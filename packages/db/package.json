@@ -1,0 +1,42 @@
+{
+  "name": "@app/db",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "generate": "prisma generate",
+    "migrate": "DATABASE_URL=\"$DATABASE_MIGRATIONS_URL\" prisma migrate dev",
+    "migrate:deploy": "DATABASE_URL=\"$DATABASE_MIGRATIONS_URL\" prisma migrate deploy",
+    "seed": "DATABASE_URL=\"$DATABASE_MIGRATIONS_URL\" tsx prisma/seed.ts",
+    "reset": "DATABASE_URL=\"$DATABASE_MIGRATIONS_URL\" prisma migrate reset --force",
+    "studio": "prisma studio",
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "echo 'no lint for @app/db'",
+    "test": "echo 'no tests for @app/db'"
+  },
+  "dependencies": {
+    "@prisma/client": "6.1.0",
+    "argon2": "0.41.1"
+  },
+  "devDependencies": {
+    "@types/node": "24.0.0",
+    "prisma": "6.1.0",
+    "tsx": "4.19.2",
+    "typescript": "5.7.2"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  }
+}

@@ -1,0 +1,107 @@
+import { Injectable } from '@nestjs/common';
+import type {
+  CreateSourceInput,
+  PaginatedResponse,
+  Pagination,
+  SourceResponse,
+  UpdateSourceInput,
+} from '@app/shared';
+import { Prisma } from '@app/db';
+import { PrismaService } from '../../database/prisma.service';
+import { ConflictError, NotFoundError } from '../../common/errors/domain.error';
+
+@Injectable()
+export class SourcesService {
+  constructor(private readonly prisma: PrismaService) {}
+
+  async create(input: CreateSourceInput): Promise<SourceResponse> {
+    return this.prisma.runAsAdmin(async (tx) => {
+      const existing = await tx.source.findUnique({ where: { code: input.code } });
+      if (existing) throw new ConflictError(`Source code '${input.code}' already exists`);
+      const row = await tx.source.create({
+        data: {
+          name: input.name,
+          code: input.code,
+          metadata: (input.metadata ?? Prisma.JsonNull) as Prisma.InputJsonValue,
+        },
+      });
+      return mapSource(row);
+    });
+  }
+
+  async list(query: Pagination): Promise<PaginatedResponse<SourceResponse>> {
+    return this.prisma.runAsAdmin(async (tx) => {
+      const skip = (query.page - 1) * query.pageSize;
+      const [rows, total] = await Promise.all([
+        tx.source.findMany({ orderBy: { createdAt: 'desc' }, skip, take: query.pageSize }),
+        tx.source.count(),
+      ]);
+      return {
+        data: rows.map(mapSource),
+        meta: {
+          page: query.page,
+          pageSize: query.pageSize,
+          total,
+          totalPages: Math.max(1, Math.ceil(total / query.pageSize)),
+        },
+      };
+    });
+  }
+
+  async listActiveAll(): Promise<SourceResponse[]> {
+    return this.prisma.runAsAdmin(async (tx) => {
+      const rows = await tx.source.findMany({
+        where: { status: 'ACTIVE' },
+        orderBy: { name: 'asc' },
+      });
+      return rows.map(mapSource);
+    });
+  }
+
+  async getById(id: string): Promise<SourceResponse> {
+    const row = await this.prisma.runAsAdmin((tx) => tx.source.findUnique({ where: { id } }));
+    if (!row) throw new NotFoundError('Source', id);
+    return mapSource(row);
+  }
+
+  async update(id: string, input: UpdateSourceInput): Promise<SourceResponse> {
+    const row = await this.prisma.runAsAdmin(async (tx) => {
+      const existing = await tx.source.findUnique({ where: { id } });
+      if (!existing) throw new NotFoundError('Source', id);
+      return tx.source.update({
+        where: { id },
+        data: {
+          name: input.name ?? undefined,
+          status: input.status ?? undefined,
+          metadata:
+            input.metadata === undefined
+              ? undefined
+              : input.metadata === null
+                ? Prisma.JsonNull
+                : (input.metadata as Prisma.InputJsonValue),
+        },
+      });
+    });
+    return mapSource(row);
+  }
+}
+
+function mapSource(row: {
+  id: string;
+  name: string;
+  code: string;
+  status: SourceResponse['status'];
+  metadata: unknown;
+  createdAt: Date;
+  updatedAt: Date;
+}): SourceResponse {
+  return {
+    id: row.id,
+    name: row.name,
+    code: row.code,
+    status: row.status,
+    metadata: (row.metadata as Record<string, unknown> | null) ?? null,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}

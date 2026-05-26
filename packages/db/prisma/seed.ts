@@ -1,0 +1,96 @@
+/**
+ * Seed: creates a SUPER_ADMIN, a starter catalog of sources, and a
+ * couple of sample (global) commission rules. Safe to re-run — uses
+ * upserts by natural keys.
+ *
+ * Run via: pnpm db:seed
+ */
+import { PrismaClient, UserRole, UserStatus } from '@prisma/client';
+import argon2 from 'argon2';
+
+const prisma = new PrismaClient();
+
+async function main() {
+  const adminEmail = process.env.SEED_ADMIN_EMAIL ?? 'admin@example.com';
+  const adminPassword = process.env.SEED_ADMIN_PASSWORD ?? 'AdminPassw0rd!';
+
+  // Bypass RLS for seeding.
+  await prisma.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
+
+  // --- Admin user ---
+  const passwordHash = await argon2.hash(adminPassword, { type: argon2.argon2id });
+  const admin = await prisma.user.upsert({
+    where: { email: adminEmail },
+    update: { passwordHash },
+    create: {
+      email: adminEmail,
+      passwordHash,
+      role: UserRole.SUPER_ADMIN,
+      status: UserStatus.ACTIVE,
+    },
+  });
+
+  // --- Sources ---
+  const sources = [
+    { code: 'omt', name: 'OMT' },
+    { code: 'bank_transfer', name: 'Bank Transfer' },
+    { code: 'crypto_gateway', name: 'Crypto Gateway' },
+    { code: 'utility_provider', name: 'Utility Provider' },
+  ];
+  for (const s of sources) {
+    await prisma.source.upsert({
+      where: { code: s.code },
+      update: { name: s.name },
+      create: s,
+    });
+  }
+
+  // --- Sample global commission rules (company_id NULL = applies to all) ---
+  // The spec example:
+  //   1 → 100     => fixed 1$
+  //   101 → 300   => fixed 5$
+  //   301 → 1000  => 2%
+  const sampleRules = [
+    { minAmount: '1', maxAmount: '100', type: 'FIXED' as const, value: '1', priority: 100 },
+    { minAmount: '101', maxAmount: '300', type: 'FIXED' as const, value: '5', priority: 100 },
+    { minAmount: '301', maxAmount: '1000', type: 'PERCENTAGE' as const, value: '2', priority: 100 },
+  ];
+  // Skip if any global rule already exists (idempotent enough for a sample).
+  const existingGlobal = await prisma.commissionRule.count({
+    where: { companyId: null, sourceId: null },
+  });
+  if (existingGlobal === 0) {
+    for (const r of sampleRules) {
+      await prisma.commissionRule.create({
+        data: {
+          companyId: null,
+          sourceId: null,
+          minAmount: r.minAmount,
+          maxAmount: r.maxAmount,
+          commissionType: r.type,
+          commissionValue: r.value,
+          priority: r.priority,
+          active: true,
+        },
+      });
+    }
+  }
+
+  console.log('');
+  console.log('==========================================');
+  console.log(' Seed complete.');
+  console.log(' Super admin:');
+  console.log('   email:    ', admin.email);
+  console.log('   password: ', adminPassword);
+  console.log('==========================================');
+  console.log('');
+}
+
+main()
+  .catch((e) => {
+    console.error(e);
+    process.exit(1);
+  })
+  .finally(async () => {
+    await prisma.$disconnect();
+  });

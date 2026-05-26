@@ -1,0 +1,17 @@
+node_modules
+**/node_modules
+**/.next
+**/dist
+**/build
+**/coverage
+.git
+.github
+.husky
+*.log
+.env
+.env.local
+.env.*.local
+README.md
+*.md
+.idea
+.vscode

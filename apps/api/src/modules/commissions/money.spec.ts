@@ -1,0 +1,98 @@
+import { describe, expect, it } from 'vitest';
+import { Money, MONEY_SCALE } from '@app/shared';
+
+describe('Money', () => {
+  describe('construction and equality', () => {
+    it('parses string, number, and decimal inputs identically', () => {
+      expect(Money.of('1.50').eq(Money.of(1.5))).toBe(true);
+      expect(Money.of('0').isZero()).toBe(true);
+      expect(Money.zero().isZero()).toBe(true);
+    });
+
+    it('preserves precision past JS float limits', () => {
+      const a = Money.of('0.1');
+      const b = Money.of('0.2');
+      // 0.1 + 0.2 === 0.3 in decimal arithmetic (unlike JS floats).
+      expect(a.add(b).eq(Money.of('0.3'))).toBe(true);
+    });
+
+    it('keeps 8-dp precision for typical fintech amounts', () => {
+      const v = Money.of('123.45678901234567');
+      // Stored at 8 dp scale.
+      expect(v.toString()).toBe('123.45678901');
+    });
+  });
+
+  describe('arithmetic', () => {
+    it('add/sub/mul/div preserve sign', () => {
+      const ten = Money.of('10');
+      const three = Money.of('3');
+      expect(ten.add(three).toString()).toBe('13');
+      expect(ten.sub(three).toString()).toBe('7');
+      expect(three.mul(4).toString()).toBe('12');
+      expect(ten.div(4).toString()).toBe('2.5');
+    });
+
+    it('percent applies fractional percentages correctly', () => {
+      expect(Money.of('200').percent('2.5').toString()).toBe('5');
+      expect(Money.of('1000').percent('0.1').toString()).toBe('1');
+    });
+
+    it('mul by -1 flips sign and isNegative reports correctly', () => {
+      const neg = Money.of('5').mul(-1);
+      expect(neg.isNegative()).toBe(true);
+      expect(neg.isPositive()).toBe(false);
+      expect(neg.toString()).toBe('-5');
+    });
+  });
+
+  describe('rounding', () => {
+    it('uses bankers rounding (half-to-even)', () => {
+      // 1.005 at 2 dp -> 1.00 (banker's) not 1.01
+      expect(Money.of('1.005').toFixed(2)).toBe('1.00');
+      // 1.015 at 2 dp -> 1.02 (banker's)
+      expect(Money.of('1.015').toFixed(2)).toBe('1.02');
+    });
+
+    it('round() clamps to MONEY_SCALE (8 dp)', () => {
+      const long = Money.of('1.123456789012345');
+      expect(long.round().toString().split('.')[1]?.length).toBeLessThanOrEqual(MONEY_SCALE);
+    });
+  });
+
+  describe('comparison', () => {
+    it('gte/lte boundary cases', () => {
+      const a = Money.of('100');
+      expect(a.gte(Money.of('100'))).toBe(true);
+      expect(a.lte(Money.of('100'))).toBe(true);
+      expect(a.gt(Money.of('100'))).toBe(false);
+      expect(a.lt(Money.of('100'))).toBe(false);
+    });
+
+    it('cmp returns -1/0/1', () => {
+      expect(Money.of('1').cmp(Money.of('2'))).toBe(-1);
+      expect(Money.of('2').cmp(Money.of('1'))).toBe(1);
+      expect(Money.of('1').cmp(Money.of('1'))).toBe(0);
+    });
+  });
+
+  describe('isZero / isPositive edge cases', () => {
+    it('zero is neither positive nor negative', () => {
+      const z = Money.zero();
+      expect(z.isZero()).toBe(true);
+      expect(z.isPositive()).toBe(false);
+      expect(z.isNegative()).toBe(false);
+    });
+
+    it('tiny positive (1e-8) is still positive at 8 dp', () => {
+      const tiny = Money.of('0.00000001');
+      expect(tiny.isPositive()).toBe(true);
+      expect(tiny.isZero()).toBe(false);
+    });
+
+    it('values below 8 dp resolution round to zero', () => {
+      const sub = Money.of('0.000000001'); // 9th decimal
+      expect(sub.round().isZero()).toBe(true);
+    });
+  });
+});

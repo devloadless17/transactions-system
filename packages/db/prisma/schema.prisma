@@ -1,0 +1,437 @@
+// =================================================================
+// Transactions System — Prisma Schema
+//
+// Multi-tenant fintech-style transaction platform.
+// All money fields use Decimal(20, 8). All timestamps are UTC.
+// Tenant-scoped tables carry company_id and are protected by RLS
+// policies declared in migration 0002_rls.sql.
+// =================================================================
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ----------------------------- Enums -----------------------------
+
+enum UserRole {
+  SUPER_ADMIN
+  ADMIN_OPERATOR
+  COMPANY_OWNER
+  COMPANY_MANAGER
+  COMPANY_VIEWER
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+  PENDING
+}
+
+enum CompanyStatus {
+  ACTIVE
+  SUSPENDED
+  DISABLED
+}
+
+enum SourceStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum CommissionType {
+  FIXED
+  PERCENTAGE
+}
+
+enum TransactionStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  REVERSED
+  REFUNDED
+}
+
+enum LedgerAccountType {
+  AVAILABLE
+  PENDING
+  RESERVED
+  FEE
+  EXTERNAL
+}
+
+enum LedgerDirection {
+  DEBIT
+  CREDIT
+}
+
+enum WithdrawalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  PROCESSING
+  COMPLETED
+  CANCELLED
+}
+
+enum PayoutMethod {
+  BANK_TRANSFER
+  CRYPTO
+  CASH
+  WISH
+  OTHER
+}
+
+// ----------------------------- Users -----------------------------
+
+model User {
+  id                  String     @id @default(uuid()) @db.Uuid
+  email               String     @unique @db.Citext
+  passwordHash        String     @map("password_hash")
+  role                UserRole
+  status              UserStatus @default(ACTIVE)
+  companyId           String?    @map("company_id") @db.Uuid
+  company             Company?   @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  mustChangePassword  Boolean    @default(false) @map("must_change_password")
+  lastLoginAt         DateTime?  @map("last_login_at") @db.Timestamptz(6)
+  createdAt           DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  refreshTokens        RefreshToken[]
+  approvedWithdrawals  Withdrawal[]   @relation("WithdrawalApprovedBy")
+  requestedWithdrawals Withdrawal[]   @relation("WithdrawalRequestedBy")
+  approvedPayouts      Payout[]       @relation("PayoutApprovedBy")
+  requestedPayouts     Payout[]       @relation("PayoutRequestedBy")
+  approvedLoads        Load[]         @relation("LoadApprovedBy")
+  requestedLoads       Load[]         @relation("LoadRequestedBy")
+  auditLogs            AuditLog[]
+
+  @@index([companyId])
+  @@index([role])
+  @@map("users")
+}
+
+model RefreshToken {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @map("user_id") @db.Uuid
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash  String    @unique @map("token_hash")
+  userAgent  String?   @map("user_agent")
+  ipAddress  String?   @map("ip_address")
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz(6)
+  revokedAt  DateTime? @map("revoked_at") @db.Timestamptz(6)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
+}
+
+// --------------------------- Companies ---------------------------
+
+model Company {
+  id              String        @id @default(uuid()) @db.Uuid
+  name            String
+  slug            String        @unique
+  status          CompanyStatus @default(ACTIVE)
+  defaultCurrency String        @map("default_currency") @db.Char(3)
+  metadata        Json?         @db.JsonB
+  createdAt       DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  users             User[]
+  apiKeys           ApiKey[]
+  commissionRules   CommissionRule[]
+  transactions      Transaction[]
+  wallets           Wallet[]
+  ledgerEntries     LedgerEntry[]
+  withdrawals       Withdrawal[]
+  payouts           Payout[]
+  loads             Load[]
+  auditLogs         AuditLog[]
+  idempotencyKeys   IdempotencyKey[]
+
+  @@index([status])
+  @@map("companies")
+}
+
+// --------------------------- Sources -----------------------------
+
+model Source {
+  id        String       @id @default(uuid()) @db.Uuid
+  name      String
+  code      String       @unique
+  status    SourceStatus @default(ACTIVE)
+  metadata  Json?        @db.JsonB
+  createdAt DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  commissionRules CommissionRule[]
+  transactions    Transaction[]
+  apiKeys         ApiKey[]
+
+  @@map("sources")
+}
+
+// --------------------------- API Keys ----------------------------
+
+// API keys come in two flavours:
+//   - SOURCE keys (sourceId set, companyId null): held by external providers
+//     like OMT/wish. Caller posts to /v1/ingest/transactions with a
+//     `companySlug` in the body. Can only target companies that have opted
+//     into this source via `company_sources`.
+//   - COMPANY keys (companyId set, sourceId null): legacy company-held keys.
+//     The company picks `sourceCode` per request.
+// Exactly one of `companyId` / `sourceId` is set — enforced by CHECK.
+model ApiKey {
+  id         String    @id @default(uuid()) @db.Uuid
+  companyId  String?   @map("company_id") @db.Uuid
+  company    Company?  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  sourceId   String?   @map("source_id") @db.Uuid
+  source     Source?   @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  name       String
+  keyPrefix  String    @map("key_prefix")
+  keyHash    String    @map("key_hash")
+  lastUsedAt DateTime? @map("last_used_at") @db.Timestamptz(6)
+  expiresAt  DateTime? @map("expires_at") @db.Timestamptz(6)
+  revokedAt  DateTime? @map("revoked_at") @db.Timestamptz(6)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([keyPrefix])
+  @@index([companyId])
+  @@index([sourceId])
+  @@map("api_keys")
+}
+
+// ----------------------- Commission Rules ------------------------
+
+model CommissionRule {
+  id              String         @id @default(uuid()) @db.Uuid
+  companyId       String?        @map("company_id") @db.Uuid
+  company         Company?       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  sourceId        String?        @map("source_id") @db.Uuid
+  source          Source?        @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  minAmount       Decimal        @map("min_amount") @db.Decimal(20, 8)
+  maxAmount       Decimal        @map("max_amount") @db.Decimal(20, 8)
+  commissionType  CommissionType @map("commission_type")
+  commissionValue Decimal        @map("commission_value") @db.Decimal(20, 8)
+  priority        Int            @default(0)
+  active          Boolean        @default(true)
+  createdAt       DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([companyId, sourceId, active, priority])
+  @@map("commission_rules")
+}
+
+// --------------------------- Transactions ------------------------
+
+model Transaction {
+  id                    String            @id @default(uuid()) @db.Uuid
+  companyId             String            @map("company_id") @db.Uuid
+  company               Company           @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  sourceId              String            @map("source_id") @db.Uuid
+  source                Source            @relation(fields: [sourceId], references: [id], onDelete: Restrict)
+  externalTransactionId String            @map("external_transaction_id")
+  amount                Decimal           @db.Decimal(20, 8)
+  currency              String            @db.Char(3)
+  commissionAmount      Decimal           @map("commission_amount") @db.Decimal(20, 8)
+  netAmount             Decimal           @map("net_amount") @db.Decimal(20, 8)
+  status                TransactionStatus @default(PENDING)
+  payload               Json              @db.JsonB
+  idempotencyKey        String?           @map("idempotency_key")
+  processedAt           DateTime?         @map("processed_at") @db.Timestamptz(6)
+  createdAt             DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  ledgerEntries LedgerEntry[]
+
+  @@unique([sourceId, externalTransactionId])
+  @@unique([companyId, idempotencyKey])
+  @@index([companyId, createdAt])
+  @@index([companyId, status])
+  @@map("transactions")
+}
+
+// ----------------------------- Wallets ---------------------------
+
+model Wallet {
+  id               String   @id @default(uuid()) @db.Uuid
+  companyId        String   @map("company_id") @db.Uuid
+  company          Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  currency         String   @db.Char(3)
+  availableBalance Decimal  @default(0) @map("available_balance") @db.Decimal(20, 8)
+  pendingBalance   Decimal  @default(0) @map("pending_balance") @db.Decimal(20, 8)
+  reservedBalance  Decimal  @default(0) @map("reserved_balance") @db.Decimal(20, 8)
+  version          Int      @default(0)
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([companyId, currency])
+  @@map("wallets")
+}
+
+// --------------------------- Ledger ------------------------------
+// Append-only. No UPDATE/DELETE allowed (enforced by DB trigger).
+
+model LedgerEntry {
+  id            String            @id @default(uuid()) @db.Uuid
+  companyId     String            @map("company_id") @db.Uuid
+  company       Company           @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  transactionId String?           @map("transaction_id") @db.Uuid
+  transaction   Transaction?      @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  withdrawalId  String?           @map("withdrawal_id") @db.Uuid
+  withdrawal    Withdrawal?       @relation(fields: [withdrawalId], references: [id], onDelete: Restrict)
+  payoutId      String?           @map("payout_id") @db.Uuid
+  payout        Payout?           @relation(fields: [payoutId], references: [id], onDelete: Restrict)
+  loadId        String?           @map("load_id") @db.Uuid
+  load          Load?             @relation(fields: [loadId], references: [id], onDelete: Restrict)
+  accountType   LedgerAccountType @map("account_type")
+  direction     LedgerDirection
+  amount        Decimal           @db.Decimal(20, 8)
+  currency      String            @db.Char(3)
+  metadata      Json?             @db.JsonB
+  createdAt     DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([companyId, currency, createdAt])
+  @@index([transactionId])
+  @@index([withdrawalId])
+  @@index([payoutId])
+  @@index([loadId])
+  @@map("ledger_entries")
+}
+
+// -------------------------- Withdrawals / Payouts / Loads --------
+// Three sibling tables with the same shape. They were one table with a
+// `kind` column up to migration 0008; 0009 split them so each has its
+// own page, endpoint, service, and lifecycle.
+//   - Withdrawal: company pays an external third party (out)
+//   - Payout:     company pays itself                       (out)
+//   - Load:       company tops up its own wallet            (in)
+
+model Withdrawal {
+  id                String           @id @default(uuid()) @db.Uuid
+  companyId         String           @map("company_id") @db.Uuid
+  company           Company          @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  amount            Decimal          @db.Decimal(20, 8)
+  currency          String           @db.Char(3)
+  status            WithdrawalStatus @default(PENDING)
+  payoutMethod      PayoutMethod     @map("payout_method")
+  payoutDetails     Json?            @map("payout_details") @db.JsonB
+  externalReference String?          @map("external_reference")
+  requestedById     String           @map("requested_by_id") @db.Uuid
+  requestedBy       User             @relation("WithdrawalRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
+  approvedById      String?          @map("approved_by_id") @db.Uuid
+  approvedBy        User?            @relation("WithdrawalApprovedBy", fields: [approvedById], references: [id], onDelete: Restrict)
+  notes             String?
+  metadata          Json?            @db.JsonB
+  processedAt       DateTime?        @map("processed_at") @db.Timestamptz(6)
+  createdAt         DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  ledgerEntries LedgerEntry[]
+
+  @@index([companyId, status])
+  @@index([companyId, createdAt])
+  @@map("withdrawals")
+}
+
+model Payout {
+  id                String           @id @default(uuid()) @db.Uuid
+  companyId         String           @map("company_id") @db.Uuid
+  company           Company          @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  amount            Decimal          @db.Decimal(20, 8)
+  currency          String           @db.Char(3)
+  status            WithdrawalStatus @default(PENDING)
+  payoutMethod      PayoutMethod     @map("payout_method")
+  payoutDetails     Json?            @map("payout_details") @db.JsonB
+  externalReference String?          @map("external_reference")
+  requestedById     String           @map("requested_by_id") @db.Uuid
+  requestedBy       User             @relation("PayoutRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
+  approvedById      String?          @map("approved_by_id") @db.Uuid
+  approvedBy        User?            @relation("PayoutApprovedBy", fields: [approvedById], references: [id], onDelete: Restrict)
+  notes             String?
+  metadata          Json?            @db.JsonB
+  processedAt       DateTime?        @map("processed_at") @db.Timestamptz(6)
+  createdAt         DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  ledgerEntries LedgerEntry[]
+
+  @@index([companyId, status])
+  @@index([companyId, createdAt])
+  @@map("payouts")
+}
+
+model Load {
+  id                String           @id @default(uuid()) @db.Uuid
+  companyId         String           @map("company_id") @db.Uuid
+  company           Company          @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  amount            Decimal          @db.Decimal(20, 8)
+  currency          String           @db.Char(3)
+  status            WithdrawalStatus @default(PENDING)
+  payoutMethod      PayoutMethod     @map("payout_method")
+  payoutDetails     Json?            @map("payout_details") @db.JsonB
+  externalReference String?          @map("external_reference")
+  requestedById     String           @map("requested_by_id") @db.Uuid
+  requestedBy       User             @relation("LoadRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
+  approvedById      String?          @map("approved_by_id") @db.Uuid
+  approvedBy        User?            @relation("LoadApprovedBy", fields: [approvedById], references: [id], onDelete: Restrict)
+  notes             String?
+  metadata          Json?            @db.JsonB
+  processedAt       DateTime?        @map("processed_at") @db.Timestamptz(6)
+  createdAt         DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  ledgerEntries LedgerEntry[]
+
+  @@index([companyId, status])
+  @@index([companyId, createdAt])
+  @@map("loads")
+}
+
+// -------------------------- Audit Logs ---------------------------
+
+model AuditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  actorId    String?  @map("actor_id") @db.Uuid
+  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  companyId  String?  @map("company_id") @db.Uuid
+  company    Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  action     String
+  entityType String   @map("entity_type")
+  entityId   String?  @map("entity_id")
+  metadata   Json?    @db.JsonB
+  ipAddress  String?  @map("ip_address")
+  userAgent  String?  @map("user_agent")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([companyId, createdAt])
+  @@index([actorId])
+  @@index([entityType, entityId])
+  @@map("audit_logs")
+}
+
+// -------------------- Idempotency Keys ---------------------------
+
+model IdempotencyKey {
+  id              String   @id @default(uuid()) @db.Uuid
+  companyId       String   @map("company_id") @db.Uuid
+  company         Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  key             String
+  requestHash     String   @map("request_hash")
+  responseSnapshot Json?   @map("response_snapshot") @db.JsonB
+  expiresAt       DateTime @map("expires_at") @db.Timestamptz(6)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([companyId, key])
+  @@index([expiresAt])
+  @@map("idempotency_keys")
+}

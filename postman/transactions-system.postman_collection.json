@@ -1,0 +1,938 @@
+{
+  "info": {
+    "_postman_id": "f7c0a6b2-9d40-4cda-9c01-7d5b1ec23a91",
+    "name": "Transactions System",
+    "description": "Full end-to-end test flow for the multi-tenant transaction platform.\n\nTwo distinct API key types:\n- **Source key** — held by external providers (OMT, Wish). Can POST transactions on behalf of any company via `/ingest/:sourceCode/transactions`, and discover companies via `GET /ingest/companies`.\n- **Company key** — held by the company itself. READ-ONLY. Used for programmatic dashboards/exports against `/company/*` endpoints.\n\nRun the requests **in order** from the top folder down:\n\n1. **00 — Health** — sanity check the API is up\n2. **01 — Admin** — log in as super admin, create a test company\n3. **02 — Company Owner** — log in as the new owner, create a read-only company key\n4. **02b — Admin: Source Keys** — mint a source key for a provider (e.g. OMT)\n5. **03 — Ingestion (external provider)** — discover companies, then POST a transaction using the source key + companyId\n6. **04 — Owner reads** — wallets, transactions, ledger\n7. **05 — Withdrawals** — request one, then admin approves with a reference\n8. **07 — Analytics** — admin dashboards\n9. **08 — Negative tests** — confirm validation/auth errors fire correctly\n\nThe collection has **test scripts that auto-capture** the CSRF token, company ID, owner credentials, source/company API keys, and withdrawal ID into collection variables — so you just click Send in order and everything flows.\n\n**Cookies**: Postman manages them per-host. When you switch from admin to owner login, the older session is overwritten automatically. If you want to log out fully, click the Cookies icon and clear `localhost`.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:3001/v1", "type": "string" },
+    { "key": "adminEmail", "value": "ali@loadless.ai", "type": "string" },
+    { "key": "adminPassword", "value": "loadless", "type": "string" },
+    { "key": "csrfToken", "value": "", "type": "string" },
+    { "key": "companyId", "value": "", "type": "string" },
+    { "key": "ownerEmail", "value": "", "type": "string" },
+    { "key": "ownerPassword", "value": "", "type": "string" },
+    { "key": "apiKey", "value": "", "type": "string" },
+    { "key": "sourceApiKey", "value": "", "type": "string" },
+    { "key": "sourceCode", "value": "omt", "type": "string" },
+    { "key": "sourceId", "value": "", "type": "string" },
+    { "key": "withdrawalId", "value": "", "type": "string" },
+    { "key": "transactionId", "value": "", "type": "string" }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Refresh the CSRF token variable from cookies before every request.",
+          "// Mutating requests reference it via the `x-csrf-token` header.",
+          "const c = pm.cookies.get('csrf-token');",
+          "if (c) pm.collectionVariables.set('csrfToken', c);"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Also refresh CSRF after the response (Set-Cookie may have rotated it).",
+          "const c = pm.cookies.get('csrf-token');",
+          "if (c) pm.collectionVariables.set('csrfToken', c);"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "00 — Health",
+      "item": [
+        {
+          "name": "GET /health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/health", "host": ["{{baseUrl}}"], "path": ["health"] },
+            "description": "Sanity check. Returns `{ status: 'ok', db: 'ok' }` when Postgres is reachable."
+          }
+        }
+      ]
+    },
+    {
+      "name": "01 — Admin",
+      "item": [
+        {
+          "name": "Login as super admin",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const c = pm.cookies.get('csrf-token');",
+                  "if (c) pm.collectionVariables.set('csrfToken', c);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{adminEmail}}\",\n  \"password\": \"{{adminPassword}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "login"]
+            },
+            "description": "Sets `txn_access`, `txn_refresh`, `csrf-token` cookies."
+          }
+        },
+        {
+          "name": "Create test company",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.expect([200, 201]).to.include(pm.response.code));",
+                  "const j = pm.response.json();",
+                  "pm.collectionVariables.set('companyId', j.company.id);",
+                  "pm.collectionVariables.set('ownerEmail', j.owner.email);",
+                  "pm.collectionVariables.set('ownerPassword', j.owner.temporaryPassword);",
+                  "console.log('Saved companyId =', j.company.id);",
+                  "console.log('Saved ownerPassword (use it in step 02)');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-csrf-token", "value": "{{csrfToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"My Test Co\",\n  \"slug\": \"my-test-co\",\n  \"defaultCurrency\": \"USD\",\n  \"ownerEmail\": \"owner@mytestco.com\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/admin/companies",
+              "host": ["{{baseUrl}}"],
+              "path": ["admin", "companies"]
+            },
+            "description": "Provisions a company, an owner user, and a default-currency wallet. Auto-saves companyId + ownerPassword for the next steps.\n\nIf you re-run and get a slug conflict, change the `slug` and `ownerEmail` to fresh values."
+          }
+        },
+        {
+          "name": "List companies",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/companies?pageSize=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["admin", "companies"],
+              "query": [{ "key": "pageSize", "value": "20" }]
+            }
+          }
+        },
+        {
+          "name": "Get company by id",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/companies/{{companyId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["admin", "companies", "{{companyId}}"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "02 — Company Owner",
+      "item": [
+        {
+          "name": "Login as company owner",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const c = pm.cookies.get('csrf-token');",
+                  "if (c) pm.collectionVariables.set('csrfToken', c);",
+                  "const j = pm.response.json();",
+                  "console.log('Logged in as', j.email, '(mustChangePassword =', j.mustChangePassword, ')');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{ownerEmail}}\",\n  \"password\": \"{{ownerPassword}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "login"]
+            },
+            "description": "Overwrites the admin cookies. Subsequent cookie-authed requests are made as this company's owner.\n\n`mustChangePassword` is `true` on first login — for API testing you can ignore it, the access token still works."
+          }
+        },
+        {
+          "name": "/auth/me (verify session)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/auth/me", "host": ["{{baseUrl}}"], "path": ["auth", "me"] }
+          }
+        },
+        {
+          "name": "Create API key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.expect([200, 201]).to.include(pm.response.code));",
+                  "const j = pm.response.json();",
+                  "pm.collectionVariables.set('apiKey', j.plaintext);",
+                  "console.log('Saved apiKey =', j.plaintext.slice(0, 24) + '…');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-csrf-token", "value": "{{csrfToken}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"postman-test\"\n}" },
+            "url": {
+              "raw": "{{baseUrl}}/company/api-keys",
+              "host": ["{{baseUrl}}"],
+              "path": ["company", "api-keys"]
+            },
+            "description": "**Read-only** company key. Use it to GET your company's transactions, wallets, ledger, withdrawals, etc. from a script or internal tool.\n\n**NOT for ingestion** — ingestion requires a source API key minted by the admin (see folder 02b — Admin: Source Keys). Attempting to POST /ingest with a company key returns 403.\n\nThe plaintext is shown **only once**. Auto-saved to {{apiKey}}."
+          }
+        },
+        {
+          "name": "List API keys",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/company/api-keys",
+              "host": ["{{baseUrl}}"],
+              "path": ["company", "api-keys"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "02b — Admin: Source Keys",
+      "description": "Mint a source API key for an external provider (OMT, Wish, …). Source keys are the **only** way to POST transactions to the platform.\n\nRun the **Login as super admin** request first if your admin session expired.",
+      "item": [
+        {
+          "name": "(switch to admin) Login as super admin",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const c = pm.cookies.get('csrf-token');",
+                  "if (c) pm.collectionVariables.set('csrfToken', c);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{adminEmail}}\",\n  \"password\": \"{{adminPassword}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "login"]
+            }
+          }
+        },
+        {
+          "name": "List sources (find the source id for OMT)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j = pm.response.json();",
+                  "const wanted = pm.collectionVariables.get('sourceCode') || 'omt';",
+                  "const match = (j.data || []).find(s => s.code === wanted);",
+                  "if (match) {",
+                  "  pm.collectionVariables.set('sourceId', match.id);",
+                  "  console.log('Saved sourceId for', wanted, '=', match.id);",
+                  "} else {",
+                  "  console.warn('Could not find source code', wanted, '— pick one from the response and set {{sourceCode}} accordingly');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/sources?pageSize=100",
+              "host": ["{{baseUrl}}"],
+              "path": ["admin", "sources"],
+              "query": [{ "key": "pageSize", "value": "100" }]
+            },
+            "description": "Looks up the sourceId for `{{sourceCode}}` (default: `omt`) and saves it to `{{sourceId}}`. You can change `{{sourceCode}}` in collection variables to target any other source (wish_money_code, bank_transfer, crypto_gateway, …)."
+          }
+        },
+        {
+          "name": "Mint source API key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.expect([200, 201]).to.include(pm.response.code));",
+                  "const j = pm.response.json();",
+                  "pm.collectionVariables.set('sourceApiKey', j.plaintext);",
+                  "console.log('Saved sourceApiKey =', j.plaintext.slice(0, 24) + '…');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-csrf-token", "value": "{{csrfToken}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"postman-source-test\"\n}" },
+            "url": {
+              "raw": "{{baseUrl}}/admin/sources/{{sourceId}}/api-keys",
+              "host": ["{{baseUrl}}"],
+              "path": ["admin", "sources", "{{sourceId}}", "api-keys"]
+            },
+            "description": "Issues a fresh source-scoped API key for the source whose UUID is in `{{sourceId}}`. Auto-saves the plaintext to `{{sourceApiKey}}` for use in the ingestion folder."
+          }
+        },
+        {
+          "name": "List source API keys",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/sources/{{sourceId}}/api-keys",
+              "host": ["{{baseUrl}}"],
+              "path": ["admin", "sources", "{{sourceId}}", "api-keys"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "03 — Ingestion (external provider)",
+      "description": "Run **02b — Admin: Source Keys** first to mint `{{sourceApiKey}}`. These requests use only the Bearer API key — no cookies, no CSRF. This simulates the real external integration where OMT / Wish / banks POST to the platform.\n\nKey identifies the **source**. The body's `companyId` identifies which company the transaction is **for**.",
+      "item": [
+        {
+          "name": "Discover companies",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('Returns an array of companies', () => pm.expect(j.data).to.be.an('array'));",
+                  "if ((j.data || []).length > 0 && !pm.collectionVariables.get('companyId')) {",
+                  "  pm.collectionVariables.set('companyId', j.data[0].id);",
+                  "  console.log('Saved companyId =', j.data[0].id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{sourceApiKey}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/ingest/companies",
+              "host": ["{{baseUrl}}"],
+              "path": ["ingest", "companies"]
+            },
+            "description": "External provider startup: discover the list of ACTIVE companies, cache their slugs. Returns `{ data: [{ id, slug, name, defaultCurrency }, ...] }`. Only callable with a source key."
+          }
+        },
+        {
+          "name": "Ingest 50 USD (fee 1, net 49)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.expect([200, 201]).to.include(pm.response.code));",
+                  "const j = pm.response.json();",
+                  "pm.collectionVariables.set('transactionId', j.id);",
+                  "pm.test('Commission is 1 (FIXED bracket 1-100)', () => pm.expect(j.commissionAmount).to.equal('1'));",
+                  "pm.test('Net is 49', () => pm.expect(j.netAmount).to.equal('49'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{sourceApiKey}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"companyId\": \"{{companyId}}\",\n  \"externalTransactionId\": \"postman-{{$timestamp}}-50\",\n  \"amount\": \"50\",\n  \"currency\": \"USD\",\n  \"payload\": {\n    \"customer\": { \"name\": \"Alice (payer)\",     \"phone\": \"+961-3-111-111\" },\n    \"target\":   { \"name\": \"Bob (recipient)\",  \"phone\": \"+961-3-222-222\" },\n    \"note\": \"test-from-postman\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/ingest/{{sourceCode}}/transactions",
+              "host": ["{{baseUrl}}"],
+              "path": ["ingest", "{{sourceCode}}", "transactions"]
+            },
+            "description": "Matches the **1–100 USD FIXED 1** seeded commission rule. The `{{$timestamp}}` keeps the externalTransactionId unique on re-run.\n\n**Payload conventions** (free-form jsonb but providers should follow these so dashboards render consistently):\n- `customer` — the *sender* / payer (name, phone, …)\n- `target` — the *recipient* / beneficiary (name, phone, …)\n- `note` — free-text comment from the provider\n- anything else under `payload` is preserved as-is"
+          }
+        },
+        {
+          "name": "Ingest 200 USD (fee 5, net 195)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{sourceApiKey}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"companyId\": \"{{companyId}}\",\n  \"externalTransactionId\": \"postman-{{$timestamp}}-200\",\n  \"amount\": \"200\",\n  \"currency\": \"USD\",\n  \"payload\": {\n    \"customer\": { \"name\": \"Bob (payer)\" },\n    \"target\":   { \"name\": \"Dana (recipient)\", \"phone\": \"+961-3-333-333\" },\n    \"note\": \"bill payment\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/ingest/{{sourceCode}}/transactions",
+              "host": ["{{baseUrl}}"],
+              "path": ["ingest", "{{sourceCode}}", "transactions"]
+            },
+            "description": "**101–300 USD FIXED 5** bracket."
+          }
+        },
+        {
+          "name": "Ingest 500 USD (2%, fee 10)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{sourceApiKey}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"companyId\": \"{{companyId}}\",\n  \"externalTransactionId\": \"postman-{{$timestamp}}-500\",\n  \"amount\": \"500\",\n  \"currency\": \"USD\",\n  \"payload\": {\n    \"customer\": { \"name\": \"Carol (payer)\", \"phone\": \"+961-3-444-444\" },\n    \"target\":   { \"name\": \"Eve (recipient)\", \"phone\": \"+961-3-555-555\" },\n    \"note\": \"large purchase\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/ingest/{{sourceCode}}/transactions",
+              "host": ["{{baseUrl}}"],
+              "path": ["ingest", "{{sourceCode}}", "transactions"]
+            },
+            "description": "**301–1000 PERCENTAGE 2%** → fee 10, net 490."
+          }
+        },
+        {
+          "name": "Idempotency check (re-send same external id)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{sourceApiKey}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"companyId\": \"{{companyId}}\",\n  \"externalTransactionId\": \"postman-dedup-fixed-id\",\n  \"amount\": \"50\",\n  \"currency\": \"USD\",\n  \"payload\": {}\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/ingest/{{sourceCode}}/transactions",
+              "host": ["{{baseUrl}}"],
+              "path": ["ingest", "{{sourceCode}}", "transactions"]
+            },
+            "description": "**Send this twice.** The second response should return the **same `id`** as the first — proving the dedup works. No duplicate row is created."
+          }
+        }
+      ]
+    },
+    {
+      "name": "04 — Owner reads",
+      "item": [
+        {
+          "name": "Wallets",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/company/wallets",
+              "host": ["{{baseUrl}}"],
+              "path": ["company", "wallets"]
+            }
+          }
+        },
+        {
+          "name": "Transactions list",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/company/transactions?pageSize=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["company", "transactions"],
+              "query": [{ "key": "pageSize", "value": "20" }]
+            }
+          }
+        },
+        {
+          "name": "Transaction detail (id + ledger entries)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/company/transactions/{{transactionId}}/detail",
+              "host": ["{{baseUrl}}"],
+              "path": ["company", "transactions", "{{transactionId}}", "detail"]
+            },
+            "description": "Returns the transaction plus all ledger entries (typically 3: DEBIT EXTERNAL, CREDIT AVAILABLE, CREDIT FEE)."
+          }
+        },
+        {
+          "name": "Ledger (append-only audit trail)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/company/ledger?currency=USD&pageSize=50",
+              "host": ["{{baseUrl}}"],
+              "path": ["company", "ledger"],
+              "query": [
+                { "key": "currency", "value": "USD" },
+                { "key": "pageSize", "value": "50" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Recent withdrawals",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/company/withdrawals",
+              "host": ["{{baseUrl}}"],
+              "path": ["company", "withdrawals"]
+            }
+          }
+        },
+        {
+          "name": "Company analytics overview",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/company/analytics/overview?currency=USD",
+              "host": ["{{baseUrl}}"],
+              "path": ["company", "analytics", "overview"],
+              "query": [{ "key": "currency", "value": "USD" }]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "05 — Withdrawals",
+      "item": [
+        {
+          "name": "Request CRYPTO withdrawal (owner)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.expect([200, 201]).to.include(pm.response.code));",
+                  "const j = pm.response.json();",
+                  "pm.collectionVariables.set('withdrawalId', j.id);",
+                  "pm.test('Status is PENDING', () => pm.expect(j.status).to.equal('PENDING'));",
+                  "pm.test('Payout method captured', () => pm.expect(j.payoutMethod).to.equal('CRYPTO'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-csrf-token", "value": "{{csrfToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": \"50\",\n  \"currency\": \"USD\",\n  \"notes\": \"postman crypto test\",\n  \"payout\": {\n    \"method\": \"CRYPTO\",\n    \"network\": \"TRC20\",\n    \"walletAddress\": \"TX9zABCDefg-example-tron-address\",\n    \"memo\": \"postman-demo\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/company/withdrawals",
+              "host": ["{{baseUrl}}"],
+              "path": ["company", "withdrawals"]
+            },
+            "description": "Run **02 — Login as company owner** first so the cookie is the owner's.\n\nMoves 50 USD from `available` to `reserved`. Status PENDING until admin approves."
+          }
+        },
+        {
+          "name": "Request BANK withdrawal (owner)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-csrf-token", "value": "{{csrfToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": \"30\",\n  \"currency\": \"USD\",\n  \"payout\": {\n    \"method\": \"BANK_TRANSFER\",\n    \"accountHolder\": \"My Test Co Ltd\",\n    \"accountNumber\": \"LB12-0000-0000-0000\",\n    \"bankName\": \"BLOM Bank\",\n    \"swiftBic\": \"BLOMLBBX\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/company/withdrawals",
+              "host": ["{{baseUrl}}"],
+              "path": ["company", "withdrawals"]
+            }
+          }
+        },
+        {
+          "name": "Request CASH withdrawal (owner)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-csrf-token", "value": "{{csrfToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": \"20\",\n  \"currency\": \"USD\",\n  \"payout\": {\n    \"method\": \"CASH\",\n    \"recipientName\": \"Ali\",\n    \"recipientPhone\": \"+961-3-123-456\",\n    \"pickupLocation\": \"OMT Beirut branch\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/company/withdrawals",
+              "host": ["{{baseUrl}}"],
+              "path": ["company", "withdrawals"]
+            }
+          }
+        },
+        {
+          "name": "(switch to admin) Login as super admin",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const c = pm.cookies.get('csrf-token');",
+                  "if (c) pm.collectionVariables.set('csrfToken', c);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{adminEmail}}\",\n  \"password\": \"{{adminPassword}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "login"]
+            },
+            "description": "Switches the active session back to admin so the next approve/reject calls authenticate as admin."
+          }
+        },
+        {
+          "name": "Admin: list pending withdrawals",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/withdrawals?status=PENDING",
+              "host": ["{{baseUrl}}"],
+              "path": ["admin", "withdrawals"],
+              "query": [{ "key": "status", "value": "PENDING" }]
+            }
+          }
+        },
+        {
+          "name": "Admin: approve with externalReference",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-csrf-token", "value": "{{csrfToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"externalReference\": \"WIRE-REF-2026-001\",\n  \"notes\": \"sent via cold wallet at 10:30\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/admin/withdrawals/{{withdrawalId}}/approve",
+              "host": ["{{baseUrl}}"],
+              "path": ["admin", "withdrawals", "{{withdrawalId}}", "approve"]
+            },
+            "description": "Approves the most-recently-created withdrawal (auto-captured into {{withdrawalId}}).\n\n**Required**: `externalReference` (≥2 chars). This represents the off-platform proof — bank wire id, crypto tx hash, receipt number — that the admin **already sent the money**. The platform doesn't move the money; it records the accounting around that movement."
+          }
+        },
+        {
+          "name": "Admin: reject (alternative path)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-csrf-token", "value": "{{csrfToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"notes\": \"KYC mismatch — please update bank details\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/admin/withdrawals/{{withdrawalId}}/reject",
+              "host": ["{{baseUrl}}"],
+              "path": ["admin", "withdrawals", "{{withdrawalId}}", "reject"]
+            },
+            "description": "Use instead of approve. Funds return from reserved → available."
+          }
+        }
+      ]
+    },
+    {
+      "name": "07 — Analytics (admin)",
+      "item": [
+        {
+          "name": "Platform multi-currency rollup",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/analytics/platform",
+              "host": ["{{baseUrl}}"],
+              "path": ["admin", "analytics", "platform"]
+            },
+            "description": "Per-currency view of volume in, volume out, fees earned, net held in wallets. The system admin's main KPI surface."
+          }
+        },
+        {
+          "name": "Operations queue",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/analytics/operations",
+              "host": ["{{baseUrl}}"],
+              "path": ["admin", "analytics", "operations"]
+            },
+            "description": "Pending withdrawals + recent reversals — everything that needs an operator."
+          }
+        },
+        {
+          "name": "Daily flows (USD)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/analytics/flows?currency=USD",
+              "host": ["{{baseUrl}}"],
+              "path": ["admin", "analytics", "flows"],
+              "query": [{ "key": "currency", "value": "USD" }]
+            }
+          }
+        },
+        {
+          "name": "Drill into the test company",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/analytics/companies/{{companyId}}/overview?currency=USD",
+              "host": ["{{baseUrl}}"],
+              "path": ["admin", "analytics", "companies", "{{companyId}}", "overview"],
+              "query": [{ "key": "currency", "value": "USD" }]
+            }
+          }
+        },
+        {
+          "name": "Audit logs",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/audit-logs?companyId={{companyId}}&pageSize=50",
+              "host": ["{{baseUrl}}"],
+              "path": ["admin", "audit-logs"],
+              "query": [
+                { "key": "companyId", "value": "{{companyId}}" },
+                { "key": "pageSize", "value": "50" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "08 — Negative tests",
+      "description": "Confirm the platform rejects bad input safely.",
+      "item": [
+        {
+          "name": "Ingest with no API key (401)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"companyId\": \"{{companyId}}\",\n  \"externalTransactionId\": \"x\",\n  \"amount\": \"10\",\n  \"currency\": \"USD\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/ingest/{{sourceCode}}/transactions",
+              "host": ["{{baseUrl}}"],
+              "path": ["ingest", "{{sourceCode}}", "transactions"]
+            }
+          }
+        },
+        {
+          "name": "Company key cannot ingest (403)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{apiKey}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"companyId\": \"{{companyId}}\",\n  \"externalTransactionId\": \"company-key-attempt-{{$timestamp}}\",\n  \"amount\": \"10\",\n  \"currency\": \"USD\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/ingest/{{sourceCode}}/transactions",
+              "host": ["{{baseUrl}}"],
+              "path": ["ingest", "{{sourceCode}}", "transactions"]
+            },
+            "description": "Uses the company-owned key `{{apiKey}}` (read-only) to try to ingest. Must return 403 — only source keys can ingest."
+          }
+        },
+        {
+          "name": "Ingest invalid amount (400)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{sourceApiKey}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"companyId\": \"{{companyId}}\",\n  \"externalTransactionId\": \"bad-{{$timestamp}}\",\n  \"amount\": \"-5\",\n  \"currency\": \"USD\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/ingest/{{sourceCode}}/transactions",
+              "host": ["{{baseUrl}}"],
+              "path": ["ingest", "{{sourceCode}}", "transactions"]
+            }
+          }
+        },
+        {
+          "name": "Missing companyId (400)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{sourceApiKey}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"externalTransactionId\": \"missing-slug-{{$timestamp}}\",\n  \"amount\": \"10\",\n  \"currency\": \"USD\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/ingest/{{sourceCode}}/transactions",
+              "host": ["{{baseUrl}}"],
+              "path": ["ingest", "{{sourceCode}}", "transactions"]
+            }
+          }
+        },
+        {
+          "name": "Withdrawal exceeding wallet (409)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-csrf-token", "value": "{{csrfToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": \"9999999\",\n  \"currency\": \"USD\",\n  \"payout\": {\n    \"method\": \"CASH\",\n    \"recipientName\": \"x\",\n    \"recipientPhone\": \"+1\",\n    \"pickupLocation\": \"y\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/company/withdrawals",
+              "host": ["{{baseUrl}}"],
+              "path": ["company", "withdrawals"]
+            },
+            "description": "Run as company owner. Should return 409 `CONFLICT: Wallet balance would become negative`."
+          }
+        },
+        {
+          "name": "Approve without externalReference (400)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-csrf-token", "value": "{{csrfToken}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{}" },
+            "url": {
+              "raw": "{{baseUrl}}/admin/withdrawals/{{withdrawalId}}/approve",
+              "host": ["{{baseUrl}}"],
+              "path": ["admin", "withdrawals", "{{withdrawalId}}", "approve"]
+            },
+            "description": "Run as admin. Must fail validation: the platform forces operators to record proof of payment before flipping the ledger."
+          }
+        },
+        {
+          "name": "CSRF missing on mutation (403)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"shouldnt-work\"\n}" },
+            "url": {
+              "raw": "{{baseUrl}}/company/api-keys",
+              "host": ["{{baseUrl}}"],
+              "path": ["company", "api-keys"]
+            },
+            "description": "Run as company owner. Send WITHOUT the `x-csrf-token` header — the CSRF guard should return 403."
+          }
+        }
+      ]
+    }
+  ]
+}

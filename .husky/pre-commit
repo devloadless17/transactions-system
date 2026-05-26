@@ -1,0 +1,3 @@
+#!/usr/bin/env sh
+# Pre-commit: run lint-staged for formatting + quick ESLint pass on staged files.
+pnpm exec lint-staged

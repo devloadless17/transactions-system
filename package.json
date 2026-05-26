@@ -1,0 +1,56 @@
+{
+  "name": "transactions-system",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Multi-tenant transaction & settlement platform",
+  "engines": {
+    "node": ">=24.0.0",
+    "pnpm": ">=10.0.0"
+  },
+  "packageManager": "pnpm@10.33.3",
+  "scripts": {
+    "packages:build": "pnpm --filter @app/db build && pnpm --filter @app/shared build",
+    "packages:dev": "concurrently -n db,shared -c yellow,cyan \"pnpm --filter @app/db dev\" \"pnpm --filter @app/shared dev\"",
+    "dev": "pnpm packages:build && concurrently -n pkgs,api,web -c yellow,blue,green \"pnpm packages:dev\" \"pnpm --filter @app/api dev\" \"pnpm --filter @app/web dev\"",
+    "build": "pnpm packages:build && pnpm -r --filter ./apps/* build",
+    "lint": "eslint . --max-warnings=200 && pnpm --filter @app/web lint",
+    "lint:fix": "eslint . --fix && pnpm --filter @app/web lint --fix",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "db:generate": "pnpm --filter @app/db generate",
+    "db:migrate": "pnpm --filter @app/db migrate",
+    "db:migrate:deploy": "pnpm --filter @app/db migrate:deploy",
+    "db:seed": "pnpm --filter @app/db seed",
+    "db:reset": "pnpm --filter @app/db reset",
+    "db:studio": "pnpm --filter @app/db studio",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f",
+    "loadtest": "tsx scripts/loadtest.ts",
+    "e2e": "playwright test",
+    "e2e:ui": "playwright test --ui",
+    "prepare": "husky || true"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.17.0",
+    "@playwright/test": "^1.60.0",
+    "@types/node": "24.0.0",
+    "concurrently": "9.1.0",
+    "eslint": "9.17.0",
+    "husky": "9.1.7",
+    "lint-staged": "15.5.0",
+    "prettier": "3.4.2",
+    "tsx": "4.19.2",
+    "typescript": "5.7.2",
+    "typescript-eslint": "8.18.2"
+  },
+  "lint-staged": {
+    "*.{ts,tsx,js,jsx}": [
+      "prettier --write",
+      "eslint --max-warnings=200"
+    ],
+    "*.{json,md,yml,yaml}": [
+      "prettier --write"
+    ]
+  }
+}
