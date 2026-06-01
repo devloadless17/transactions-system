@@ -41,11 +41,19 @@ export const rejectWithdrawalSchema = z.object({
 });
 export type RejectWithdrawalInput = z.infer<typeof rejectWithdrawalSchema>;
 
+// Company-initiated cancel of a PENDING request (withdrawal/payout/load).
+export const cancelRequestSchema = z.object({
+  notes: z.string().trim().max(500).optional(),
+});
+export type CancelRequestInput = z.infer<typeof cancelRequestSchema>;
+
 export const withdrawalResponseSchema = z.object({
   id: z.string().uuid(),
   companyId: z.string().uuid(),
   amount: z.string(),
   currency: z.string(),
+  feeAmount: z.string(),
+  netAmount: z.string(),
   status: z.nativeEnum(WithdrawalStatus),
   payoutMethod: z.nativeEnum(PayoutMethod),
   payoutDetails: payoutDetailsSchema.nullable(),

@@ -385,10 +385,20 @@ export class WhishPaymentsService {
     amount: string,
   ): Promise<void> {
     const rules = await this.prisma.runAsAdmin((tx) =>
-      this.commissionsRepo.loadCandidates(tx, { companyId, sourceId }),
+      this.commissionsRepo.loadCandidates(tx, {
+        companyId,
+        sourceId,
+        operationType: 'TRANSACTION',
+      }),
     );
     // Throws if nothing matches; we only care about the throw, not the result.
-    this.commissionResolver.resolve({ companyId, sourceId, amount: Money.of(amount), rules });
+    this.commissionResolver.resolve({
+      companyId,
+      sourceId,
+      operationType: 'TRANSACTION',
+      amount: Money.of(amount),
+      rules,
+    });
   }
 
   /** Platform Whish account balance (admin). */

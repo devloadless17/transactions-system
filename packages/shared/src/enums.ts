@@ -48,6 +48,34 @@ export const CommissionType = {
 } as const;
 export type CommissionType = (typeof CommissionType)[keyof typeof CommissionType];
 
+// Which operation a fee (commission) rule applies to. TRANSACTION is the
+// original behaviour (source ingestion); the others fee the money-movement
+// flows. Existing rules default to TRANSACTION.
+export const FeeOperationType = {
+  TRANSACTION: 'TRANSACTION',
+  WITHDRAWAL: 'WITHDRAWAL',
+  PAYOUT: 'PAYOUT',
+  LOAD: 'LOAD',
+} as const;
+export type FeeOperationType = (typeof FeeOperationType)[keyof typeof FeeOperationType];
+
+// How a fee is taken relative to the requested amount.
+//   DEDUCTED — recipient gets amount − fee (platform keeps the fee)
+//   ON_TOP   — recipient gets the full amount; the company pays amount + fee
+export const FeeApplication = {
+  DEDUCTED: 'DEDUCTED',
+  ON_TOP: 'ON_TOP',
+} as const;
+export type FeeApplication = (typeof FeeApplication)[keyof typeof FeeApplication];
+
+// The four money flows that carry a fee + reserved-balance lifecycle.
+export const FEE_OPERATION_TYPES = [
+  FeeOperationType.TRANSACTION,
+  FeeOperationType.WITHDRAWAL,
+  FeeOperationType.PAYOUT,
+  FeeOperationType.LOAD,
+] as const;
+
 export const TransactionStatus = {
   PENDING: 'PENDING',
   PROCESSING: 'PROCESSING',

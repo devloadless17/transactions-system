@@ -32,6 +32,8 @@ export class CommissionsService {
         data: {
           companyId: input.companyId ?? null,
           sourceId: input.sourceId ?? null,
+          operationType: input.operationType,
+          feeApplication: input.feeApplication,
           minAmount: input.minAmount,
           maxAmount: input.maxAmount,
           commissionType: input.commissionType,
@@ -50,6 +52,7 @@ export class CommissionsService {
       const where: Prisma.CommissionRuleWhereInput = {};
       if (query.companyId !== undefined) where.companyId = query.companyId;
       if (query.sourceId !== undefined) where.sourceId = query.sourceId;
+      if (query.operationType !== undefined) where.operationType = query.operationType;
       const skip = (query.page - 1) * query.pageSize;
       const [rows, total] = await Promise.all([
         tx.commissionRule.findMany({
@@ -84,6 +87,8 @@ export class CommissionsService {
       return tx.commissionRule.update({
         where: { id },
         data: {
+          operationType: input.operationType ?? undefined,
+          feeApplication: input.feeApplication ?? undefined,
           minAmount: input.minAmount ?? undefined,
           maxAmount: input.maxAmount ?? undefined,
           commissionType: input.commissionType ?? undefined,
@@ -106,6 +111,8 @@ function mapRule(row: {
   id: string;
   companyId: string | null;
   sourceId: string | null;
+  operationType: CommissionRuleResponse['operationType'];
+  feeApplication: CommissionRuleResponse['feeApplication'];
   minAmount: { toString(): string };
   maxAmount: { toString(): string };
   commissionType: CommissionRuleResponse['commissionType'];
@@ -119,6 +126,8 @@ function mapRule(row: {
     id: row.id,
     companyId: row.companyId,
     sourceId: row.sourceId,
+    operationType: row.operationType,
+    feeApplication: row.feeApplication,
     minAmount: row.minAmount.toString(),
     maxAmount: row.maxAmount.toString(),
     commissionType: row.commissionType,

@@ -10,11 +10,13 @@ import {
 } from '@nestjs/common';
 import {
   approveLoadSchema,
+  cancelRequestSchema,
   createLoadSchema,
   listLoadsQuerySchema,
   rejectLoadSchema,
   UserRole,
   type ApproveLoadInput,
+  type CancelRequestInput,
   type CreateLoadInput,
   type ListLoadsQuery,
   type RejectLoadInput,
@@ -56,6 +58,18 @@ export class LoadsController {
   ) {
     if (!user.companyId) throw new ForbiddenError('No company in session');
     return this.loads.list({ companyId: user.companyId, query });
+  }
+
+  @Roles(UserRole.COMPANY_OWNER, UserRole.COMPANY_MANAGER)
+  @Post('company/loads/:id/cancel')
+  @Audited({ action: 'load.cancelled', entityType: 'load', idFrom: 'params.id' })
+  async cancel(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body(new ZodPipe(cancelRequestSchema)) body: CancelRequestInput,
+    @CurrentUser() user: AuthPrincipal,
+  ) {
+    if (!user.companyId) throw new ForbiddenError('No company in session');
+    return this.loads.cancel(id, user.companyId, user.userId, body);
   }
 
   // ---------------- Admin endpoints ----------------

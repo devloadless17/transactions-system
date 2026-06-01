@@ -2,7 +2,9 @@ import { Injectable, Logger } from '@nestjs/common';
 import {
   Money,
   type ApprovePayoutInput,
+  type CancelRequestInput,
   type CreatePayoutInput,
+  type FeeApplication,
   type ListPayoutsQuery,
   type PaginatedResponse,
   type PayoutDetails,
@@ -16,14 +18,46 @@ import { PrismaService } from '../../database/prisma.service';
 import { LedgerService } from '../ledger/ledger.service';
 import { WalletsService } from '../wallets/wallets.service';
 import { AnalyticsService } from '../analytics/analytics.service';
-import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain.error';
+import { FeesService } from '../commissions/fees.service';
+import {
+  ConflictError,
+  InsufficientBalanceError,
+  NotFoundError,
+  ValidationError,
+} from '../../common/errors/domain.error';
 
 const REQUESTABLE_STATUS: WithdrawalStatus = 'PENDING';
+
+/** Reserved total for a row = amount, or amount+fee when the fee is ON_TOP. */
+function reservedTotal(amount: Money, fee: Money, feeApplication: FeeApplication): Money {
+  return feeApplication === 'ON_TOP' ? amount.add(fee) : amount;
+}
+
+async function assertSufficient(
+  tx: PrismaClient,
+  companyId: string,
+  currency: string,
+  required: Money,
+): Promise<void> {
+  const wallet = await tx.wallet.findUnique({
+    where: { companyId_currency: { companyId, currency } },
+  });
+  const available = Money.of(wallet?.availableBalance.toString() ?? '0');
+  if (available.lt(required)) {
+    throw new InsufficientBalanceError({
+      currency,
+      required: required.toString(),
+      available: available.toString(),
+      shortfall: required.sub(available).toString(),
+    });
+  }
+}
 
 /**
  * Payouts: company withdraws funds to itself. Same lifecycle as a
  * withdrawal (available → reserved on request, reserved → external on
- * approval) but they belong to a separate user-facing process.
+ * approval) with an optional PAYOUT fee realized to the FEE account on
+ * approval.
  */
 @Injectable()
 export class PayoutsService {
@@ -34,6 +68,7 @@ export class PayoutsService {
     private readonly ledger: LedgerService,
     private readonly wallets: WalletsService,
     private readonly analytics: AnalyticsService,
+    private readonly fees: FeesService,
   ) {}
 
   private invalidateAnalytics() {
@@ -55,12 +90,25 @@ export class PayoutsService {
         await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
         const cTx = tx as unknown as PrismaClient;
 
+        const { fee, feeApplication } = await this.fees.resolveFlowFee(cTx, {
+          companyId,
+          amount,
+          operationType: 'PAYOUT',
+        });
+        const reserved = reservedTotal(amount, fee, feeApplication);
+        const net = feeApplication === 'ON_TOP' ? amount : amount.sub(fee);
+
+        await assertSufficient(cTx, companyId, input.currency, reserved);
+
         const p = await cTx.payout.create({
           data: {
             companyId,
             requestedById,
             amount: amount.toString(),
             currency: input.currency,
+            feeAmount: fee.toString(),
+            netAmount: net.toString(),
+            feeApplication,
             status: REQUESTABLE_STATUS,
             notes: input.notes ?? null,
             payoutMethod: input.payout.method,
@@ -68,14 +116,13 @@ export class PayoutsService {
           },
         });
 
-        // Reserve the amount. Ledger move: available → reserved.
         await this.ledger.writeEntries(cTx, [
           {
             companyId,
             payoutId: p.id,
             accountType: 'AVAILABLE',
             direction: 'DEBIT',
-            amount,
+            amount: reserved,
             currency: input.currency,
           },
           {
@@ -83,14 +130,14 @@ export class PayoutsService {
             payoutId: p.id,
             accountType: 'RESERVED',
             direction: 'CREDIT',
-            amount,
+            amount: reserved,
             currency: input.currency,
           },
         ]);
         await this.wallets.applyDelta(cTx, {
           companyId,
           currency: input.currency,
-          delta: { available: amount.mul(-1), reserved: amount },
+          delta: { available: reserved.mul(-1), reserved },
         });
 
         return p;
@@ -119,30 +166,45 @@ export class PayoutsService {
         }
 
         const amount = Money.of(p.amount.toString());
+        const fee = Money.of(p.feeAmount.toString());
+        const reserved = reservedTotal(amount, fee, p.feeApplication);
+        const external = p.feeApplication === 'ON_TOP' ? amount : amount.sub(fee);
 
-        // Ledger move: reserved → external.
-        await this.ledger.writeEntries(cTx, [
+        const entries: Parameters<typeof this.ledger.writeEntries>[1] = [
           {
             companyId: p.companyId,
             payoutId: p.id,
             accountType: 'RESERVED',
             direction: 'DEBIT',
-            amount,
+            amount: reserved,
             currency: p.currency,
           },
-          {
+        ];
+        if (external.isPositive()) {
+          entries.push({
             companyId: p.companyId,
             payoutId: p.id,
             accountType: 'EXTERNAL',
             direction: 'CREDIT',
-            amount,
+            amount: external,
             currency: p.currency,
-          },
-        ]);
+          });
+        }
+        if (fee.isPositive()) {
+          entries.push({
+            companyId: p.companyId,
+            payoutId: p.id,
+            accountType: 'FEE',
+            direction: 'CREDIT',
+            amount: fee,
+            currency: p.currency,
+          });
+        }
+        await this.ledger.writeEntries(cTx, entries);
         await this.wallets.applyDelta(cTx, {
           companyId: p.companyId,
           currency: p.currency,
-          delta: { reserved: amount.mul(-1) },
+          delta: { reserved: reserved.mul(-1) },
         });
 
         return cTx.payout.update({
@@ -168,27 +230,60 @@ export class PayoutsService {
     approvedById: string,
     input: RejectPayoutInput,
   ): Promise<PayoutResponse> {
+    return this.release(id, input.notes, { approvedById, status: 'REJECTED' });
+  }
+
+  /**
+   * Company-initiated cancel of a PENDING payout. Releases the full reserved
+   * total back to available so it can be re-requested. PENDING only.
+   */
+  async cancel(
+    id: string,
+    companyId: string,
+    cancelledById: string,
+    input: CancelRequestInput,
+  ): Promise<PayoutResponse> {
+    return this.release(id, input.notes, { cancelledById, status: 'CANCELLED', companyId });
+  }
+
+  /** Shared reserved-release used by reject (admin) and cancel (company). */
+  private async release(
+    id: string,
+    notes: string | undefined,
+    opts: {
+      status: WithdrawalStatus;
+      approvedById?: string;
+      cancelledById?: string;
+      companyId?: string;
+    },
+  ): Promise<PayoutResponse> {
     const row = await this.prisma.$transaction(
       async (tx) => {
         await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
         const cTx = tx as unknown as PrismaClient;
 
         const p = await cTx.payout.findUnique({ where: { id } });
-        if (!p) throw new NotFoundError('Payout', id);
+        if (!p || (opts.companyId && p.companyId !== opts.companyId)) {
+          throw new NotFoundError('Payout', id);
+        }
         if (p.status !== 'PENDING') {
-          throw new ConflictError(`Payout is in status ${p.status} and cannot be rejected`);
+          const verb = opts.status === 'CANCELLED' ? 'cancelled' : 'rejected';
+          throw new ConflictError(`Payout is in status ${p.status} and cannot be ${verb}`);
         }
 
-        const amount = Money.of(p.amount.toString());
+        const reserved = reservedTotal(
+          Money.of(p.amount.toString()),
+          Money.of(p.feeAmount.toString()),
+          p.feeApplication,
+        );
 
-        // Return reserved funds to available.
         await this.ledger.writeEntries(cTx, [
           {
             companyId: p.companyId,
             payoutId: p.id,
             accountType: 'RESERVED',
             direction: 'DEBIT',
-            amount,
+            amount: reserved,
             currency: p.currency,
           },
           {
@@ -196,23 +291,24 @@ export class PayoutsService {
             payoutId: p.id,
             accountType: 'AVAILABLE',
             direction: 'CREDIT',
-            amount,
+            amount: reserved,
             currency: p.currency,
           },
         ]);
         await this.wallets.applyDelta(cTx, {
           companyId: p.companyId,
           currency: p.currency,
-          delta: { reserved: amount.mul(-1), available: amount },
+          delta: { reserved: reserved.mul(-1), available: reserved },
         });
 
         return cTx.payout.update({
           where: { id },
           data: {
-            status: 'REJECTED',
-            approvedById,
+            status: opts.status,
+            approvedById: opts.approvedById ?? undefined,
+            cancelledById: opts.cancelledById ?? undefined,
             processedAt: new Date(),
-            notes: input.notes ?? p.notes,
+            notes: notes ?? p.notes,
           },
         });
       },
@@ -271,6 +367,8 @@ function mapPayout(row: {
   companyId: string;
   amount: { toString(): string };
   currency: string;
+  feeAmount: { toString(): string };
+  netAmount: { toString(): string };
   status: WithdrawalStatus;
   payoutMethod: PayoutMethod;
   payoutDetails: unknown;
@@ -287,6 +385,8 @@ function mapPayout(row: {
     companyId: row.companyId,
     amount: row.amount.toString(),
     currency: row.currency.trim(),
+    feeAmount: row.feeAmount.toString(),
+    netAmount: row.netAmount.toString(),
     status: row.status,
     payoutMethod: row.payoutMethod,
     payoutDetails: (row.payoutDetails as PayoutDetails | null) ?? null,

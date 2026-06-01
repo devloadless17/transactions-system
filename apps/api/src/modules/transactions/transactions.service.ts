@@ -128,10 +128,12 @@ export class TransactionsService {
         const rules = await this.commissionsRepo.loadCandidates(cTx, {
           companyId,
           sourceId: source.id,
+          operationType: 'TRANSACTION',
         });
         const resolution = this.resolver.resolve({
           companyId,
           sourceId: source.id,
+          operationType: 'TRANSACTION',
           amount,
           rules,
         });

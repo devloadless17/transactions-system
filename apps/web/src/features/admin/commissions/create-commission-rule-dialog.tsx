@@ -6,6 +6,9 @@ import { toast } from 'sonner';
 import {
   createCommissionRuleSchema,
   CommissionType,
+  FeeApplication,
+  FeeOperationType,
+  FEE_OPERATION_TYPES,
   type CommissionRuleResponse,
   type CompanyResponse,
   type CreateCommissionRuleInput,
@@ -53,6 +56,8 @@ export function CreateCommissionRuleDialog({
     defaultValues: {
       companyId: null,
       sourceId: null,
+      operationType: FeeOperationType.TRANSACTION,
+      feeApplication: FeeApplication.DEDUCTED,
       minAmount: '0',
       maxAmount: '100',
       commissionType: CommissionType.FIXED,
@@ -65,6 +70,8 @@ export function CreateCommissionRuleDialog({
   const companyId = watch('companyId');
   const sourceId = watch('sourceId');
   const type = watch('commissionType');
+  const operationType = watch('operationType');
+  const feeApplication = watch('feeApplication');
 
   const onSubmit = handleSubmit(async (values) => {
     setSubmitting(true);
@@ -93,6 +100,25 @@ export function CreateCommissionRuleDialog({
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={onSubmit} className="space-y-4">
+          <div className="space-y-2">
+            <Label>Operation</Label>
+            <div className="flex flex-wrap gap-2">
+              {FEE_OPERATION_TYPES.map((op) => (
+                <Button
+                  key={op}
+                  type="button"
+                  size="sm"
+                  variant={operationType === op ? 'default' : 'outline'}
+                  onClick={() => {
+                    setValue('operationType', op);
+                    if (op !== FeeOperationType.TRANSACTION) setValue('sourceId', null);
+                  }}
+                >
+                  {op.charAt(0) + op.slice(1).toLowerCase()}
+                </Button>
+              ))}
+            </div>
+          </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="companyId">Company (optional)</Label>
@@ -110,22 +136,46 @@ export function CreateCommissionRuleDialog({
                 ))}
               </select>
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="sourceId">Source (optional)</Label>
-              <select
-                id="sourceId"
-                value={sourceId ?? ''}
-                onChange={(e) => setValue('sourceId', e.target.value || null)}
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-              >
-                <option value="">(global)</option>
-                {sources.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.code}
-                  </option>
-                ))}
-              </select>
-            </div>
+            {operationType === FeeOperationType.TRANSACTION ? (
+              <div className="space-y-2">
+                <Label htmlFor="sourceId">Source (optional)</Label>
+                <select
+                  id="sourceId"
+                  value={sourceId ?? ''}
+                  onChange={(e) => setValue('sourceId', e.target.value || null)}
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                >
+                  <option value="">(global)</option>
+                  {sources.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.code}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <Label>Fee application</Label>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={feeApplication === 'DEDUCTED' ? 'default' : 'outline'}
+                    onClick={() => setValue('feeApplication', FeeApplication.DEDUCTED)}
+                  >
+                    Deducted
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={feeApplication === 'ON_TOP' ? 'default' : 'outline'}
+                    onClick={() => setValue('feeApplication', FeeApplication.ON_TOP)}
+                  >
+                    On top
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-2">

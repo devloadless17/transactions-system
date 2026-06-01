@@ -72,6 +72,18 @@ export function WithdrawalsView({ config }: { config: ProcessConfig }) {
       apiFetch<PaginatedResponse<WithdrawalResponse>>(`${config.endpoint}?pageSize=50`),
   });
 
+  const cancelMu = useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<WithdrawalResponse>(`${config.endpoint}/${id}/cancel`, { method: 'POST', body: {} }),
+    onSuccess: () => {
+      toast.success(`${capitalize(config.noun)} cancelled`);
+      setDetail(null);
+      qc.invalidateQueries({ queryKey: config.queryKey });
+      qc.invalidateQueries({ queryKey: ['company', 'wallets'] });
+    },
+    onError: (err) => toast.error(err instanceof ApiClientError ? err.message : 'Failed'),
+  });
+
   const rows = listQ.data?.data ?? [];
 
   const columns: Column<WithdrawalResponse>[] = [
@@ -88,6 +100,20 @@ export function WithdrawalsView({ config }: { config: ProcessConfig }) {
       className: 'font-mono',
       cell: (w) => trimAmount(w.amount),
     },
+    {
+      key: 'fee',
+      header: 'Fee',
+      align: 'right',
+      className: 'font-mono text-xs text-muted-foreground',
+      cell: (w) => (trimAmount(w.feeAmount) === '0' ? '—' : trimAmount(w.feeAmount)),
+    },
+    {
+      key: 'net',
+      header: 'Net',
+      align: 'right',
+      className: 'font-mono text-xs',
+      cell: (w) => trimAmount(w.netAmount),
+    },
     { key: 'currency', header: 'Currency', cell: (w) => w.currency },
     {
       key: 'method',
@@ -101,10 +127,23 @@ export function WithdrawalsView({ config }: { config: ProcessConfig }) {
       cell: (w) => <Badge variant={statusVariant(w.status)}>{w.status}</Badge>,
     },
     {
-      key: 'reference',
-      header: 'Reference',
-      className: 'font-mono text-xs break-all',
-      cell: (w) => (w.externalReference ? w.externalReference.slice(0, 24) : '—'),
+      key: 'actions',
+      header: '',
+      align: 'right',
+      cell: (w) =>
+        w.status === 'PENDING' ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={cancelMu.isPending}
+            onClick={(e) => {
+              e.stopPropagation();
+              cancelMu.mutate(w.id);
+            }}
+          >
+            Cancel
+          </Button>
+        ) : null,
     },
   ];
 
@@ -488,6 +527,18 @@ function DetailDrawer({
               <DetailRow
                 label="Amount"
                 value={`${trimAmount(withdrawal.amount)} ${withdrawal.currency}`}
+                mono
+              />
+              {trimAmount(withdrawal.feeAmount) !== '0' && (
+                <DetailRow
+                  label="Fee"
+                  value={`${trimAmount(withdrawal.feeAmount)} ${withdrawal.currency}`}
+                  mono
+                />
+              )}
+              <DetailRow
+                label="Net"
+                value={`${trimAmount(withdrawal.netAmount)} ${withdrawal.currency}`}
                 mono
               />
               <DetailRow label="Method" value={prettyMethod(withdrawal.payoutMethod)} />

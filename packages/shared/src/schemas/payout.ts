@@ -32,6 +32,8 @@ export const payoutResponseSchema = z.object({
   companyId: z.string().uuid(),
   amount: z.string(),
   currency: z.string(),
+  feeAmount: z.string(),
+  netAmount: z.string(),
   status: z.nativeEnum(WithdrawalStatus),
   payoutMethod: z.nativeEnum(PayoutMethod),
   payoutDetails: payoutDetailsSchema.nullable(),

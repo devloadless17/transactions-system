@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import {
   Money,
   type ApproveLoadInput,
+  type CancelRequestInput,
   type CreateLoadInput,
   type LoadResponse,
   type ListLoadsQuery,
@@ -16,20 +17,22 @@ import { PrismaService } from '../../database/prisma.service';
 import { LedgerService } from '../ledger/ledger.service';
 import { WalletsService } from '../wallets/wallets.service';
 import { AnalyticsService } from '../analytics/analytics.service';
+import { FeesService } from '../commissions/fees.service';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain.error';
 
 const REQUESTABLE_STATUS: WithdrawalStatus = 'PENDING';
 
 /**
- * Loads: company tops up its own wallet (money in, not out).
+ * Loads: company tops up its own wallet (money in, not out). An optional LOAD
+ * fee is taken when the deposit is approved.
  *
  * Lifecycle:
- *   - request: just persists PENDING. No wallet/ledger move yet — the
- *     funds haven't arrived. The company is declaring intent.
- *   - approve: operator has verified real-world receipt. Credit available
- *     (DEBIT external, CREDIT available). Wallet `available += amount`.
- *   - reject: pure status change. No money moved at request time, so
- *     there's nothing to unwind.
+ *   - request: persists PENDING and records the fee preview. No wallet/ledger
+ *     move yet — the funds haven't arrived.
+ *   - approve: operator verified receipt. Credit the net to available and the
+ *     fee to the platform FEE account. (DEDUCTED: external=amount, available
+ *     gets amount−fee. ON_TOP: external=amount+fee, available gets amount.)
+ *   - reject / cancel: pure status change (nothing was moved at request time).
  */
 @Injectable()
 export class LoadsService {
@@ -40,6 +43,7 @@ export class LoadsService {
     private readonly ledger: LedgerService,
     private readonly wallets: WalletsService,
     private readonly analytics: AnalyticsService,
+    private readonly fees: FeesService,
   ) {}
 
   private invalidateAnalytics() {
@@ -61,12 +65,23 @@ export class LoadsService {
         await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
         const cTx = tx as unknown as PrismaClient;
 
+        const { fee, feeApplication } = await this.fees.resolveFlowFee(cTx, {
+          companyId,
+          amount,
+          operationType: 'LOAD',
+        });
+        // Net credited to the wallet on approval.
+        const net = feeApplication === 'ON_TOP' ? amount : amount.sub(fee);
+
         return cTx.load.create({
           data: {
             companyId,
             requestedById,
             amount: amount.toString(),
             currency: input.currency,
+            feeAmount: fee.toString(),
+            netAmount: net.toString(),
+            feeApplication,
             status: REQUESTABLE_STATUS,
             notes: input.notes ?? null,
             payoutMethod: input.payout.method,
@@ -94,30 +109,46 @@ export class LoadsService {
         }
 
         const amount = Money.of(l.amount.toString());
+        const fee = Money.of(l.feeAmount.toString());
+        const externalDebit = l.feeApplication === 'ON_TOP' ? amount.add(fee) : amount;
+        const availableCredit = l.feeApplication === 'ON_TOP' ? amount : amount.sub(fee);
 
-        // Money in: DEBIT external, CREDIT available.
-        await this.ledger.writeEntries(cTx, [
+        // Money in: DEBIT external, CREDIT available(net) + FEE(fee). Skip zero.
+        const entries: Parameters<typeof this.ledger.writeEntries>[1] = [
           {
             companyId: l.companyId,
             loadId: l.id,
             accountType: 'EXTERNAL',
             direction: 'DEBIT',
-            amount,
+            amount: externalDebit,
             currency: l.currency,
           },
-          {
+        ];
+        if (availableCredit.isPositive()) {
+          entries.push({
             companyId: l.companyId,
             loadId: l.id,
             accountType: 'AVAILABLE',
             direction: 'CREDIT',
-            amount,
+            amount: availableCredit,
             currency: l.currency,
-          },
-        ]);
+          });
+        }
+        if (fee.isPositive()) {
+          entries.push({
+            companyId: l.companyId,
+            loadId: l.id,
+            accountType: 'FEE',
+            direction: 'CREDIT',
+            amount: fee,
+            currency: l.currency,
+          });
+        }
+        await this.ledger.writeEntries(cTx, entries);
         await this.wallets.applyDelta(cTx, {
           companyId: l.companyId,
           currency: l.currency,
-          delta: { available: amount },
+          delta: { available: availableCredit },
         });
 
         return cTx.load.update({
@@ -139,26 +170,52 @@ export class LoadsService {
   }
 
   async reject(id: string, approvedById: string, input: RejectLoadInput): Promise<LoadResponse> {
+    return this.close(id, input.notes, { approvedById, status: 'REJECTED' });
+  }
+
+  /** Company-initiated cancel of a PENDING load (status-only; nothing moved). */
+  async cancel(
+    id: string,
+    companyId: string,
+    cancelledById: string,
+    input: CancelRequestInput,
+  ): Promise<LoadResponse> {
+    return this.close(id, input.notes, { cancelledById, status: 'CANCELLED', companyId });
+  }
+
+  private async close(
+    id: string,
+    notes: string | undefined,
+    opts: {
+      status: WithdrawalStatus;
+      approvedById?: string;
+      cancelledById?: string;
+      companyId?: string;
+    },
+  ): Promise<LoadResponse> {
     const row = await this.prisma.$transaction(
       async (tx) => {
         await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
         const cTx = tx as unknown as PrismaClient;
 
         const l = await cTx.load.findUnique({ where: { id } });
-        if (!l) throw new NotFoundError('Load', id);
+        if (!l || (opts.companyId && l.companyId !== opts.companyId)) {
+          throw new NotFoundError('Load', id);
+        }
         if (l.status !== 'PENDING') {
-          throw new ConflictError(`Load is in status ${l.status} and cannot be rejected`);
+          const verb = opts.status === 'CANCELLED' ? 'cancelled' : 'rejected';
+          throw new ConflictError(`Load is in status ${l.status} and cannot be ${verb}`);
         }
 
-        // Nothing was reserved/moved at request time — rejection is a
-        // pure status change.
+        // Nothing was moved at request time — closing is a pure status change.
         return cTx.load.update({
           where: { id },
           data: {
-            status: 'REJECTED',
-            approvedById,
+            status: opts.status,
+            approvedById: opts.approvedById ?? undefined,
+            cancelledById: opts.cancelledById ?? undefined,
             processedAt: new Date(),
-            notes: input.notes ?? l.notes,
+            notes: notes ?? l.notes,
           },
         });
       },
@@ -217,6 +274,8 @@ function mapLoad(row: {
   companyId: string;
   amount: { toString(): string };
   currency: string;
+  feeAmount: { toString(): string };
+  netAmount: { toString(): string };
   status: WithdrawalStatus;
   payoutMethod: PayoutMethod;
   payoutDetails: unknown;
@@ -233,6 +292,8 @@ function mapLoad(row: {
     companyId: row.companyId,
     amount: row.amount.toString(),
     currency: row.currency.trim(),
+    feeAmount: row.feeAmount.toString(),
+    netAmount: row.netAmount.toString(),
     status: row.status,
     payoutMethod: row.payoutMethod,
     payoutDetails: (row.payoutDetails as PayoutDetails | null) ?? null,

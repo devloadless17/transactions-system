@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { CommissionType } from '../enums';
+import { CommissionType, FeeApplication, FeeOperationType } from '../enums';
 
 const decimalString = z.string().regex(/^-?\d+(\.\d+)?$/, 'must be a decimal string (e.g. "1.50")');
 
@@ -7,6 +7,8 @@ export const createCommissionRuleSchema = z
   .object({
     companyId: z.string().uuid().nullable().optional(),
     sourceId: z.string().uuid().nullable().optional(),
+    operationType: z.nativeEnum(FeeOperationType).default(FeeOperationType.TRANSACTION),
+    feeApplication: z.nativeEnum(FeeApplication).default(FeeApplication.DEDUCTED),
     minAmount: decimalString,
     maxAmount: decimalString,
     commissionType: z.nativeEnum(CommissionType),
@@ -21,6 +23,8 @@ export const createCommissionRuleSchema = z
 export type CreateCommissionRuleInput = z.infer<typeof createCommissionRuleSchema>;
 
 export const updateCommissionRuleSchema = z.object({
+  operationType: z.nativeEnum(FeeOperationType).optional(),
+  feeApplication: z.nativeEnum(FeeApplication).optional(),
   minAmount: decimalString.optional(),
   maxAmount: decimalString.optional(),
   commissionType: z.nativeEnum(CommissionType).optional(),
@@ -34,6 +38,8 @@ export const commissionRuleResponseSchema = z.object({
   id: z.string().uuid(),
   companyId: z.string().uuid().nullable(),
   sourceId: z.string().uuid().nullable(),
+  operationType: z.nativeEnum(FeeOperationType),
+  feeApplication: z.nativeEnum(FeeApplication),
   minAmount: z.string(),
   maxAmount: z.string(),
   commissionType: z.nativeEnum(CommissionType),
@@ -50,5 +56,6 @@ export const listCommissionRulesQuerySchema = z.object({
   pageSize: z.coerce.number().int().min(1).max(100).default(50),
   companyId: z.string().uuid().nullable().optional(),
   sourceId: z.string().uuid().nullable().optional(),
+  operationType: z.nativeEnum(FeeOperationType).optional(),
 });
 export type ListCommissionRulesQuery = z.infer<typeof listCommissionRulesQuerySchema>;

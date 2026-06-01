@@ -16,6 +16,8 @@ function rule(partial: Partial<ResolvableRule>): ResolvableRule {
     id: partial.id ?? Math.random().toString(36).slice(2),
     companyId: partial.companyId ?? null,
     sourceId: partial.sourceId ?? null,
+    operationType: partial.operationType ?? 'TRANSACTION',
+    feeApplication: partial.feeApplication ?? 'DEDUCTED',
     minAmount: partial.minAmount ?? '0',
     maxAmount: partial.maxAmount ?? '999999999',
     commissionType: partial.commissionType ?? 'FIXED',
@@ -49,6 +51,7 @@ describe('CommissionResolverService', () => {
       const r = svc.resolve({
         companyId: company,
         sourceId: source,
+        operationType: 'TRANSACTION',
         amount: Money.of('50'),
         rules: sample,
       });
@@ -60,6 +63,7 @@ describe('CommissionResolverService', () => {
       const r = svc.resolve({
         companyId: company,
         sourceId: source,
+        operationType: 'TRANSACTION',
         amount: Money.of('200'),
         rules: sample,
       });
@@ -71,6 +75,7 @@ describe('CommissionResolverService', () => {
       const r = svc.resolve({
         companyId: company,
         sourceId: source,
+        operationType: 'TRANSACTION',
         amount: Money.of('500'),
         rules: sample,
       });
@@ -82,6 +87,7 @@ describe('CommissionResolverService', () => {
       const r = svc.resolve({
         companyId: company,
         sourceId: source,
+        operationType: 'TRANSACTION',
         amount: Money.of('101'),
         rules: sample,
       });
@@ -92,6 +98,7 @@ describe('CommissionResolverService', () => {
       const r = svc.resolve({
         companyId: company,
         sourceId: source,
+        operationType: 'TRANSACTION',
         amount: Money.of('1000'),
         rules: sample,
       });
@@ -104,6 +111,7 @@ describe('CommissionResolverService', () => {
         svc.resolve({
           companyId: company,
           sourceId: source,
+          operationType: 'TRANSACTION',
           amount: Money.of('5000'),
           rules: sample,
         }),
@@ -121,6 +129,7 @@ describe('CommissionResolverService', () => {
       const r = svc.resolve({
         companyId: company,
         sourceId: source,
+        operationType: 'TRANSACTION',
         amount: Money.of('50'),
         rules: [global, companyOnly, sourceOnly, both],
       });
@@ -134,6 +143,7 @@ describe('CommissionResolverService', () => {
       const r = svc.resolve({
         companyId: company,
         sourceId: source,
+        operationType: 'TRANSACTION',
         amount: Money.of('50'),
         rules: [global, sourceOnly],
       });
@@ -146,6 +156,7 @@ describe('CommissionResolverService', () => {
       const r = svc.resolve({
         companyId: company,
         sourceId: source,
+        operationType: 'TRANSACTION',
         amount: Money.of('50'),
         rules: [otherCo, global],
       });
@@ -158,6 +169,7 @@ describe('CommissionResolverService', () => {
       const r = svc.resolve({
         companyId: company,
         sourceId: source,
+        operationType: 'TRANSACTION',
         amount: Money.of('50'),
         rules: [otherSrc, global],
       });
@@ -172,6 +184,7 @@ describe('CommissionResolverService', () => {
       const r = svc.resolve({
         companyId: company,
         sourceId: source,
+        operationType: 'TRANSACTION',
         amount: Money.of('50'),
         rules: [low, high],
       });
@@ -186,6 +199,7 @@ describe('CommissionResolverService', () => {
       const r = svc.resolve({
         companyId: company,
         sourceId: source,
+        operationType: 'TRANSACTION',
         amount: Money.of('50'),
         rules: [inactive, active],
       });
@@ -200,6 +214,7 @@ describe('CommissionResolverService', () => {
       const r = svc.resolve({
         companyId: company,
         sourceId: source,
+        operationType: 'TRANSACTION',
         amount: Money.of('50'),
         rules: [lowRange, correct],
       });
@@ -212,6 +227,7 @@ describe('CommissionResolverService', () => {
       const r = svc.resolve({
         companyId: company,
         sourceId: source,
+        operationType: 'TRANSACTION',
         amount: Money.of('123.45'),
         rules: [
           rule({

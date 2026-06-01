@@ -85,6 +85,22 @@ export function CommissionsView() {
       ),
     },
     {
+      key: 'operation',
+      header: 'Operation',
+      cell: (r) => (
+        <div className="space-y-0.5">
+          <div className="text-sm">
+            {r.operationType.charAt(0) + r.operationType.slice(1).toLowerCase()}
+          </div>
+          {r.operationType !== 'TRANSACTION' && (
+            <div className="text-xs text-muted-foreground">
+              {r.feeApplication === 'ON_TOP' ? 'on top' : 'deducted'}
+            </div>
+          )}
+        </div>
+      ),
+    },
+    {
       key: 'range',
       header: 'Range',
       className: 'font-mono text-xs',

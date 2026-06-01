@@ -49,6 +49,18 @@ enum CommissionType {
   PERCENTAGE
 }
 
+enum FeeOperationType {
+  TRANSACTION
+  WITHDRAWAL
+  PAYOUT
+  LOAD
+}
+
+enum FeeApplication {
+  DEDUCTED
+  ON_TOP
+}
+
 enum TransactionStatus {
   PENDING
   PROCESSING
@@ -117,6 +129,9 @@ model User {
   requestedPayouts     Payout[]       @relation("PayoutRequestedBy")
   approvedLoads        Load[]         @relation("LoadApprovedBy")
   requestedLoads       Load[]         @relation("LoadRequestedBy")
+  cancelledWithdrawals Withdrawal[]   @relation("WithdrawalCancelledBy")
+  cancelledPayouts     Payout[]       @relation("PayoutCancelledBy")
+  cancelledLoads       Load[]         @relation("LoadCancelledBy")
   auditLogs            AuditLog[]
 
   @@index([companyId])
@@ -225,21 +240,23 @@ model ApiKey {
 // ----------------------- Commission Rules ------------------------
 
 model CommissionRule {
-  id              String         @id @default(uuid()) @db.Uuid
-  companyId       String?        @map("company_id") @db.Uuid
-  company         Company?       @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  sourceId        String?        @map("source_id") @db.Uuid
-  source          Source?        @relation(fields: [sourceId], references: [id], onDelete: Cascade)
-  minAmount       Decimal        @map("min_amount") @db.Decimal(20, 8)
-  maxAmount       Decimal        @map("max_amount") @db.Decimal(20, 8)
-  commissionType  CommissionType @map("commission_type")
-  commissionValue Decimal        @map("commission_value") @db.Decimal(20, 8)
-  priority        Int            @default(0)
-  active          Boolean        @default(true)
-  createdAt       DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt       DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  id              String           @id @default(uuid()) @db.Uuid
+  companyId       String?          @map("company_id") @db.Uuid
+  company         Company?         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  sourceId        String?          @map("source_id") @db.Uuid
+  source          Source?          @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  operationType   FeeOperationType @default(TRANSACTION) @map("operation_type")
+  feeApplication  FeeApplication   @default(DEDUCTED) @map("fee_application")
+  minAmount       Decimal          @map("min_amount") @db.Decimal(20, 8)
+  maxAmount       Decimal          @map("max_amount") @db.Decimal(20, 8)
+  commissionType  CommissionType   @map("commission_type")
+  commissionValue Decimal          @map("commission_value") @db.Decimal(20, 8)
+  priority        Int              @default(0)
+  active          Boolean          @default(true)
+  createdAt       DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  @@index([companyId, sourceId, active, priority])
+  @@index([companyId, sourceId, operationType, active, priority])
   @@map("commission_rules")
 }
 
@@ -335,6 +352,9 @@ model Withdrawal {
   company           Company          @relation(fields: [companyId], references: [id], onDelete: Restrict)
   amount            Decimal          @db.Decimal(20, 8)
   currency          String           @db.Char(3)
+  feeAmount         Decimal          @default(0) @map("fee_amount") @db.Decimal(20, 8)
+  netAmount         Decimal          @default(0) @map("net_amount") @db.Decimal(20, 8)
+  feeApplication    FeeApplication   @default(DEDUCTED) @map("fee_application")
   status            WithdrawalStatus @default(PENDING)
   payoutMethod      PayoutMethod     @map("payout_method")
   payoutDetails     Json?            @map("payout_details") @db.JsonB
@@ -343,6 +363,8 @@ model Withdrawal {
   requestedBy       User             @relation("WithdrawalRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
   approvedById      String?          @map("approved_by_id") @db.Uuid
   approvedBy        User?            @relation("WithdrawalApprovedBy", fields: [approvedById], references: [id], onDelete: Restrict)
+  cancelledById     String?          @map("cancelled_by_id") @db.Uuid
+  cancelledBy       User?            @relation("WithdrawalCancelledBy", fields: [cancelledById], references: [id], onDelete: Restrict)
   notes             String?
   metadata          Json?            @db.JsonB
   processedAt       DateTime?        @map("processed_at") @db.Timestamptz(6)
@@ -362,6 +384,9 @@ model Payout {
   company           Company          @relation(fields: [companyId], references: [id], onDelete: Restrict)
   amount            Decimal          @db.Decimal(20, 8)
   currency          String           @db.Char(3)
+  feeAmount         Decimal          @default(0) @map("fee_amount") @db.Decimal(20, 8)
+  netAmount         Decimal          @default(0) @map("net_amount") @db.Decimal(20, 8)
+  feeApplication    FeeApplication   @default(DEDUCTED) @map("fee_application")
   status            WithdrawalStatus @default(PENDING)
   payoutMethod      PayoutMethod     @map("payout_method")
   payoutDetails     Json?            @map("payout_details") @db.JsonB
@@ -370,6 +395,8 @@ model Payout {
   requestedBy       User             @relation("PayoutRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
   approvedById      String?          @map("approved_by_id") @db.Uuid
   approvedBy        User?            @relation("PayoutApprovedBy", fields: [approvedById], references: [id], onDelete: Restrict)
+  cancelledById     String?          @map("cancelled_by_id") @db.Uuid
+  cancelledBy       User?            @relation("PayoutCancelledBy", fields: [cancelledById], references: [id], onDelete: Restrict)
   notes             String?
   metadata          Json?            @db.JsonB
   processedAt       DateTime?        @map("processed_at") @db.Timestamptz(6)
@@ -389,6 +416,9 @@ model Load {
   company           Company          @relation(fields: [companyId], references: [id], onDelete: Restrict)
   amount            Decimal          @db.Decimal(20, 8)
   currency          String           @db.Char(3)
+  feeAmount         Decimal          @default(0) @map("fee_amount") @db.Decimal(20, 8)
+  netAmount         Decimal          @default(0) @map("net_amount") @db.Decimal(20, 8)
+  feeApplication    FeeApplication   @default(DEDUCTED) @map("fee_application")
   status            WithdrawalStatus @default(PENDING)
   payoutMethod      PayoutMethod     @map("payout_method")
   payoutDetails     Json?            @map("payout_details") @db.JsonB
@@ -397,6 +427,8 @@ model Load {
   requestedBy       User             @relation("LoadRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
   approvedById      String?          @map("approved_by_id") @db.Uuid
   approvedBy        User?            @relation("LoadApprovedBy", fields: [approvedById], references: [id], onDelete: Restrict)
+  cancelledById     String?          @map("cancelled_by_id") @db.Uuid
+  cancelledBy       User?            @relation("LoadCancelledBy", fields: [cancelledById], references: [id], onDelete: Restrict)
   notes             String?
   metadata          Json?            @db.JsonB
   processedAt       DateTime?        @map("processed_at") @db.Timestamptz(6)

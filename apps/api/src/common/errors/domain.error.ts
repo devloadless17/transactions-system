@@ -50,3 +50,16 @@ export class ValidationError extends DomainError {
     super('VALIDATION_ERROR', message, 400, details);
   }
 }
+
+/** Not enough available balance to cover a request (amount, or amount+fee). */
+export class InsufficientBalanceError extends DomainError {
+  constructor(d: { currency: string; required: string; available: string; shortfall: string }) {
+    super(
+      'INSUFFICIENT_BALANCE',
+      `Insufficient ${d.currency} balance: need ${d.required}, have ${d.available}. ` +
+        `Top up ${d.shortfall} ${d.currency} and try again.`,
+      409,
+      d,
+    );
+  }
+}

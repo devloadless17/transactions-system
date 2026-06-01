@@ -10,11 +10,13 @@ import {
 } from '@nestjs/common';
 import {
   approvePayoutSchema,
+  cancelRequestSchema,
   createPayoutSchema,
   listPayoutsQuerySchema,
   rejectPayoutSchema,
   UserRole,
   type ApprovePayoutInput,
+  type CancelRequestInput,
   type CreatePayoutInput,
   type ListPayoutsQuery,
   type RejectPayoutInput,
@@ -56,6 +58,18 @@ export class PayoutsController {
   ) {
     if (!user.companyId) throw new ForbiddenError('No company in session');
     return this.payouts.list({ companyId: user.companyId, query });
+  }
+
+  @Roles(UserRole.COMPANY_OWNER, UserRole.COMPANY_MANAGER)
+  @Post('company/payouts/:id/cancel')
+  @Audited({ action: 'payout.cancelled', entityType: 'payout', idFrom: 'params.id' })
+  async cancel(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body(new ZodPipe(cancelRequestSchema)) body: CancelRequestInput,
+    @CurrentUser() user: AuthPrincipal,
+  ) {
+    if (!user.companyId) throw new ForbiddenError('No company in session');
+    return this.payouts.cancel(id, user.companyId, user.userId, body);
   }
 
   // ---------------- Admin endpoints ----------------

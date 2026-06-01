@@ -10,11 +10,13 @@ import {
 } from '@nestjs/common';
 import {
   approveWithdrawalSchema,
+  cancelRequestSchema,
   createWithdrawalSchema,
   listWithdrawalsQuerySchema,
   rejectWithdrawalSchema,
   UserRole,
   type ApproveWithdrawalInput,
+  type CancelRequestInput,
   type CreateWithdrawalInput,
   type ListWithdrawalsQuery,
   type RejectWithdrawalInput,
@@ -56,6 +58,18 @@ export class WithdrawalsController {
   ) {
     if (!user.companyId) throw new ForbiddenError('No company in session');
     return this.withdrawals.list({ companyId: user.companyId, query });
+  }
+
+  @Roles(UserRole.COMPANY_OWNER, UserRole.COMPANY_MANAGER)
+  @Post('company/withdrawals/:id/cancel')
+  @Audited({ action: 'withdrawal.cancelled', entityType: 'withdrawal', idFrom: 'params.id' })
+  async cancel(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body(new ZodPipe(cancelRequestSchema)) body: CancelRequestInput,
+    @CurrentUser() user: AuthPrincipal,
+  ) {
+    if (!user.companyId) throw new ForbiddenError('No company in session');
+    return this.withdrawals.cancel(id, user.companyId, user.userId, body);
   }
 
   // ---------------- Admin endpoints ----------------
