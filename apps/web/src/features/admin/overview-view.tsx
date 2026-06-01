@@ -1,5 +1,5 @@
 'use client';
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import Link from 'next/link';
 import { ArrowUpFromLine, RotateCcw } from 'lucide-react';
@@ -23,34 +23,35 @@ export function AdminOverview() {
   const [days, setDays] = useState<number>(30);
   const [flowsCurrency, setFlowsCurrency] = useState<string>('USD');
 
-  // Bucket "now" to whole minutes so the queryKey is stable across renders
-  // (otherwise every render produced a fresh ISO timestamp and triggered a
-  // refetch loop).
-  const { from, to } = useMemo(() => {
-    const now = Math.floor(Date.now() / 60_000) * 60_000;
-    return {
-      to: new Date(now).toISOString(),
-      from: new Date(now - days * 24 * 3600 * 1000).toISOString(),
-    };
-  }, [days]);
-
-  const rangeParams = new URLSearchParams({ from, to });
+  // Window computed at fetch time, with the upper bound rounded UP to the next
+  // minute so a just-ingested transaction (in the current partial minute) is
+  // included immediately rather than excluded until the clock ticks over.
+  // Bucketing to the minute keeps the backend's per-window cache key stable for
+  // ~60s; the queryKeys are days-based, so recomputing here never churns them.
+  const rangeParams = () => {
+    const anchor = Math.ceil(Date.now() / 60_000) * 60_000;
+    return new URLSearchParams({
+      from: new Date(anchor - days * 24 * 3600 * 1000).toISOString(),
+      to: new Date(anchor).toISOString(),
+    });
+  };
 
   const platformQ = useQuery({
     queryKey: ['admin', 'analytics', 'platform', days],
     queryFn: () =>
-      apiFetch<PlatformAnalyticsResponse>(`/admin/analytics/platform?${rangeParams.toString()}`),
+      apiFetch<PlatformAnalyticsResponse>(`/admin/analytics/platform?${rangeParams().toString()}`),
     refetchInterval: 60_000,
     staleTime: 30_000,
     retry: 1,
   });
 
-  const flowsParams = new URLSearchParams(rangeParams);
-  flowsParams.set('currency', flowsCurrency);
-
   const flowsQ = useQuery({
     queryKey: ['admin', 'analytics', 'flows', days, flowsCurrency],
-    queryFn: () => apiFetch<FlowsResponse>(`/admin/analytics/flows?${flowsParams.toString()}`),
+    queryFn: () => {
+      const params = rangeParams();
+      params.set('currency', flowsCurrency);
+      return apiFetch<FlowsResponse>(`/admin/analytics/flows?${params.toString()}`);
+    },
     staleTime: 30_000,
     retry: 1,
   });

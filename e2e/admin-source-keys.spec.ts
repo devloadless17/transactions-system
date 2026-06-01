@@ -91,7 +91,7 @@ test.describe('admin: source API keys', () => {
     expect(body.status).toBe('COMPLETED');
 
     // Negative case: same key, wrong source in URL → 403.
-    const mismatch = await ingestRes.post('/v1/ingest/wish_money_code/transactions', {
+    const mismatch = await ingestRes.post('/v1/ingest/whish/transactions', {
       headers: { Authorization: `Bearer ${plaintext}` },
       data: {
         companyId: targetId,

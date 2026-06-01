@@ -113,7 +113,21 @@ export class LedgerService {
       const [rows, total] = await Promise.all([
         tx.ledgerEntry.findMany({
           where,
-          orderBy: { createdAt: 'desc' },
+          // All lines of one transaction share the same createdAt (written in a
+          // single createMany), so ordering by createdAt alone leaves their
+          // relative order to the DB heap — which is why the same transaction's
+          // lines render in a different order each time. Add a stable, meaningful
+          // tiebreak so every transaction's lines always read the same way:
+          // newest first, then DEBIT before CREDIT, then by account type (enum
+          // order: AVAILABLE, PENDING, RESERVED, FEE, EXTERNAL), then id as a
+          // final total-order guarantee. For a standard ingest this yields
+          // EXTERNAL(DEBIT) → AVAILABLE(CREDIT) → FEE(CREDIT) every time.
+          orderBy: [
+            { createdAt: 'desc' },
+            { direction: 'asc' },
+            { accountType: 'asc' },
+            { id: 'asc' },
+          ],
           skip,
           take: query.pageSize,
         }),
