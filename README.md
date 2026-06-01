@@ -102,3 +102,32 @@ The seed prints the super admin credentials. Default:
 - **Phase 4** — analytics, caching, queues for high-volume paths.
 
 See `/home/aliubuntu/.claude/plans/system-architecture-prompt-fluttering-hedgehog.md` for the full architecture plan.
+
+## Whish Pay integration
+
+Companies mint Whish payment links; a paid link settles into the company wallet
+through the existing ingest pipeline (commission + ledger + wallet credit).
+We are the _outbound_ caller (the inverse of source-key ingest).
+
+- **Config** — single platform Whish account via `WHISH_*` env vars (sandbox by
+  default). `WHISH_CALLBACK_BASE` must be internet-reachable so Whish can call back.
+- **Enabled currencies** — `WHISH_ENABLED_CURRENCIES` (default `USD`). Link creation
+  rejects disabled currencies and, crucially, **pre-checks that a commission rule
+  resolves for the amount** — so a link that couldn't settle is never minted. To
+  activate LBP: set `WHISH_ENABLED_CURRENCIES=USD,LBP` **and** add commission rules
+  covering LBP amounts. The enabled set is served at `GET /v1/company/whish/config`.
+- **Reference** — each payment gets a numeric `externalId` (BIGINT identity). It is
+  sent to Whish, echoed on callbacks, and reused as the settled transaction's
+  `external_transaction_id`, making settlement idempotent against duplicate callbacks.
+- **Flow** — `POST /v1/company/whish/payments` → Whish `POST /payment/whish` →
+  `collectUrl`. Customer pays → Whish `GET /v1/whish/callback/{success,failure}`
+  (token-guarded, **verified** via `POST /payment/collect/status` before crediting).
+  Missed callbacks self-heal via a 60s reconciliation interval (and manual
+  `POST .../:id/refresh-status`).
+- **CRM integration** — server-to-server via a **company API key**
+  (`Authorization: Bearer tsk_…`, minted under Settings → API keys):
+  `POST/GET /v1/integrations/whish/payments[/:ref]`. Optional signed webhook
+  (`whish.payment.paid`, `X-Whish-Signature: sha256=…`) so the CRM needn't poll.
+- **Surfaces** — company **Whish Pay** + **Developers** (live tester, multi-language
+  examples, webhook config) pages; **admin → Whish Pay** (balance + all payments).
+  Hand-off guide: [`docs/whish-crm-integration.html`](docs/whish-crm-integration.html).

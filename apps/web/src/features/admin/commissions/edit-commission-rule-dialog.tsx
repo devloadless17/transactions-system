@@ -85,7 +85,7 @@ export function EditCommissionRuleDialog({ rule, onClose, onSaved }: Props) {
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit((values) => mu.mutate(values))} className="space-y-4">
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="minAmount">Min amount</Label>
               <Input id="minAmount" {...register('minAmount')} />
@@ -101,7 +101,7 @@ export function EditCommissionRuleDialog({ rule, onClose, onSaved }: Props) {
               )}
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-2">
               <Label>Type</Label>
               <div className="flex gap-2">

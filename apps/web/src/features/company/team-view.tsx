@@ -16,14 +16,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
+import { DataTable, type Column } from '@/components/ui/data-table';
 import {
   Dialog,
   DialogContent,
@@ -60,9 +53,66 @@ export function TeamView() {
     onError: (err) => toast.error(err instanceof ApiClientError ? err.message : 'Failed'),
   });
 
+  const columns: Column<TeamMemberResponse>[] = [
+    { key: 'email', header: 'Email', className: 'break-all', cell: (m) => m.email },
+    {
+      key: 'role',
+      header: 'Role',
+      cell: (m) => (
+        <select
+          value={m.role}
+          onChange={(e) => updateMu.mutate({ id: m.id, role: e.target.value as UserRole })}
+          className="h-8 rounded-md border border-input bg-background px-2 text-sm"
+        >
+          {COMPANY_ROLE_VALUES.map((r) => (
+            <option key={r} value={r}>
+              {r}
+            </option>
+          ))}
+        </select>
+      ),
+    },
+    {
+      key: 'status',
+      header: 'Status',
+      cell: (m) => (
+        <Badge variant={m.status === 'ACTIVE' ? 'success' : 'destructive'}>{m.status}</Badge>
+      ),
+    },
+    {
+      key: 'lastLogin',
+      header: 'Last login',
+      className: 'text-xs text-muted-foreground',
+      cell: (m) => (m.lastLoginAt ? new Date(m.lastLoginAt).toLocaleString() : 'never'),
+    },
+    {
+      key: 'actions',
+      header: '',
+      align: 'right',
+      cell: (m) =>
+        m.status === 'ACTIVE' ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => updateMu.mutate({ id: m.id, status: UserStatus.DISABLED })}
+          >
+            Disable
+          </Button>
+        ) : (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => updateMu.mutate({ id: m.id, status: UserStatus.ACTIVE })}
+          >
+            Reactivate
+          </Button>
+        ),
+    },
+  ];
+
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-semibold">Team</h1>
           <p className="text-sm text-muted-foreground">
@@ -81,73 +131,13 @@ export function TeamView() {
 
       <Card>
         <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Email</TableHead>
-                <TableHead>Role</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Last login</TableHead>
-                <TableHead></TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {listQ.isLoading && (
-                <TableRow>
-                  <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">
-                    Loading…
-                  </TableCell>
-                </TableRow>
-              )}
-              {listQ.data?.data.map((m) => (
-                <TableRow key={m.id}>
-                  <TableCell>{m.email}</TableCell>
-                  <TableCell>
-                    <select
-                      value={m.role}
-                      onChange={(e) =>
-                        updateMu.mutate({ id: m.id, role: e.target.value as UserRole })
-                      }
-                      className="h-8 rounded-md border border-input bg-background px-2 text-sm"
-                    >
-                      {COMPANY_ROLE_VALUES.map((r) => (
-                        <option key={r} value={r}>
-                          {r}
-                        </option>
-                      ))}
-                    </select>
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant={m.status === 'ACTIVE' ? 'success' : 'destructive'}>
-                      {m.status}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {m.lastLoginAt ? new Date(m.lastLoginAt).toLocaleString() : 'never'}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    {m.status === 'ACTIVE' ? (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => updateMu.mutate({ id: m.id, status: UserStatus.DISABLED })}
-                      >
-                        Disable
-                      </Button>
-                    ) : (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => updateMu.mutate({ id: m.id, status: UserStatus.ACTIVE })}
-                      >
-                        Reactivate
-                      </Button>
-                    )}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+          <DataTable<TeamMemberResponse>
+            columns={columns}
+            rows={listQ.data?.data}
+            isLoading={listQ.isLoading}
+            error={listQ.error}
+            rowKey={(m) => m.id}
+          />
         </CardContent>
       </Card>
 

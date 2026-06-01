@@ -7,18 +7,11 @@ import {
   type LedgerEntryResponse,
   type PaginatedResponse,
 } from '@app/shared';
-import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Label } from '@/components/ui/label';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
+import { DataTable, type Column } from '@/components/ui/data-table';
+import { Pagination } from '@/components/ui/pagination';
 import { apiFetch } from '@/lib/api.client';
 
 const PAGE_SIZE = 50;
@@ -37,6 +30,46 @@ export function LedgerView() {
     queryFn: () =>
       apiFetch<PaginatedResponse<LedgerEntryResponse>>(`/company/ledger?${params.toString()}`),
   });
+
+  const columns: Column<LedgerEntryResponse>[] = [
+    {
+      key: 'when',
+      header: 'When',
+      className: 'text-xs text-muted-foreground',
+      cell: (e) => new Date(e.createdAt).toLocaleString(),
+    },
+    {
+      key: 'account',
+      header: 'Account',
+      cell: (e) => <Badge variant="secondary">{e.accountType}</Badge>,
+    },
+    {
+      key: 'direction',
+      header: 'Direction',
+      cell: (e) => (
+        <Badge variant={e.direction === 'DEBIT' ? 'warning' : 'success'}>{e.direction}</Badge>
+      ),
+    },
+    {
+      key: 'amount',
+      header: 'Amount',
+      align: 'right',
+      className: 'font-mono',
+      cell: (e) => trimAmount(e.amount),
+    },
+    { key: 'currency', header: 'Currency', cell: (e) => e.currency },
+    {
+      key: 'linked',
+      header: 'Linked',
+      className: 'font-mono text-xs break-all',
+      cell: (e) => (
+        <>
+          {e.transactionId && `tx:${e.transactionId.slice(0, 8)}`}
+          {e.withdrawalId && `wd:${e.withdrawalId.slice(0, 8)}`}
+        </>
+      ),
+    },
+  ];
 
   return (
     <div className="space-y-6">
@@ -92,83 +125,24 @@ export function LedgerView() {
 
       <Card>
         <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>When</TableHead>
-                <TableHead>Account</TableHead>
-                <TableHead>Direction</TableHead>
-                <TableHead className="text-right">Amount</TableHead>
-                <TableHead>Currency</TableHead>
-                <TableHead>Linked</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {listQ.isLoading && (
-                <TableRow>
-                  <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">
-                    Loading…
-                  </TableCell>
-                </TableRow>
-              )}
-              {listQ.data?.data.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">
-                    No entries.
-                  </TableCell>
-                </TableRow>
-              )}
-              {listQ.data?.data.map((e) => (
-                <TableRow key={e.id}>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {new Date(e.createdAt).toLocaleString()}
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant="secondary">{e.accountType}</Badge>
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant={e.direction === 'DEBIT' ? 'warning' : 'success'}>
-                      {e.direction}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-right font-mono">{trimAmount(e.amount)}</TableCell>
-                  <TableCell>{e.currency}</TableCell>
-                  <TableCell className="font-mono text-xs">
-                    {e.transactionId && `tx:${e.transactionId.slice(0, 8)}`}
-                    {e.withdrawalId && `wd:${e.withdrawalId.slice(0, 8)}`}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+          <DataTable<LedgerEntryResponse>
+            columns={columns}
+            rows={listQ.data?.data}
+            isLoading={listQ.isLoading}
+            error={listQ.error}
+            rowKey={(e) => e.id}
+            empty={<div className="py-8 text-center text-muted-foreground">No entries.</div>}
+          />
         </CardContent>
       </Card>
 
-      {listQ.data && listQ.data.meta.totalPages > 1 && (
-        <div className="flex items-center justify-between text-sm">
-          <span className="text-muted-foreground">
-            Page {listQ.data.meta.page} of {listQ.data.meta.totalPages} · {listQ.data.meta.total}{' '}
-            total
-          </span>
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={page <= 1}
-              onClick={() => setPage((p) => p - 1)}
-            >
-              Previous
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={page >= listQ.data.meta.totalPages}
-              onClick={() => setPage((p) => p + 1)}
-            >
-              Next
-            </Button>
-          </div>
-        </div>
+      {listQ.data && (
+        <Pagination
+          page={listQ.data.meta.page}
+          totalPages={listQ.data.meta.totalPages}
+          total={listQ.data.meta.total}
+          onPageChange={setPage}
+        />
       )}
     </div>
   );

@@ -88,6 +88,13 @@ enum PayoutMethod {
   OTHER
 }
 
+enum WhishPaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  EXPIRED
+}
+
 // ----------------------------- Users -----------------------------
 
 model User {
@@ -142,6 +149,10 @@ model Company {
   status          CompanyStatus @default(ACTIVE)
   defaultCurrency String        @map("default_currency") @db.Char(3)
   metadata        Json?         @db.JsonB
+  // Optional outbound webhook: where to POST payment events (e.g. whish.payment.paid),
+  // and the secret used to HMAC-sign the body. Configured by the company.
+  webhookUrl      String?       @map("webhook_url")
+  webhookSecret   String?       @map("webhook_secret")
   createdAt       DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt       DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -156,6 +167,7 @@ model Company {
   loads             Load[]
   auditLogs         AuditLog[]
   idempotencyKeys   IdempotencyKey[]
+  whishPayments     WhishPayment[]
 
   @@index([status])
   @@map("companies")
@@ -252,6 +264,7 @@ model Transaction {
   updatedAt             DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   ledgerEntries LedgerEntry[]
+  whishPayment  WhishPayment?
 
   @@unique([sourceId, externalTransactionId])
   @@unique([companyId, idempotencyKey])
@@ -434,4 +447,38 @@ model IdempotencyKey {
   @@unique([companyId, key])
   @@index([expiresAt])
   @@map("idempotency_keys")
+}
+
+// -------------------------- Whish Payments -----------------------
+// A payment link minted on behalf of a company via Whish Pay. We are the
+// third party calling Whish (outbound). `externalId` is the numeric
+// reference we send to Whish and which it echoes back on the callback +
+// status lookups; it doubles as the `external_transaction_id` of the
+// ledger Transaction written once the payment is confirmed PAID, giving
+// idempotent settlement for free. Tenant-scoped (RLS by company_id).
+
+model WhishPayment {
+  id               String             @id @default(uuid()) @db.Uuid
+  companyId        String             @map("company_id") @db.Uuid
+  company          Company            @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  externalId       BigInt             @unique @default(autoincrement()) @map("external_id")
+  callbackToken    String             @unique @map("callback_token")
+  amount           Decimal            @db.Decimal(20, 8)
+  currency         String             @db.Char(3)
+  invoice          String
+  status           WhishPaymentStatus @default(PENDING)
+  collectUrl       String?            @map("collect_url")
+  payerPhoneNumber String?            @map("payer_phone_number")
+  transactionId    String?            @unique @map("transaction_id") @db.Uuid
+  transaction      Transaction?       @relation(fields: [transactionId], references: [id], onDelete: SetNull)
+  idempotencyKey   String?            @map("idempotency_key")
+  metadata         Json?              @db.JsonB
+  paidAt           DateTime?          @map("paid_at") @db.Timestamptz(6)
+  createdAt        DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([companyId, idempotencyKey])
+  @@index([companyId, status])
+  @@index([companyId, createdAt])
+  @@map("whish_payments")
 }

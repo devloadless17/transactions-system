@@ -1,6 +1,7 @@
 'use client';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { ChangePasswordForm } from '@/features/auth/change-password-form';
+import { ApiKeysCard } from './api-keys-card';
 
 export function SettingsView() {
   return (
@@ -23,6 +24,8 @@ export function SettingsView() {
           <ChangePasswordForm />
         </CardContent>
       </Card>
+
+      <ApiKeysCard />
     </div>
   );
 }

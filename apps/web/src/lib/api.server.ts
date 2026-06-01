@@ -2,7 +2,12 @@ import 'server-only';
 import { cookies } from 'next/headers';
 import { ApiClientError, type ApiErrorBody } from './api';
 
-const INTERNAL_BASE = process.env.API_INTERNAL_BASE_URL ?? 'http://localhost:3001/v1';
+// Server-side (Node) base URL for the API. Use 127.0.0.1, NOT localhost:
+// Node's fetch (undici) resolves `localhost` to IPv6 `::1` first on Windows,
+// but the API listens on IPv4 only — so `localhost` yields "fetch failed".
+// 127.0.0.1 forces IPv4. (The browser client uses NEXT_PUBLIC_API_BASE_URL,
+// where localhost is fine because browsers fall back to IPv4.)
+const INTERNAL_BASE = process.env.API_INTERNAL_BASE_URL ?? 'http://127.0.0.1:3001/v1';
 
 interface RequestOpts {
   method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';

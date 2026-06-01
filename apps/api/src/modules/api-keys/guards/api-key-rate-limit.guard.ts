@@ -1,4 +1,5 @@
-import { CanActivate, ExecutionContext, Injectable, Logger } from '@nestjs/common';
+import type { CanActivate, ExecutionContext } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import IORedis, { type Redis } from 'ioredis';
 import { HttpException } from '@nestjs/common';

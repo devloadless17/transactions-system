@@ -47,14 +47,14 @@ export function OverviewView() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-end justify-between gap-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-semibold">Overview</h1>
           <p className="text-sm text-muted-foreground">
             Your wallets, activity, and recent transactions.
           </p>
         </div>
-        <div className="flex gap-3">
+        <div className="flex flex-wrap gap-3">
           <div className="flex items-center gap-1 rounded-md border bg-background p-1">
             {RANGE_OPTIONS.map((r) => (
               <Button
@@ -81,7 +81,7 @@ export function OverviewView() {
         </div>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <KpiCard
           label="Volume"
           value={data ? `${formatNumber(data.kpi.totalVolume)} ${data.kpi.currency}` : '—'}

@@ -5,15 +5,8 @@ import type { AuditLogResponse, CompanyResponse, PaginatedResponse } from '@app/
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
-import { Button } from '@/components/ui/button';
+import { DataTable, type Column } from '@/components/ui/data-table';
+import { Pagination } from '@/components/ui/pagination';
 import { apiFetch } from '@/lib/api.client';
 
 const PAGE_SIZE = 50;
@@ -41,6 +34,40 @@ export function AuditLogsView() {
   });
   const companyName = (id: string | null) =>
     !id ? '—' : (companiesQ.data?.data.find((c) => c.id === id)?.name ?? id.slice(0, 8));
+
+  const columns: Column<AuditLogResponse>[] = [
+    {
+      key: 'when',
+      header: 'When',
+      className: 'text-xs text-muted-foreground',
+      cell: (a) => new Date(a.createdAt).toLocaleString(),
+    },
+    { key: 'actor', header: 'Actor', cell: (a) => a.actorEmail ?? '—' },
+    { key: 'company', header: 'Company', cell: (a) => companyName(a.companyId) },
+    {
+      key: 'action',
+      header: 'Action',
+      className: 'font-mono text-xs',
+      cell: (a) => a.action,
+    },
+    {
+      key: 'entity',
+      header: 'Entity',
+      className: 'font-mono text-xs',
+      cell: (a) => (
+        <>
+          {a.entityType}
+          {a.entityId ? `:${a.entityId.slice(0, 8)}` : ''}
+        </>
+      ),
+    },
+    {
+      key: 'ip',
+      header: 'IP',
+      className: 'text-xs text-muted-foreground',
+      cell: (a) => a.ipAddress ?? '—',
+    },
+  ];
 
   return (
     <div className="space-y-6">
@@ -89,79 +116,24 @@ export function AuditLogsView() {
 
       <Card>
         <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>When</TableHead>
-                <TableHead>Actor</TableHead>
-                <TableHead>Company</TableHead>
-                <TableHead>Action</TableHead>
-                <TableHead>Entity</TableHead>
-                <TableHead>IP</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {listQ.isLoading && (
-                <TableRow>
-                  <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">
-                    Loading…
-                  </TableCell>
-                </TableRow>
-              )}
-              {listQ.data?.data.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">
-                    No audit logs yet.
-                  </TableCell>
-                </TableRow>
-              )}
-              {listQ.data?.data.map((a) => (
-                <TableRow key={a.id}>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {new Date(a.createdAt).toLocaleString()}
-                  </TableCell>
-                  <TableCell>{a.actorEmail ?? '—'}</TableCell>
-                  <TableCell>{companyName(a.companyId)}</TableCell>
-                  <TableCell className="font-mono text-xs">{a.action}</TableCell>
-                  <TableCell className="font-mono text-xs">
-                    {a.entityType}
-                    {a.entityId ? `:${a.entityId.slice(0, 8)}` : ''}
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {a.ipAddress ?? '—'}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+          <DataTable<AuditLogResponse>
+            columns={columns}
+            rows={listQ.data?.data}
+            isLoading={listQ.isLoading}
+            error={listQ.error}
+            rowKey={(a) => a.id}
+            empty={<div className="py-8 text-center text-muted-foreground">No audit logs yet.</div>}
+          />
         </CardContent>
       </Card>
 
-      {listQ.data && listQ.data.meta.totalPages > 1 && (
-        <div className="flex items-center justify-between text-sm">
-          <span className="text-muted-foreground">
-            Page {listQ.data.meta.page} of {listQ.data.meta.totalPages} · {listQ.data.meta.total}{' '}
-            total
-          </span>
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={page <= 1}
-              onClick={() => setPage((p) => p - 1)}
-            >
-              Previous
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={page >= listQ.data.meta.totalPages}
-              onClick={() => setPage((p) => p + 1)}
-            >
-              Next
-            </Button>
-          </div>
-        </div>
+      {listQ.data && (
+        <Pagination
+          page={listQ.data.meta.page}
+          total={listQ.data.meta.total}
+          totalPages={listQ.data.meta.totalPages}
+          onPageChange={setPage}
+        />
       )}
     </div>
   );

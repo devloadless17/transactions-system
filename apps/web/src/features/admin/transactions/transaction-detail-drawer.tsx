@@ -44,7 +44,7 @@ export function TransactionDetailDrawer({ scope, transaction, onClose }: Props) 
       <SheetContent className="overflow-y-auto">
         <SheetHeader>
           <SheetTitle>Transaction</SheetTitle>
-          <SheetDescription className="font-mono text-xs">{tx?.id}</SheetDescription>
+          <SheetDescription className="font-mono text-xs break-all">{tx?.id}</SheetDescription>
         </SheetHeader>
 
         {tx && (
@@ -152,8 +152,8 @@ function DetailRow({
 }) {
   return (
     <div className="flex items-start justify-between gap-3 border-b py-1 last:border-0">
-      <span className="text-xs text-muted-foreground">{label}</span>
-      <span className={`text-right text-sm ${mono ? 'font-mono' : ''}`}>{value}</span>
+      <span className="shrink-0 text-xs text-muted-foreground">{label}</span>
+      <span className={`text-right text-sm ${mono ? 'font-mono break-all' : ''}`}>{value}</span>
     </div>
   );
 }

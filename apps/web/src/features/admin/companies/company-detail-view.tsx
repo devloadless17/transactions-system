@@ -15,18 +15,12 @@ import {
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
+import { DataTable, type Column } from '@/components/ui/data-table';
 import { apiFetch } from '@/lib/api.client';
 import { ApiClientError } from '@/lib/api';
 import { KpiCard } from '@/features/analytics/kpi-card';
 import { VolumeChart } from '@/features/analytics/volume-chart';
+import { CompanyUsersCard } from './company-users-card';
 
 export function CompanyDetailView({ companyId }: { companyId: string }) {
   const qc = useQueryClient();
@@ -83,10 +77,100 @@ export function CompanyDetailView({ companyId }: { companyId: string }) {
     onError: (err) => toast.error(err instanceof ApiClientError ? err.message : 'Failed'),
   });
 
+  const walletColumns: Column<WalletResponse>[] = [
+    { key: 'currency', header: 'Currency', className: 'font-medium', cell: (w) => w.currency },
+    {
+      key: 'available',
+      header: 'Available',
+      align: 'right',
+      className: 'font-mono',
+      cell: (w) => trimAmount(w.availableBalance),
+    },
+    {
+      key: 'pending',
+      header: 'Pending',
+      align: 'right',
+      className: 'font-mono',
+      cell: (w) => trimAmount(w.pendingBalance),
+    },
+    {
+      key: 'reserved',
+      header: 'Reserved',
+      align: 'right',
+      className: 'font-mono',
+      cell: (w) => trimAmount(w.reservedBalance),
+    },
+    {
+      key: 'updated',
+      header: 'Updated',
+      className: 'text-xs text-muted-foreground',
+      cell: (w) => new Date(w.updatedAt).toLocaleString(),
+    },
+  ];
+
+  const txColumns: Column<TransactionResponse>[] = [
+    {
+      key: 'external',
+      header: 'External',
+      className: 'font-mono text-xs',
+      cell: (t) => t.externalTransactionId,
+    },
+    { key: 'source', header: 'Source', cell: (t) => t.sourceCode },
+    {
+      key: 'amount',
+      header: 'Amount',
+      align: 'right',
+      className: 'font-mono text-xs',
+      cell: (t) => `${trimAmount(t.amount)} ${t.currency}`,
+    },
+    {
+      key: 'fee',
+      header: 'Fee',
+      align: 'right',
+      className: 'font-mono text-xs',
+      cell: (t) => trimAmount(t.commissionAmount),
+    },
+    {
+      key: 'status',
+      header: 'Status',
+      cell: (t) => (
+        <Badge variant={t.status === 'COMPLETED' ? 'success' : 'secondary'}>{t.status}</Badge>
+      ),
+    },
+    {
+      key: 'created',
+      header: 'Created',
+      className: 'text-xs text-muted-foreground',
+      cell: (t) => new Date(t.createdAt).toLocaleString(),
+    },
+  ];
+
+  const auditColumns: Column<AuditLogResponse>[] = [
+    {
+      key: 'when',
+      header: 'When',
+      className: 'text-xs text-muted-foreground',
+      cell: (a) => new Date(a.createdAt).toLocaleString(),
+    },
+    { key: 'actor', header: 'Actor', className: 'text-xs', cell: (a) => a.actorEmail ?? '—' },
+    { key: 'action', header: 'Action', className: 'font-mono text-xs', cell: (a) => a.action },
+    {
+      key: 'entity',
+      header: 'Entity',
+      className: 'font-mono text-xs',
+      cell: (a) => (
+        <>
+          {a.entityType}
+          {a.entityId ? `:${a.entityId.slice(0, 8)}` : ''}
+        </>
+      ),
+    },
+  ];
+
   return (
     <div className="space-y-6">
-      <div className="flex items-start justify-between gap-3">
-        <div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
           <Link href="/admin/companies" className="text-xs text-muted-foreground hover:underline">
             ← All companies
           </Link>
@@ -103,14 +187,15 @@ export function CompanyDetailView({ companyId }: { companyId: string }) {
           </h1>
           {companyQ.data && (
             <p className="text-sm text-muted-foreground">
-              slug: <span className="font-mono">{companyQ.data.slug}</span> · default currency:{' '}
-              {companyQ.data.defaultCurrency} · created{' '}
+              slug: <span className="font-mono break-all">{companyQ.data.slug}</span> · default
+              currency: {companyQ.data.defaultCurrency} · created{' '}
               {new Date(companyQ.data.createdAt).toLocaleDateString()}
             </p>
           )}
         </div>
         {companyQ.data?.status === 'ACTIVE' && (
           <Button
+            className="w-full sm:w-auto"
             variant="destructive"
             onClick={() => {
               if (
@@ -128,7 +213,7 @@ export function CompanyDetailView({ companyId }: { companyId: string }) {
         )}
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <KpiCard
           label="Volume"
           value={
@@ -162,12 +247,12 @@ export function CompanyDetailView({ companyId }: { companyId: string }) {
 
       <Card>
         <CardHeader>
-          <div className="flex items-end justify-between gap-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <CardTitle>Activity</CardTitle>
               <CardDescription>Daily completed transaction volume.</CardDescription>
             </div>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <div className="flex items-center gap-1 rounded-md border bg-background p-1">
                 {[7, 30, 90].map((d) => (
                   <Button
@@ -211,92 +296,28 @@ export function CompanyDetailView({ companyId }: { companyId: string }) {
           </CardDescription>
         </CardHeader>
         <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Currency</TableHead>
-                <TableHead className="text-right">Available</TableHead>
-                <TableHead className="text-right">Pending</TableHead>
-                <TableHead className="text-right">Reserved</TableHead>
-                <TableHead>Updated</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {walletsQ.data?.data.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={5} className="py-6 text-center text-muted-foreground">
-                    No wallets yet.
-                  </TableCell>
-                </TableRow>
-              )}
-              {walletsQ.data?.data.map((w) => (
-                <TableRow key={w.id}>
-                  <TableCell className="font-medium">{w.currency}</TableCell>
-                  <TableCell className="text-right font-mono">
-                    {trimAmount(w.availableBalance)}
-                  </TableCell>
-                  <TableCell className="text-right font-mono">
-                    {trimAmount(w.pendingBalance)}
-                  </TableCell>
-                  <TableCell className="text-right font-mono">
-                    {trimAmount(w.reservedBalance)}
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {new Date(w.updatedAt).toLocaleString()}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+          <DataTable<WalletResponse>
+            columns={walletColumns}
+            rows={walletsQ.data?.data}
+            rowKey={(w) => w.id}
+            empty={<div className="py-6 text-center text-muted-foreground">No wallets yet.</div>}
+          />
         </CardContent>
       </Card>
+
+      <CompanyUsersCard companyId={companyId} />
 
       <Card>
         <CardHeader>
           <CardTitle>Recent transactions</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>External</TableHead>
-                <TableHead>Source</TableHead>
-                <TableHead className="text-right">Amount</TableHead>
-                <TableHead className="text-right">Fee</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Created</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {txQ.data?.data.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={6} className="py-6 text-center text-muted-foreground">
-                    No transactions.
-                  </TableCell>
-                </TableRow>
-              )}
-              {txQ.data?.data.map((t) => (
-                <TableRow key={t.id}>
-                  <TableCell className="font-mono text-xs">{t.externalTransactionId}</TableCell>
-                  <TableCell>{t.sourceCode}</TableCell>
-                  <TableCell className="text-right font-mono text-xs">
-                    {trimAmount(t.amount)} {t.currency}
-                  </TableCell>
-                  <TableCell className="text-right font-mono text-xs">
-                    {trimAmount(t.commissionAmount)}
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant={t.status === 'COMPLETED' ? 'success' : 'secondary'}>
-                      {t.status}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {new Date(t.createdAt).toLocaleString()}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+          <DataTable<TransactionResponse>
+            columns={txColumns}
+            rows={txQ.data?.data}
+            rowKey={(t) => t.id}
+            empty={<div className="py-6 text-center text-muted-foreground">No transactions.</div>}
+          />
         </CardContent>
       </Card>
 
@@ -306,38 +327,12 @@ export function CompanyDetailView({ companyId }: { companyId: string }) {
           <CardDescription>Mutating actions tied to this company.</CardDescription>
         </CardHeader>
         <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>When</TableHead>
-                <TableHead>Actor</TableHead>
-                <TableHead>Action</TableHead>
-                <TableHead>Entity</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {auditQ.data?.data.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={4} className="py-6 text-center text-muted-foreground">
-                    No audit entries.
-                  </TableCell>
-                </TableRow>
-              )}
-              {auditQ.data?.data.map((a) => (
-                <TableRow key={a.id}>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {new Date(a.createdAt).toLocaleString()}
-                  </TableCell>
-                  <TableCell className="text-xs">{a.actorEmail ?? '—'}</TableCell>
-                  <TableCell className="font-mono text-xs">{a.action}</TableCell>
-                  <TableCell className="font-mono text-xs">
-                    {a.entityType}
-                    {a.entityId ? `:${a.entityId.slice(0, 8)}` : ''}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+          <DataTable<AuditLogResponse>
+            columns={auditColumns}
+            rows={auditQ.data?.data}
+            rowKey={(a) => a.id}
+            empty={<div className="py-6 text-center text-muted-foreground">No audit entries.</div>}
+          />
         </CardContent>
       </Card>
     </div>

@@ -1,0 +1,258 @@
+
+===== PAGE 1 =====
+  
+ 
+  
+ 
+Whish Web Service  
+ 
+Technical Specifications  
+  
+===== PAGE 2 =====
+  
+ 
+ 
+Version Control 
+Version Author Date Comment 
+1.0 TecFrac 2022-11-08 Initial Release 
+1.1 TecFrac 2025-05-12 
+Adding test cases and 
+request content-type 
+requirements. 
+1.2 TecFrac 2025-09-17 
+Get Status Endpoint 
+update to include 
+payerPhoneNumber in 
+the response payload. 
+1.3 TecFrac 2025-10-03 Sandbox Base URL 
+update. 
+1.3.1 TecFrac 2025-12-11 Production Base URL 
+update. 
+1.4 TecFrac 2025-12-23 
+User-Agent 
+Requirement addition 
+and additional field 
+descriptions and notes. 
+1.4.1 TecFrac 2026-02-03 
+Get Balance now 
+supports LBP and 
+USD. 
+1.4.2 TecFrac 2026-02-09 Get Rate removed with 
+minor adjustment. 
+             
+Disclaimer  
+The information in this document is provided for Whish clients and business partners. Whish retains the 
+right to make changes to this specification at any time. Web service requests, responses, and error codes 
+are subject to change. This document is provided for informational purposes only.  The content of this 
+document is the sole property of Whish.   
+===== PAGE 3 =====
+  
+ 
+  
+Table of Contents  
+Version Control ............................................................................................................................................. 2 
+Overview ..................................................................................................................................................... 4 
+Environments ........................................................................................................................................ 4 
+Production ........................................................................................................................................... 4 
+Sandbox ............................................................................................................................................... 4 
+Communication Requirements ........................................................................................................ 4 
+Request Headers .................................................................................................................................. 4 
+Response Structure .................................................................................................................................. 4 
+Get Balance .............................................................................................................................................. 5 
+Post Payment ........................................................................................................................................... 6 
+Get Status ................................................................................................................................................. 8 
+ 
+  
+  
+===== PAGE 4 =====
+  
+ 
+Overview  
+The Whish API is a REST based service accessible over HTTPS. It supports JSON formatted requests 
+and responses and is intended to be consumed by authorized distributors. 
+Environments 
+Production 
+URL: https://api.whish.money/itel-service/api 
+Sandbox 
+URL: https://api.sandbox.whish.money/itel-service/api 
+Communication Requirements 
+Protocol and Format 
+• The distributor must be capable of producing and consuming JSON over HTTPS.  
+• All requests and responses use the application/json format. 
+Request Headers 
+All requests sent to Whish services must include the following HTTP headers.  
+Header 
+Name Description 
+channel Value provided by Whish 
+secret Value provided by Whish 
+websiteUrl URL of the third party website or application name where the API is integrated 
+User-Agent Identifies the consuming website or application 
+ 
+User-Agent format: “Whish/1.0 (https://whish.money; support@whish.money)" 
+Response Structure 
+All API responses follow a unified structure with the attributes listed below.  
+Attribute Description 
+status Boolean value indicating success or failure 
+code Operation-specific failure code 
+dialog Contains an optional title and message to be displayed to the user 
+data Contains the response payload based on the executed operation 
+Notes 
+• Missing or invalid headers may result in request rejection. 
+• The User-Agent header is required for monitoring, analytics, and support purposes.  
+===== PAGE 5 =====
+  
+ 
+Get Balance 
+This method returns the real balance of the account. 
+You can specify the currency (LBP or USD) using “?currency=LBP” or “?currency=USD”. 
+Voided items are items which are sold and not used for some reason, so they are put on hold for later 
+usages. 
+URI  
+LBP: GET /payment/account/balance?currency=LBP  
+USD: GET /payment/account/balance?currency=USD  
+Request 
+No request body attributes are needed; just include the required headers and specify the currency (LBP or 
+USD) in the query. 
+Response Data 
+Field   Description  Type  
+balanceDetails   Complex Type 
+      balance  The real balance of the account.  Double 
+Response Example  
+Successful Response:  
+USD:                                                                                   LBP: 
+{ 
+    "status": true, 
+    "code": null, 
+    "dialog": null, 
+    "actions": null, 
+    "extra": null, 
+    "data": { 
+        "balance": 10439.0 
+    } 
+} 
+ 
+{ 
+    "status": true, 
+    "code": null, 
+    "dialog": null, 
+    "actions": null, 
+    "extra": null, 
+    "data": { 
+        "balance": 943975.0 
+    } 
+} 
+ 
+ 
+===== PAGE 6 =====
+  
+ 
+ 
+Post Payment 
+This method returns the URL, where the client will be redirected to pay for the merchant through WHISH 
+Balance. 
+URI 
+POST /payment/whish 
+Request 
+Besides the header attributes which are mandatory in all requests, following are the attributes needed to 
+be attached in the requests body: 
+Field   Description  Type  
+amount Amount to be paid by client Double 
+currency The amount’s currency. Supported currencies: LBP/USD String 
+invoice Details/Description about the payment String  
+externalId ID provided by third party Long  
+successCallbackUrl GET Callback URL provided by third party for successful transaction String 
+failureCallbackUrl GET Callback URL provided by third party for failed transaction String 
+successRedirectUrl GET Redirect URL provided by third party for successful transaction String 
+failureRedirectUrl GET Redirect URL provided by third party for failed transaction String 
+ 
+Test Cases: 
+• Success: Use the phone number 96170902894 on the payment page with the OTP 111111.  
+• Failure: Use any phone number with an OTP other than 111111. 
+Notes 
+• The callback and redirect URLs are fully specified by the third party integrating with Whish.  
+===== PAGE 7 =====
+  
+ 
+• Callback URLs are triggered by Whish using a GET request to notify the third party of the 
+transaction result. 
+• Redirect URLs are used to redirect the client after the payment flow is completed.  
+• The third party may append any custom query parameters to the callback or redirect URLs, such 
+as a unique identifier, timestamp, order reference, or any other tracking information.  
+• Whish will call or redirect to the provided URLs as received, without altering the query 
+parameters. 
+• externalId must be a numeric value generated by the third party and must be unique per request, 
+serving as the reference identifier for the transaction. 
+• No OTP is delivered in sandbox environment. 
+Request Sample:  
+ 
+{  
+"amount": "1",  
+"currency": "USD",  
+"invoice": "Order #1",  
+"externalId": 1,  
+"successCallbackUrl": "https://example.com/api/payment/success",  
+"failureCallbackUrl": "https://example.com/api/payment/failure",  
+"successRedirectUrl": "https://example.com/thank-you",  
+"failureRedirectUrl": "https://example.com/payment-error"  
+}  
+ 
+Response Data 
+Field  Description  Type  
+collectUrl The payment page URL  String 
+ 
+ 
+ 
+ 
+ 
+===== PAGE 8 =====
+  
+ 
+Response Example  
+Successful Response:  
+{   
+   "status":true, 
+   "code":null, 
+   "dialog":null, 
+   "extra":null, 
+   "data":{   
+      "collectUrl": “https://whish.money/pay/8nQS2mL” 
+   } 
+} 
+ 
+Get Status 
+This method returns the collect status of Whish Pay transactions. 
+URI 
+POST /payment/collect/status 
+Request 
+Besides the header attributes which are mandatory in all requests, following are the attributes needed to 
+be attached in the requests body: 
+Field   Description  Type  
+currency The amount currency. Supported currencies: “LBP, “USD” String 
+externalId ID provided by third party Long  
+ 
+ 
+Response Data 
+Field  Description  Type  
+collectStatus The collect status (success, failed, 
+pending)  
+String 
+===== PAGE 9 =====
+  
+ 
+payerPhoneNumber The phone number that performed 
+the payment 
+Long 
+ 
+Response Example  
+Successful Response:  
+{   
+   "status":true, 
+   "code":null, 
+   "dialog":null, 
+   "extra":null, 
+   "data":{   
+      " collectStatus": “success”, 
+      " payerPhoneNumber": “96170902894” 
+   } 
+} 
+ 

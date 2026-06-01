@@ -93,7 +93,7 @@ export function CreateCommissionRuleDialog({
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={onSubmit} className="space-y-4">
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="companyId">Company (optional)</Label>
               <select
@@ -127,7 +127,7 @@ export function CreateCommissionRuleDialog({
               </select>
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="minAmount">Min amount</Label>
               <Input id="minAmount" {...register('minAmount')} />
@@ -143,7 +143,7 @@ export function CreateCommissionRuleDialog({
               )}
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-2">
               <Label>Type</Label>
               <div className="flex gap-2">
@@ -172,7 +172,7 @@ export function CreateCommissionRuleDialog({
               <Input id="commissionValue" {...register('commissionValue')} />
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="priority">Priority</Label>
               <Input

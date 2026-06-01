@@ -11,14 +11,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
+import { DataTable, type Column } from '@/components/ui/data-table';
 import {
   Dialog,
   DialogContent,
@@ -78,6 +71,58 @@ export function AdminWithdrawalsView({ config }: { config: AdminProcessConfig })
   const companyName = (id: string) =>
     companiesQ.data?.data.find((c) => c.id === id)?.name ?? id.slice(0, 8);
 
+  const columns: Column<WithdrawalResponse>[] = [
+    { key: 'company', header: 'Company', cell: (w) => companyName(w.companyId) },
+    {
+      key: 'amount',
+      header: 'Amount',
+      align: 'right',
+      className: 'font-mono',
+      cell: (w) => trimAmount(w.amount),
+    },
+    { key: 'currency', header: 'Currency', cell: (w) => w.currency },
+    {
+      key: 'method',
+      header: 'Method',
+      className: 'text-xs',
+      cell: (w) => prettyMethod(w.payoutMethod),
+    },
+    {
+      key: 'status',
+      header: 'Status',
+      cell: (w) => <Badge variant={statusVariant(w.status)}>{w.status}</Badge>,
+    },
+    {
+      key: 'requested',
+      header: 'Requested',
+      className: 'text-xs text-muted-foreground',
+      cell: (w) => new Date(w.createdAt).toLocaleString(),
+    },
+    {
+      key: 'actions',
+      header: '',
+      align: 'right',
+      cell: (w) => (
+        <span onClick={(e) => e.stopPropagation()}>
+          {w.status === 'PENDING' && (
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setReview({ withdrawal: w, action: 'reject' })}
+              >
+                Reject
+              </Button>
+              <Button size="sm" onClick={() => setReview({ withdrawal: w, action: 'approve' })}>
+                Approve
+              </Button>
+            </div>
+          )}
+        </span>
+      ),
+    },
+  ];
+
   return (
     <div className="space-y-6">
       <div>
@@ -107,72 +152,14 @@ export function AdminWithdrawalsView({ config }: { config: AdminProcessConfig })
 
       <Card>
         <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Company</TableHead>
-                <TableHead className="text-right">Amount</TableHead>
-                <TableHead>Currency</TableHead>
-                <TableHead>Method</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Requested</TableHead>
-                <TableHead></TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {listQ.isLoading && (
-                <TableRow>
-                  <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
-                    Loading…
-                  </TableCell>
-                </TableRow>
-              )}
-              {listQ.data?.data.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
-                    Nothing to review.
-                  </TableCell>
-                </TableRow>
-              )}
-              {listQ.data?.data.map((w) => (
-                <TableRow
-                  key={w.id}
-                  className="cursor-pointer"
-                  onClick={() => setReview({ withdrawal: w, action: 'approve' })}
-                >
-                  <TableCell>{companyName(w.companyId)}</TableCell>
-                  <TableCell className="text-right font-mono">{trimAmount(w.amount)}</TableCell>
-                  <TableCell>{w.currency}</TableCell>
-                  <TableCell className="text-xs">{prettyMethod(w.payoutMethod)}</TableCell>
-                  <TableCell>
-                    <Badge variant={statusVariant(w.status)}>{w.status}</Badge>
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {new Date(w.createdAt).toLocaleString()}
-                  </TableCell>
-                  <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
-                    {w.status === 'PENDING' && (
-                      <div className="flex justify-end gap-2">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setReview({ withdrawal: w, action: 'reject' })}
-                        >
-                          Reject
-                        </Button>
-                        <Button
-                          size="sm"
-                          onClick={() => setReview({ withdrawal: w, action: 'approve' })}
-                        >
-                          Approve
-                        </Button>
-                      </div>
-                    )}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+          <DataTable<WithdrawalResponse>
+            columns={columns}
+            rows={listQ.data?.data}
+            isLoading={listQ.isLoading}
+            rowKey={(w) => w.id}
+            onRowClick={(w) => setReview({ withdrawal: w, action: 'approve' })}
+            empty={<div className="py-8 text-center text-muted-foreground">Nothing to review.</div>}
+          />
         </CardContent>
       </Card>
 

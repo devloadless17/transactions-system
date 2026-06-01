@@ -17,14 +17,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
+import { DataTable, type Column } from '@/components/ui/data-table';
 import {
   Dialog,
   DialogContent,
@@ -81,9 +74,43 @@ export function WithdrawalsView({ config }: { config: ProcessConfig }) {
 
   const rows = listQ.data?.data ?? [];
 
+  const columns: Column<WithdrawalResponse>[] = [
+    {
+      key: 'created',
+      header: 'Created',
+      className: 'text-xs text-muted-foreground',
+      cell: (w) => new Date(w.createdAt).toLocaleString(),
+    },
+    {
+      key: 'amount',
+      header: 'Amount',
+      align: 'right',
+      className: 'font-mono',
+      cell: (w) => trimAmount(w.amount),
+    },
+    { key: 'currency', header: 'Currency', cell: (w) => w.currency },
+    {
+      key: 'method',
+      header: 'Method',
+      className: 'text-xs',
+      cell: (w) => prettyMethod(w.payoutMethod),
+    },
+    {
+      key: 'status',
+      header: 'Status',
+      cell: (w) => <Badge variant={statusVariant(w.status)}>{w.status}</Badge>,
+    },
+    {
+      key: 'reference',
+      header: 'Reference',
+      className: 'font-mono text-xs break-all',
+      cell: (w) => (w.externalReference ? w.externalReference.slice(0, 24) : '—'),
+    },
+  ];
+
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-semibold">{config.heading}</h1>
           <p className="text-sm text-muted-foreground">{config.subhead}</p>
@@ -93,50 +120,17 @@ export function WithdrawalsView({ config }: { config: ProcessConfig }) {
 
       <Card>
         <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Created</TableHead>
-                <TableHead className="text-right">Amount</TableHead>
-                <TableHead>Currency</TableHead>
-                <TableHead>Method</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Reference</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {listQ.isLoading && (
-                <TableRow>
-                  <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">
-                    Loading…
-                  </TableCell>
-                </TableRow>
-              )}
-              {!listQ.isLoading && rows.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">
-                    {config.emptyState}
-                  </TableCell>
-                </TableRow>
-              )}
-              {rows.map((w) => (
-                <TableRow key={w.id} className="cursor-pointer" onClick={() => setDetail(w)}>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {new Date(w.createdAt).toLocaleString()}
-                  </TableCell>
-                  <TableCell className="text-right font-mono">{trimAmount(w.amount)}</TableCell>
-                  <TableCell>{w.currency}</TableCell>
-                  <TableCell className="text-xs">{prettyMethod(w.payoutMethod)}</TableCell>
-                  <TableCell>
-                    <Badge variant={statusVariant(w.status)}>{w.status}</Badge>
-                  </TableCell>
-                  <TableCell className="font-mono text-xs">
-                    {w.externalReference ? w.externalReference.slice(0, 24) : '—'}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+          <DataTable<WithdrawalResponse>
+            columns={columns}
+            rows={rows}
+            isLoading={listQ.isLoading}
+            error={listQ.error}
+            rowKey={(w) => w.id}
+            onRowClick={(w) => setDetail(w)}
+            empty={
+              <div className="py-8 text-center text-muted-foreground">{config.emptyState}</div>
+            }
+          />
         </CardContent>
       </Card>
 
@@ -350,14 +344,14 @@ function WishFields({ form }: { form: UseFormReturn<CreateWithdrawalInput> }) {
   }>;
   const err = (formState.errors.payout ?? {}) as Record<string, { message?: string } | undefined>;
   return (
-    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
       <Field label="Recipient name" error={err.recipientName?.message}>
         <Input {...register('payout.recipientName')} />
       </Field>
       <Field label="Whish phone number" error={err.recipientPhone?.message}>
         <Input {...register('payout.recipientPhone')} placeholder="+961 ..." />
       </Field>
-      <div className="md:col-span-2">
+      <div className="sm:col-span-2">
         <Field label="Instructions (optional)" error={err.instructions?.message}>
           <Input {...register('payout.instructions')} />
         </Field>
@@ -372,19 +366,19 @@ function CryptoFields({ form }: { form: UseFormReturn<CreateWithdrawalInput> }) 
   }>;
   const err = (formState.errors.payout ?? {}) as Record<string, { message?: string } | undefined>;
   return (
-    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
       <Field label="Network" error={err.network?.message}>
         <Input {...register('payout.network')} placeholder="BTC, ETH, TRC20, SOL, …" />
       </Field>
       <Field label="Memo / tag (optional)" error={err.memo?.message}>
         <Input {...register('payout.memo')} />
       </Field>
-      <div className="md:col-span-2">
+      <div className="sm:col-span-2">
         <Field label="Wallet address" error={err.walletAddress?.message}>
           <Input className="font-mono text-xs" {...register('payout.walletAddress')} />
         </Field>
       </div>
-      <div className="md:col-span-2">
+      <div className="sm:col-span-2">
         <Field label="Instructions (optional)" error={err.instructions?.message}>
           <Input {...register('payout.instructions')} />
         </Field>
@@ -404,19 +398,19 @@ function CashFields({ form }: { form: UseFormReturn<CreateWithdrawalInput> }) {
   }>;
   const err = (formState.errors.payout ?? {}) as Record<string, { message?: string } | undefined>;
   return (
-    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
       <Field label="Recipient name" error={err.recipientName?.message}>
         <Input {...register('payout.recipientName')} />
       </Field>
       <Field label="Recipient phone" error={err.recipientPhone?.message}>
         <Input {...register('payout.recipientPhone')} />
       </Field>
-      <div className="md:col-span-2">
+      <div className="sm:col-span-2">
         <Field label="Pickup location" error={err.pickupLocation?.message}>
           <Input {...register('payout.pickupLocation')} />
         </Field>
       </div>
-      <div className="md:col-span-2">
+      <div className="sm:col-span-2">
         <Field label="Instructions (optional)" error={err.instructions?.message}>
           <Input {...register('payout.instructions')} />
         </Field>

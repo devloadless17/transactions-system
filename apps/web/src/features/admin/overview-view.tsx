@@ -7,14 +7,7 @@ import type { FlowsResponse, OperationsResponse, PlatformAnalyticsResponse } fro
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
+import { DataTable, type Column } from '@/components/ui/data-table';
 import { apiFetch } from '@/lib/api.client';
 import { KpiCard } from '@/features/analytics/kpi-card';
 import { FlowsChart } from '@/features/analytics/flows-chart';
@@ -78,16 +71,90 @@ export function AdminOverview() {
     platformQ.data?.byCurrency.find((c) => Number(c.feesEarned) > 0) ??
     platformQ.data?.byCurrency[0];
 
+  type CurrencyRow = PlatformAnalyticsResponse['byCurrency'][number];
+  type SourceRow = NonNullable<typeof overviewQ.data>['topSources'][number];
+
+  const currencyColumns: Column<CurrencyRow>[] = [
+    { key: 'currency', header: 'Currency', className: 'font-medium', cell: (c) => c.currency },
+    {
+      key: 'volumeIn',
+      header: 'Volume in',
+      align: 'right',
+      className: 'font-mono',
+      cell: (c) => fmt(c.volumeIn),
+    },
+    {
+      key: 'volumeOut',
+      header: 'Volume out',
+      align: 'right',
+      className: 'font-mono',
+      cell: (c) => fmt(c.volumeOut),
+    },
+    {
+      key: 'feesEarned',
+      header: 'Fees earned',
+      align: 'right',
+      className: 'font-mono',
+      cell: (c) => fmt(c.feesEarned),
+    },
+    {
+      key: 'netHeld',
+      header: 'Net held',
+      align: 'right',
+      className: 'font-mono',
+      cell: (c) => fmt(c.netHeld),
+    },
+    {
+      key: 'ingestCount',
+      header: 'Ingest count',
+      align: 'right',
+      className: 'text-xs text-muted-foreground',
+      cell: (c) => c.ingestCount.toLocaleString(),
+    },
+    {
+      key: 'withdrawalCount',
+      header: 'Withdrawal count',
+      align: 'right',
+      className: 'text-xs text-muted-foreground',
+      cell: (c) => c.withdrawalCount.toLocaleString(),
+    },
+  ];
+
+  const sourceColumns: Column<SourceRow>[] = [
+    { key: 'source', header: 'Source', className: 'font-mono text-xs', cell: (s) => s.sourceCode },
+    {
+      key: 'count',
+      header: 'Count',
+      align: 'right',
+      className: 'font-mono',
+      cell: (s) => s.count.toLocaleString(),
+    },
+    {
+      key: 'volume',
+      header: 'Volume',
+      align: 'right',
+      className: 'font-mono',
+      cell: (s) => fmt(s.volume),
+    },
+    {
+      key: 'fees',
+      header: 'Fees',
+      align: 'right',
+      className: 'font-mono text-muted-foreground',
+      cell: (s) => fmt(s.fees),
+    },
+  ];
+
   return (
     <div className="space-y-6">
-      <div className="flex items-end justify-between gap-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-semibold">Platform Overview</h1>
           <p className="text-sm text-muted-foreground">
             Multi-currency view of everything flowing through the system.
           </p>
         </div>
-        <div className="flex items-center gap-1 rounded-md border bg-background p-1">
+        <div className="flex items-center gap-1 self-start rounded-md border bg-background p-1 sm:self-auto">
           {RANGE_OPTIONS.map((r) => (
             <Button
               key={r.days}
@@ -102,7 +169,7 @@ export function AdminOverview() {
       </div>
 
       {/* Hero KPIs */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <KpiCard
           label="Platform revenue"
           value={primary ? `${fmt(primary.feesEarned)} ${primary.currency}` : '—'}
@@ -137,57 +204,24 @@ export function AdminOverview() {
           </CardDescription>
         </CardHeader>
         <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Currency</TableHead>
-                <TableHead className="text-right">Volume in</TableHead>
-                <TableHead className="text-right">Volume out</TableHead>
-                <TableHead className="text-right">Fees earned</TableHead>
-                <TableHead className="text-right">Net held</TableHead>
-                <TableHead className="text-right">Ingest count</TableHead>
-                <TableHead className="text-right">Withdrawal count</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {platformQ.isLoading && (
-                <TableRow>
-                  <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
-                    Loading…
-                  </TableCell>
-                </TableRow>
-              )}
-              {platformQ.data?.byCurrency.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
-                    No activity in this range.
-                  </TableCell>
-                </TableRow>
-              )}
-              {platformQ.data?.byCurrency.map((c) => (
-                <TableRow key={c.currency}>
-                  <TableCell className="font-medium">{c.currency}</TableCell>
-                  <TableCell className="text-right font-mono">{fmt(c.volumeIn)}</TableCell>
-                  <TableCell className="text-right font-mono">{fmt(c.volumeOut)}</TableCell>
-                  <TableCell className="text-right font-mono">{fmt(c.feesEarned)}</TableCell>
-                  <TableCell className="text-right font-mono">{fmt(c.netHeld)}</TableCell>
-                  <TableCell className="text-right text-xs text-muted-foreground">
-                    {c.ingestCount.toLocaleString()}
-                  </TableCell>
-                  <TableCell className="text-right text-xs text-muted-foreground">
-                    {c.withdrawalCount.toLocaleString()}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+          <DataTable<CurrencyRow>
+            columns={currencyColumns}
+            rows={platformQ.data?.byCurrency}
+            isLoading={platformQ.isLoading}
+            rowKey={(c) => c.currency}
+            empty={
+              <div className="py-8 text-center text-muted-foreground">
+                No activity in this range.
+              </div>
+            }
+          />
         </CardContent>
       </Card>
 
       {/* By source — platform-wide breakdown in the chosen currency */}
       <Card>
         <CardHeader>
-          <div className="flex items-end justify-between">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <CardTitle>By source</CardTitle>
               <CardDescription>
@@ -198,7 +232,7 @@ export function AdminOverview() {
             <select
               value={flowsCurrency}
               onChange={(e) => setFlowsCurrency(e.target.value)}
-              className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm sm:w-auto"
               aria-label="By source currency"
             >
               {(currencies.length ? currencies : ['USD']).map((c) => (
@@ -210,49 +244,24 @@ export function AdminOverview() {
           </div>
         </CardHeader>
         <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Source</TableHead>
-                <TableHead className="text-right">Count</TableHead>
-                <TableHead className="text-right">Volume</TableHead>
-                <TableHead className="text-right">Fees</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {overviewQ.isLoading && (
-                <TableRow>
-                  <TableCell colSpan={4} className="py-6 text-center text-muted-foreground">
-                    Loading…
-                  </TableCell>
-                </TableRow>
-              )}
-              {overviewQ.data && overviewQ.data.topSources.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={4} className="py-6 text-center text-muted-foreground">
-                    No transactions in this range.
-                  </TableCell>
-                </TableRow>
-              )}
-              {overviewQ.data?.topSources.map((s) => (
-                <TableRow key={s.sourceId}>
-                  <TableCell className="font-mono text-xs">{s.sourceCode}</TableCell>
-                  <TableCell className="text-right font-mono">{s.count.toLocaleString()}</TableCell>
-                  <TableCell className="text-right font-mono">{fmt(s.volume)}</TableCell>
-                  <TableCell className="text-right font-mono text-muted-foreground">
-                    {fmt(s.fees)}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+          <DataTable<SourceRow>
+            columns={sourceColumns}
+            rows={overviewQ.data?.topSources}
+            isLoading={overviewQ.isLoading}
+            rowKey={(s) => s.sourceId}
+            empty={
+              <div className="py-6 text-center text-muted-foreground">
+                No transactions in this range.
+              </div>
+            }
+          />
         </CardContent>
       </Card>
 
       {/* Flows chart with currency switcher */}
       <Card>
         <CardHeader>
-          <div className="flex items-end justify-between">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <CardTitle>Flows</CardTitle>
               <CardDescription>
@@ -262,7 +271,7 @@ export function AdminOverview() {
             <select
               value={flowsCurrency}
               onChange={(e) => setFlowsCurrency(e.target.value)}
-              className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm sm:w-auto"
             >
               {(currencies.length ? currencies : ['USD']).map((c) => (
                 <option key={c} value={c}>

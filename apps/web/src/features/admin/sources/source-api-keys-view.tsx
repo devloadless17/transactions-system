@@ -15,14 +15,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
+import { DataTable, type Column } from '@/components/ui/data-table';
 import {
   Dialog,
   DialogContent,
@@ -64,10 +57,58 @@ export function SourceApiKeysView({ sourceId }: { sourceId: string }) {
     onError: (err) => toast.error(err instanceof ApiClientError ? err.message : 'Failed to revoke'),
   });
 
+  const columns: Column<ApiKeyResponse>[] = [
+    { key: 'name', header: 'Name', className: 'font-medium', cell: (k) => k.name },
+    {
+      key: 'prefix',
+      header: 'Prefix',
+      className: 'font-mono text-xs',
+      cell: (k) => `tsk_${k.keyPrefix}_…`,
+    },
+    {
+      key: 'lastUsed',
+      header: 'Last used',
+      className: 'text-xs text-muted-foreground',
+      cell: (k) => (k.lastUsedAt ? new Date(k.lastUsedAt).toLocaleString() : '—'),
+    },
+    {
+      key: 'created',
+      header: 'Created',
+      className: 'text-xs text-muted-foreground',
+      cell: (k) => new Date(k.createdAt).toLocaleString(),
+    },
+    {
+      key: 'status',
+      header: 'Status',
+      cell: (k) =>
+        k.revokedAt ? (
+          <Badge variant="destructive">revoked</Badge>
+        ) : (
+          <Badge variant="success">active</Badge>
+        ),
+    },
+    {
+      key: 'actions',
+      header: '',
+      align: 'right',
+      cell: (k) =>
+        !k.revokedAt && (
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={revokeMu.isPending}
+            onClick={() => revokeMu.mutate(k.id)}
+          >
+            Revoke
+          </Button>
+        ),
+    },
+  ];
+
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div className="space-y-1">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0 space-y-1">
           <Link
             href="/admin/sources"
             className="inline-flex items-center text-xs text-muted-foreground hover:text-foreground"
@@ -89,70 +130,24 @@ export function SourceApiKeysView({ sourceId }: { sourceId: string }) {
             <code className="text-xs">companyId</code> in the body.
           </p>
         </div>
-        <Button onClick={() => setCreateOpen(true)}>New key</Button>
+        <Button className="w-full sm:w-auto" onClick={() => setCreateOpen(true)}>
+          New key
+        </Button>
       </div>
 
       <Card>
         <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Prefix</TableHead>
-                <TableHead>Last used</TableHead>
-                <TableHead>Created</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead></TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {listQ.isLoading && (
-                <TableRow>
-                  <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">
-                    Loading…
-                  </TableCell>
-                </TableRow>
-              )}
-              {!listQ.isLoading && listQ.data?.data.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">
-                    No keys yet for this source.
-                  </TableCell>
-                </TableRow>
-              )}
-              {listQ.data?.data.map((k) => (
-                <TableRow key={k.id}>
-                  <TableCell className="font-medium">{k.name}</TableCell>
-                  <TableCell className="font-mono text-xs">tsk_{k.keyPrefix}_…</TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {k.lastUsedAt ? new Date(k.lastUsedAt).toLocaleString() : '—'}
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {new Date(k.createdAt).toLocaleString()}
-                  </TableCell>
-                  <TableCell>
-                    {k.revokedAt ? (
-                      <Badge variant="destructive">revoked</Badge>
-                    ) : (
-                      <Badge variant="success">active</Badge>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    {!k.revokedAt && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        disabled={revokeMu.isPending}
-                        onClick={() => revokeMu.mutate(k.id)}
-                      >
-                        Revoke
-                      </Button>
-                    )}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+          <DataTable<ApiKeyResponse>
+            columns={columns}
+            rows={listQ.data?.data}
+            isLoading={listQ.isLoading}
+            rowKey={(k) => k.id}
+            empty={
+              <div className="py-8 text-center text-muted-foreground">
+                No keys yet for this source.
+              </div>
+            }
+          />
         </CardContent>
       </Card>
 

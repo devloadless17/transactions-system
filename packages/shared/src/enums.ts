@@ -106,3 +106,22 @@ export type WithdrawalStatus = (typeof WithdrawalStatus)[keyof typeof Withdrawal
 // ISO 4217 currency codes used by the platform. Expand as needed.
 export const SUPPORTED_CURRENCIES = ['USD', 'EUR', 'GBP', 'LBP', 'AED', 'SAR'] as const;
 export type SupportedCurrency = (typeof SUPPORTED_CURRENCIES)[number];
+
+// --------------------------- Whish Pay ---------------------------
+
+// Lifecycle of a Whish payment link minted on behalf of a company.
+//   PENDING — link created, payer has not completed payment yet
+//   PAID    — confirmed via collect/status; a ledger Transaction was written
+//   FAILED  — Whish reported failure (or link creation failed)
+//   EXPIRED — never paid; closed out by reconciliation
+export const WhishPaymentStatus = {
+  PENDING: 'PENDING',
+  PAID: 'PAID',
+  FAILED: 'FAILED',
+  EXPIRED: 'EXPIRED',
+} as const;
+export type WhishPaymentStatus = (typeof WhishPaymentStatus)[keyof typeof WhishPaymentStatus];
+
+// Whish supports only LBP and USD.
+export const WHISH_CURRENCIES = ['USD', 'LBP'] as const;
+export type WhishCurrency = (typeof WHISH_CURRENCIES)[number];

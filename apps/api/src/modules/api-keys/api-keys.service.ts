@@ -92,7 +92,6 @@ export class ApiKeysService {
     );
 
     for (const c of candidates) {
-      // eslint-disable-next-line no-await-in-loop
       const ok = await argon2.verify(c.keyHash, plaintext).catch(() => false);
       if (ok) {
         this.prisma

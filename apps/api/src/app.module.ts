@@ -21,6 +21,8 @@ import { LoadsModule } from './modules/loads/loads.module';
 import { AuditModule } from './modules/audit/audit.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { TeamModule } from './modules/team/team.module';
+import { AdminUsersModule } from './modules/admin-users/admin-users.module';
+import { WhishModule } from './modules/whish/whish.module';
 import { MetricsModule } from './modules/metrics/metrics.module';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 import { AuditInterceptor } from './modules/audit/audit.interceptor';
@@ -58,6 +60,8 @@ import type { Env } from './config/env.schema';
     LoadsModule,
     AnalyticsModule,
     TeamModule,
+    AdminUsersModule,
+    WhishModule,
     MetricsModule,
   ],
   providers: [

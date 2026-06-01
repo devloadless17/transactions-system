@@ -1,5 +1,6 @@
-import { Controller, Get, Param, ParseUUIDPipe, Post, UseGuards } from '@nestjs/common';
-import { UserRole } from '@app/shared';
+import { Body, Controller, Get, Param, ParseUUIDPipe, Post, UseGuards } from '@nestjs/common';
+import { createApiKeySchema, UserRole, type CreateApiKeyInput } from '@app/shared';
+import { ZodPipe } from '../../common/pipes/zod-validation.pipe';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CsrfGuard } from '../auth/guards/csrf.guard';
@@ -11,10 +12,10 @@ import { ApiKeysService } from './api-keys.service';
 import { ForbiddenError } from '../../common/errors/domain.error';
 
 /**
- * Read/revoke only. Company-held API keys are no longer issued — all ingest
- * happens with source-bound keys minted by the super admin under
- * /v1/admin/sources/:sourceId/api-keys. We keep this read+revoke surface so
- * companies can still see and revoke any legacy keys still in the database.
+ * Company-held API keys for server-to-server integrations (e.g. a company's CRM
+ * generating Whish payment links). The COMPANY_OWNER can mint, list, and revoke
+ * keys self-serve. Source-provider ingest keys are managed separately by the
+ * super admin under /v1/admin/sources/:sourceId/api-keys.
  */
 @UseGuards(JwtAuthGuard, RolesGuard, CsrfGuard)
 @Roles(UserRole.COMPANY_OWNER, UserRole.COMPANY_MANAGER)
@@ -26,6 +27,17 @@ export class ApiKeysController {
   async list(@CurrentUser() user: AuthPrincipal) {
     if (!user.companyId) throw new ForbiddenError('No company in session');
     return { data: await this.apiKeys.listByCompany(user.companyId) };
+  }
+
+  @Roles(UserRole.COMPANY_OWNER)
+  @Post()
+  @Audited({ action: 'api_key.created', entityType: 'api_key', idFrom: 'result.apiKey.id' })
+  async create(
+    @Body(new ZodPipe(createApiKeySchema)) body: CreateApiKeyInput,
+    @CurrentUser() user: AuthPrincipal,
+  ) {
+    if (!user.companyId) throw new ForbiddenError('No company in session');
+    return this.apiKeys.create({ kind: 'company', companyId: user.companyId }, body);
   }
 
   @Post(':id/revoke')

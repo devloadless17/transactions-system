@@ -1,0 +1,43 @@
+import type { CanActivate, ExecutionContext } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import type { Request } from 'express';
+import { UnauthorizedError } from '../../../common/errors/domain.error';
+import type { AuthenticatedRequest, AuthPrincipal } from '../../../common/types/request.types';
+import { UserRole } from '@app/shared';
+import { ApiKeysService } from '../api-keys.service';
+
+/**
+ * Authenticates server-to-server integration endpoints (a company's CRM) with
+ * `Authorization: Bearer tsk_...`. Requires a COMPANY-scoped key — source keys
+ * are rejected. On success sets a synthetic principal carrying the companyId so
+ * the rest of the pipeline can scope to that tenant. No CSRF (API keys are a
+ * separate trust model, like the ingest path).
+ */
+@Injectable()
+export class CompanyApiKeyAuthGuard implements CanActivate {
+  constructor(private readonly apiKeys: ApiKeysService) {}
+
+  async canActivate(ctx: ExecutionContext): Promise<boolean> {
+    const req = ctx.switchToHttp().getRequest<Request>();
+    const auth = req.headers.authorization;
+    if (!auth || !auth.startsWith('Bearer ')) {
+      throw new UnauthorizedError('Missing API key');
+    }
+    const plaintext = auth.slice('Bearer '.length).trim();
+    const result = await this.apiKeys.verify(plaintext);
+    if (!result) throw new UnauthorizedError('Invalid or revoked API key');
+    if (!result.companyId) {
+      throw new UnauthorizedError('A company API key is required for this endpoint');
+    }
+
+    const principal: AuthPrincipal = {
+      userId: result.keyId,
+      email: `apikey:${result.keyId}`,
+      role: UserRole.COMPANY_OWNER, // surrogate — integration paths don't consult role
+      companyId: result.companyId,
+      sourceId: null,
+    };
+    (req as AuthenticatedRequest).principal = principal;
+    return true;
+  }
+}

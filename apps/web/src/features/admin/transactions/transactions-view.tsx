@@ -13,14 +13,8 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
+import { DataTable, type Column } from '@/components/ui/data-table';
+import { Pagination } from '@/components/ui/pagination';
 import {
   Dialog,
   DialogContent,
@@ -99,9 +93,79 @@ export function TransactionsView({ scope }: { scope: 'admin' | 'company' }) {
       });
   }
 
+  const columns: Column<TransactionResponse>[] = [
+    {
+      key: 'external',
+      header: 'External ID',
+      className: 'font-mono text-xs',
+      cell: (t) => t.externalTransactionId,
+    },
+    { key: 'source', header: 'Source', cell: (t) => t.sourceCode },
+    ...(scope === 'admin'
+      ? [
+          {
+            key: 'company',
+            header: 'Company',
+            cell: (t: TransactionResponse) =>
+              companyById.get(t.companyId)?.name ?? t.companyId.slice(0, 8),
+          } as Column<TransactionResponse>,
+        ]
+      : []),
+    {
+      key: 'amount',
+      header: 'Amount',
+      align: 'right',
+      className: 'font-mono text-xs',
+      cell: (t) => `${trimAmount(t.amount)} ${t.currency}`,
+    },
+    {
+      key: 'fee',
+      header: 'Fee',
+      align: 'right',
+      className: 'font-mono text-xs',
+      cell: (t) => trimAmount(t.commissionAmount),
+    },
+    {
+      key: 'net',
+      header: 'Net',
+      align: 'right',
+      className: 'font-mono text-xs',
+      cell: (t) => trimAmount(t.netAmount),
+    },
+    {
+      key: 'status',
+      header: 'Status',
+      cell: (t) => <Badge variant={statusVariant(t.status)}>{t.status}</Badge>,
+    },
+    {
+      key: 'created',
+      header: 'Created',
+      className: 'text-muted-foreground text-xs',
+      cell: (t) => new Date(t.createdAt).toLocaleString(),
+    },
+    ...(scope === 'admin'
+      ? [
+          {
+            key: 'actions',
+            header: '',
+            align: 'right',
+            cell: (t: TransactionResponse) => (
+              <span onClick={(e) => e.stopPropagation()}>
+                {t.status === 'COMPLETED' && (
+                  <Button variant="ghost" size="sm" onClick={() => setReverseTarget(t)}>
+                    Reverse
+                  </Button>
+                )}
+              </span>
+            ),
+          } as Column<TransactionResponse>,
+        ]
+      : []),
+  ];
+
   return (
     <div className="space-y-6">
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <h1 className="text-2xl font-semibold">Transactions</h1>
           <p className="text-sm text-muted-foreground">
@@ -110,7 +174,7 @@ export function TransactionsView({ scope }: { scope: 'admin' | 'company' }) {
               : 'Transactions ingested via your API keys.'}
           </p>
         </div>
-        <Button variant="outline" onClick={downloadCsv}>
+        <Button className="w-full sm:w-auto" variant="outline" onClick={downloadCsv}>
           Export CSV
         </Button>
       </div>
@@ -186,95 +250,27 @@ export function TransactionsView({ scope }: { scope: 'admin' | 'company' }) {
 
       <Card>
         <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>External ID</TableHead>
-                <TableHead>Source</TableHead>
-                {scope === 'admin' && <TableHead>Company</TableHead>}
-                <TableHead className="text-right">Amount</TableHead>
-                <TableHead className="text-right">Fee</TableHead>
-                <TableHead className="text-right">Net</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Created</TableHead>
-                {scope === 'admin' && <TableHead></TableHead>}
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {isLoading && (
-                <TableRow>
-                  <TableCell
-                    colSpan={scope === 'admin' ? 9 : 7}
-                    className="py-8 text-center text-muted-foreground"
-                  >
-                    Loading…
-                  </TableCell>
-                </TableRow>
-              )}
-              {error && (
-                <TableRow>
-                  <TableCell
-                    colSpan={scope === 'admin' ? 9 : 7}
-                    className="py-8 text-center text-destructive"
-                  >
-                    {error instanceof ApiClientError ? error.message : 'Failed to load'}
-                  </TableCell>
-                </TableRow>
-              )}
-              {data?.data.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={scope === 'admin' ? 9 : 7}>
-                    <EmptyState
-                      icon={Inbox}
-                      title="No transactions"
-                      description={
-                        Object.values(filters).some(Boolean)
-                          ? 'Try clearing or widening the filters above.'
-                          : scope === 'company'
-                            ? 'Use one of your API keys to send a transaction via /v1/ingest/transactions.'
-                            : 'Once companies start ingesting, transactions will appear here.'
-                      }
-                    />
-                  </TableCell>
-                </TableRow>
-              )}
-              {data?.data.map((t) => (
-                <TableRow key={t.id} className="cursor-pointer" onClick={() => setDetailTarget(t)}>
-                  <TableCell className="font-mono text-xs">{t.externalTransactionId}</TableCell>
-                  <TableCell>{t.sourceCode}</TableCell>
-                  {scope === 'admin' && (
-                    <TableCell>
-                      {companyById.get(t.companyId)?.name ?? t.companyId.slice(0, 8)}
-                    </TableCell>
-                  )}
-                  <TableCell className="text-right font-mono text-xs">
-                    {trimAmount(t.amount)} {t.currency}
-                  </TableCell>
-                  <TableCell className="text-right font-mono text-xs">
-                    {trimAmount(t.commissionAmount)}
-                  </TableCell>
-                  <TableCell className="text-right font-mono text-xs">
-                    {trimAmount(t.netAmount)}
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant={statusVariant(t.status)}>{t.status}</Badge>
-                  </TableCell>
-                  <TableCell className="text-muted-foreground text-xs">
-                    {new Date(t.createdAt).toLocaleString()}
-                  </TableCell>
-                  {scope === 'admin' && (
-                    <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
-                      {t.status === 'COMPLETED' && (
-                        <Button variant="ghost" size="sm" onClick={() => setReverseTarget(t)}>
-                          Reverse
-                        </Button>
-                      )}
-                    </TableCell>
-                  )}
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+          <DataTable<TransactionResponse>
+            columns={columns}
+            rows={data?.data}
+            isLoading={isLoading}
+            error={error}
+            rowKey={(t) => t.id}
+            onRowClick={(t) => setDetailTarget(t)}
+            empty={
+              <EmptyState
+                icon={Inbox}
+                title="No transactions"
+                description={
+                  Object.values(filters).some(Boolean)
+                    ? 'Try clearing or widening the filters above.'
+                    : scope === 'company'
+                      ? 'Use one of your API keys to send a transaction via /v1/ingest/transactions.'
+                      : 'Once companies start ingesting, transactions will appear here.'
+                }
+              />
+            }
+          />
         </CardContent>
       </Card>
 
@@ -293,30 +289,13 @@ export function TransactionsView({ scope }: { scope: 'admin' | 'company' }) {
         onClose={() => setDetailTarget(null)}
       />
 
-      {data && data.meta.totalPages > 1 && (
-        <div className="flex items-center justify-between text-sm">
-          <span className="text-muted-foreground">
-            Page {data.meta.page} of {data.meta.totalPages} · {data.meta.total} total
-          </span>
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={page <= 1}
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-            >
-              Previous
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={page >= data.meta.totalPages}
-              onClick={() => setPage((p) => p + 1)}
-            >
-              Next
-            </Button>
-          </div>
-        </div>
+      {data && (
+        <Pagination
+          page={data.meta.page}
+          total={data.meta.total}
+          totalPages={data.meta.totalPages}
+          onPageChange={setPage}
+        />
       )}
     </div>
   );

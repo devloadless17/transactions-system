@@ -16,3 +16,5 @@ export * from './team';
 export * from './reversal';
 export * from './ledger';
 export * from './admin-analytics';
+export * from './admin-user';
+export * from './whish';
