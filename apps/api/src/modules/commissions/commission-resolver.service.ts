@@ -55,6 +55,24 @@ export class NoMatchingCommissionRuleError extends DomainError {
   }
 }
 
+/**
+ * A DEDUCTED fee computed larger than the amount it is deducted from would make
+ * net negative and the resulting ledger set unbalanced (the AVAILABLE credit
+ * line is skipped, leaving debits != credits). We fail loudly here at resolve
+ * time with a clear 422 instead of letting it surface as an opaque "unbalanced
+ * ledger entries" 500 that blocks every ingest in the affected bracket.
+ */
+export class CommissionExceedsAmountError extends DomainError {
+  constructor(ruleId: string, amount: string, commission: string) {
+    super(
+      'COMMISSION_EXCEEDS_AMOUNT',
+      `Resolved commission (${commission}) exceeds the amount (${amount}) for a DEDUCTED fee (rule=${ruleId}). Fix the commission rule.`,
+      422,
+      { ruleId, amount, commission },
+    );
+  }
+}
+
 interface ResolveArgs {
   companyId: string;
   sourceId: string | null;
@@ -117,6 +135,15 @@ export class CommissionResolverService {
 
     const rule = candidates[0]!;
     const commission = computeCommission(amount, rule);
+
+    // Defense-in-depth: a DEDUCTED fee can never exceed the amount it is taken
+    // from. Reject here so a misconfigured rule fails with a clear 422 rather
+    // than as an opaque unbalanced-ledger 500 downstream. (ON_TOP fees are
+    // added on top, so a fee > amount is legitimate there.)
+    if (rule.feeApplication === 'DEDUCTED' && commission.gt(amount)) {
+      throw new CommissionExceedsAmountError(rule.id, amount.toString(), commission.toString());
+    }
+
     const net = amount.sub(commission);
 
     return {

@@ -99,70 +99,67 @@ export class WithdrawalsService {
     const amount = Money.of(input.amount);
     if (!amount.isPositive()) throw new ValidationError('amount must be positive');
 
-    const row = await this.prisma.$transaction(
-      async (tx) => {
-        await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
-        const cTx = tx as unknown as PrismaClient;
+    const row = await this.prisma.runSerializable(async (tx) => {
+      await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
+      const cTx = tx as unknown as PrismaClient;
 
-        // Resolve the WITHDRAWAL fee (free if no rule). ON_TOP reserves
-        // amount+fee; DEDUCTED reserves amount and the recipient gets amount−fee.
-        const { fee, feeApplication } = await this.fees.resolveFlowFee(cTx, {
+      // Resolve the WITHDRAWAL fee (free if no rule). ON_TOP reserves
+      // amount+fee; DEDUCTED reserves amount and the recipient gets amount−fee.
+      const { fee, feeApplication } = await this.fees.resolveFlowFee(cTx, {
+        companyId,
+        amount,
+        operationType: 'WITHDRAWAL',
+      });
+      const reserved = reservedTotal(amount, fee, feeApplication);
+      const net = feeApplication === 'ON_TOP' ? amount : amount.sub(fee);
+
+      // Clear "top up" error if available can't cover the reserved total.
+      await assertSufficient(cTx, companyId, input.currency, reserved);
+
+      const w = await cTx.withdrawal.create({
+        data: {
           companyId,
-          amount,
-          operationType: 'WITHDRAWAL',
-        });
-        const reserved = reservedTotal(amount, fee, feeApplication);
-        const net = feeApplication === 'ON_TOP' ? amount : amount.sub(fee);
-
-        // Clear "top up" error if available can't cover the reserved total.
-        await assertSufficient(cTx, companyId, input.currency, reserved);
-
-        const w = await cTx.withdrawal.create({
-          data: {
-            companyId,
-            requestedById,
-            amount: amount.toString(),
-            currency: input.currency,
-            feeAmount: fee.toString(),
-            netAmount: net.toString(),
-            feeApplication,
-            status: REQUESTABLE_STATUS,
-            notes: input.notes ?? null,
-            payoutMethod: input.payout.method,
-            payoutDetails: input.payout as unknown as Prisma.InputJsonValue,
-          },
-        });
-
-        // Reserve the full reserved total. Ledger move: available → reserved.
-        await this.ledger.writeEntries(cTx, [
-          {
-            companyId,
-            withdrawalId: w.id,
-            accountType: 'AVAILABLE',
-            direction: 'DEBIT',
-            amount: reserved,
-            currency: input.currency,
-          },
-          {
-            companyId,
-            withdrawalId: w.id,
-            accountType: 'RESERVED',
-            direction: 'CREDIT',
-            amount: reserved,
-            currency: input.currency,
-          },
-        ]);
-
-        await this.wallets.applyDelta(cTx, {
-          companyId,
+          requestedById,
+          amount: amount.toString(),
           currency: input.currency,
-          delta: { available: reserved.mul(-1), reserved },
-        });
+          feeAmount: fee.toString(),
+          netAmount: net.toString(),
+          feeApplication,
+          status: REQUESTABLE_STATUS,
+          notes: input.notes ?? null,
+          payoutMethod: input.payout.method,
+          payoutDetails: input.payout as unknown as Prisma.InputJsonValue,
+        },
+      });
 
-        return w;
-      },
-      { isolationLevel: 'Serializable' },
-    );
+      // Reserve the full reserved total. Ledger move: available → reserved.
+      await this.ledger.writeEntries(cTx, [
+        {
+          companyId,
+          withdrawalId: w.id,
+          accountType: 'AVAILABLE',
+          direction: 'DEBIT',
+          amount: reserved,
+          currency: input.currency,
+        },
+        {
+          companyId,
+          withdrawalId: w.id,
+          accountType: 'RESERVED',
+          direction: 'CREDIT',
+          amount: reserved,
+          currency: input.currency,
+        },
+      ]);
+
+      await this.wallets.applyDelta(cTx, {
+        companyId,
+        currency: input.currency,
+        delta: { available: reserved.mul(-1), reserved },
+      });
+
+      return w;
+    });
 
     this.invalidateAnalytics();
     this.notify(row.companyId);
@@ -174,74 +171,71 @@ export class WithdrawalsService {
     approvedById: string,
     input: ApproveWithdrawalInput,
   ): Promise<WithdrawalResponse> {
-    const row = await this.prisma.$transaction(
-      async (tx) => {
-        await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
-        const cTx = tx as unknown as PrismaClient;
+    const row = await this.prisma.runSerializable(async (tx) => {
+      await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
+      const cTx = tx as unknown as PrismaClient;
 
-        const w = await cTx.withdrawal.findUnique({ where: { id } });
-        if (!w) throw new NotFoundError('Withdrawal', id);
-        if (w.status !== 'PENDING') {
-          throw new ConflictError(`Withdrawal is in status ${w.status} and cannot be approved`);
-        }
+      const w = await cTx.withdrawal.findUnique({ where: { id } });
+      if (!w) throw new NotFoundError('Withdrawal', id);
+      if (w.status !== 'PENDING') {
+        throw new ConflictError(`Withdrawal is in status ${w.status} and cannot be approved`);
+      }
 
-        const amount = Money.of(w.amount.toString());
-        const fee = Money.of(w.feeAmount.toString());
-        const reserved = reservedTotal(amount, fee, w.feeApplication);
-        const external = w.feeApplication === 'ON_TOP' ? amount : amount.sub(fee);
+      const amount = Money.of(w.amount.toString());
+      const fee = Money.of(w.feeAmount.toString());
+      const reserved = reservedTotal(amount, fee, w.feeApplication);
+      const external = w.feeApplication === 'ON_TOP' ? amount : amount.sub(fee);
 
-        // Funds leave the platform; the fee is realized to the FEE account.
-        // Ledger: reserved → external(net) + FEE(fee). Skip any zero line.
-        const entries: Parameters<typeof this.ledger.writeEntries>[1] = [
-          {
-            companyId: w.companyId,
-            withdrawalId: w.id,
-            accountType: 'RESERVED',
-            direction: 'DEBIT',
-            amount: reserved,
-            currency: w.currency,
-          },
-        ];
-        if (external.isPositive()) {
-          entries.push({
-            companyId: w.companyId,
-            withdrawalId: w.id,
-            accountType: 'EXTERNAL',
-            direction: 'CREDIT',
-            amount: external,
-            currency: w.currency,
-          });
-        }
-        if (fee.isPositive()) {
-          entries.push({
-            companyId: w.companyId,
-            withdrawalId: w.id,
-            accountType: 'FEE',
-            direction: 'CREDIT',
-            amount: fee,
-            currency: w.currency,
-          });
-        }
-        await this.ledger.writeEntries(cTx, entries);
-        await this.wallets.applyDelta(cTx, {
+      // Funds leave the platform; the fee is realized to the FEE account.
+      // Ledger: reserved → external(net) + FEE(fee). Skip any zero line.
+      const entries: Parameters<typeof this.ledger.writeEntries>[1] = [
+        {
           companyId: w.companyId,
+          withdrawalId: w.id,
+          accountType: 'RESERVED',
+          direction: 'DEBIT',
+          amount: reserved,
           currency: w.currency,
-          delta: { reserved: reserved.mul(-1) },
+        },
+      ];
+      if (external.isPositive()) {
+        entries.push({
+          companyId: w.companyId,
+          withdrawalId: w.id,
+          accountType: 'EXTERNAL',
+          direction: 'CREDIT',
+          amount: external,
+          currency: w.currency,
         });
+      }
+      if (fee.isPositive()) {
+        entries.push({
+          companyId: w.companyId,
+          withdrawalId: w.id,
+          accountType: 'FEE',
+          direction: 'CREDIT',
+          amount: fee,
+          currency: w.currency,
+        });
+      }
+      await this.ledger.writeEntries(cTx, entries);
+      await this.wallets.applyDelta(cTx, {
+        companyId: w.companyId,
+        currency: w.currency,
+        delta: { reserved: reserved.mul(-1) },
+      });
 
-        return cTx.withdrawal.update({
-          where: { id },
-          data: {
-            status: 'COMPLETED',
-            approvedById,
-            processedAt: new Date(),
-            notes: input.notes ?? w.notes,
-            externalReference: input.externalReference,
-          },
-        });
-      },
-      { isolationLevel: 'Serializable' },
-    );
+      return cTx.withdrawal.update({
+        where: { id },
+        data: {
+          status: 'COMPLETED',
+          approvedById,
+          processedAt: new Date(),
+          notes: input.notes ?? w.notes,
+          externalReference: input.externalReference,
+        },
+      });
+    });
 
     this.invalidateAnalytics();
     this.notify(row.companyId);
@@ -253,60 +247,57 @@ export class WithdrawalsService {
     approvedById: string,
     input: RejectWithdrawalInput,
   ): Promise<WithdrawalResponse> {
-    const row = await this.prisma.$transaction(
-      async (tx) => {
-        await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
-        const cTx = tx as unknown as PrismaClient;
+    const row = await this.prisma.runSerializable(async (tx) => {
+      await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
+      const cTx = tx as unknown as PrismaClient;
 
-        const w = await cTx.withdrawal.findUnique({ where: { id } });
-        if (!w) throw new NotFoundError('Withdrawal', id);
-        if (w.status !== 'PENDING') {
-          throw new ConflictError(`Withdrawal is in status ${w.status} and cannot be rejected`);
-        }
+      const w = await cTx.withdrawal.findUnique({ where: { id } });
+      if (!w) throw new NotFoundError('Withdrawal', id);
+      if (w.status !== 'PENDING') {
+        throw new ConflictError(`Withdrawal is in status ${w.status} and cannot be rejected`);
+      }
 
-        const reserved = reservedTotal(
-          Money.of(w.amount.toString()),
-          Money.of(w.feeAmount.toString()),
-          w.feeApplication,
-        );
+      const reserved = reservedTotal(
+        Money.of(w.amount.toString()),
+        Money.of(w.feeAmount.toString()),
+        w.feeApplication,
+      );
 
-        // Return the full reserved total to available (no fee realized).
-        await this.ledger.writeEntries(cTx, [
-          {
-            companyId: w.companyId,
-            withdrawalId: w.id,
-            accountType: 'RESERVED',
-            direction: 'DEBIT',
-            amount: reserved,
-            currency: w.currency,
-          },
-          {
-            companyId: w.companyId,
-            withdrawalId: w.id,
-            accountType: 'AVAILABLE',
-            direction: 'CREDIT',
-            amount: reserved,
-            currency: w.currency,
-          },
-        ]);
-        await this.wallets.applyDelta(cTx, {
+      // Return the full reserved total to available (no fee realized).
+      await this.ledger.writeEntries(cTx, [
+        {
           companyId: w.companyId,
+          withdrawalId: w.id,
+          accountType: 'RESERVED',
+          direction: 'DEBIT',
+          amount: reserved,
           currency: w.currency,
-          delta: { reserved: reserved.mul(-1), available: reserved },
-        });
+        },
+        {
+          companyId: w.companyId,
+          withdrawalId: w.id,
+          accountType: 'AVAILABLE',
+          direction: 'CREDIT',
+          amount: reserved,
+          currency: w.currency,
+        },
+      ]);
+      await this.wallets.applyDelta(cTx, {
+        companyId: w.companyId,
+        currency: w.currency,
+        delta: { reserved: reserved.mul(-1), available: reserved },
+      });
 
-        return cTx.withdrawal.update({
-          where: { id },
-          data: {
-            status: 'REJECTED',
-            approvedById,
-            processedAt: new Date(),
-            notes: input.notes ?? w.notes,
-          },
-        });
-      },
-      { isolationLevel: 'Serializable' },
-    );
+      return cTx.withdrawal.update({
+        where: { id },
+        data: {
+          status: 'REJECTED',
+          approvedById,
+          processedAt: new Date(),
+          notes: input.notes ?? w.notes,
+        },
+      });
+    });
 
     this.invalidateAnalytics();
     this.notify(row.companyId);
@@ -324,59 +315,56 @@ export class WithdrawalsService {
     cancelledById: string,
     input: CancelRequestInput,
   ): Promise<WithdrawalResponse> {
-    const row = await this.prisma.$transaction(
-      async (tx) => {
-        await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
-        const cTx = tx as unknown as PrismaClient;
+    const row = await this.prisma.runSerializable(async (tx) => {
+      await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
+      const cTx = tx as unknown as PrismaClient;
 
-        const w = await cTx.withdrawal.findUnique({ where: { id } });
-        if (!w || w.companyId !== companyId) throw new NotFoundError('Withdrawal', id);
-        if (w.status !== 'PENDING') {
-          throw new ConflictError(`Withdrawal is in status ${w.status} and cannot be cancelled`);
-        }
+      const w = await cTx.withdrawal.findUnique({ where: { id } });
+      if (!w || w.companyId !== companyId) throw new NotFoundError('Withdrawal', id);
+      if (w.status !== 'PENDING') {
+        throw new ConflictError(`Withdrawal is in status ${w.status} and cannot be cancelled`);
+      }
 
-        const reserved = reservedTotal(
-          Money.of(w.amount.toString()),
-          Money.of(w.feeAmount.toString()),
-          w.feeApplication,
-        );
+      const reserved = reservedTotal(
+        Money.of(w.amount.toString()),
+        Money.of(w.feeAmount.toString()),
+        w.feeApplication,
+      );
 
-        await this.ledger.writeEntries(cTx, [
-          {
-            companyId: w.companyId,
-            withdrawalId: w.id,
-            accountType: 'RESERVED',
-            direction: 'DEBIT',
-            amount: reserved,
-            currency: w.currency,
-          },
-          {
-            companyId: w.companyId,
-            withdrawalId: w.id,
-            accountType: 'AVAILABLE',
-            direction: 'CREDIT',
-            amount: reserved,
-            currency: w.currency,
-          },
-        ]);
-        await this.wallets.applyDelta(cTx, {
+      await this.ledger.writeEntries(cTx, [
+        {
           companyId: w.companyId,
+          withdrawalId: w.id,
+          accountType: 'RESERVED',
+          direction: 'DEBIT',
+          amount: reserved,
           currency: w.currency,
-          delta: { reserved: reserved.mul(-1), available: reserved },
-        });
+        },
+        {
+          companyId: w.companyId,
+          withdrawalId: w.id,
+          accountType: 'AVAILABLE',
+          direction: 'CREDIT',
+          amount: reserved,
+          currency: w.currency,
+        },
+      ]);
+      await this.wallets.applyDelta(cTx, {
+        companyId: w.companyId,
+        currency: w.currency,
+        delta: { reserved: reserved.mul(-1), available: reserved },
+      });
 
-        return cTx.withdrawal.update({
-          where: { id },
-          data: {
-            status: 'CANCELLED',
-            cancelledById,
-            processedAt: new Date(),
-            notes: input.notes ?? w.notes,
-          },
-        });
-      },
-      { isolationLevel: 'Serializable' },
-    );
+      return cTx.withdrawal.update({
+        where: { id },
+        data: {
+          status: 'CANCELLED',
+          cancelledById,
+          processedAt: new Date(),
+          notes: input.notes ?? w.notes,
+        },
+      });
+    });
 
     this.invalidateAnalytics();
     this.notify(row.companyId);

@@ -67,37 +67,34 @@ export class LoadsService {
     const amount = Money.of(input.amount);
     if (!amount.isPositive()) throw new ValidationError('amount must be positive');
 
-    const row = await this.prisma.$transaction(
-      async (tx) => {
-        await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
-        const cTx = tx as unknown as PrismaClient;
+    const row = await this.prisma.runSerializable(async (tx) => {
+      await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
+      const cTx = tx as unknown as PrismaClient;
 
-        const { fee, feeApplication } = await this.fees.resolveFlowFee(cTx, {
+      const { fee, feeApplication } = await this.fees.resolveFlowFee(cTx, {
+        companyId,
+        amount,
+        operationType: 'LOAD',
+      });
+      // Net credited to the wallet on approval.
+      const net = feeApplication === 'ON_TOP' ? amount : amount.sub(fee);
+
+      return cTx.load.create({
+        data: {
           companyId,
-          amount,
-          operationType: 'LOAD',
-        });
-        // Net credited to the wallet on approval.
-        const net = feeApplication === 'ON_TOP' ? amount : amount.sub(fee);
-
-        return cTx.load.create({
-          data: {
-            companyId,
-            requestedById,
-            amount: amount.toString(),
-            currency: input.currency,
-            feeAmount: fee.toString(),
-            netAmount: net.toString(),
-            feeApplication,
-            status: REQUESTABLE_STATUS,
-            notes: input.notes ?? null,
-            payoutMethod: input.payout.method,
-            payoutDetails: input.payout as unknown as Prisma.InputJsonValue,
-          },
-        });
-      },
-      { isolationLevel: 'Serializable' },
-    );
+          requestedById,
+          amount: amount.toString(),
+          currency: input.currency,
+          feeAmount: fee.toString(),
+          netAmount: net.toString(),
+          feeApplication,
+          status: REQUESTABLE_STATUS,
+          notes: input.notes ?? null,
+          payoutMethod: input.payout.method,
+          payoutDetails: input.payout as unknown as Prisma.InputJsonValue,
+        },
+      });
+    });
 
     this.invalidateAnalytics();
     this.notify(row.companyId);
@@ -105,73 +102,70 @@ export class LoadsService {
   }
 
   async approve(id: string, approvedById: string, input: ApproveLoadInput): Promise<LoadResponse> {
-    const row = await this.prisma.$transaction(
-      async (tx) => {
-        await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
-        const cTx = tx as unknown as PrismaClient;
+    const row = await this.prisma.runSerializable(async (tx) => {
+      await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
+      const cTx = tx as unknown as PrismaClient;
 
-        const l = await cTx.load.findUnique({ where: { id } });
-        if (!l) throw new NotFoundError('Load', id);
-        if (l.status !== 'PENDING') {
-          throw new ConflictError(`Load is in status ${l.status} and cannot be approved`);
-        }
+      const l = await cTx.load.findUnique({ where: { id } });
+      if (!l) throw new NotFoundError('Load', id);
+      if (l.status !== 'PENDING') {
+        throw new ConflictError(`Load is in status ${l.status} and cannot be approved`);
+      }
 
-        const amount = Money.of(l.amount.toString());
-        const fee = Money.of(l.feeAmount.toString());
-        const externalDebit = l.feeApplication === 'ON_TOP' ? amount.add(fee) : amount;
-        const availableCredit = l.feeApplication === 'ON_TOP' ? amount : amount.sub(fee);
+      const amount = Money.of(l.amount.toString());
+      const fee = Money.of(l.feeAmount.toString());
+      const externalDebit = l.feeApplication === 'ON_TOP' ? amount.add(fee) : amount;
+      const availableCredit = l.feeApplication === 'ON_TOP' ? amount : amount.sub(fee);
 
-        // Money in: DEBIT external, CREDIT available(net) + FEE(fee). Skip zero.
-        const entries: Parameters<typeof this.ledger.writeEntries>[1] = [
-          {
-            companyId: l.companyId,
-            loadId: l.id,
-            accountType: 'EXTERNAL',
-            direction: 'DEBIT',
-            amount: externalDebit,
-            currency: l.currency,
-          },
-        ];
-        if (availableCredit.isPositive()) {
-          entries.push({
-            companyId: l.companyId,
-            loadId: l.id,
-            accountType: 'AVAILABLE',
-            direction: 'CREDIT',
-            amount: availableCredit,
-            currency: l.currency,
-          });
-        }
-        if (fee.isPositive()) {
-          entries.push({
-            companyId: l.companyId,
-            loadId: l.id,
-            accountType: 'FEE',
-            direction: 'CREDIT',
-            amount: fee,
-            currency: l.currency,
-          });
-        }
-        await this.ledger.writeEntries(cTx, entries);
-        await this.wallets.applyDelta(cTx, {
+      // Money in: DEBIT external, CREDIT available(net) + FEE(fee). Skip zero.
+      const entries: Parameters<typeof this.ledger.writeEntries>[1] = [
+        {
           companyId: l.companyId,
+          loadId: l.id,
+          accountType: 'EXTERNAL',
+          direction: 'DEBIT',
+          amount: externalDebit,
           currency: l.currency,
-          delta: { available: availableCredit },
+        },
+      ];
+      if (availableCredit.isPositive()) {
+        entries.push({
+          companyId: l.companyId,
+          loadId: l.id,
+          accountType: 'AVAILABLE',
+          direction: 'CREDIT',
+          amount: availableCredit,
+          currency: l.currency,
         });
+      }
+      if (fee.isPositive()) {
+        entries.push({
+          companyId: l.companyId,
+          loadId: l.id,
+          accountType: 'FEE',
+          direction: 'CREDIT',
+          amount: fee,
+          currency: l.currency,
+        });
+      }
+      await this.ledger.writeEntries(cTx, entries);
+      await this.wallets.applyDelta(cTx, {
+        companyId: l.companyId,
+        currency: l.currency,
+        delta: { available: availableCredit },
+      });
 
-        return cTx.load.update({
-          where: { id },
-          data: {
-            status: 'COMPLETED',
-            approvedById,
-            processedAt: new Date(),
-            notes: input.notes ?? l.notes,
-            externalReference: input.externalReference,
-          },
-        });
-      },
-      { isolationLevel: 'Serializable' },
-    );
+      return cTx.load.update({
+        where: { id },
+        data: {
+          status: 'COMPLETED',
+          approvedById,
+          processedAt: new Date(),
+          notes: input.notes ?? l.notes,
+          externalReference: input.externalReference,
+        },
+      });
+    });
 
     this.invalidateAnalytics();
     this.notify(row.companyId);
@@ -202,34 +196,31 @@ export class LoadsService {
       companyId?: string;
     },
   ): Promise<LoadResponse> {
-    const row = await this.prisma.$transaction(
-      async (tx) => {
-        await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
-        const cTx = tx as unknown as PrismaClient;
+    const row = await this.prisma.runSerializable(async (tx) => {
+      await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
+      const cTx = tx as unknown as PrismaClient;
 
-        const l = await cTx.load.findUnique({ where: { id } });
-        if (!l || (opts.companyId && l.companyId !== opts.companyId)) {
-          throw new NotFoundError('Load', id);
-        }
-        if (l.status !== 'PENDING') {
-          const verb = opts.status === 'CANCELLED' ? 'cancelled' : 'rejected';
-          throw new ConflictError(`Load is in status ${l.status} and cannot be ${verb}`);
-        }
+      const l = await cTx.load.findUnique({ where: { id } });
+      if (!l || (opts.companyId && l.companyId !== opts.companyId)) {
+        throw new NotFoundError('Load', id);
+      }
+      if (l.status !== 'PENDING') {
+        const verb = opts.status === 'CANCELLED' ? 'cancelled' : 'rejected';
+        throw new ConflictError(`Load is in status ${l.status} and cannot be ${verb}`);
+      }
 
-        // Nothing was moved at request time — closing is a pure status change.
-        return cTx.load.update({
-          where: { id },
-          data: {
-            status: opts.status,
-            approvedById: opts.approvedById ?? undefined,
-            cancelledById: opts.cancelledById ?? undefined,
-            processedAt: new Date(),
-            notes: notes ?? l.notes,
-          },
-        });
-      },
-      { isolationLevel: 'Serializable' },
-    );
+      // Nothing was moved at request time — closing is a pure status change.
+      return cTx.load.update({
+        where: { id },
+        data: {
+          status: opts.status,
+          approvedById: opts.approvedById ?? undefined,
+          cancelledById: opts.cancelledById ?? undefined,
+          processedAt: new Date(),
+          notes: notes ?? l.notes,
+        },
+      });
+    });
 
     this.invalidateAnalytics();
     this.notify(row.companyId);

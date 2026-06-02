@@ -92,65 +92,62 @@ export class PayoutsService {
     const amount = Money.of(input.amount);
     if (!amount.isPositive()) throw new ValidationError('amount must be positive');
 
-    const row = await this.prisma.$transaction(
-      async (tx) => {
-        await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
-        const cTx = tx as unknown as PrismaClient;
+    const row = await this.prisma.runSerializable(async (tx) => {
+      await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
+      const cTx = tx as unknown as PrismaClient;
 
-        const { fee, feeApplication } = await this.fees.resolveFlowFee(cTx, {
+      const { fee, feeApplication } = await this.fees.resolveFlowFee(cTx, {
+        companyId,
+        amount,
+        operationType: 'PAYOUT',
+      });
+      const reserved = reservedTotal(amount, fee, feeApplication);
+      const net = feeApplication === 'ON_TOP' ? amount : amount.sub(fee);
+
+      await assertSufficient(cTx, companyId, input.currency, reserved);
+
+      const p = await cTx.payout.create({
+        data: {
           companyId,
-          amount,
-          operationType: 'PAYOUT',
-        });
-        const reserved = reservedTotal(amount, fee, feeApplication);
-        const net = feeApplication === 'ON_TOP' ? amount : amount.sub(fee);
-
-        await assertSufficient(cTx, companyId, input.currency, reserved);
-
-        const p = await cTx.payout.create({
-          data: {
-            companyId,
-            requestedById,
-            amount: amount.toString(),
-            currency: input.currency,
-            feeAmount: fee.toString(),
-            netAmount: net.toString(),
-            feeApplication,
-            status: REQUESTABLE_STATUS,
-            notes: input.notes ?? null,
-            payoutMethod: input.payout.method,
-            payoutDetails: input.payout as unknown as Prisma.InputJsonValue,
-          },
-        });
-
-        await this.ledger.writeEntries(cTx, [
-          {
-            companyId,
-            payoutId: p.id,
-            accountType: 'AVAILABLE',
-            direction: 'DEBIT',
-            amount: reserved,
-            currency: input.currency,
-          },
-          {
-            companyId,
-            payoutId: p.id,
-            accountType: 'RESERVED',
-            direction: 'CREDIT',
-            amount: reserved,
-            currency: input.currency,
-          },
-        ]);
-        await this.wallets.applyDelta(cTx, {
-          companyId,
+          requestedById,
+          amount: amount.toString(),
           currency: input.currency,
-          delta: { available: reserved.mul(-1), reserved },
-        });
+          feeAmount: fee.toString(),
+          netAmount: net.toString(),
+          feeApplication,
+          status: REQUESTABLE_STATUS,
+          notes: input.notes ?? null,
+          payoutMethod: input.payout.method,
+          payoutDetails: input.payout as unknown as Prisma.InputJsonValue,
+        },
+      });
 
-        return p;
-      },
-      { isolationLevel: 'Serializable' },
-    );
+      await this.ledger.writeEntries(cTx, [
+        {
+          companyId,
+          payoutId: p.id,
+          accountType: 'AVAILABLE',
+          direction: 'DEBIT',
+          amount: reserved,
+          currency: input.currency,
+        },
+        {
+          companyId,
+          payoutId: p.id,
+          accountType: 'RESERVED',
+          direction: 'CREDIT',
+          amount: reserved,
+          currency: input.currency,
+        },
+      ]);
+      await this.wallets.applyDelta(cTx, {
+        companyId,
+        currency: input.currency,
+        delta: { available: reserved.mul(-1), reserved },
+      });
+
+      return p;
+    });
 
     this.invalidateAnalytics();
     this.notify(row.companyId);
@@ -162,72 +159,69 @@ export class PayoutsService {
     approvedById: string,
     input: ApprovePayoutInput,
   ): Promise<PayoutResponse> {
-    const row = await this.prisma.$transaction(
-      async (tx) => {
-        await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
-        const cTx = tx as unknown as PrismaClient;
+    const row = await this.prisma.runSerializable(async (tx) => {
+      await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
+      const cTx = tx as unknown as PrismaClient;
 
-        const p = await cTx.payout.findUnique({ where: { id } });
-        if (!p) throw new NotFoundError('Payout', id);
-        if (p.status !== 'PENDING') {
-          throw new ConflictError(`Payout is in status ${p.status} and cannot be approved`);
-        }
+      const p = await cTx.payout.findUnique({ where: { id } });
+      if (!p) throw new NotFoundError('Payout', id);
+      if (p.status !== 'PENDING') {
+        throw new ConflictError(`Payout is in status ${p.status} and cannot be approved`);
+      }
 
-        const amount = Money.of(p.amount.toString());
-        const fee = Money.of(p.feeAmount.toString());
-        const reserved = reservedTotal(amount, fee, p.feeApplication);
-        const external = p.feeApplication === 'ON_TOP' ? amount : amount.sub(fee);
+      const amount = Money.of(p.amount.toString());
+      const fee = Money.of(p.feeAmount.toString());
+      const reserved = reservedTotal(amount, fee, p.feeApplication);
+      const external = p.feeApplication === 'ON_TOP' ? amount : amount.sub(fee);
 
-        const entries: Parameters<typeof this.ledger.writeEntries>[1] = [
-          {
-            companyId: p.companyId,
-            payoutId: p.id,
-            accountType: 'RESERVED',
-            direction: 'DEBIT',
-            amount: reserved,
-            currency: p.currency,
-          },
-        ];
-        if (external.isPositive()) {
-          entries.push({
-            companyId: p.companyId,
-            payoutId: p.id,
-            accountType: 'EXTERNAL',
-            direction: 'CREDIT',
-            amount: external,
-            currency: p.currency,
-          });
-        }
-        if (fee.isPositive()) {
-          entries.push({
-            companyId: p.companyId,
-            payoutId: p.id,
-            accountType: 'FEE',
-            direction: 'CREDIT',
-            amount: fee,
-            currency: p.currency,
-          });
-        }
-        await this.ledger.writeEntries(cTx, entries);
-        await this.wallets.applyDelta(cTx, {
+      const entries: Parameters<typeof this.ledger.writeEntries>[1] = [
+        {
           companyId: p.companyId,
+          payoutId: p.id,
+          accountType: 'RESERVED',
+          direction: 'DEBIT',
+          amount: reserved,
           currency: p.currency,
-          delta: { reserved: reserved.mul(-1) },
+        },
+      ];
+      if (external.isPositive()) {
+        entries.push({
+          companyId: p.companyId,
+          payoutId: p.id,
+          accountType: 'EXTERNAL',
+          direction: 'CREDIT',
+          amount: external,
+          currency: p.currency,
         });
+      }
+      if (fee.isPositive()) {
+        entries.push({
+          companyId: p.companyId,
+          payoutId: p.id,
+          accountType: 'FEE',
+          direction: 'CREDIT',
+          amount: fee,
+          currency: p.currency,
+        });
+      }
+      await this.ledger.writeEntries(cTx, entries);
+      await this.wallets.applyDelta(cTx, {
+        companyId: p.companyId,
+        currency: p.currency,
+        delta: { reserved: reserved.mul(-1) },
+      });
 
-        return cTx.payout.update({
-          where: { id },
-          data: {
-            status: 'COMPLETED',
-            approvedById,
-            processedAt: new Date(),
-            notes: input.notes ?? p.notes,
-            externalReference: input.externalReference,
-          },
-        });
-      },
-      { isolationLevel: 'Serializable' },
-    );
+      return cTx.payout.update({
+        where: { id },
+        data: {
+          status: 'COMPLETED',
+          approvedById,
+          processedAt: new Date(),
+          notes: input.notes ?? p.notes,
+          externalReference: input.externalReference,
+        },
+      });
+    });
 
     this.invalidateAnalytics();
     this.notify(row.companyId);
@@ -266,63 +260,60 @@ export class PayoutsService {
       companyId?: string;
     },
   ): Promise<PayoutResponse> {
-    const row = await this.prisma.$transaction(
-      async (tx) => {
-        await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
-        const cTx = tx as unknown as PrismaClient;
+    const row = await this.prisma.runSerializable(async (tx) => {
+      await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
+      const cTx = tx as unknown as PrismaClient;
 
-        const p = await cTx.payout.findUnique({ where: { id } });
-        if (!p || (opts.companyId && p.companyId !== opts.companyId)) {
-          throw new NotFoundError('Payout', id);
-        }
-        if (p.status !== 'PENDING') {
-          const verb = opts.status === 'CANCELLED' ? 'cancelled' : 'rejected';
-          throw new ConflictError(`Payout is in status ${p.status} and cannot be ${verb}`);
-        }
+      const p = await cTx.payout.findUnique({ where: { id } });
+      if (!p || (opts.companyId && p.companyId !== opts.companyId)) {
+        throw new NotFoundError('Payout', id);
+      }
+      if (p.status !== 'PENDING') {
+        const verb = opts.status === 'CANCELLED' ? 'cancelled' : 'rejected';
+        throw new ConflictError(`Payout is in status ${p.status} and cannot be ${verb}`);
+      }
 
-        const reserved = reservedTotal(
-          Money.of(p.amount.toString()),
-          Money.of(p.feeAmount.toString()),
-          p.feeApplication,
-        );
+      const reserved = reservedTotal(
+        Money.of(p.amount.toString()),
+        Money.of(p.feeAmount.toString()),
+        p.feeApplication,
+      );
 
-        await this.ledger.writeEntries(cTx, [
-          {
-            companyId: p.companyId,
-            payoutId: p.id,
-            accountType: 'RESERVED',
-            direction: 'DEBIT',
-            amount: reserved,
-            currency: p.currency,
-          },
-          {
-            companyId: p.companyId,
-            payoutId: p.id,
-            accountType: 'AVAILABLE',
-            direction: 'CREDIT',
-            amount: reserved,
-            currency: p.currency,
-          },
-        ]);
-        await this.wallets.applyDelta(cTx, {
+      await this.ledger.writeEntries(cTx, [
+        {
           companyId: p.companyId,
+          payoutId: p.id,
+          accountType: 'RESERVED',
+          direction: 'DEBIT',
+          amount: reserved,
           currency: p.currency,
-          delta: { reserved: reserved.mul(-1), available: reserved },
-        });
+        },
+        {
+          companyId: p.companyId,
+          payoutId: p.id,
+          accountType: 'AVAILABLE',
+          direction: 'CREDIT',
+          amount: reserved,
+          currency: p.currency,
+        },
+      ]);
+      await this.wallets.applyDelta(cTx, {
+        companyId: p.companyId,
+        currency: p.currency,
+        delta: { reserved: reserved.mul(-1), available: reserved },
+      });
 
-        return cTx.payout.update({
-          where: { id },
-          data: {
-            status: opts.status,
-            approvedById: opts.approvedById ?? undefined,
-            cancelledById: opts.cancelledById ?? undefined,
-            processedAt: new Date(),
-            notes: notes ?? p.notes,
-          },
-        });
-      },
-      { isolationLevel: 'Serializable' },
-    );
+      return cTx.payout.update({
+        where: { id },
+        data: {
+          status: opts.status,
+          approvedById: opts.approvedById ?? undefined,
+          cancelledById: opts.cancelledById ?? undefined,
+          processedAt: new Date(),
+          notes: notes ?? p.notes,
+        },
+      });
+    });
 
     this.invalidateAnalytics();
     this.notify(row.companyId);

@@ -99,119 +99,116 @@ export class TransactionsService {
 
     // Run the whole financial mutation as admin (we already validated the
     // caller via API key) inside a serializable transaction.
-    const result = await this.prisma.$transaction(
-      async (tx) => {
-        await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
-        const cTx = tx as unknown as PrismaClient;
+    const result = await this.prisma.runSerializable(async (tx) => {
+      await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
+      const cTx = tx as unknown as PrismaClient;
 
-        // ---- idempotency: explicit key OR natural (source,external) pair ----
-        if (input.idempotencyKey) {
-          const existing = await cTx.transaction.findFirst({
-            where: { companyId, idempotencyKey: input.idempotencyKey },
-          });
-          if (existing) {
-            return this.mapTransaction(cTx, existing);
-          }
-        }
-        const dup = await cTx.transaction.findFirst({
-          where: { sourceId: source.id, externalTransactionId: input.externalTransactionId },
+      // ---- idempotency: explicit key OR natural (source,external) pair ----
+      if (input.idempotencyKey) {
+        const existing = await cTx.transaction.findFirst({
+          where: { companyId, idempotencyKey: input.idempotencyKey },
         });
-        if (dup) {
-          if (dup.companyId !== companyId) {
-            throw new ConflictError(
-              'externalTransactionId already used by a different company for this source',
-              { sourceId: source.id, externalTransactionId: input.externalTransactionId },
-            );
-          }
-          return this.mapTransaction(cTx, dup);
+        if (existing) {
+          return this.mapTransaction(cTx, existing);
         }
+      }
+      const dup = await cTx.transaction.findFirst({
+        where: { sourceId: source.id, externalTransactionId: input.externalTransactionId },
+      });
+      if (dup) {
+        if (dup.companyId !== companyId) {
+          throw new ConflictError(
+            'externalTransactionId already used by a different company for this source',
+            { sourceId: source.id, externalTransactionId: input.externalTransactionId },
+          );
+        }
+        return this.mapTransaction(cTx, dup);
+      }
 
-        // ---- commission ----
-        const rules = await this.commissionsRepo.loadCandidates(cTx, {
+      // ---- commission ----
+      const rules = await this.commissionsRepo.loadCandidates(cTx, {
+        companyId,
+        sourceId: source.id,
+        operationType: 'TRANSACTION',
+      });
+      const resolution = this.resolver.resolve({
+        companyId,
+        sourceId: source.id,
+        operationType: 'TRANSACTION',
+        amount,
+        rules,
+      });
+
+      // ---- insert transaction row ----
+      const txRow = await cTx.transaction.create({
+        data: {
           companyId,
           sourceId: source.id,
-          operationType: 'TRANSACTION',
-        });
-        const resolution = this.resolver.resolve({
+          externalTransactionId: input.externalTransactionId,
+          amount: amount.toString(),
+          currency: input.currency,
+          commissionAmount: resolution.commissionAmount.toString(),
+          netAmount: resolution.netAmount.toString(),
+          status: 'COMPLETED',
+          payload: (input.payload ?? {}) as Prisma.InputJsonValue,
+          idempotencyKey: input.idempotencyKey ?? null,
+          processedAt: new Date(),
+        },
+      });
+
+      // ---- ledger: balanced double-entry ----
+      // DEBIT  EXTERNAL  amount       (the outside world owes us this)
+      // CREDIT AVAILABLE netAmount    (company's spendable balance grows)  [skip if 0]
+      // CREDIT FEE       commission   (platform fee revenue)               [skip if 0]
+      const ledgerLines: import('../ledger/ledger.service').LedgerEntryInput[] = [
+        {
           companyId,
-          sourceId: source.id,
-          operationType: 'TRANSACTION',
+          transactionId: txRow.id,
+          accountType: 'EXTERNAL',
+          direction: 'DEBIT',
           amount,
-          rules,
+          currency: input.currency,
+        },
+      ];
+      if (resolution.netAmount.isPositive()) {
+        ledgerLines.push({
+          companyId,
+          transactionId: txRow.id,
+          accountType: 'AVAILABLE',
+          direction: 'CREDIT',
+          amount: resolution.netAmount,
+          currency: input.currency,
         });
-
-        // ---- insert transaction row ----
-        const txRow = await cTx.transaction.create({
-          data: {
-            companyId,
-            sourceId: source.id,
-            externalTransactionId: input.externalTransactionId,
-            amount: amount.toString(),
-            currency: input.currency,
-            commissionAmount: resolution.commissionAmount.toString(),
-            netAmount: resolution.netAmount.toString(),
-            status: 'COMPLETED',
-            payload: (input.payload ?? {}) as Prisma.InputJsonValue,
-            idempotencyKey: input.idempotencyKey ?? null,
-            processedAt: new Date(),
-          },
+      }
+      if (resolution.commissionAmount.isPositive()) {
+        ledgerLines.push({
+          companyId,
+          transactionId: txRow.id,
+          accountType: 'FEE',
+          direction: 'CREDIT',
+          amount: resolution.commissionAmount,
+          currency: input.currency,
         });
+      }
+      await this.ledger.writeEntries(cTx, ledgerLines);
 
-        // ---- ledger: balanced double-entry ----
-        // DEBIT  EXTERNAL  amount       (the outside world owes us this)
-        // CREDIT AVAILABLE netAmount    (company's spendable balance grows)  [skip if 0]
-        // CREDIT FEE       commission   (platform fee revenue)               [skip if 0]
-        const ledgerLines: import('../ledger/ledger.service').LedgerEntryInput[] = [
-          {
-            companyId,
-            transactionId: txRow.id,
-            accountType: 'EXTERNAL',
-            direction: 'DEBIT',
-            amount,
-            currency: input.currency,
-          },
-        ];
-        if (resolution.netAmount.isPositive()) {
-          ledgerLines.push({
-            companyId,
-            transactionId: txRow.id,
-            accountType: 'AVAILABLE',
-            direction: 'CREDIT',
-            amount: resolution.netAmount,
-            currency: input.currency,
-          });
-        }
-        if (resolution.commissionAmount.isPositive()) {
-          ledgerLines.push({
-            companyId,
-            transactionId: txRow.id,
-            accountType: 'FEE',
-            direction: 'CREDIT',
-            amount: resolution.commissionAmount,
-            currency: input.currency,
-          });
-        }
-        await this.ledger.writeEntries(cTx, ledgerLines);
+      // ---- wallet delta (only if net > 0) ----
+      if (resolution.netAmount.isPositive()) {
+        await this.wallets.applyDelta(cTx, {
+          companyId,
+          currency: input.currency,
+          delta: { available: resolution.netAmount },
+        });
+      }
 
-        // ---- wallet delta (only if net > 0) ----
-        if (resolution.netAmount.isPositive()) {
-          await this.wallets.applyDelta(cTx, {
-            companyId,
-            currency: input.currency,
-            delta: { available: resolution.netAmount },
-          });
-        }
+      this.logger.log(
+        `ingest tx=${txRow.id} co=${companyId} src=${source.code} ` +
+          `amount=${amount.toString()} fee=${resolution.commissionAmount.toString()} ` +
+          `net=${resolution.netAmount.toString()} ${input.currency}`,
+      );
 
-        this.logger.log(
-          `ingest tx=${txRow.id} co=${companyId} src=${source.code} ` +
-            `amount=${amount.toString()} fee=${resolution.commissionAmount.toString()} ` +
-            `net=${resolution.netAmount.toString()} ${input.currency}`,
-        );
-
-        return this.mapTransaction(cTx, txRow);
-      },
-      { isolationLevel: 'Serializable' },
-    );
+      return this.mapTransaction(cTx, txRow);
+    });
 
     this.ingestCounter.inc({ source_code: source.code, currency: input.currency });
 
@@ -238,83 +235,80 @@ export class TransactionsService {
     txId: string,
     args: { actorId: string; reason: string },
   ): Promise<TransactionResponse> {
-    const reversed = await this.prisma.$transaction(
-      async (tx) => {
-        await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
-        const cTx = tx as unknown as PrismaClient;
+    const reversed = await this.prisma.runSerializable(async (tx) => {
+      await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
+      const cTx = tx as unknown as PrismaClient;
 
-        const orig = await cTx.transaction.findUnique({
-          where: { id: txId },
-          include: { source: { select: { code: true } } },
+      const orig = await cTx.transaction.findUnique({
+        where: { id: txId },
+        include: { source: { select: { code: true } } },
+      });
+      if (!orig) throw new NotFoundError('Transaction', txId);
+      if (orig.status === 'REVERSED') {
+        return orig;
+      }
+      if (orig.status !== 'COMPLETED') {
+        throw new ConflictError(`Transaction is in status ${orig.status} and cannot be reversed`);
+      }
+
+      const amount = Money.of(orig.amount.toString());
+      const fee = Money.of(orig.commissionAmount.toString());
+      const net = Money.of(orig.netAmount.toString());
+
+      // Compensating ledger entries: mirror the original signs.
+      // original was: DEBIT EXTERNAL, CREDIT AVAILABLE, CREDIT FEE
+      // reversal is:  CREDIT EXTERNAL, DEBIT AVAILABLE, DEBIT FEE
+      const lines: import('../ledger/ledger.service').LedgerEntryInput[] = [
+        {
+          companyId: orig.companyId,
+          transactionId: orig.id,
+          accountType: 'EXTERNAL',
+          direction: 'CREDIT',
+          amount,
+          currency: orig.currency,
+          metadata: { kind: 'reversal', reason: args.reason },
+        },
+      ];
+      if (net.isPositive()) {
+        lines.push({
+          companyId: orig.companyId,
+          transactionId: orig.id,
+          accountType: 'AVAILABLE',
+          direction: 'DEBIT',
+          amount: net,
+          currency: orig.currency,
+          metadata: { kind: 'reversal' },
         });
-        if (!orig) throw new NotFoundError('Transaction', txId);
-        if (orig.status === 'REVERSED') {
-          return orig;
-        }
-        if (orig.status !== 'COMPLETED') {
-          throw new ConflictError(`Transaction is in status ${orig.status} and cannot be reversed`);
-        }
-
-        const amount = Money.of(orig.amount.toString());
-        const fee = Money.of(orig.commissionAmount.toString());
-        const net = Money.of(orig.netAmount.toString());
-
-        // Compensating ledger entries: mirror the original signs.
-        // original was: DEBIT EXTERNAL, CREDIT AVAILABLE, CREDIT FEE
-        // reversal is:  CREDIT EXTERNAL, DEBIT AVAILABLE, DEBIT FEE
-        const lines: import('../ledger/ledger.service').LedgerEntryInput[] = [
-          {
-            companyId: orig.companyId,
-            transactionId: orig.id,
-            accountType: 'EXTERNAL',
-            direction: 'CREDIT',
-            amount,
-            currency: orig.currency,
-            metadata: { kind: 'reversal', reason: args.reason },
-          },
-        ];
-        if (net.isPositive()) {
-          lines.push({
-            companyId: orig.companyId,
-            transactionId: orig.id,
-            accountType: 'AVAILABLE',
-            direction: 'DEBIT',
-            amount: net,
-            currency: orig.currency,
-            metadata: { kind: 'reversal' },
-          });
-        }
-        if (fee.isPositive()) {
-          lines.push({
-            companyId: orig.companyId,
-            transactionId: orig.id,
-            accountType: 'FEE',
-            direction: 'DEBIT',
-            amount: fee,
-            currency: orig.currency,
-            metadata: { kind: 'reversal' },
-          });
-        }
-        await this.ledger.writeEntries(cTx, lines);
-
-        // Wallet: subtract the net (which we previously credited).
-        if (net.isPositive()) {
-          await this.wallets.applyDelta(cTx, {
-            companyId: orig.companyId,
-            currency: orig.currency,
-            delta: { available: net.mul(-1) },
-          });
-        }
-
-        const updated = await cTx.transaction.update({
-          where: { id: orig.id },
-          data: { status: 'REVERSED' },
-          include: { source: { select: { code: true } } },
+      }
+      if (fee.isPositive()) {
+        lines.push({
+          companyId: orig.companyId,
+          transactionId: orig.id,
+          accountType: 'FEE',
+          direction: 'DEBIT',
+          amount: fee,
+          currency: orig.currency,
+          metadata: { kind: 'reversal' },
         });
-        return updated;
-      },
-      { isolationLevel: 'Serializable' },
-    );
+      }
+      await this.ledger.writeEntries(cTx, lines);
+
+      // Wallet: subtract the net (which we previously credited).
+      if (net.isPositive()) {
+        await this.wallets.applyDelta(cTx, {
+          companyId: orig.companyId,
+          currency: orig.currency,
+          delta: { available: net.mul(-1) },
+        });
+      }
+
+      const updated = await cTx.transaction.update({
+        where: { id: orig.id },
+        data: { status: 'REVERSED' },
+        include: { source: { select: { code: true } } },
+      });
+      return updated;
+    });
 
     this.logger.log(
       `reversed tx=${reversed.id} co=${reversed.companyId} amount=${reversed.amount.toString()} reason=${args.reason}`,

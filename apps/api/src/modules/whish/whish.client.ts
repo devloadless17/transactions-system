@@ -3,6 +3,10 @@ import { ConfigService } from '@nestjs/config';
 import type { Env } from '../../config/env.schema';
 import { DomainError, ValidationError } from '../../common/errors/domain.error';
 
+// Cap every Whish call so an unresponsive upstream can't hang the callback
+// handler or the reconciliation poller indefinitely.
+const WHISH_TIMEOUT_MS = 10_000;
+
 /** Upstream Whish failure (network error or `status: false` envelope). */
 export class WhishError extends DomainError {
   constructor(message: string, details?: Record<string, unknown>) {
@@ -116,6 +120,7 @@ export class WhishClient {
         method,
         headers: this.headers(),
         body: body !== undefined ? JSON.stringify(body) : undefined,
+        signal: AbortSignal.timeout(WHISH_TIMEOUT_MS),
       });
     } catch (err) {
       this.logger.error(`Whish request failed: ${method} ${path}`, err as Error);

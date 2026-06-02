@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Money } from '@app/shared';
 import {
+  CommissionExceedsAmountError,
   CommissionResolverService,
   NoMatchingCommissionRuleError,
   type ResolvableRule,
@@ -240,6 +241,88 @@ describe('CommissionResolverService', () => {
       });
       // 2.5% of 123.45 = 3.08625
       expect(r.commissionAmount.toString()).toBe('3.08625');
+    });
+  });
+
+  describe('commission cannot exceed amount (DEDUCTED)', () => {
+    it('throws when a DEDUCTED fixed fee is larger than the amount', () => {
+      expect(() =>
+        svc.resolve({
+          companyId: company,
+          sourceId: source,
+          operationType: 'TRANSACTION',
+          amount: Money.of('100'),
+          rules: [
+            rule({
+              minAmount: '1',
+              maxAmount: '1000',
+              commissionType: 'FIXED',
+              commissionValue: '150',
+              feeApplication: 'DEDUCTED',
+            }),
+          ],
+        }),
+      ).toThrow(CommissionExceedsAmountError);
+    });
+
+    it('throws when a DEDUCTED percentage fee exceeds 100% of the amount', () => {
+      expect(() =>
+        svc.resolve({
+          companyId: company,
+          sourceId: source,
+          operationType: 'TRANSACTION',
+          amount: Money.of('100'),
+          rules: [
+            rule({
+              minAmount: '1',
+              maxAmount: '1000',
+              commissionType: 'PERCENTAGE',
+              commissionValue: '150',
+              feeApplication: 'DEDUCTED',
+            }),
+          ],
+        }),
+      ).toThrow(CommissionExceedsAmountError);
+    });
+
+    it('allows a fee EQUAL to the amount (net 0)', () => {
+      const r = svc.resolve({
+        companyId: company,
+        sourceId: source,
+        operationType: 'TRANSACTION',
+        amount: Money.of('100'),
+        rules: [
+          rule({
+            minAmount: '1',
+            maxAmount: '1000',
+            commissionType: 'FIXED',
+            commissionValue: '100',
+            feeApplication: 'DEDUCTED',
+          }),
+        ],
+      });
+      expect(r.commissionAmount.toString()).toBe('100');
+      expect(r.netAmount.toString()).toBe('0');
+    });
+
+    it('does NOT throw for ON_TOP fees larger than the amount (fee is added on top)', () => {
+      const r = svc.resolve({
+        companyId: company,
+        sourceId: source,
+        operationType: 'WITHDRAWAL',
+        amount: Money.of('100'),
+        rules: [
+          rule({
+            operationType: 'WITHDRAWAL',
+            minAmount: '1',
+            maxAmount: '1000',
+            commissionType: 'FIXED',
+            commissionValue: '150',
+            feeApplication: 'ON_TOP',
+          }),
+        ],
+      });
+      expect(r.commissionAmount.toString()).toBe('150');
     });
   });
 });

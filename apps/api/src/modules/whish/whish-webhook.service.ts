@@ -4,6 +4,11 @@ import type { WhishPayment } from '@app/db';
 import type { WhishWebhookConfig } from '@app/shared';
 import { PrismaService } from '../../database/prisma.service';
 import { RealtimeService } from '../realtime/realtime.service';
+import { assertSafeWebhookUrl } from '../../common/net/ssrf';
+
+// Hard cap on outbound webhook attempts so a slow/hostile endpoint can't tie up
+// the settlement path.
+const WEBHOOK_TIMEOUT_MS = 5000;
 
 /**
  * Outbound webhooks to a company's own endpoint (e.g. their CRM). On a
@@ -30,6 +35,18 @@ export class WhishWebhookService {
     );
     if (!company?.webhookUrl) return;
 
+    // Re-validate at send time (defends against a URL that was re-pointed at an
+    // internal address after it was configured). Best-effort delivery: on a
+    // disallowed/unsafe URL we log and skip rather than throw.
+    try {
+      await assertSafeWebhookUrl(company.webhookUrl);
+    } catch (err) {
+      this.logger.warn(
+        `Skipping webhook for payment ${payment.externalId}: unsafe URL ${company.webhookUrl} (${(err as Error).message})`,
+      );
+      return;
+    }
+
     const body = JSON.stringify({
       event: 'whish.payment.paid',
       data: {
@@ -54,7 +71,13 @@ export class WhishWebhookService {
 
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
-        const res = await fetch(company.webhookUrl, { method: 'POST', headers, body });
+        const res = await fetch(company.webhookUrl, {
+          method: 'POST',
+          headers,
+          body,
+          redirect: 'manual',
+          signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
+        });
         if (res.ok) {
           this.logger.log(
             `Webhook delivered: payment ${payment.externalId} → ${company.webhookUrl}`,
@@ -86,6 +109,9 @@ export class WhishWebhookService {
 
   /** Set the webhook URL; generates a signing secret on first set (returned once). */
   async setUrl(companyId: string, url: string): Promise<WhishWebhookConfig> {
+    // Reject https-only/private-address violations up front (400) rather than
+    // silently storing a URL that will be skipped at delivery time.
+    await assertSafeWebhookUrl(url);
     const existing = await this.prisma.runAsTenant(companyId, (tx) =>
       tx.company.findUnique({ where: { id: companyId }, select: { webhookSecret: true } }),
     );
