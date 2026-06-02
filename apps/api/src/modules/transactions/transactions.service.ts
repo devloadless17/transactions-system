@@ -3,6 +3,7 @@ import { InjectMetric } from '@willsoto/nestjs-prometheus';
 import type { Counter } from 'prom-client';
 import {
   Money,
+  type FeeApplication,
   type IngestCompanyListItem,
   type IngestTransactionInput,
   type ListTransactionsQuery,
@@ -17,7 +18,12 @@ import { LedgerService } from '../ledger/ledger.service';
 import { WalletsService } from '../wallets/wallets.service';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { RealtimeService } from '../realtime/realtime.service';
-import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain.error';
+import {
+  ConflictError,
+  ForbiddenError,
+  NotFoundError,
+  ValidationError,
+} from '../../common/errors/domain.error';
 
 @Injectable()
 export class TransactionsService {
@@ -43,10 +49,15 @@ export class TransactionsService {
    * Guarded by `ApiKeyAuthGuard` + source-key check in the controller;
    * the service itself is unauthenticated for testability.
    */
-  async listCompaniesForSource(): Promise<{ data: IngestCompanyListItem[] }> {
+  async listCompaniesForSource(sourceId: string): Promise<{ data: IngestCompanyListItem[] }> {
+    // Only companies that have opted into THIS source — never the full tenant list.
     const rows = await this.prisma.runAsAdmin((tx) =>
       tx.company.findMany({
-        where: { status: 'ACTIVE', visible: true },
+        where: {
+          status: 'ACTIVE',
+          visible: true,
+          companySources: { some: { sourceId, enabled: true } },
+        },
         orderBy: { slug: 'asc' },
         select: { id: true, slug: true, name: true, defaultCurrency: true },
       }),
@@ -82,10 +93,13 @@ export class TransactionsService {
       throw new ValidationError('amount must be positive');
     }
 
-    const [foundSource, company] = await this.prisma.runAsAdmin((tx) =>
+    const [foundSource, company, optIn] = await this.prisma.runAsAdmin((tx) =>
       Promise.all([
         tx.source.findUnique({ where: { id: ctx.sourceId } }),
         tx.company.findUnique({ where: { id: input.companyId } }),
+        tx.companySource.findUnique({
+          where: { companyId_sourceId: { companyId: input.companyId, sourceId: ctx.sourceId } },
+        }),
       ]),
     );
     if (!foundSource || foundSource.status !== 'ACTIVE') {
@@ -93,6 +107,13 @@ export class TransactionsService {
     }
     if (!company || company.status !== 'ACTIVE') {
       throw new ValidationError(`company '${input.companyId}' not found or inactive`);
+    }
+    // The source must be explicitly enabled for this company. Without this, any
+    // source key could mint balance into any active company's wallet.
+    if (!optIn || !optIn.enabled) {
+      throw new ForbiddenError(
+        `source '${foundSource.code}' is not enabled for company '${input.companyId}'`,
+      );
     }
     const companyId = company.id;
     const source: { id: string; code: string; status: string } = foundSource;
@@ -139,6 +160,17 @@ export class TransactionsService {
         rules,
       });
 
+      // Honour the rule's fee application (mirrors loads.approve):
+      //   DEDUCTED: external = amount,       company credited amount − fee
+      //   ON_TOP:   external = amount + fee, company credited the full amount
+      // `availableCredit` is the persisted netAmount (what the wallet receives).
+      const fee = resolution.commissionAmount;
+      const { externalDebit, availableCredit } = ingestSplit(
+        amount,
+        fee,
+        resolution.feeApplication,
+      );
+
       // ---- insert transaction row ----
       const txRow = await cTx.transaction.create({
         data: {
@@ -147,8 +179,8 @@ export class TransactionsService {
           externalTransactionId: input.externalTransactionId,
           amount: amount.toString(),
           currency: input.currency,
-          commissionAmount: resolution.commissionAmount.toString(),
-          netAmount: resolution.netAmount.toString(),
+          commissionAmount: fee.toString(),
+          netAmount: availableCredit.toString(),
           status: 'COMPLETED',
           payload: (input.payload ?? {}) as Prisma.InputJsonValue,
           idempotencyKey: input.idempotencyKey ?? null,
@@ -157,54 +189,54 @@ export class TransactionsService {
       });
 
       // ---- ledger: balanced double-entry ----
-      // DEBIT  EXTERNAL  amount       (the outside world owes us this)
-      // CREDIT AVAILABLE netAmount    (company's spendable balance grows)  [skip if 0]
-      // CREDIT FEE       commission   (platform fee revenue)               [skip if 0]
+      // DEBIT  EXTERNAL  externalDebit   (the outside world owes us this)
+      // CREDIT AVAILABLE availableCredit (company's spendable balance grows) [skip if 0]
+      // CREDIT FEE       fee             (platform fee revenue)              [skip if 0]
       const ledgerLines: import('../ledger/ledger.service').LedgerEntryInput[] = [
         {
           companyId,
           transactionId: txRow.id,
           accountType: 'EXTERNAL',
           direction: 'DEBIT',
-          amount,
+          amount: externalDebit,
           currency: input.currency,
         },
       ];
-      if (resolution.netAmount.isPositive()) {
+      if (availableCredit.isPositive()) {
         ledgerLines.push({
           companyId,
           transactionId: txRow.id,
           accountType: 'AVAILABLE',
           direction: 'CREDIT',
-          amount: resolution.netAmount,
+          amount: availableCredit,
           currency: input.currency,
         });
       }
-      if (resolution.commissionAmount.isPositive()) {
+      if (fee.isPositive()) {
         ledgerLines.push({
           companyId,
           transactionId: txRow.id,
           accountType: 'FEE',
           direction: 'CREDIT',
-          amount: resolution.commissionAmount,
+          amount: fee,
           currency: input.currency,
         });
       }
       await this.ledger.writeEntries(cTx, ledgerLines);
 
-      // ---- wallet delta (only if net > 0) ----
-      if (resolution.netAmount.isPositive()) {
+      // ---- wallet delta (only if the company is credited something) ----
+      if (availableCredit.isPositive()) {
         await this.wallets.applyDelta(cTx, {
           companyId,
           currency: input.currency,
-          delta: { available: resolution.netAmount },
+          delta: { available: availableCredit },
         });
       }
 
       this.logger.log(
         `ingest tx=${txRow.id} co=${companyId} src=${source.code} ` +
-          `amount=${amount.toString()} fee=${resolution.commissionAmount.toString()} ` +
-          `net=${resolution.netAmount.toString()} ${input.currency}`,
+          `amount=${amount.toString()} fee=${fee.toString()} ` +
+          `net=${availableCredit.toString()} app=${resolution.feeApplication} ${input.currency}`,
       );
 
       return this.mapTransaction(cTx, txRow);
@@ -225,9 +257,11 @@ export class TransactionsService {
 
   /**
    * Reverse a COMPLETED transaction. Writes compensating ledger entries
-   * (mirror of the original) and decrements the available balance.
-   * Fails if reversing would push available negative — operator must
-   * resolve manually in that case.
+   * (mirror of the original) and claws the credited funds back from available.
+   * If the company has already spent/withdrawn some of the credit, the part
+   * that available can't cover is booked to the RECEIVABLE account as a debt
+   * the company owes the platform — so a reversal is ALWAYS recordable and the
+   * loss can never silently sit on the books as a stuck COMPLETED row.
    *
    * Idempotent: a tx already in REVERSED state returns its current row.
    */
@@ -251,33 +285,59 @@ export class TransactionsService {
         throw new ConflictError(`Transaction is in status ${orig.status} and cannot be reversed`);
       }
 
-      const amount = Money.of(orig.amount.toString());
       const fee = Money.of(orig.commissionAmount.toString());
       const net = Money.of(orig.netAmount.toString());
+      // The original EXTERNAL debit was net + fee for BOTH fee applications
+      // (DEDUCTED: amount = net + fee; ON_TOP: amount + fee = net + fee), so we
+      // can reconstruct it from the stored net/fee without a feeApplication
+      // column and keep the reversal balanced in either case.
+      const externalAmount = net.add(fee);
+
+      // Claw `net` back from available; whatever available can't cover becomes a
+      // RECEIVABLE (a debt the company owes). This keeps available >= 0 and the
+      // ledger balanced whether or not the funds were already withdrawn.
+      const walletRow = await cTx.wallet.findUnique({
+        where: { companyId_currency: { companyId: orig.companyId, currency: orig.currency } },
+      });
+      const available = Money.of(walletRow?.availableBalance.toString() ?? '0');
+      const { fromAvailable, receivable } = splitClawback(net, available);
 
       // Compensating ledger entries: mirror the original signs.
       // original was: DEBIT EXTERNAL, CREDIT AVAILABLE, CREDIT FEE
-      // reversal is:  CREDIT EXTERNAL, DEBIT AVAILABLE, DEBIT FEE
+      // reversal is:  CREDIT EXTERNAL, DEBIT AVAILABLE (+ DEBIT RECEIVABLE for the
+      // uncovered remainder), DEBIT FEE. debits (fromAvailable + receivable + fee)
+      // == credit (net + fee), so the set stays balanced.
       const lines: import('../ledger/ledger.service').LedgerEntryInput[] = [
         {
           companyId: orig.companyId,
           transactionId: orig.id,
           accountType: 'EXTERNAL',
           direction: 'CREDIT',
-          amount,
+          amount: externalAmount,
           currency: orig.currency,
           metadata: { kind: 'reversal', reason: args.reason },
         },
       ];
-      if (net.isPositive()) {
+      if (fromAvailable.isPositive()) {
         lines.push({
           companyId: orig.companyId,
           transactionId: orig.id,
           accountType: 'AVAILABLE',
           direction: 'DEBIT',
-          amount: net,
+          amount: fromAvailable,
           currency: orig.currency,
           metadata: { kind: 'reversal' },
+        });
+      }
+      if (receivable.isPositive()) {
+        lines.push({
+          companyId: orig.companyId,
+          transactionId: orig.id,
+          accountType: 'RECEIVABLE',
+          direction: 'DEBIT',
+          amount: receivable,
+          currency: orig.currency,
+          metadata: { kind: 'reversal', shortfall: true },
         });
       }
       if (fee.isPositive()) {
@@ -293,13 +353,18 @@ export class TransactionsService {
       }
       await this.ledger.writeEntries(cTx, lines);
 
-      // Wallet: subtract the net (which we previously credited).
-      if (net.isPositive()) {
+      // Wallet: subtract only what available could cover (stays >= 0).
+      if (fromAvailable.isPositive()) {
         await this.wallets.applyDelta(cTx, {
           companyId: orig.companyId,
           currency: orig.currency,
-          delta: { available: net.mul(-1) },
+          delta: { available: fromAvailable.mul(-1) },
         });
+      }
+      if (receivable.isPositive()) {
+        this.logger.warn(
+          `reversal of tx=${orig.id} co=${orig.companyId} created RECEIVABLE=${receivable.toString()} ${orig.currency.trim()} (available could not cover full clawback of ${net.toString()})`,
+        );
       }
 
       const updated = await cTx.transaction.update({
@@ -498,6 +563,41 @@ export class TransactionsService {
     });
     return mapTxRow(row, source?.code ?? '');
   }
+}
+
+/**
+ * Split an ingest amount into the EXTERNAL debit and the AVAILABLE credit
+ * according to how the fee is applied:
+ *   - DEDUCTED: the fee comes out of the amount → external = amount, the
+ *     company is credited amount − fee.
+ *   - ON_TOP:   the fee is charged on top → external = amount + fee, the
+ *     company is credited the full amount.
+ * In both cases external = credit + fee, so the ledger set stays balanced.
+ */
+export function ingestSplit(
+  amount: Money,
+  fee: Money,
+  feeApplication: FeeApplication,
+): { externalDebit: Money; availableCredit: Money } {
+  const isOnTop = feeApplication === 'ON_TOP';
+  return {
+    externalDebit: isOnTop ? amount.add(fee) : amount,
+    availableCredit: isOnTop ? amount : amount.sub(fee),
+  };
+}
+
+/**
+ * Split a clawback of `net` against the current available balance: take what
+ * the wallet can cover (capped, so available never goes below zero) and record
+ * the rest as a receivable (a debt the company owes). `fromAvailable + receivable`
+ * always equals `net`, so the reversal ledger set stays balanced.
+ */
+export function splitClawback(
+  net: Money,
+  available: Money,
+): { fromAvailable: Money; receivable: Money } {
+  const fromAvailable = available.gte(net) ? net : available;
+  return { fromAvailable, receivable: net.sub(fromAvailable) };
 }
 
 function mapTxRow(

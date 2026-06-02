@@ -33,6 +33,10 @@ export const envSchema = z
     RATE_LIMIT_TTL: z.coerce.number().int().positive().default(60),
     RATE_LIMIT_MAX: z.coerce.number().int().positive().default(100),
 
+    // When set, GET /metrics requires `Authorization: Bearer <token>`. Empty in
+    // dev (open); set it in production so the metrics aren't world-readable.
+    METRICS_TOKEN: z.string().default(''),
+
     // ---- Whish Pay integration (single platform account) ----
     // Sandbox base by default; flip to https://api.whish.money/itel-service/api
     // for production. `channel` + `secret` are issued by Whish.

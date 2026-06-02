@@ -103,6 +103,16 @@ export class WithdrawalsService {
       await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
       const cTx = tx as unknown as PrismaClient;
 
+      // Block money-out while the company owes the platform (e.g. from a
+      // reversal clawback that exceeded its balance). It must settle first.
+      const owed = await this.ledger.outstandingReceivable(cTx, companyId, input.currency);
+      if (owed.isPositive()) {
+        throw new ConflictError(
+          `Outstanding balance of ${owed.toString()} ${input.currency} owed to the platform must be settled before withdrawing`,
+          { currency: input.currency, outstanding: owed.toString() },
+        );
+      }
+
       // Resolve the WITHDRAWAL fee (free if no rule). ON_TOP reserves
       // amount+fee; DEDUCTED reserves amount and the recipient gets amount−fee.
       const { fee, feeApplication } = await this.fees.resolveFlowFee(cTx, {

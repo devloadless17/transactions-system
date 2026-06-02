@@ -2,6 +2,7 @@ export * from './auth';
 export * from './company';
 export * from './common';
 export * from './source';
+export * from './company-source';
 export * from './commission';
 export * from './transaction';
 export * from './wallet';

@@ -69,6 +69,6 @@ export class IngestController {
     if (!req.principal?.sourceId) {
       throw new ForbiddenError('this endpoint requires a source API key');
     }
-    return this.transactions.listCompaniesForSource();
+    return this.transactions.listCompaniesForSource(req.principal.sourceId);
   }
 }

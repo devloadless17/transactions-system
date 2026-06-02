@@ -42,6 +42,7 @@ export class RealtimeGateway implements OnGatewayConnection {
       if (!token) return this.reject(client, 'missing access cookie');
       const payload = await this.jwt.verifyAsync<AccessTokenPayload>(token, {
         secret: this.config.get('JWT_ACCESS_SECRET', { infer: true }),
+        algorithms: ['HS256'],
       });
       const room = payload.companyId ? companyRoom(payload.companyId) : ADMIN_ROOM;
       await client.join(room);

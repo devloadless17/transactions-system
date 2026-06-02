@@ -96,6 +96,16 @@ export class PayoutsService {
       await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
       const cTx = tx as unknown as PrismaClient;
 
+      // Block money-out while the company owes the platform (reversal clawback
+      // shortfall). It must settle the debt before paying out again.
+      const owed = await this.ledger.outstandingReceivable(cTx, companyId, input.currency);
+      if (owed.isPositive()) {
+        throw new ConflictError(
+          `Outstanding balance of ${owed.toString()} ${input.currency} owed to the platform must be settled before a payout`,
+          { currency: input.currency, outstanding: owed.toString() },
+        );
+      }
+
       const { fee, feeApplication } = await this.fees.resolveFlowFee(cTx, {
         companyId,
         amount,

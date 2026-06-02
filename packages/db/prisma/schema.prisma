@@ -76,6 +76,9 @@ enum LedgerAccountType {
   RESERVED
   FEE
   EXTERNAL
+  // Debt owed by the company to the platform (e.g. the uncovered remainder of a
+  // reversal after available was drained). No wallet projection — like FEE/EXTERNAL.
+  RECEIVABLE
 }
 
 enum LedgerDirection {
@@ -105,6 +108,13 @@ enum WhishPaymentStatus {
   PAID
   FAILED
   EXPIRED
+}
+
+enum WebhookDeliveryStatus {
+  PENDING
+  DELIVERED
+  FAILED
+  RETRYING
 }
 
 // ----------------------------- Users -----------------------------
@@ -186,6 +196,8 @@ model Company {
   auditLogs         AuditLog[]
   idempotencyKeys   IdempotencyKey[]
   whishPayments     WhishPayment[]
+  companySources    CompanySource[]
+  webhookDeliveries WebhookDelivery[]
 
   @@index([status])
   @@map("companies")
@@ -205,8 +217,29 @@ model Source {
   commissionRules CommissionRule[]
   transactions    Transaction[]
   apiKeys         ApiKey[]
+  companySources  CompanySource[]
 
   @@map("sources")
+}
+
+// ----------------------- Company ↔ Source opt-in ------------------
+// A SOURCE API key (held by an external provider like OMT) may only ingest
+// transactions for companies that have an enabled pairing here. Without this,
+// any source key could credit any active company. Managed by admins; the Whish
+// flow self-provisions a pairing when a company mints its first payment link.
+model CompanySource {
+  id        String   @id @default(uuid()) @db.Uuid
+  companyId String   @map("company_id") @db.Uuid
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  sourceId  String   @map("source_id") @db.Uuid
+  source    Source   @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([companyId, sourceId])
+  @@index([sourceId, enabled])
+  @@map("company_sources")
 }
 
 // --------------------------- API Keys ----------------------------
@@ -450,9 +483,12 @@ model Load {
 model AuditLog {
   id         String   @id @default(uuid()) @db.Uuid
   actorId    String?  @map("actor_id") @db.Uuid
-  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  // Restrict (not SetNull): audit_logs is append-only (DB trigger rejects
+  // UPDATE), so a SetNull-on-delete would fail. Entities with audit history are
+  // disabled, never hard-deleted.
+  actor      User?    @relation(fields: [actorId], references: [id], onDelete: Restrict)
   companyId  String?  @map("company_id") @db.Uuid
-  company    Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  company    Company? @relation(fields: [companyId], references: [id], onDelete: Restrict)
   action     String
   entityType String   @map("entity_type")
   entityId   String?  @map("entity_id")
@@ -516,4 +552,32 @@ model WhishPayment {
   @@index([companyId, status])
   @@index([companyId, createdAt])
   @@map("whish_payments")
+}
+
+// -------------------------- Webhook Deliveries -------------------
+// Durable log/queue of outbound webhook attempts. Created in 0001 and protected
+// by RLS (0002). NOTE: not yet wired — the current Whish webhook delivery is
+// fire-and-forget (see WhishWebhookService); this model exists so schema.prisma
+// matches the live DB (no drift / destructive migrate) and is ready to adopt
+// for durable, retried delivery. Tenant-scoped (RLS by company_id).
+model WebhookDelivery {
+  id             String                @id @default(uuid()) @db.Uuid
+  companyId      String                @map("company_id") @db.Uuid
+  company        Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  eventType      String                @map("event_type")
+  payload        Json                  @db.JsonB
+  targetUrl      String                @map("target_url")
+  status         WebhookDeliveryStatus @default(PENDING)
+  responseStatus Int?                  @map("response_status")
+  responseBody   String?               @map("response_body")
+  attempts       Int                   @default(0)
+  lastAttemptAt  DateTime?             @map("last_attempt_at") @db.Timestamptz(6)
+  nextRetryAt    DateTime?             @map("next_retry_at") @db.Timestamptz(6)
+  deliveredAt    DateTime?             @map("delivered_at") @db.Timestamptz(6)
+  createdAt      DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([companyId, createdAt])
+  @@index([status, nextRetryAt])
+  @@map("webhook_deliveries")
 }

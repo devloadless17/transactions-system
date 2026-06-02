@@ -1,6 +1,7 @@
 import { ArgumentsHost, Catch, ExceptionFilter, HttpException, Logger } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { ZodError } from 'zod';
+import { Prisma } from '@app/db';
 import { DomainError } from '../errors/domain.error';
 
 interface ErrorBody {
@@ -63,6 +64,17 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       };
     }
 
+    // Map known Prisma errors to proper 4xx instead of leaking them as 500s.
+    if (exception instanceof Prisma.PrismaClientKnownRequestError) {
+      return this.translatePrismaKnown(exception);
+    }
+    if (exception instanceof Prisma.PrismaClientValidationError) {
+      return {
+        status: 400,
+        body: { error: { code: 'VALIDATION_ERROR', message: 'Invalid database query input' } },
+      };
+    }
+
     if (exception instanceof HttpException) {
       const status = exception.getStatus();
       const response = exception.getResponse();
@@ -92,6 +104,49 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         },
       },
     };
+  }
+
+  private translatePrismaKnown(e: Prisma.PrismaClientKnownRequestError): {
+    status: number;
+    body: ErrorBody;
+  } {
+    switch (e.code) {
+      case 'P2002': // unique constraint violation
+        return {
+          status: 409,
+          body: {
+            error: {
+              code: 'CONFLICT',
+              message: 'A record with these values already exists',
+              details: { target: (e.meta as { target?: unknown } | undefined)?.target },
+            },
+          },
+        };
+      case 'P2025': // record required but not found
+        return { status: 404, body: { error: { code: 'NOT_FOUND', message: 'Record not found' } } };
+      case 'P2003': // foreign-key constraint violation
+        return {
+          status: 409,
+          body: {
+            error: {
+              code: 'CONFLICT',
+              message: 'Operation violates a reference constraint',
+              details: { field: (e.meta as { field_name?: unknown } | undefined)?.field_name },
+            },
+          },
+        };
+      case 'P2034': // write conflict / deadlock (normally retried by runSerializable)
+        return {
+          status: 409,
+          body: { error: { code: 'WRITE_CONFLICT', message: 'Write conflict, please retry' } },
+        };
+      default:
+        // Unknown known-error: surface the Prisma code but not internals.
+        return {
+          status: 400,
+          body: { error: { code: `DB_${e.code}`, message: 'Database request error' } },
+        };
+    }
   }
 }
 

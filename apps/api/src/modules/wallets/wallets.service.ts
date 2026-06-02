@@ -49,22 +49,28 @@ export class WalletsService {
         continue;
       }
 
-      const newAvailable = Money.of(wallet.availableBalance.toString())
-        .add(args.delta.available ?? Money.zero())
-        .toString();
-      const newPending = Money.of(wallet.pendingBalance.toString())
-        .add(args.delta.pending ?? Money.zero())
-        .toString();
-      const newReserved = Money.of(wallet.reservedBalance.toString())
-        .add(args.delta.reserved ?? Money.zero())
-        .toString();
+      const newAvailable = Money.of(wallet.availableBalance.toString()).add(
+        args.delta.available ?? Money.zero(),
+      );
+      const newPending = Money.of(wallet.pendingBalance.toString()).add(
+        args.delta.pending ?? Money.zero(),
+      );
+      const newReserved = Money.of(wallet.reservedBalance.toString()).add(
+        args.delta.reserved ?? Money.zero(),
+      );
 
       // Reject if any balance would go negative — keeps DB CHECKs from raising.
-      if (Number(newAvailable) < 0 || Number(newPending) < 0 || Number(newReserved) < 0) {
+      // Compare with Money/Decimal (never JS float) so a 20,8-digit balance can't
+      // slip past the guard through float-precision loss.
+      if (newAvailable.isNegative() || newPending.isNegative() || newReserved.isNegative()) {
         throw new ConflictError('Wallet balance would become negative', {
           companyId: args.companyId,
           currency: args.currency,
-          attempted: { newAvailable, newPending, newReserved },
+          attempted: {
+            newAvailable: newAvailable.toString(),
+            newPending: newPending.toString(),
+            newReserved: newReserved.toString(),
+          },
         });
       }
 
@@ -72,9 +78,9 @@ export class WalletsService {
       const res = await tx.wallet.updateMany({
         where: { id: wallet.id, version: wallet.version },
         data: {
-          availableBalance: newAvailable,
-          pendingBalance: newPending,
-          reservedBalance: newReserved,
+          availableBalance: newAvailable.toString(),
+          pendingBalance: newPending.toString(),
+          reservedBalance: newReserved.toString(),
           version: { increment: 1 },
         },
       });

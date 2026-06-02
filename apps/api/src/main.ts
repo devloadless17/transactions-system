@@ -3,6 +3,7 @@ import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import { Logger } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import type { Request, Response, NextFunction } from 'express';
 import { Logger as PinoLogger } from 'nestjs-pino';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
@@ -70,6 +71,19 @@ async function bootstrap() {
   app.useBodyParser('json', { limit: '256kb' });
   app.useBodyParser('urlencoded', { extended: true, limit: '256kb' });
   app.use(cookieParser());
+
+  // Protect /metrics with a bearer token when configured. Prometheus metrics
+  // leak operational/tenant topology, so they should not be world-readable in
+  // production. When METRICS_TOKEN is empty (dev) the endpoint stays open.
+  const metricsToken = config.get('METRICS_TOKEN', { infer: true });
+  if (metricsToken) {
+    app.use('/metrics', (req: Request, res: Response, next: NextFunction) => {
+      if (req.headers.authorization === `Bearer ${metricsToken}`) return next();
+      res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'metrics token required' } });
+    });
+  } else if (config.get('NODE_ENV', { infer: true }) === 'production') {
+    logger.warn('METRICS_TOKEN is not set — /metrics is publicly readable in production.');
+  }
 
   const allowed = config
     .get('ALLOWED_ORIGINS', { infer: true })

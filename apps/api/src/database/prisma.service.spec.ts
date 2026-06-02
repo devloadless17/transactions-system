@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 // PrismaClient's constructor reads the datasource URL lazily (it does not
 // connect here), so a placeholder is enough to instantiate the service under
@@ -14,17 +14,22 @@ function serializationFailure(): Error {
   return e;
 }
 
+type TxFn = <T>(fn: (tx: unknown) => Promise<T> | T, opts?: unknown) => Promise<T>;
+
+/** Replace the inherited interactive-transaction method with a test stub. */
+function stubTransaction(svc: PrismaService, impl: TxFn): void {
+  (svc as unknown as { $transaction: TxFn }).$transaction = impl;
+}
+
 describe('PrismaService.runSerializable', () => {
   it('retries a transient serialization failure and eventually succeeds', async () => {
     const svc = new PrismaService();
     let calls = 0;
-    vi.spyOn(svc, '$transaction' as never).mockImplementation((async (
-      fn: (tx: unknown) => unknown,
-    ) => {
+    stubTransaction(svc, async (fn) => {
       calls++;
       if (calls < 3) throw serializationFailure();
       return fn({});
-    }) as never);
+    });
 
     const result = await svc.runSerializable(async () => 'ok');
     expect(result).toBe('ok');
@@ -34,10 +39,10 @@ describe('PrismaService.runSerializable', () => {
   it('rethrows a non-retryable error immediately without retrying', async () => {
     const svc = new PrismaService();
     let calls = 0;
-    vi.spyOn(svc, '$transaction' as never).mockImplementation((async () => {
+    stubTransaction(svc, async () => {
       calls++;
       throw new Error('some unrelated failure');
-    }) as never);
+    });
 
     await expect(svc.runSerializable(async () => 'ok')).rejects.toThrow('some unrelated failure');
     expect(calls).toBe(1);
@@ -46,10 +51,10 @@ describe('PrismaService.runSerializable', () => {
   it('gives up after the max attempts on a persistent conflict', async () => {
     const svc = new PrismaService();
     let calls = 0;
-    vi.spyOn(svc, '$transaction' as never).mockImplementation((async () => {
+    stubTransaction(svc, async () => {
       calls++;
       throw serializationFailure();
-    }) as never);
+    });
 
     await expect(svc.runSerializable(async () => 'ok')).rejects.toThrow(/serialize/);
     expect(calls).toBe(5);

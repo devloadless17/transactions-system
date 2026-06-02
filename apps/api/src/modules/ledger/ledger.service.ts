@@ -92,6 +92,32 @@ export class LedgerService {
   }
 
   /**
+   * Outstanding RECEIVABLE (debt owed by the company to the platform) for a
+   * (company, currency), computed from the ledger: Σ(DEBIT) − Σ(CREDIT). A
+   * positive result means the company owes the platform. Call inside an open
+   * transaction (RLS context already set by the caller).
+   */
+  async outstandingReceivable(
+    tx: PrismaClient,
+    companyId: string,
+    currency: string,
+  ): Promise<Money> {
+    const rows = await tx.ledgerEntry.groupBy({
+      by: ['direction'],
+      where: { companyId, currency, accountType: 'RECEIVABLE' },
+      _sum: { amount: true },
+    });
+    let debit = Money.zero();
+    let credit = Money.zero();
+    for (const r of rows) {
+      const amt = Money.of((r._sum.amount ?? 0).toString());
+      if (r.direction === 'DEBIT') debit = debit.add(amt);
+      else credit = credit.add(amt);
+    }
+    return debit.sub(credit);
+  }
+
+  /**
    * Read ledger entries for a company. Append-only model means this is a
    * pure read; suitable for reconciliation, audits, and the wallet detail
    * page on the company dashboard.

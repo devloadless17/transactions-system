@@ -77,6 +77,17 @@ export class WhishPaymentsService {
     const source = await this.resolveWhishSource();
     await this.assertCommissionResolves(companyId, source.id, input.amount);
 
+    // Minting a Whish link is the company opting into the Whish source. Ensure
+    // the pairing exists/enabled so settlement (which runs through the ingest
+    // path's company↔source opt-in check) is allowed.
+    await this.prisma.runAsAdmin((tx) =>
+      tx.companySource.upsert({
+        where: { companyId_sourceId: { companyId, sourceId: source.id } },
+        update: { enabled: true },
+        create: { companyId, sourceId: source.id, enabled: true },
+      }),
+    );
+
     // Idempotency: a retried create with the same key returns the original.
     if (input.idempotencyKey) {
       const prior = await this.prisma.runAsTenant(companyId, (tx) =>

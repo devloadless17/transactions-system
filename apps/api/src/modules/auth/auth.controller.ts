@@ -10,6 +10,7 @@ import {
   UsePipes,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Throttle } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
 import crypto from 'node:crypto';
 import {
@@ -37,6 +38,9 @@ export class AuthController {
     private readonly config: ConfigService<Env, true>,
   ) {}
 
+  // Strict per-IP limit on the unauthenticated, argon2-heavy login path to
+  // blunt brute-force / credential-stuffing and CPU-exhaustion attempts.
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Public()
   @Post('login')
   @HttpCode(200)
@@ -55,6 +59,7 @@ export class AuthController {
     return mapToMeResponse(user);
   }
 
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Public()
   @Post('refresh')
   @HttpCode(200)

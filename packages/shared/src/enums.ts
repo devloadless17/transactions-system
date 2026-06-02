@@ -92,6 +92,10 @@ export const LedgerAccountType = {
   RESERVED: 'RESERVED',
   FEE: 'FEE',
   EXTERNAL: 'EXTERNAL',
+  // A debt owed by the company to the platform — e.g. the uncovered remainder
+  // of a reversal/clawback after the company's available balance was drained.
+  // Has no wallet projection (like FEE/EXTERNAL), so the wallet stays >= 0.
+  RECEIVABLE: 'RECEIVABLE',
 } as const;
 export type LedgerAccountType = (typeof LedgerAccountType)[keyof typeof LedgerAccountType];
 

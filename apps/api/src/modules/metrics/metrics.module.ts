@@ -2,6 +2,7 @@ import { Global, Module } from '@nestjs/common';
 import {
   PrometheusModule,
   makeCounterProvider,
+  makeGaugeProvider,
   makeHistogramProvider,
 } from '@willsoto/nestjs-prometheus';
 import { MetricsInterceptor } from './metrics.interceptor';
@@ -33,6 +34,15 @@ const metricProviders = [
     name: 'txn_ingest_total',
     help: 'Transactions ingested (successful)',
     labelNames: ['source_code', 'currency'],
+  }),
+  makeGaugeProvider({
+    name: 'ledger_wallet_divergent',
+    help: 'Number of (company,currency) wallets whose balance diverges from the ledger as of the last reconciliation run',
+  }),
+  makeGaugeProvider({
+    name: 'ledger_receivable_outstanding',
+    help: 'Total outstanding RECEIVABLE (company debt to the platform) as of the last reconciliation run, by currency',
+    labelNames: ['currency'],
   }),
 ];
 
