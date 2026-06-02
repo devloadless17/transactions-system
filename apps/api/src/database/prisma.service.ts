@@ -68,16 +68,45 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   }
 
   /**
-   * Run `fn` inside a Serializable transaction, retrying on transient
-   * serialization/deadlock failures (Postgres 40001/40P01, Prisma P2034) with
-   * jittered exponential backoff. Every financial mutation (ingest, reverse,
-   * withdrawal/payout/load lifecycle, Whish settlement) must go through this so
-   * normal contention is retried transparently instead of surfacing as a 500.
-   *
-   * The caller is still responsible for setting the RLS context inside `fn`
-   * (e.g. `SET LOCAL app.bypass_rls = 'on'`), exactly as before.
+   * Run `fn` scoped to a tenant when `companyId` is set (RLS enforces the
+   * scope — a forgotten where-clause can't leak another tenant's rows), or as
+   * admin (RLS bypass) for genuine cross-tenant/admin reads when it is null.
+   * Lets one service method serve both a company actor and an admin safely.
+   */
+  async runAsScoped<T>(companyId: string | null, fn: (tx: PrismaClient) => Promise<T>): Promise<T> {
+    return companyId ? this.runAsTenant(companyId, fn) : this.runAsAdmin(fn);
+  }
+
+  /**
+   * Serializable transaction + transient-conflict retry (Postgres 40001/40P01,
+   * Prisma P2034) with jittered backoff, with NO RLS context set — `fn` must set
+   * its own (or rely on bypass). Financial mutations should instead use
+   * `runSerializableAsTenant`, which scopes every write to a company; this raw
+   * variant exists for non-tenant serializable work.
    */
   async runSerializable<T>(fn: (tx: PrismaClient) => Promise<T>): Promise<T> {
+    return this.runSerializableRaw(fn);
+  }
+
+  /**
+   * Like `runSerializable`, but scoped to a tenant: sets `app.current_company_id`
+   * so RLS WITH CHECK validates that every row written in `fn` belongs to
+   * `companyId` (defense-in-depth — a bug can't write into another tenant).
+   * Used by the company-known write flows (ingest, withdrawal/payout/load
+   * request). Caller does NOT set the RLS context — this does.
+   */
+  async runSerializableAsTenant<T>(
+    companyId: string,
+    fn: (tx: PrismaClient) => Promise<T>,
+  ): Promise<T> {
+    const safeId = escapeUuid(companyId);
+    return this.runSerializableRaw(async (tx) => {
+      await tx.$executeRawUnsafe(`SET LOCAL app.current_company_id = '${safeId}'`);
+      return fn(tx);
+    });
+  }
+
+  private async runSerializableRaw<T>(fn: (tx: PrismaClient) => Promise<T>): Promise<T> {
     let attempt = 0;
     for (;;) {
       attempt++;

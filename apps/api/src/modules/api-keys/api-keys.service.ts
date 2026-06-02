@@ -50,7 +50,7 @@ export class ApiKeysService {
   }
 
   async listByCompany(companyId: string): Promise<ApiKeyResponse[]> {
-    const rows = await this.prisma.runAsAdmin((tx) =>
+    const rows = await this.prisma.runAsScoped(companyId, (tx) =>
       tx.apiKey.findMany({ where: { companyId }, orderBy: { createdAt: 'desc' } }),
     );
     return rows.map(mapKey);

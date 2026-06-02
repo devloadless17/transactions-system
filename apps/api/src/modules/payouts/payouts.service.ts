@@ -90,10 +90,10 @@ export class PayoutsService {
     input: CreatePayoutInput,
   ): Promise<PayoutResponse> {
     const amount = Money.of(input.amount);
-    if (!amount.isPositive()) throw new ValidationError('amount must be positive');
+    if (!amount.round().isPositive())
+      throw new ValidationError('amount must be positive at up to 8 decimal places');
 
-    const row = await this.prisma.runSerializable(async (tx) => {
-      await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
+    const row = await this.prisma.runSerializableAsTenant(companyId, async (tx) => {
       const cTx = tx as unknown as PrismaClient;
 
       // Block money-out while the company owes the platform (reversal clawback
@@ -169,8 +169,11 @@ export class PayoutsService {
     approvedById: string,
     input: ApprovePayoutInput,
   ): Promise<PayoutResponse> {
-    const row = await this.prisma.runSerializable(async (tx) => {
-      await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
+    const pre = await this.prisma.runAsAdmin((tx) =>
+      tx.payout.findUnique({ where: { id }, select: { companyId: true } }),
+    );
+    if (!pre) throw new NotFoundError('Payout', id);
+    const row = await this.prisma.runSerializableAsTenant(pre.companyId, async (tx) => {
       const cTx = tx as unknown as PrismaClient;
 
       const p = await cTx.payout.findUnique({ where: { id } });
@@ -270,8 +273,17 @@ export class PayoutsService {
       companyId?: string;
     },
   ): Promise<PayoutResponse> {
-    const row = await this.prisma.runSerializable(async (tx) => {
-      await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
+    // cancel passes the company; reject (admin) doesn't — resolve it so the
+    // mutation runs scoped and RLS WITH CHECK validates the writes.
+    const targetCompanyId =
+      opts.companyId ??
+      (
+        await this.prisma.runAsAdmin((tx) =>
+          tx.payout.findUnique({ where: { id }, select: { companyId: true } }),
+        )
+      )?.companyId;
+    if (!targetCompanyId) throw new NotFoundError('Payout', id);
+    const row = await this.prisma.runSerializableAsTenant(targetCompanyId, async (tx) => {
       const cTx = tx as unknown as PrismaClient;
 
       const p = await cTx.payout.findUnique({ where: { id } });
@@ -334,7 +346,7 @@ export class PayoutsService {
     companyId?: string;
     query: ListPayoutsQuery;
   }): Promise<PaginatedResponse<PayoutResponse>> {
-    return this.prisma.runAsAdmin(async (tx) => {
+    return this.prisma.runAsScoped(args.companyId ?? null, async (tx) => {
       const where: Prisma.PayoutWhereInput = {};
       if (args.companyId) where.companyId = args.companyId;
       else if (args.query.companyId) where.companyId = args.query.companyId;
@@ -366,7 +378,9 @@ export class PayoutsService {
   }
 
   async getById(id: string, companyId?: string): Promise<PayoutResponse> {
-    const row = await this.prisma.runAsAdmin((tx) => tx.payout.findUnique({ where: { id } }));
+    const row = await this.prisma.runAsScoped(companyId ?? null, (tx) =>
+      tx.payout.findUnique({ where: { id } }),
+    );
     if (!row) throw new NotFoundError('Payout', id);
     if (companyId && row.companyId !== companyId) throw new NotFoundError('Payout', id);
     return mapPayout(row);

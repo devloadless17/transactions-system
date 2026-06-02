@@ -126,7 +126,7 @@ export class LedgerService {
     companyId: string,
     query: ListLedgerEntriesQuery,
   ): Promise<PaginatedResponse<LedgerEntryResponse>> {
-    return this.prisma.runAsAdmin(async (tx) => {
+    return this.prisma.runAsScoped(companyId, async (tx) => {
       const where: Prisma.LedgerEntryWhereInput = { companyId };
       if (query.currency) where.currency = query.currency;
       if (query.accountType) where.accountType = query.accountType;

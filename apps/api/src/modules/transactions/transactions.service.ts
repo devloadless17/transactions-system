@@ -89,8 +89,11 @@ export class TransactionsService {
     input: IngestTransactionInput,
   ): Promise<TransactionResponse> {
     const amount = Money.of(input.amount);
-    if (!amount.isPositive()) {
-      throw new ValidationError('amount must be positive');
+    // Reject not just non-positive but also sub-unit amounts that round to 0 at
+    // the 8dp money scale (they would pass isPositive() yet violate the DB
+    // amount>0 CHECK and surface as a 500).
+    if (!amount.round().isPositive()) {
+      throw new ValidationError('amount must be positive at up to 8 decimal places');
     }
 
     const [foundSource, company, optIn] = await this.prisma.runAsAdmin((tx) =>
@@ -118,10 +121,10 @@ export class TransactionsService {
     const companyId = company.id;
     const source: { id: string; code: string; status: string } = foundSource;
 
-    // Run the whole financial mutation as admin (we already validated the
-    // caller via API key) inside a serializable transaction.
-    const result = await this.prisma.runSerializable(async (tx) => {
-      await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
+    // Run the whole financial mutation scoped to the target company, so RLS
+    // WITH CHECK validates that every row written (transaction, ledger, wallet)
+    // belongs to `companyId` — a bug can't mis-book into another tenant.
+    const result = await this.prisma.runSerializableAsTenant(companyId, async (tx) => {
       const cTx = tx as unknown as PrismaClient;
 
       // ---- idempotency: explicit key OR natural (source,external) pair ----
@@ -133,16 +136,15 @@ export class TransactionsService {
           return this.mapTransaction(cTx, existing);
         }
       }
+      // Natural idempotency: a repeat of the same (source, externalId) for this
+      // company replays the existing row. The (source, externalId) unique index
+      // is global, so a *different* company reusing the same pair is rejected by
+      // that constraint on insert (surfaced as a 409) — it can't be observed
+      // here under tenant scope, so there's nothing to second-guess.
       const dup = await cTx.transaction.findFirst({
         where: { sourceId: source.id, externalTransactionId: input.externalTransactionId },
       });
       if (dup) {
-        if (dup.companyId !== companyId) {
-          throw new ConflictError(
-            'externalTransactionId already used by a different company for this source',
-            { sourceId: source.id, externalTransactionId: input.externalTransactionId },
-          );
-        }
         return this.mapTransaction(cTx, dup);
       }
 
@@ -269,8 +271,13 @@ export class TransactionsService {
     txId: string,
     args: { actorId: string; reason: string },
   ): Promise<TransactionResponse> {
-    const reversed = await this.prisma.runSerializable(async (tx) => {
-      await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
+    // Admin action: look up the owning company first, then run the mutation
+    // scoped to it so RLS WITH CHECK validates every compensating write.
+    const pre = await this.prisma.runAsAdmin((tx) =>
+      tx.transaction.findUnique({ where: { id: txId }, select: { companyId: true } }),
+    );
+    if (!pre) throw new NotFoundError('Transaction', txId);
+    const reversed = await this.prisma.runSerializableAsTenant(pre.companyId, async (tx) => {
       const cTx = tx as unknown as PrismaClient;
 
       const orig = await cTx.transaction.findUnique({
@@ -395,7 +402,7 @@ export class TransactionsService {
    * date-range slices for larger sets.
    */
   async exportCsv(args: { companyId?: string; query: ListTransactionsQuery }): Promise<string> {
-    const rows = await this.prisma.runAsAdmin(async (tx) => {
+    const rows = await this.prisma.runAsScoped(args.companyId ?? null, async (tx) => {
       const where: Prisma.TransactionWhereInput = {};
       if (args.companyId) where.companyId = args.companyId;
       else if (args.query.companyId) where.companyId = args.query.companyId;
@@ -451,7 +458,7 @@ export class TransactionsService {
     companyId?: string;
     query: ListTransactionsQuery;
   }): Promise<PaginatedResponse<TransactionResponse>> {
-    return this.prisma.runAsAdmin(async (tx) => {
+    return this.prisma.runAsScoped(args.companyId ?? null, async (tx) => {
       const where: Prisma.TransactionWhereInput = {};
       if (args.companyId) where.companyId = args.companyId;
       else if (args.query.companyId) where.companyId = args.query.companyId;
@@ -494,7 +501,7 @@ export class TransactionsService {
   }
 
   async getById(id: string, companyId?: string): Promise<TransactionResponse> {
-    const row = await this.prisma.runAsAdmin((tx) =>
+    const row = await this.prisma.runAsScoped(companyId ?? null, (tx) =>
       tx.transaction.findUnique({
         where: { id },
         include: { source: { select: { code: true } } },
@@ -511,7 +518,7 @@ export class TransactionsService {
    * full double-entry trail without leaving the row.
    */
   async getDetail(id: string, companyId?: string) {
-    return this.prisma.runAsAdmin(async (tx) => {
+    return this.prisma.runAsScoped(companyId ?? null, async (tx) => {
       const row = await tx.transaction.findUnique({
         where: { id },
         include: { source: { select: { code: true } } },

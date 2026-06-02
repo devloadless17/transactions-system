@@ -65,10 +65,10 @@ export class LoadsService {
     input: CreateLoadInput,
   ): Promise<LoadResponse> {
     const amount = Money.of(input.amount);
-    if (!amount.isPositive()) throw new ValidationError('amount must be positive');
+    if (!amount.round().isPositive())
+      throw new ValidationError('amount must be positive at up to 8 decimal places');
 
-    const row = await this.prisma.runSerializable(async (tx) => {
-      await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
+    const row = await this.prisma.runSerializableAsTenant(companyId, async (tx) => {
       const cTx = tx as unknown as PrismaClient;
 
       const { fee, feeApplication } = await this.fees.resolveFlowFee(cTx, {
@@ -102,8 +102,11 @@ export class LoadsService {
   }
 
   async approve(id: string, approvedById: string, input: ApproveLoadInput): Promise<LoadResponse> {
-    const row = await this.prisma.runSerializable(async (tx) => {
-      await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
+    const pre = await this.prisma.runAsAdmin((tx) =>
+      tx.load.findUnique({ where: { id }, select: { companyId: true } }),
+    );
+    if (!pre) throw new NotFoundError('Load', id);
+    const row = await this.prisma.runSerializableAsTenant(pre.companyId, async (tx) => {
       const cTx = tx as unknown as PrismaClient;
 
       const l = await cTx.load.findUnique({ where: { id } });
@@ -196,8 +199,15 @@ export class LoadsService {
       companyId?: string;
     },
   ): Promise<LoadResponse> {
-    const row = await this.prisma.runSerializable(async (tx) => {
-      await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
+    const targetCompanyId =
+      opts.companyId ??
+      (
+        await this.prisma.runAsAdmin((tx) =>
+          tx.load.findUnique({ where: { id }, select: { companyId: true } }),
+        )
+      )?.companyId;
+    if (!targetCompanyId) throw new NotFoundError('Load', id);
+    const row = await this.prisma.runSerializableAsTenant(targetCompanyId, async (tx) => {
       const cTx = tx as unknown as PrismaClient;
 
       const l = await cTx.load.findUnique({ where: { id } });
@@ -231,7 +241,7 @@ export class LoadsService {
     companyId?: string;
     query: ListLoadsQuery;
   }): Promise<PaginatedResponse<LoadResponse>> {
-    return this.prisma.runAsAdmin(async (tx) => {
+    return this.prisma.runAsScoped(args.companyId ?? null, async (tx) => {
       const where: Prisma.LoadWhereInput = {};
       if (args.companyId) where.companyId = args.companyId;
       else if (args.query.companyId) where.companyId = args.query.companyId;
@@ -263,7 +273,9 @@ export class LoadsService {
   }
 
   async getById(id: string, companyId?: string): Promise<LoadResponse> {
-    const row = await this.prisma.runAsAdmin((tx) => tx.load.findUnique({ where: { id } }));
+    const row = await this.prisma.runAsScoped(companyId ?? null, (tx) =>
+      tx.load.findUnique({ where: { id } }),
+    );
     if (!row) throw new NotFoundError('Load', id);
     if (companyId && row.companyId !== companyId) throw new NotFoundError('Load', id);
     return mapLoad(row);

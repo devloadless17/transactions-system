@@ -146,7 +146,23 @@ export class AuthService {
     const stored = await this.prisma.runAsAdmin((tx) =>
       tx.refreshToken.findUnique({ where: { tokenHash } }),
     );
-    if (!stored || stored.revokedAt || stored.expiresAt < new Date()) {
+    if (!stored || stored.expiresAt < new Date()) {
+      throw new UnauthorizedError('Refresh token revoked or expired');
+    }
+    // Reuse detection: a token that was already rotated/revoked is being
+    // replayed. Either the legitimate holder lost a race or the token was
+    // stolen — fail closed by revoking the user's entire refresh-token family
+    // so any attacker chain minted from it dies too.
+    if (stored.revokedAt) {
+      await this.prisma.runAsAdmin((tx) =>
+        tx.refreshToken.updateMany({
+          where: { userId: stored.userId, revokedAt: null },
+          data: { revokedAt: new Date() },
+        }),
+      );
+      this.logger.warn(
+        `refresh token reuse detected for user ${stored.userId}; revoked all active sessions`,
+      );
       throw new UnauthorizedError('Refresh token revoked or expired');
     }
 

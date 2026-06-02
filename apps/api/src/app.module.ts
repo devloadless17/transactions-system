@@ -25,6 +25,7 @@ import { TeamModule } from './modules/team/team.module';
 import { AdminUsersModule } from './modules/admin-users/admin-users.module';
 import { WhishModule } from './modules/whish/whish.module';
 import { ReconciliationModule } from './modules/reconciliation/reconciliation.module';
+import { MaintenanceModule } from './modules/maintenance/maintenance.module';
 import { MetricsModule } from './modules/metrics/metrics.module';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 import { AuditInterceptor } from './modules/audit/audit.interceptor';
@@ -66,6 +67,7 @@ import type { Env } from './config/env.schema';
     AdminUsersModule,
     WhishModule,
     ReconciliationModule,
+    MaintenanceModule,
     MetricsModule,
   ],
   providers: [

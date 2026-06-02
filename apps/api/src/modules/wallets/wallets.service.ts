@@ -95,14 +95,14 @@ export class WalletsService {
   }
 
   async listByCompany(companyId: string): Promise<WalletResponse[]> {
-    const rows = await this.prisma.runAsAdmin((tx) =>
+    const rows = await this.prisma.runAsScoped(companyId, (tx) =>
       tx.wallet.findMany({ where: { companyId }, orderBy: { currency: 'asc' } }),
     );
     return rows.map(mapWallet);
   }
 
   async getOne(companyId: string, currency: string): Promise<WalletResponse> {
-    const row = await this.prisma.runAsAdmin((tx) =>
+    const row = await this.prisma.runAsScoped(companyId, (tx) =>
       tx.wallet.findUnique({
         where: { companyId_currency: { companyId, currency } },
       }),

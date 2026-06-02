@@ -97,10 +97,10 @@ export class WithdrawalsService {
     input: CreateWithdrawalInput,
   ): Promise<WithdrawalResponse> {
     const amount = Money.of(input.amount);
-    if (!amount.isPositive()) throw new ValidationError('amount must be positive');
+    if (!amount.round().isPositive())
+      throw new ValidationError('amount must be positive at up to 8 decimal places');
 
-    const row = await this.prisma.runSerializable(async (tx) => {
-      await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
+    const row = await this.prisma.runSerializableAsTenant(companyId, async (tx) => {
       const cTx = tx as unknown as PrismaClient;
 
       // Block money-out while the company owes the platform (e.g. from a
@@ -181,8 +181,11 @@ export class WithdrawalsService {
     approvedById: string,
     input: ApproveWithdrawalInput,
   ): Promise<WithdrawalResponse> {
-    const row = await this.prisma.runSerializable(async (tx) => {
-      await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
+    const pre = await this.prisma.runAsAdmin((tx) =>
+      tx.withdrawal.findUnique({ where: { id }, select: { companyId: true } }),
+    );
+    if (!pre) throw new NotFoundError('Withdrawal', id);
+    const row = await this.prisma.runSerializableAsTenant(pre.companyId, async (tx) => {
       const cTx = tx as unknown as PrismaClient;
 
       const w = await cTx.withdrawal.findUnique({ where: { id } });
@@ -257,8 +260,11 @@ export class WithdrawalsService {
     approvedById: string,
     input: RejectWithdrawalInput,
   ): Promise<WithdrawalResponse> {
-    const row = await this.prisma.runSerializable(async (tx) => {
-      await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
+    const pre = await this.prisma.runAsAdmin((tx) =>
+      tx.withdrawal.findUnique({ where: { id }, select: { companyId: true } }),
+    );
+    if (!pre) throw new NotFoundError('Withdrawal', id);
+    const row = await this.prisma.runSerializableAsTenant(pre.companyId, async (tx) => {
       const cTx = tx as unknown as PrismaClient;
 
       const w = await cTx.withdrawal.findUnique({ where: { id } });
@@ -325,8 +331,7 @@ export class WithdrawalsService {
     cancelledById: string,
     input: CancelRequestInput,
   ): Promise<WithdrawalResponse> {
-    const row = await this.prisma.runSerializable(async (tx) => {
-      await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
+    const row = await this.prisma.runSerializableAsTenant(companyId, async (tx) => {
       const cTx = tx as unknown as PrismaClient;
 
       const w = await cTx.withdrawal.findUnique({ where: { id } });
@@ -385,7 +390,7 @@ export class WithdrawalsService {
     companyId?: string;
     query: ListWithdrawalsQuery;
   }): Promise<PaginatedResponse<WithdrawalResponse>> {
-    return this.prisma.runAsAdmin(async (tx) => {
+    return this.prisma.runAsScoped(args.companyId ?? null, async (tx) => {
       const where: Prisma.WithdrawalWhereInput = {};
       if (args.companyId) where.companyId = args.companyId;
       else if (args.query.companyId) where.companyId = args.query.companyId;
@@ -417,7 +422,9 @@ export class WithdrawalsService {
   }
 
   async getById(id: string, companyId?: string): Promise<WithdrawalResponse> {
-    const row = await this.prisma.runAsAdmin((tx) => tx.withdrawal.findUnique({ where: { id } }));
+    const row = await this.prisma.runAsScoped(companyId ?? null, (tx) =>
+      tx.withdrawal.findUnique({ where: { id } }),
+    );
     if (!row) throw new NotFoundError('Withdrawal', id);
     if (companyId && row.companyId !== companyId) throw new NotFoundError('Withdrawal', id);
     return mapWithdrawal(row);

@@ -50,7 +50,7 @@ export class TeamService {
   }
 
   async list(companyId: string): Promise<TeamMemberResponse[]> {
-    const rows = await this.prisma.runAsAdmin((tx) =>
+    const rows = await this.prisma.runAsScoped(companyId, (tx) =>
       tx.user.findMany({ where: { companyId }, orderBy: { createdAt: 'asc' } }),
     );
     return rows.map(mapMember);

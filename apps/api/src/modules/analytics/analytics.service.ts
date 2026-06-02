@@ -174,78 +174,80 @@ export class AnalyticsService {
     const companyFilter =
       p.args.scope === 'admin' ? p.args.range.companyId : p.args.scope.companyId;
 
-    return this.prisma.runAsAdmin(async (tx) => {
-      // KPI aggregate
-      const agg = await tx.transaction.aggregate({
-        where: {
-          status: 'COMPLETED',
+    return this.prisma.runAsScoped(
+      p.args.scope === 'admin' ? null : p.args.scope.companyId,
+      async (tx) => {
+        // KPI aggregate
+        const agg = await tx.transaction.aggregate({
+          where: {
+            status: 'COMPLETED',
+            currency: p.currency,
+            createdAt: { gte: p.from, lte: p.to },
+            ...(companyFilter ? { companyId: companyFilter } : {}),
+          },
+          _sum: { amount: true, commissionAmount: true },
+          _count: { _all: true },
+          _avg: { amount: true },
+        });
+
+        const totalVolume = Money.of((agg._sum.amount ?? 0).toString()).toString();
+        const totalFees = Money.of((agg._sum.commissionAmount ?? 0).toString()).toString();
+        const transactionCount = agg._count._all;
+        const averageAmount = Money.of((agg._avg.amount ?? 0).toString()).toString();
+
+        // Volume broken out by operation type: deposits (source ingestion),
+        // withdrawals, loads, payouts. Each splits settled (COMPLETED) money
+        // from what's still in-flight (awaiting approval / processing) so the
+        // company sees both what moved and what's pending. Same currency /
+        // company / date window as the KPI aggregate above.
+        const baseWhere = {
           currency: p.currency,
           createdAt: { gte: p.from, lte: p.to },
           ...(companyFilter ? { companyId: companyFilter } : {}),
-        },
-        _sum: { amount: true, commissionAmount: true },
-        _count: { _all: true },
-        _avg: { amount: true },
-      });
-
-      const totalVolume = Money.of((agg._sum.amount ?? 0).toString()).toString();
-      const totalFees = Money.of((agg._sum.commissionAmount ?? 0).toString()).toString();
-      const transactionCount = agg._count._all;
-      const averageAmount = Money.of((agg._avg.amount ?? 0).toString()).toString();
-
-      // Volume broken out by operation type: deposits (source ingestion),
-      // withdrawals, loads, payouts. Each splits settled (COMPLETED) money
-      // from what's still in-flight (awaiting approval / processing) so the
-      // company sees both what moved and what's pending. Same currency /
-      // company / date window as the KPI aggregate above.
-      const baseWhere = {
-        currency: p.currency,
-        createdAt: { gte: p.from, lte: p.to },
-        ...(companyFilter ? { companyId: companyFilter } : {}),
-      };
-      const sumAndCount = { _sum: { amount: true }, _count: { _all: true } } as const;
-      // Deposits = transactions; settled count/total reuse the KPI aggregate.
-      const depositsPending = await tx.transaction.aggregate({
-        where: { ...baseWhere, status: { in: ['PENDING', 'PROCESSING'] } },
-        ...sumAndCount,
-      });
-      const [
-        withdrawalsDone,
-        withdrawalsPending,
-        loadsDone,
-        loadsPending,
-        payoutsDone,
-        payoutsPending,
-      ] = await Promise.all([
-        tx.withdrawal.aggregate({ where: { ...baseWhere, status: 'COMPLETED' }, ...sumAndCount }),
-        tx.withdrawal.aggregate({
-          where: { ...baseWhere, status: { in: ['PENDING', 'APPROVED', 'PROCESSING'] } },
+        };
+        const sumAndCount = { _sum: { amount: true }, _count: { _all: true } } as const;
+        // Deposits = transactions; settled count/total reuse the KPI aggregate.
+        const depositsPending = await tx.transaction.aggregate({
+          where: { ...baseWhere, status: { in: ['PENDING', 'PROCESSING'] } },
           ...sumAndCount,
-        }),
-        tx.load.aggregate({ where: { ...baseWhere, status: 'COMPLETED' }, ...sumAndCount }),
-        tx.load.aggregate({
-          where: { ...baseWhere, status: { in: ['PENDING', 'APPROVED', 'PROCESSING'] } },
-          ...sumAndCount,
-        }),
-        tx.payout.aggregate({ where: { ...baseWhere, status: 'COMPLETED' }, ...sumAndCount }),
-        tx.payout.aggregate({
-          where: { ...baseWhere, status: { in: ['PENDING', 'APPROVED', 'PROCESSING'] } },
-          ...sumAndCount,
-        }),
-      ]);
+        });
+        const [
+          withdrawalsDone,
+          withdrawalsPending,
+          loadsDone,
+          loadsPending,
+          payoutsDone,
+          payoutsPending,
+        ] = await Promise.all([
+          tx.withdrawal.aggregate({ where: { ...baseWhere, status: 'COMPLETED' }, ...sumAndCount }),
+          tx.withdrawal.aggregate({
+            where: { ...baseWhere, status: { in: ['PENDING', 'APPROVED', 'PROCESSING'] } },
+            ...sumAndCount,
+          }),
+          tx.load.aggregate({ where: { ...baseWhere, status: 'COMPLETED' }, ...sumAndCount }),
+          tx.load.aggregate({
+            where: { ...baseWhere, status: { in: ['PENDING', 'APPROVED', 'PROCESSING'] } },
+            ...sumAndCount,
+          }),
+          tx.payout.aggregate({ where: { ...baseWhere, status: 'COMPLETED' }, ...sumAndCount }),
+          tx.payout.aggregate({
+            where: { ...baseWhere, status: { in: ['PENDING', 'APPROVED', 'PROCESSING'] } },
+            ...sumAndCount,
+          }),
+        ]);
 
-      const volume = {
-        deposits: toVolumeMetric(agg, depositsPending),
-        withdrawals: toVolumeMetric(withdrawalsDone, withdrawalsPending),
-        loads: toVolumeMetric(loadsDone, loadsPending),
-        payouts: toVolumeMetric(payoutsDone, payoutsPending),
-      };
+        const volume = {
+          deposits: toVolumeMetric(agg, depositsPending),
+          withdrawals: toVolumeMetric(withdrawalsDone, withdrawalsPending),
+          loads: toVolumeMetric(loadsDone, loadsPending),
+          payouts: toVolumeMetric(payoutsDone, payoutsPending),
+        };
 
-      // Daily buckets via raw SQL: groupBy doesn't support date_trunc directly.
-      const dailyRows = await tx.$queryRawUnsafe<
-        Array<{ day: Date; volume: string; fees: string; count: bigint }>
-      >(
-        `
+        // Daily buckets via raw SQL: groupBy doesn't support date_trunc directly.
+        const dailyRows = await tx.$queryRawUnsafe<
+          Array<{ day: Date; volume: string; fees: string; count: bigint }>
+        >(
+          `
         SELECT
           date_trunc('day', created_at)::date  AS day,
           SUM(amount)::text                     AS volume,
@@ -260,93 +262,94 @@ export class AnalyticsService {
         GROUP BY 1
         ORDER BY 1 ASC
         `,
-        p.currency,
-        p.from,
-        p.to,
-        ...(companyFilter ? [companyFilter] : []),
-      );
+          p.currency,
+          p.from,
+          p.to,
+          ...(companyFilter ? [companyFilter] : []),
+        );
 
-      const buckets = fillDailyGaps(p.from, p.to, dailyRows);
+        const buckets = fillDailyGaps(p.from, p.to, dailyRows);
 
-      // Sources by volume — include fees so dashboards can show
-      // "by OMT: $X volume, $Y fees" / "by wish: ..." breakdowns. When
-      // scoped to a single company (drilldown), return ALL of its sources;
-      // the platform-wide view stays capped to the top few.
-      const topSrcRows = await tx.transaction.groupBy({
-        by: ['sourceId'],
-        where: {
-          status: 'COMPLETED',
-          currency: p.currency,
-          createdAt: { gte: p.from, lte: p.to },
-          ...(companyFilter ? { companyId: companyFilter } : {}),
-        },
-        _sum: { amount: true, commissionAmount: true },
-        _count: { _all: true },
-        orderBy: { _sum: { amount: 'desc' } },
-        ...(companyFilter ? {} : { take: TOP_LIMIT }),
-      });
-      const sourceIds = topSrcRows.map((r) => r.sourceId);
-      const sources = sourceIds.length
-        ? await tx.source.findMany({ where: { id: { in: sourceIds } } })
-        : [];
-      const sourceCode = new Map(sources.map((s) => [s.id, s.code]));
-      const topSources = topSrcRows.map((r) => ({
-        sourceId: r.sourceId,
-        sourceCode: sourceCode.get(r.sourceId) ?? '',
-        volume: Money.of((r._sum.amount ?? 0).toString()).toString(),
-        fees: Money.of((r._sum.commissionAmount ?? 0).toString()).toString(),
-        count: r._count._all,
-      }));
-
-      // Top companies — admin scope only.
-      let topCompanies:
-        | { companyId: string; companyName: string; volume: string; count: number }[]
-        | undefined;
-      if (p.args.scope === 'admin' && !companyFilter) {
-        const rows = await tx.transaction.groupBy({
-          by: ['companyId'],
+        // Sources by volume — include fees so dashboards can show
+        // "by OMT: $X volume, $Y fees" / "by wish: ..." breakdowns. When
+        // scoped to a single company (drilldown), return ALL of its sources;
+        // the platform-wide view stays capped to the top few.
+        const topSrcRows = await tx.transaction.groupBy({
+          by: ['sourceId'],
           where: {
             status: 'COMPLETED',
             currency: p.currency,
             createdAt: { gte: p.from, lte: p.to },
+            ...(companyFilter ? { companyId: companyFilter } : {}),
           },
-          _sum: { amount: true },
+          _sum: { amount: true, commissionAmount: true },
           _count: { _all: true },
           orderBy: { _sum: { amount: 'desc' } },
-          take: TOP_LIMIT,
+          ...(companyFilter ? {} : { take: TOP_LIMIT }),
         });
-        const companyIds = rows.map((r) => r.companyId);
-        const companies = companyIds.length
-          ? await tx.company.findMany({ where: { id: { in: companyIds } } })
+        const sourceIds = topSrcRows.map((r) => r.sourceId);
+        const sources = sourceIds.length
+          ? await tx.source.findMany({ where: { id: { in: sourceIds } } })
           : [];
-        const nameById = new Map(companies.map((c) => [c.id, c.name]));
-        topCompanies = rows.map((r) => ({
-          companyId: r.companyId,
-          companyName: nameById.get(r.companyId) ?? r.companyId.slice(0, 8),
+        const sourceCode = new Map(sources.map((s) => [s.id, s.code]));
+        const topSources = topSrcRows.map((r) => ({
+          sourceId: r.sourceId,
+          sourceCode: sourceCode.get(r.sourceId) ?? '',
           volume: Money.of((r._sum.amount ?? 0).toString()).toString(),
+          fees: Money.of((r._sum.commissionAmount ?? 0).toString()).toString(),
           count: r._count._all,
         }));
-      }
 
-      return {
-        range: { from: p.from.toISOString(), to: p.to.toISOString() },
-        currency: p.currency,
-        kpi: {
-          totalVolume,
-          // Company-scoped callers never receive the aggregate fee — they only
-          // see per-transaction fees. Admins (scope === 'admin', incl. when
-          // drilling into one company) get the total.
-          ...(p.args.scope === 'admin' ? { totalFees } : {}),
-          transactionCount,
-          averageAmount,
+        // Top companies — admin scope only.
+        let topCompanies:
+          | { companyId: string; companyName: string; volume: string; count: number }[]
+          | undefined;
+        if (p.args.scope === 'admin' && !companyFilter) {
+          const rows = await tx.transaction.groupBy({
+            by: ['companyId'],
+            where: {
+              status: 'COMPLETED',
+              currency: p.currency,
+              createdAt: { gte: p.from, lte: p.to },
+            },
+            _sum: { amount: true },
+            _count: { _all: true },
+            orderBy: { _sum: { amount: 'desc' } },
+            take: TOP_LIMIT,
+          });
+          const companyIds = rows.map((r) => r.companyId);
+          const companies = companyIds.length
+            ? await tx.company.findMany({ where: { id: { in: companyIds } } })
+            : [];
+          const nameById = new Map(companies.map((c) => [c.id, c.name]));
+          topCompanies = rows.map((r) => ({
+            companyId: r.companyId,
+            companyName: nameById.get(r.companyId) ?? r.companyId.slice(0, 8),
+            volume: Money.of((r._sum.amount ?? 0).toString()).toString(),
+            count: r._count._all,
+          }));
+        }
+
+        return {
+          range: { from: p.from.toISOString(), to: p.to.toISOString() },
           currency: p.currency,
-        },
-        volume,
-        daily: { currency: p.currency, buckets },
-        topSources,
-        ...(topCompanies ? { topCompanies } : {}),
-      };
-    });
+          kpi: {
+            totalVolume,
+            // Company-scoped callers never receive the aggregate fee — they only
+            // see per-transaction fees. Admins (scope === 'admin', incl. when
+            // drilling into one company) get the total.
+            ...(p.args.scope === 'admin' ? { totalFees } : {}),
+            transactionCount,
+            averageAmount,
+            currency: p.currency,
+          },
+          volume,
+          daily: { currency: p.currency, buckets },
+          topSources,
+          ...(topCompanies ? { topCompanies } : {}),
+        };
+      },
+    );
   }
 }
 

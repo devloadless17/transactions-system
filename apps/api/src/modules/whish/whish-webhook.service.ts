@@ -60,13 +60,20 @@ export class WhishWebhookService {
         paidAt: payment.paidAt?.toISOString() ?? null,
       },
     });
+    const timestamp = Math.floor(Date.now() / 1000).toString();
     const headers: Record<string, string> = {
       'content-type': 'application/json',
       'x-whish-event': 'whish.payment.paid',
+      'x-whish-timestamp': timestamp,
     };
     if (company.webhookSecret) {
-      const sig = crypto.createHmac('sha256', company.webhookSecret).update(body).digest('hex');
-      headers['x-whish-signature'] = `sha256=${sig}`;
+      // Sign `timestamp.body` (not just body) so the receiver can reject
+      // replays by checking the timestamp is recent before trusting the sig.
+      const sig = crypto
+        .createHmac('sha256', company.webhookSecret)
+        .update(`${timestamp}.${body}`)
+        .digest('hex');
+      headers['x-whish-signature'] = `t=${timestamp},sha256=${sig}`;
     }
 
     for (let attempt = 1; attempt <= 2; attempt++) {

@@ -336,20 +336,24 @@ export class WhishPaymentsService {
 
     let expired = 0;
     for (const p of rows) {
-      if (now - p.createdAt.getTime() > EXPIRE_AGE_MS) {
-        await this.prisma.runAsAdmin((tx) =>
-          tx.whishPayment.update({
-            where: { id: p.id },
-            data: { status: WhishPaymentStatus.EXPIRED },
-          }),
-        );
-        this.realtime.company(p.companyId, ['whish']);
-        expired++;
-        continue;
-      }
+      const tooOld = now - p.createdAt.getTime() > EXPIRE_AGE_MS;
       try {
-        await this.reconcile(p);
+        // Always ask Whish for the authoritative status first — never expire a
+        // payment that actually settled just before the cutoff.
+        const result = await this.reconcile(p);
+        if (tooOld && result.status === WhishPaymentStatus.PENDING) {
+          await this.prisma.runAsAdmin((tx) =>
+            tx.whishPayment.update({
+              where: { id: p.id },
+              data: { status: WhishPaymentStatus.EXPIRED },
+            }),
+          );
+          this.realtime.company(p.companyId, ['whish']);
+          expired++;
+        }
       } catch (err) {
+        // Couldn't reach Whish — leave it PENDING and retry next run rather than
+        // blindly expiring a possibly-paid payment.
         this.logger.warn(`Reconcile failed for payment ${p.externalId}: ${(err as Error).message}`);
       }
     }
