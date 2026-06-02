@@ -10,6 +10,7 @@ import {
   type UpdateTeamMemberInput,
 } from '@app/shared';
 import { PrismaService } from '../../database/prisma.service';
+import { RealtimeService } from '../realtime/realtime.service';
 import {
   ConflictError,
   ForbiddenError,
@@ -19,10 +20,13 @@ import {
 
 @Injectable()
 export class TeamService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly realtime: RealtimeService,
+  ) {}
 
   async invite(companyId: string, input: InviteTeamMemberInput): Promise<InviteTeamMemberResponse> {
-    return this.prisma.runAsAdmin(async (tx) => {
+    const result = await this.prisma.runAsAdmin(async (tx) => {
       const existing = await tx.user.findUnique({ where: { email: input.email.toLowerCase() } });
       if (existing) throw new ConflictError(`Email '${input.email}' is already in use`);
 
@@ -41,6 +45,8 @@ export class TeamService {
       });
       return { member: mapMember(member), temporaryPassword: tempPassword };
     });
+    this.realtime.company(companyId, ['team']);
+    return result;
   }
 
   async list(companyId: string): Promise<TeamMemberResponse[]> {
@@ -81,6 +87,7 @@ export class TeamService {
         data: { role: input.role ?? undefined, status: input.status ?? undefined },
       });
     });
+    this.realtime.company(companyId, ['team']);
     return mapMember(row);
   }
 

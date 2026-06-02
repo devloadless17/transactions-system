@@ -75,7 +75,6 @@ export function AdminWhishView() {
 
       <div className="grid gap-4 sm:grid-cols-2">
         <BalanceCard currency="USD" />
-        <BalanceCard currency="LBP" />
       </div>
 
       <Card>
@@ -109,7 +108,7 @@ export function AdminWhishView() {
   );
 }
 
-function BalanceCard({ currency }: { currency: 'USD' | 'LBP' }) {
+function BalanceCard({ currency }: { currency: 'USD' }) {
   const q = useQuery({
     queryKey: ['admin', 'whish', 'balance', currency],
     queryFn: () =>

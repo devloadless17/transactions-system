@@ -295,7 +295,7 @@ function CreatePaymentDialog({
             <DialogHeader>
               <DialogTitle>New payment link</DialogTitle>
               <DialogDescription>
-                Whish supports USD and LBP. The customer pays on Whish&apos;s hosted page.
+                Payments are in USD. The customer pays on Whish&apos;s hosted page.
               </DialogDescription>
             </DialogHeader>
             <form onSubmit={handleSubmit((values) => mu.mutate(values))} className="space-y-4">

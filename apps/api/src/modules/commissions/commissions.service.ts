@@ -8,6 +8,7 @@ import type {
 } from '@app/shared';
 import type { Prisma } from '@app/db';
 import { PrismaService } from '../../database/prisma.service';
+import { RealtimeService } from '../realtime/realtime.service';
 import { NotFoundError, ValidationError } from '../../common/errors/domain.error';
 import { CommissionsRepository } from './commissions.repository';
 
@@ -16,6 +17,7 @@ export class CommissionsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly repo: CommissionsRepository,
+    private readonly realtime: RealtimeService,
   ) {}
 
   async create(input: CreateCommissionRuleInput): Promise<CommissionRuleResponse> {
@@ -44,6 +46,7 @@ export class CommissionsService {
       });
     });
     await this.repo.invalidate();
+    this.realtime.admin(['commissions']);
     return mapRule(row);
   }
 
@@ -99,6 +102,7 @@ export class CommissionsService {
       });
     });
     await this.repo.invalidate();
+    this.realtime.admin(['commissions']);
     return mapRule(row);
   }
 

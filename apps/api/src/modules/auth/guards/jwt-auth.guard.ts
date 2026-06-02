@@ -9,6 +9,8 @@ import type { AuthenticatedRequest, AuthPrincipal } from '../../../common/types/
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
 import { ACCESS_COOKIE_NAME } from '../auth.constants';
 import type { AccessTokenPayload } from '../auth.types';
+import { PrismaService } from '../../../database/prisma.service';
+import { assertCompanyActive } from '../../../common/company-status';
 
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
@@ -16,6 +18,7 @@ export class JwtAuthGuard implements CanActivate {
     private readonly jwt: JwtService,
     private readonly config: ConfigService<Env, true>,
     private readonly reflector: Reflector,
+    private readonly prisma: PrismaService,
   ) {}
 
   async canActivate(ctx: ExecutionContext): Promise<boolean> {
@@ -44,6 +47,9 @@ export class JwtAuthGuard implements CanActivate {
       role: payload.role,
       companyId: payload.companyId,
     };
+    // Freeze access for inactive tenants immediately — even with a still-valid
+    // token. Platform admins (no companyId) are never gated.
+    await assertCompanyActive(this.prisma, principal.companyId);
     (req as AuthenticatedRequest).principal = principal;
     return true;
   }

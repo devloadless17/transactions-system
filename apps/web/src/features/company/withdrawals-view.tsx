@@ -220,9 +220,9 @@ function NewRowDialog({
       currency: 'USD',
       notes: '',
       payout: {
-        method: PayoutMethod.WISH,
-        recipientName: '',
-        recipientPhone: '',
+        method: PayoutMethod.CRYPTO,
+        network: '',
+        walletAddress: '',
       },
     },
   });
@@ -236,17 +236,22 @@ function NewRowDialog({
         currency: 'USD',
         notes: '',
         payout: {
-          method: PayoutMethod.WISH,
-          recipientName: '',
-          recipientPhone: '',
+          method: PayoutMethod.CRYPTO,
+          network: '',
+          walletAddress: '',
         },
       });
+      setMethod(PayoutMethod.CRYPTO);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   const currency = watch('currency');
-  const method = watch('payout.method');
+  // Drive the method selector from local state so clicking Cash/Crypto
+  // re-renders immediately. (setValue on the nested object alone doesn't
+  // reliably notify a watch() subscriber, which made the button appear to
+  // need a second, unrelated click to "apply".)
+  const [method, setMethod] = useState<PayoutMethod>(PayoutMethod.CRYPTO);
   const wallet = walletsQ.data?.data.find((w) => w.currency === currency);
 
   const createMu = useMutation({
@@ -262,19 +267,16 @@ function NewRowDialog({
 
   function switchMethod(next: PayoutMethod) {
     const fresh: CreateWithdrawalInput['payout'] =
-      next === PayoutMethod.CRYPTO
-        ? { method: PayoutMethod.CRYPTO, network: '', walletAddress: '' }
-        : next === PayoutMethod.CASH
-          ? {
-              method: PayoutMethod.CASH,
-              recipientName: '',
-              recipientPhone: '',
-              pickupLocation: '',
-            }
-          : next === PayoutMethod.OTHER
-            ? { method: PayoutMethod.OTHER, description: '' }
-            : { method: PayoutMethod.WISH, recipientName: '', recipientPhone: '' };
+      next === PayoutMethod.CASH
+        ? {
+            method: PayoutMethod.CASH,
+            recipientName: '',
+            recipientPhone: '',
+            pickupLocation: '',
+          }
+        : { method: PayoutMethod.CRYPTO, network: '', walletAddress: '' };
     setValue('payout', fresh, { shouldValidate: false, shouldDirty: true });
+    setMethod(next);
   }
 
   return (
@@ -339,10 +341,8 @@ function NewRowDialog({
               ))}
             </div>
 
-            {method === PayoutMethod.WISH && <WishFields form={form} />}
             {method === PayoutMethod.CRYPTO && <CryptoFields form={form} />}
             {method === PayoutMethod.CASH && <CashFields form={form} />}
-            {method === PayoutMethod.OTHER && <OtherFields form={form} />}
           </section>
 
           <div className="space-y-2">
@@ -364,41 +364,13 @@ function NewRowDialog({
   );
 }
 
-// Bank transfers are not offered — operators settle every flow
-// off-platform via Whish Money, cash, or crypto. OTHER catches anything
-// else (mobile money, vouchers, …).
-const METHOD_OPTIONS: ReadonlyArray<PayoutMethod> = [
-  PayoutMethod.WISH,
-  PayoutMethod.CRYPTO,
-  PayoutMethod.CASH,
-  PayoutMethod.OTHER,
-];
+// Only cash and crypto are offered. Operators settle every flow off-platform
+// via cash handover or crypto transfer.
+const METHOD_OPTIONS: ReadonlyArray<PayoutMethod> = [PayoutMethod.CRYPTO, PayoutMethod.CASH];
 
 // ============================================================
 // Per-method field groups
 // ============================================================
-function WishFields({ form }: { form: UseFormReturn<CreateWithdrawalInput> }) {
-  const { register, formState } = form as unknown as UseFormReturn<{
-    payout: { recipientName: string; recipientPhone: string; instructions?: string };
-  }>;
-  const err = (formState.errors.payout ?? {}) as Record<string, { message?: string } | undefined>;
-  return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-      <Field label="Recipient name" error={err.recipientName?.message}>
-        <Input {...register('payout.recipientName')} />
-      </Field>
-      <Field label="Whish phone number" error={err.recipientPhone?.message}>
-        <Input {...register('payout.recipientPhone')} placeholder="+961 ..." />
-      </Field>
-      <div className="sm:col-span-2">
-        <Field label="Instructions (optional)" error={err.instructions?.message}>
-          <Input {...register('payout.instructions')} />
-        </Field>
-      </div>
-    </div>
-  );
-}
-
 function CryptoFields({ form }: { form: UseFormReturn<CreateWithdrawalInput> }) {
   const { register, formState } = form as unknown as UseFormReturn<{
     payout: { network: string; walletAddress: string; memo?: string; instructions?: string };
@@ -454,26 +426,6 @@ function CashFields({ form }: { form: UseFormReturn<CreateWithdrawalInput> }) {
           <Input {...register('payout.instructions')} />
         </Field>
       </div>
-    </div>
-  );
-}
-
-function OtherFields({ form }: { form: UseFormReturn<CreateWithdrawalInput> }) {
-  const { register, formState } = form as unknown as UseFormReturn<{
-    payout: { description: string; instructions?: string };
-  }>;
-  const err = (formState.errors.payout ?? {}) as Record<string, { message?: string } | undefined>;
-  return (
-    <div className="space-y-3">
-      <Field label="Describe the payout method" error={err.description?.message}>
-        <Input
-          {...register('payout.description')}
-          placeholder="e.g. voucher code, mobile money, …"
-        />
-      </Field>
-      <Field label="Instructions (optional)" error={err.instructions?.message}>
-        <Input {...register('payout.instructions')} />
-      </Field>
     </div>
   );
 }

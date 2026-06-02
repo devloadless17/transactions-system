@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import type { WhishPayment } from '@app/db';
 import type { WhishWebhookConfig } from '@app/shared';
 import { PrismaService } from '../../database/prisma.service';
+import { RealtimeService } from '../realtime/realtime.service';
 
 /**
  * Outbound webhooks to a company's own endpoint (e.g. their CRM). On a
@@ -14,7 +15,10 @@ import { PrismaService } from '../../database/prisma.service';
 export class WhishWebhookService {
   private readonly logger = new Logger(WhishWebhookService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly realtime: RealtimeService,
+  ) {}
 
   /** Fire the `whish.payment.paid` event for a settled payment (fire-and-forget). */
   async deliverPaid(payment: WhishPayment): Promise<void> {
@@ -92,6 +96,7 @@ export class WhishWebhookService {
         data: { webhookUrl: url, ...(newSecret ? { webhookSecret: newSecret } : {}) },
       }),
     );
+    this.realtime.company(companyId, ['whish']);
     return { url, hasSecret: true, ...(newSecret ? { secret: newSecret } : {}) };
   }
 
@@ -104,6 +109,7 @@ export class WhishWebhookService {
         select: { webhookUrl: true },
       }),
     );
+    this.realtime.company(companyId, ['whish']);
     return { url: c.webhookUrl, hasSecret: true, secret };
   }
 
@@ -114,6 +120,7 @@ export class WhishWebhookService {
         data: { webhookUrl: null, webhookSecret: null },
       }),
     );
+    this.realtime.company(companyId, ['whish']);
     return { url: null, hasSecret: false };
   }
 }

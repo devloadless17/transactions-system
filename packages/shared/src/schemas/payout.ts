@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { PayoutMethod, WithdrawalStatus } from '../enums';
 import { currencySchema } from './common';
-import { payoutDetailsSchema } from './payout-method';
+import { createPayoutDetailsSchema, payoutDetailsSchema } from './payout-method';
 
 const decimalString = z.string().regex(/^\d+(\.\d+)?$/, 'must be a positive decimal');
 
@@ -12,7 +12,7 @@ export const createPayoutSchema = z.object({
   amount: decimalString,
   currency: currencySchema,
   notes: z.string().trim().max(500).optional(),
-  payout: payoutDetailsSchema,
+  payout: createPayoutDetailsSchema,
 });
 export type CreatePayoutInput = z.infer<typeof createPayoutSchema>;
 

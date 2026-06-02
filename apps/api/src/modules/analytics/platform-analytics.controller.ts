@@ -64,4 +64,16 @@ export class PlatformAnalyticsController {
       range: { ...range, companyId },
     });
   }
+
+  /**
+   * Per-source drilldown: one source's KPIs/trend plus every company that
+   * transacted through it. The "by source, each company" admin view.
+   */
+  @Get('sources/:sourceId/overview')
+  async sourceOverview(
+    @Param('sourceId', new ParseUUIDPipe()) sourceId: string,
+    @Query(new ZodPipe(analyticsRangeSchema)) range: AnalyticsRange,
+  ) {
+    return this.analytics.sourceOverview({ sourceId, range });
+  }
 }

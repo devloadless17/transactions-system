@@ -12,32 +12,31 @@ import { apiFetch } from '@/lib/api.client';
 import { KpiCard } from '@/features/analytics/kpi-card';
 import { FlowsChart } from '@/features/analytics/flows-chart';
 import { useOverview } from '@/features/analytics/use-overview';
-
-const RANGE_OPTIONS = [
-  { label: '7d', days: 7 },
-  { label: '30d', days: 30 },
-  { label: '90d', days: 90 },
-];
+import {
+  DateRangeControls,
+  DEFAULT_RANGE,
+  rangeKey,
+  rangeLabel,
+  resolveRange,
+  type DateRange,
+} from '@/features/analytics/date-range';
 
 export function AdminOverview() {
-  const [days, setDays] = useState<number>(30);
+  const [range, setRange] = useState<DateRange>(DEFAULT_RANGE);
   const [flowsCurrency, setFlowsCurrency] = useState<string>('USD');
 
-  // Window computed at fetch time, with the upper bound rounded UP to the next
-  // minute so a just-ingested transaction (in the current partial minute) is
-  // included immediately rather than excluded until the clock ticks over.
-  // Bucketing to the minute keeps the backend's per-window cache key stable for
-  // ~60s; the queryKeys are days-based, so recomputing here never churns them.
+  // Absolute bounds for the platform/flows queries. resolveRange anchors a
+  // preset's upper bound to the next minute so the backend's per-window cache
+  // stays stable across auto-refresh; rangeKey keys the queries so switching
+  // the window (preset or custom) refetches.
   const rangeParams = () => {
-    const anchor = Math.ceil(Date.now() / 60_000) * 60_000;
-    return new URLSearchParams({
-      from: new Date(anchor - days * 24 * 3600 * 1000).toISOString(),
-      to: new Date(anchor).toISOString(),
-    });
+    const { from, to } = resolveRange(range);
+    return new URLSearchParams({ from, to });
   };
+  const rk = rangeKey(range);
 
   const platformQ = useQuery({
-    queryKey: ['admin', 'analytics', 'platform', days],
+    queryKey: ['admin', 'analytics', 'platform', rk],
     queryFn: () =>
       apiFetch<PlatformAnalyticsResponse>(`/admin/analytics/platform?${rangeParams().toString()}`),
     refetchInterval: 60_000,
@@ -46,7 +45,7 @@ export function AdminOverview() {
   });
 
   const flowsQ = useQuery({
-    queryKey: ['admin', 'analytics', 'flows', days, flowsCurrency],
+    queryKey: ['admin', 'analytics', 'flows', rk, flowsCurrency],
     queryFn: () => {
       const params = rangeParams();
       params.set('currency', flowsCurrency);
@@ -64,7 +63,7 @@ export function AdminOverview() {
     retry: 1,
   });
 
-  const overviewQ = useOverview({ scope: 'admin', currency: flowsCurrency, days });
+  const overviewQ = useOverview({ scope: 'admin', currency: flowsCurrency, range });
 
   const currencies = platformQ.data?.byCurrency.map((c) => c.currency) ?? [];
   // Hero KPIs pick the "primary" currency: first with any fees, else first in the list.
@@ -155,18 +154,7 @@ export function AdminOverview() {
             Multi-currency view of everything flowing through the system.
           </p>
         </div>
-        <div className="flex items-center gap-1 self-start rounded-md border bg-background p-1 sm:self-auto">
-          {RANGE_OPTIONS.map((r) => (
-            <Button
-              key={r.days}
-              variant={days === r.days ? 'default' : 'ghost'}
-              size="sm"
-              onClick={() => setDays(r.days)}
-            >
-              {r.label}
-            </Button>
-          ))}
-        </div>
+        <DateRangeControls value={range} onChange={setRange} className="self-start sm:self-auto" />
       </div>
 
       {/* Hero KPIs */}
@@ -175,7 +163,7 @@ export function AdminOverview() {
           label="Platform revenue"
           value={primary ? `${fmt(primary.feesEarned)} ${primary.currency}` : '—'}
           hint={
-            `Fees earned · last ${days}d` +
+            `Fees earned · ${rangeLabel(range)}` +
             (currencies.length > 1 ? ` (primary: ${primary?.currency})` : '')
           }
         />
@@ -226,7 +214,7 @@ export function AdminOverview() {
             <div>
               <CardTitle>By source</CardTitle>
               <CardDescription>
-                Volume, transaction count, and platform fees per source over the last {days} days (
+                Volume, transaction count, and platform fees per source over {rangeLabel(range)} (
                 {flowsCurrency}).
               </CardDescription>
             </div>

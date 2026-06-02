@@ -2,12 +2,16 @@ import { UserRole } from '@app/shared';
 import { requireRole } from '@/lib/session';
 import { AdminSidebar } from '@/features/admin/sidebar';
 import { AdminTopbar } from '@/features/admin/topbar';
+import { RealtimeBridge } from '@/lib/realtime';
+import { SessionKeepAlive } from '@/lib/session-keep-alive';
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
   const session = await requireRole([UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR]);
 
   return (
     <div className="flex min-h-screen">
+      <RealtimeBridge />
+      <SessionKeepAlive />
       <AdminSidebar />
       <div className="flex flex-1 flex-col">
         <AdminTopbar session={session} />

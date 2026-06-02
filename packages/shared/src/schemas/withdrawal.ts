@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { PayoutMethod, WithdrawalStatus } from '../enums';
 import { currencySchema } from './common';
-import { payoutDetailsSchema } from './payout-method';
+import { createPayoutDetailsSchema, payoutDetailsSchema } from './payout-method';
 
 // Re-export for callers that still pull payout-method types from this
 // module. The canonical location is `./payout-method`.
@@ -23,7 +23,7 @@ export const createWithdrawalSchema = z.object({
   amount: decimalString,
   currency: currencySchema,
   notes: z.string().trim().max(500).optional(),
-  payout: payoutDetailsSchema,
+  payout: createPayoutDetailsSchema,
 });
 export type CreateWithdrawalInput = z.infer<typeof createWithdrawalSchema>;
 

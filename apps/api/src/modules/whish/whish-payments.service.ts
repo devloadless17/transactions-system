@@ -20,6 +20,7 @@ import { CommissionResolverService } from '../commissions/commission-resolver.se
 import { CommissionsRepository } from '../commissions/commissions.repository';
 import { WhishClient, WhishError } from './whish.client';
 import { WhishWebhookService } from './whish-webhook.service';
+import { RealtimeService } from '../realtime/realtime.service';
 
 const WHISH_SOURCE_CODE = 'whish';
 // Stale-payment reconciliation window.
@@ -38,6 +39,7 @@ export class WhishPaymentsService {
     private readonly webhooks: WhishWebhookService,
     private readonly commissionResolver: CommissionResolverService,
     private readonly commissionsRepo: CommissionsRepository,
+    private readonly realtime: RealtimeService,
   ) {}
 
   /** Currencies live for Whish links (USD only by default). */
@@ -122,6 +124,7 @@ export class WhishPaymentsService {
       this.logger.log(
         `Whish link created: company=${companyId} externalId=${externalId} amount=${input.amount} ${input.currency}`,
       );
+      this.realtime.company(companyId, ['whish']);
       return mapWhishPayment(updated);
     } catch (err) {
       await this.prisma.runAsTenant(companyId, (tx) =>
@@ -133,6 +136,7 @@ export class WhishPaymentsService {
           },
         }),
       );
+      this.realtime.company(companyId, ['whish']);
       throw err;
     }
   }
@@ -255,6 +259,7 @@ export class WhishPaymentsService {
         }),
       );
       this.logger.log(`Whish payment ${payment.externalId} FAILED`);
+      this.realtime.company(payment.companyId, ['whish']);
       return mapWhishPayment(updated);
     }
 
@@ -294,6 +299,9 @@ export class WhishPaymentsService {
     );
     // Notify the company's webhook (best-effort, never blocks settlement).
     void this.webhooks.deliverPaid(updated);
+    // `transactions.ingest` already announced transactions/wallets/ledger;
+    // this refreshes the Whish payment views.
+    this.realtime.company(payment.companyId, ['whish']);
     return mapWhishPayment(updated);
   }
 
@@ -324,6 +332,7 @@ export class WhishPaymentsService {
             data: { status: WhishPaymentStatus.EXPIRED },
           }),
         );
+        this.realtime.company(p.companyId, ['whish']);
         expired++;
         continue;
       }
@@ -402,7 +411,7 @@ export class WhishPaymentsService {
   }
 
   /** Platform Whish account balance (admin). */
-  async getBalance(currency: 'USD' | 'LBP'): Promise<{ currency: string; balance: number }> {
+  async getBalance(currency: 'USD'): Promise<{ currency: string; balance: number }> {
     const { balance } = await this.whish.getBalance(currency);
     return { currency, balance };
   }

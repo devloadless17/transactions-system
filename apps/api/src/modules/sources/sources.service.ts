@@ -8,14 +8,18 @@ import type {
 } from '@app/shared';
 import { Prisma } from '@app/db';
 import { PrismaService } from '../../database/prisma.service';
+import { RealtimeService } from '../realtime/realtime.service';
 import { ConflictError, NotFoundError } from '../../common/errors/domain.error';
 
 @Injectable()
 export class SourcesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly realtime: RealtimeService,
+  ) {}
 
   async create(input: CreateSourceInput): Promise<SourceResponse> {
-    return this.prisma.runAsAdmin(async (tx) => {
+    const created = await this.prisma.runAsAdmin(async (tx) => {
       const existing = await tx.source.findUnique({ where: { code: input.code } });
       if (existing) throw new ConflictError(`Source code '${input.code}' already exists`);
       const row = await tx.source.create({
@@ -27,6 +31,8 @@ export class SourcesService {
       });
       return mapSource(row);
     });
+    this.realtime.admin(['sources']);
+    return created;
   }
 
   async list(query: Pagination): Promise<PaginatedResponse<SourceResponse>> {
@@ -82,6 +88,7 @@ export class SourcesService {
         },
       });
     });
+    this.realtime.admin(['sources']);
     return mapSource(row);
   }
 }

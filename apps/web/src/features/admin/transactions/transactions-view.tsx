@@ -28,6 +28,11 @@ import { apiFetch } from '@/lib/api.client';
 import { ApiClientError } from '@/lib/api';
 import { EmptyState } from '@/components/empty-state';
 import { Inbox } from 'lucide-react';
+import {
+  DateRangePicker,
+  type PickedRange,
+  type RangePreset,
+} from '@/components/ui/date-range-picker';
 import { TransactionDetailDrawer } from './transaction-detail-drawer';
 
 interface Filters {
@@ -35,14 +40,46 @@ interface Filters {
   sourceId?: string;
   companyId?: string;
   search?: string;
+  // Inclusive bounds: dates as YYYY-MM-DD, optional times as HH:mm. Expanded to
+  // ISO instants below (full day when a time is omitted).
+  from?: string;
+  to?: string;
+  fromTime?: string;
+  toTime?: string;
 }
 
 const PAGE_SIZE = 20;
+
+// Local YYYY-MM-DD, n days before today (0 = today).
+function dayKey(daysAgo = 0): string {
+  const d = new Date();
+  d.setDate(d.getDate() - daysAgo);
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
+}
 
 export function TransactionsView({ scope }: { scope: 'admin' | 'company' }) {
   const qc = useQueryClient();
   const [page, setPage] = useState(1);
   const [filters, setFilters] = useState<Filters>({});
+
+  const dateValue: PickedRange = {
+    from: filters.from,
+    to: filters.to,
+    fromTime: filters.fromTime,
+    toTime: filters.toTime,
+  };
+  const datePresets: RangePreset[] = [
+    { label: 'Today', from: dayKey(0), to: dayKey(0) },
+    { label: 'Last 7 days', from: dayKey(6), to: dayKey(0) },
+    { label: 'Last 30 days', from: dayKey(29), to: dayKey(0) },
+  ].map((p) => ({
+    label: p.label,
+    active: filters.from === p.from && filters.to === p.to && !filters.fromTime && !filters.toTime,
+    onSelect: () => {
+      setPage(1);
+      setFilters((f) => ({ ...f, from: p.from, to: p.to, fromTime: undefined, toTime: undefined }));
+    },
+  }));
   const [reverseTarget, setReverseTarget] = useState<TransactionResponse | null>(null);
   const [detailTarget, setDetailTarget] = useState<TransactionResponse | null>(null);
   const params = new URLSearchParams();
@@ -52,6 +89,13 @@ export function TransactionsView({ scope }: { scope: 'admin' | 'company' }) {
   if (filters.sourceId) params.set('sourceId', filters.sourceId);
   if (filters.companyId) params.set('companyId', filters.companyId);
   if (filters.search) params.set('search', filters.search);
+  // Expand the picked dates/times to inclusive ISO bounds the API expects:
+  // start of the "from" instant (default 00:00) through the end of the "to"
+  // minute (default 23:59, i.e. end of day).
+  if (filters.from)
+    params.set('from', new Date(`${filters.from}T${filters.fromTime || '00:00'}:00`).toISOString());
+  if (filters.to)
+    params.set('to', new Date(`${filters.to}T${filters.toTime || '23:59'}:59.999`).toISOString());
 
   const basePath = scope === 'admin' ? '/admin/transactions' : '/company/transactions';
   const { data, isLoading, error } = useQuery({
@@ -189,6 +233,25 @@ export function TransactionsView({ scope }: { scope: 'admin' | 'company' }) {
                 value={filters.search ?? ''}
                 onChange={(e) => setFilters((f) => ({ ...f, search: e.target.value }))}
                 className="w-40"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">Date range</label>
+              <DateRangePicker
+                value={dateValue}
+                presets={datePresets}
+                placeholder="All dates"
+                className="w-64"
+                onChange={(v) => {
+                  setPage(1);
+                  setFilters((f) => ({
+                    ...f,
+                    from: v.from,
+                    to: v.to,
+                    fromTime: v.fromTime,
+                    toTime: v.toTime,
+                  }));
+                }}
               />
             </div>
             <div className="space-y-1">

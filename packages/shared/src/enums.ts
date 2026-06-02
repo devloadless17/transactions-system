@@ -110,14 +110,12 @@ export const PayoutMethod = {
 } as const;
 export type PayoutMethod = (typeof PayoutMethod)[keyof typeof PayoutMethod];
 
-// Methods offered to companies for withdrawal/payout/load flows. Bank
-// transfers are intentionally excluded — operators settle off-platform
-// via Whish Money, cash handover, or crypto.
+// Methods offered to companies for withdrawal/payout/load flows. Only cash
+// handover and crypto are supported; other methods (bank transfer, Whish,
+// other) remain in the enum for legacy rows but are not selectable.
 export const SUPPORTED_PAYOUT_METHODS: ReadonlyArray<PayoutMethod> = [
-  PayoutMethod.WISH,
   PayoutMethod.CASH,
   PayoutMethod.CRYPTO,
-  PayoutMethod.OTHER,
 ];
 
 // Status is shared across all three processes (withdrawal/payout/load).
@@ -132,7 +130,7 @@ export const WithdrawalStatus = {
 export type WithdrawalStatus = (typeof WithdrawalStatus)[keyof typeof WithdrawalStatus];
 
 // ISO 4217 currency codes used by the platform. Expand as needed.
-export const SUPPORTED_CURRENCIES = ['USD', 'EUR', 'GBP', 'LBP', 'AED', 'SAR'] as const;
+export const SUPPORTED_CURRENCIES = ['USD'] as const;
 export type SupportedCurrency = (typeof SUPPORTED_CURRENCIES)[number];
 
 // --------------------------- Whish Pay ---------------------------
@@ -150,6 +148,6 @@ export const WhishPaymentStatus = {
 } as const;
 export type WhishPaymentStatus = (typeof WhishPaymentStatus)[keyof typeof WhishPaymentStatus];
 
-// Whish supports only LBP and USD.
-export const WHISH_CURRENCIES = ['USD', 'LBP'] as const;
+// Whish can support LBP + USD, but the platform only operates in USD.
+export const WHISH_CURRENCIES = ['USD'] as const;
 export type WhishCurrency = (typeof WHISH_CURRENCIES)[number];

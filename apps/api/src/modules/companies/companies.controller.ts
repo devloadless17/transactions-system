@@ -77,4 +77,15 @@ export class CompaniesController {
   async disable(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.companies.disable(id);
   }
+
+  @Post(':id/activate')
+  @Audited({
+    action: 'company.activated',
+    entityType: 'company',
+    idFrom: 'params.id',
+    companyIdFrom: 'params.id',
+  })
+  async activate(@Param('id', new ParseUUIDPipe()) id: string) {
+    return this.companies.activate(id);
+  }
 }

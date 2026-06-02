@@ -13,7 +13,10 @@ export type AnalyticsRange = z.infer<typeof analyticsRangeSchema>;
 
 export const kpiResponseSchema = z.object({
   totalVolume: z.string(),
-  totalFees: z.string(),
+  // Aggregate platform commission. Omitted on company-scoped responses: a
+  // company sees the fee on each individual transaction, never a running
+  // total (that figure is the platform's revenue, for admins only).
+  totalFees: z.string().optional(),
   transactionCount: z.number().int(),
   averageAmount: z.string(),
   currency: z.string(),
@@ -51,12 +54,59 @@ export const topCompanySchema = z.object({
 });
 export type TopCompany = z.infer<typeof topCompanySchema>;
 
+// One operation type's volume: settled (COMPLETED) money plus what's still
+// in-flight (awaiting approval / processing). Amounts are Decimal strings.
+export const volumeMetricSchema = z.object({
+  completedTotal: z.string(),
+  completedCount: z.number().int(),
+  pendingTotal: z.string(),
+  pendingCount: z.number().int(),
+});
+export type VolumeMetric = z.infer<typeof volumeMetricSchema>;
+
+// Money movement broken out by operation type so a company sees deposits
+// (source ingestion), withdrawals, loads, and payouts side by side.
+export const volumeBreakdownSchema = z.object({
+  deposits: volumeMetricSchema,
+  withdrawals: volumeMetricSchema,
+  loads: volumeMetricSchema,
+  payouts: volumeMetricSchema,
+});
+export type VolumeBreakdown = z.infer<typeof volumeBreakdownSchema>;
+
 export const overviewResponseSchema = z.object({
   range: z.object({ from: z.string(), to: z.string() }),
   currency: z.string(),
   kpi: kpiResponseSchema,
+  volume: volumeBreakdownSchema,
   daily: dailySeriesResponseSchema,
   topSources: z.array(topSourceSchema),
   topCompanies: z.array(topCompanySchema).optional(),
 });
 export type OverviewResponse = z.infer<typeof overviewResponseSchema>;
+
+// One company's activity through a single source. Used by the admin
+// source-detail drilldown ("by source, each company").
+export const sourceCompanyBreakdownSchema = z.object({
+  companyId: z.string().uuid(),
+  companyName: z.string(),
+  volume: z.string(),
+  fees: z.string(),
+  count: z.number().int(),
+});
+export type SourceCompanyBreakdown = z.infer<typeof sourceCompanyBreakdownSchema>;
+
+export const sourceOverviewResponseSchema = z.object({
+  range: z.object({ from: z.string(), to: z.string() }),
+  currency: z.string(),
+  source: z.object({
+    id: z.string().uuid(),
+    code: z.string(),
+    name: z.string(),
+  }),
+  kpi: kpiResponseSchema,
+  daily: dailySeriesResponseSchema,
+  // Every company that transacted through this source in the range, by volume.
+  byCompany: z.array(sourceCompanyBreakdownSchema),
+});
+export type SourceOverviewResponse = z.infer<typeof sourceOverviewResponseSchema>;

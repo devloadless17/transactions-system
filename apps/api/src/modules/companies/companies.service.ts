@@ -13,6 +13,7 @@ import {
   UserStatus,
 } from '@app/shared';
 import { PrismaService } from '../../database/prisma.service';
+import { RealtimeService } from '../realtime/realtime.service';
 import { ConflictError, NotFoundError } from '../../common/errors/domain.error';
 import type { Prisma } from '@app/db';
 
@@ -20,10 +21,13 @@ import type { Prisma } from '@app/db';
 export class CompaniesService {
   private readonly logger = new Logger(CompaniesService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly realtime: RealtimeService,
+  ) {}
 
   async create(input: CreateCompanyInput): Promise<CreateCompanyResponse> {
-    return this.prisma.runAsAdmin(async (tx) => {
+    const result = await this.prisma.runAsAdmin(async (tx) => {
       const slugTaken = await tx.company.findUnique({ where: { slug: input.slug } });
       if (slugTaken) throw new ConflictError(`Slug '${input.slug}' is already in use`);
 
@@ -75,6 +79,8 @@ export class CompaniesService {
         },
       };
     });
+    this.realtime.admin(['companies'], result.company.id);
+    return result;
   }
 
   async list(query: ListCompaniesQuery): Promise<PaginatedResponse<CompanyResponse>> {
@@ -124,14 +130,22 @@ export class CompaniesService {
         data: {
           name: input.name ?? undefined,
           status: input.status ?? undefined,
+          visible: input.visible ?? undefined,
         },
       });
     });
+    // Status/visibility flips must reach the company's own users too (e.g. a
+    // deactivated company should see access change), not just admins.
+    this.realtime.company(id, ['companies']);
     return mapCompany(row);
   }
 
   async disable(id: string): Promise<CompanyResponse> {
     return this.update(id, { status: 'DISABLED' satisfies CompanyStatus });
+  }
+
+  async activate(id: string): Promise<CompanyResponse> {
+    return this.update(id, { status: 'ACTIVE' satisfies CompanyStatus });
   }
 }
 
@@ -140,6 +154,7 @@ function mapCompany(row: {
   name: string;
   slug: string;
   status: CompanyStatus;
+  visible: boolean;
   defaultCurrency: string;
   createdAt: Date;
   updatedAt: Date;
@@ -149,6 +164,7 @@ function mapCompany(row: {
     name: row.name,
     slug: row.slug,
     status: row.status,
+    visible: row.visible,
     defaultCurrency: row.defaultCurrency.trim(),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),

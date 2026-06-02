@@ -5,6 +5,8 @@ import { UnauthorizedError } from '../../../common/errors/domain.error';
 import type { AuthenticatedRequest, AuthPrincipal } from '../../../common/types/request.types';
 import { UserRole } from '@app/shared';
 import { ApiKeysService } from '../api-keys.service';
+import { PrismaService } from '../../../database/prisma.service';
+import { assertCompanyActive } from '../../../common/company-status';
 
 /**
  * Authenticates server-to-server integration endpoints (a company's CRM) with
@@ -15,7 +17,10 @@ import { ApiKeysService } from '../api-keys.service';
  */
 @Injectable()
 export class CompanyApiKeyAuthGuard implements CanActivate {
-  constructor(private readonly apiKeys: ApiKeysService) {}
+  constructor(
+    private readonly apiKeys: ApiKeysService,
+    private readonly prisma: PrismaService,
+  ) {}
 
   async canActivate(ctx: ExecutionContext): Promise<boolean> {
     const req = ctx.switchToHttp().getRequest<Request>();
@@ -29,6 +34,7 @@ export class CompanyApiKeyAuthGuard implements CanActivate {
     if (!result.companyId) {
       throw new UnauthorizedError('A company API key is required for this endpoint');
     }
+    await assertCompanyActive(this.prisma, result.companyId);
 
     const principal: AuthPrincipal = {
       userId: result.keyId,

@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import { PrismaService } from '../../database/prisma.service';
 import type { Env } from '../../config/env.schema';
 import { UnauthorizedError } from '../../common/errors/domain.error';
+import { assertCompanyActive } from '../../common/company-status';
 import type { AccessTokenPayload, RefreshTokenPayload } from './auth.types';
 
 export interface IssuedTokens {
@@ -57,6 +58,9 @@ export class AuthService {
 
     const ok = await argon2.verify(user.passwordHash, password);
     if (!ok) throw new UnauthorizedError('Invalid credentials');
+
+    // Block sign-in for users of an inactive company (data is retained; access is not).
+    await assertCompanyActive(this.prisma, user.companyId);
 
     const authed: AuthenticatedUser = {
       id: user.id,
@@ -149,6 +153,7 @@ export class AuthService {
       tx.user.findUnique({ where: { id: payload.sub } }),
     );
     if (!user || user.status !== 'ACTIVE') throw new UnauthorizedError();
+    await assertCompanyActive(this.prisma, user.companyId);
 
     // Rotate: revoke the used refresh token and mint new tokens.
     await this.prisma.runAsAdmin(async (tx) => {
@@ -185,6 +190,7 @@ export class AuthService {
       tx.user.findUnique({ where: { id: userId } }),
     );
     if (!user || user.status !== 'ACTIVE') throw new UnauthorizedError();
+    await assertCompanyActive(this.prisma, user.companyId);
     return {
       id: user.id,
       email: user.email,

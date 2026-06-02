@@ -3,6 +3,7 @@ import argon2 from 'argon2';
 import crypto from 'node:crypto';
 import type { ApiKeyResponse, CreateApiKeyInput, CreateApiKeyResponse } from '@app/shared';
 import { PrismaService } from '../../database/prisma.service';
+import { RealtimeService } from '../realtime/realtime.service';
 import { NotFoundError } from '../../common/errors/domain.error';
 
 // All plaintext API keys are formatted as: tsk_<prefix>_<random>
@@ -15,7 +16,16 @@ type Owner = { kind: 'company'; companyId: string } | { kind: 'source'; sourceId
 
 @Injectable()
 export class ApiKeysService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly realtime: RealtimeService,
+  ) {}
+
+  /** Company keys live in a company view; source keys under the admin sources view. */
+  private notify(owner: Owner) {
+    if (owner.kind === 'company') this.realtime.company(owner.companyId, ['api-keys']);
+    else this.realtime.admin(['sources']);
+  }
 
   async create(owner: Owner, input: CreateApiKeyInput): Promise<CreateApiKeyResponse> {
     const plaintext = generateKey();
@@ -35,6 +45,7 @@ export class ApiKeysService {
       }),
     );
 
+    this.notify(owner);
     return { apiKey: mapKey(row), plaintext };
   }
 
@@ -63,6 +74,7 @@ export class ApiKeysService {
       if (k.revokedAt) return k;
       return tx.apiKey.update({ where: { id }, data: { revokedAt: new Date() } });
     });
+    this.notify(owner);
     return mapKey(row);
   }
 

@@ -6,6 +6,7 @@ import { AppConfigModule } from './config/config.module';
 import { AppLoggerModule } from './common/logging/logger.module';
 import { PrismaModule } from './database/prisma.module';
 import { CacheModule } from './modules/cache/cache.module';
+import { RealtimeModule } from './modules/realtime/realtime.module';
 import { HealthModule } from './modules/health/health.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CompaniesModule } from './modules/companies/companies.module';
@@ -34,6 +35,7 @@ import type { Env } from './config/env.schema';
     AppLoggerModule,
     PrismaModule,
     CacheModule,
+    RealtimeModule,
     ThrottlerModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (cfg: ConfigService<Env, true>) => ({

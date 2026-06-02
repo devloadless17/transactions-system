@@ -18,6 +18,7 @@ import { PrismaService } from '../../database/prisma.service';
 import { LedgerService } from '../ledger/ledger.service';
 import { WalletsService } from '../wallets/wallets.service';
 import { AnalyticsService } from '../analytics/analytics.service';
+import { RealtimeService } from '../realtime/realtime.service';
 import { FeesService } from '../commissions/fees.service';
 import {
   ConflictError,
@@ -75,6 +76,7 @@ export class WithdrawalsService {
     private readonly ledger: LedgerService,
     private readonly wallets: WalletsService,
     private readonly analytics: AnalyticsService,
+    private readonly realtime: RealtimeService,
     private readonly fees: FeesService,
   ) {}
 
@@ -82,6 +84,11 @@ export class WithdrawalsService {
     this.analytics
       .invalidateAll()
       .catch((e) => this.logger.warn(`analytics cache invalidate failed: ${e}`));
+  }
+
+  /** Refresh withdrawal lists, wallet balances, ledger and analytics live. */
+  private notify(companyId: string) {
+    this.realtime.company(companyId, ['withdrawals', 'wallets', 'ledger', 'analytics']);
   }
 
   async request(
@@ -158,6 +165,7 @@ export class WithdrawalsService {
     );
 
     this.invalidateAnalytics();
+    this.notify(row.companyId);
     return mapWithdrawal(row);
   }
 
@@ -236,6 +244,7 @@ export class WithdrawalsService {
     );
 
     this.invalidateAnalytics();
+    this.notify(row.companyId);
     return mapWithdrawal(row);
   }
 
@@ -300,6 +309,7 @@ export class WithdrawalsService {
     );
 
     this.invalidateAnalytics();
+    this.notify(row.companyId);
     return mapWithdrawal(row);
   }
 
@@ -369,6 +379,7 @@ export class WithdrawalsService {
     );
 
     this.invalidateAnalytics();
+    this.notify(row.companyId);
     return mapWithdrawal(row);
   }
 

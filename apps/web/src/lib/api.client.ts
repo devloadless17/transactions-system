@@ -7,6 +7,58 @@ const CSRF_HEADER_NAME = 'x-csrf-token';
 const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const AUTH_FREE_PATHS = ['/auth/login', '/auth/refresh', '/auth/csrf'];
 
+// Shared across tabs so a proactive keep-alive in one tab suppresses the others
+// (the refresh endpoint rotates+revokes the refresh token, so two tabs
+// refreshing at once would revoke each other).
+const LAST_REFRESH_KEY = 'txn_last_refresh';
+
+/** When the access cookie was last rotated (epoch ms), shared across tabs. */
+export function lastRefreshAt(): number {
+  if (typeof window === 'undefined') return 0;
+  try {
+    const v = window.localStorage.getItem(LAST_REFRESH_KEY);
+    return v ? Number(v) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function markRefreshed(at = Date.now()): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(LAST_REFRESH_KEY, String(at));
+  } catch {
+    // ignore storage failures (private mode, quota) — refresh still works.
+  }
+}
+
+let refreshInFlight: Promise<boolean> | null = null;
+
+/**
+ * Rotate the short-lived access cookie via the refresh token. `/auth/refresh`
+ * is public (no CSRF needed) and sets fresh cookies on the response. De-duped
+ * within a tab so concurrent callers (an HTTP 401, the socket, the keep-alive)
+ * share a single network round-trip. Never throws — resolves false on failure.
+ */
+export function refreshSession(): Promise<boolean> {
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = (async () => {
+    try {
+      const res = await fetch(`${PUBLIC_API_BASE}/auth/refresh`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      if (res.ok) markRefreshed();
+      return res.ok;
+    } catch {
+      return false;
+    } finally {
+      refreshInFlight = null;
+    }
+  })();
+  return refreshInFlight;
+}
+
 let sessionExpiredToastShown = false;
 function notifySessionExpired() {
   if (sessionExpiredToastShown) return;
@@ -36,6 +88,14 @@ function readCookie(name: string): string | null {
 }
 
 export async function apiFetch<T>(path: string, opts: ClientRequestOpts = {}): Promise<T> {
+  return requestWithAuthRetry<T>(path, opts, false);
+}
+
+async function requestWithAuthRetry<T>(
+  path: string,
+  opts: ClientRequestOpts,
+  retried: boolean,
+): Promise<T> {
   const method = opts.method ?? 'GET';
   const headers: Record<string, string> = {};
   if (opts.body) headers['content-type'] = 'application/json';
@@ -59,10 +119,16 @@ export async function apiFetch<T>(path: string, opts: ClientRequestOpts = {}): P
   });
 
   if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as ApiErrorBody | null;
     if (res.status === 401 && !AUTH_FREE_PATHS.some((p) => path.startsWith(p))) {
+      // The 15-min access cookie likely lapsed. Rotate it once with the refresh
+      // token and replay the request before giving up — so an idle-then-active
+      // session renews transparently instead of bouncing to login.
+      if (!retried && (await refreshSession())) {
+        return requestWithAuthRetry<T>(path, opts, true);
+      }
       notifySessionExpired();
     }
+    const body = (await res.json().catch(() => null)) as ApiErrorBody | null;
     throw new ApiClientError(res.status, body, `API ${method} ${path} failed`);
   }
 

@@ -2,6 +2,8 @@ import { UserRole } from '@app/shared';
 import { requireRole } from '@/lib/session';
 import { CompanySidebar } from '@/features/company/sidebar';
 import { CompanyTopbar } from '@/features/company/topbar';
+import { RealtimeBridge } from '@/lib/realtime';
+import { SessionKeepAlive } from '@/lib/session-keep-alive';
 
 export default async function CompanyLayout({ children }: { children: React.ReactNode }) {
   const session = await requireRole([
@@ -12,6 +14,8 @@ export default async function CompanyLayout({ children }: { children: React.Reac
 
   return (
     <div className="flex min-h-screen">
+      <RealtimeBridge />
+      <SessionKeepAlive />
       <CompanySidebar />
       <div className="flex flex-1 flex-col">
         <CompanyTopbar session={session} />

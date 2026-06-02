@@ -7,9 +7,34 @@ import { Logger as PinoLogger } from 'nestjs-pino';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
+import { IoAdapter } from '@nestjs/platform-socket.io';
+import type { ServerOptions } from 'socket.io';
+import type { INestApplicationContext } from '@nestjs/common';
 import { AppModule } from './app.module';
 import type { Env } from './config/env.schema';
 import { CSRF_HEADER_NAME } from './modules/auth/auth.constants';
+
+/**
+ * Socket.IO adapter that applies the same credentialed CORS allowlist as the
+ * HTTP server, so only our web origins can open an authenticated socket
+ * (the handshake carries the auth cookie — origin:true would invite
+ * cross-site websocket hijacking).
+ */
+class CorsIoAdapter extends IoAdapter {
+  constructor(
+    app: INestApplicationContext,
+    private readonly origins: string[],
+  ) {
+    super(app);
+  }
+
+  override createIOServer(port: number, options?: ServerOptions): unknown {
+    return super.createIOServer(port, {
+      ...options,
+      cors: { origin: this.origins, credentials: true },
+    });
+  }
+}
 
 async function bootstrap() {
   // bodyParser stays enabled (Nest's express parses JSON by default).
@@ -61,6 +86,9 @@ async function bootstrap() {
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', CSRF_HEADER_NAME],
   });
+
+  // Realtime (Socket.IO) shares the HTTP server and the same CORS allowlist.
+  app.useWebSocketAdapter(new CorsIoAdapter(app, allowed));
 
   // Apply the API prefix to everything EXCEPT operational endpoints. /metrics
   // and /docs live at root so ops tooling can hit them without knowing the

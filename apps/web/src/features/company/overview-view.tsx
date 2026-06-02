@@ -5,26 +5,26 @@ import {
   SUPPORTED_CURRENCIES,
   type PaginatedResponse,
   type TransactionResponse,
+  type VolumeMetric,
   type WalletResponse,
 } from '@app/shared';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
 import { apiFetch } from '@/lib/api.client';
 import { useOverview } from '@/features/analytics/use-overview';
 import { KpiCard } from '@/features/analytics/kpi-card';
 import { VolumeChart } from '@/features/analytics/volume-chart';
-
-const RANGE_OPTIONS = [
-  { label: '7d', days: 7 },
-  { label: '30d', days: 30 },
-  { label: '90d', days: 90 },
-];
+import {
+  DateRangeControls,
+  DEFAULT_RANGE,
+  rangeLabel,
+  type DateRange,
+} from '@/features/analytics/date-range';
 
 export function OverviewView() {
   const [currency, setCurrency] = useState('USD');
-  const [days, setDays] = useState(30);
+  const [range, setRange] = useState<DateRange>(DEFAULT_RANGE);
 
-  const overviewQ = useOverview({ scope: 'company', currency, days });
+  const overviewQ = useOverview({ scope: 'company', currency, range });
   const walletsQ = useQuery({
     queryKey: ['company', 'wallets'],
     queryFn: () => apiFetch<{ data: WalletResponse[] }>('/company/wallets'),
@@ -55,18 +55,7 @@ export function OverviewView() {
           </p>
         </div>
         <div className="flex flex-wrap gap-3">
-          <div className="flex items-center gap-1 rounded-md border bg-background p-1">
-            {RANGE_OPTIONS.map((r) => (
-              <Button
-                key={r.days}
-                variant={days === r.days ? 'default' : 'ghost'}
-                size="sm"
-                onClick={() => setDays(r.days)}
-              >
-                {r.label}
-              </Button>
-            ))}
-          </div>
+          <DateRangeControls value={range} onChange={setRange} />
           <select
             value={currency}
             onChange={(e) => setCurrency(e.target.value)}
@@ -83,21 +72,24 @@ export function OverviewView() {
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <KpiCard
-          label="Volume"
-          value={data ? `${formatNumber(data.kpi.totalVolume)} ${data.kpi.currency}` : '—'}
-          hint={`Last ${days} days`}
+          label="Deposits"
+          value={data ? `${formatNumber(data.volume.deposits.completedTotal)} ${currency}` : '—'}
+          hint={data ? inflightHint(data.volume.deposits, currency) : rangeLabel(range)}
         />
         <KpiCard
-          label="Fees paid"
-          value={data ? `${formatNumber(data.kpi.totalFees)} ${data.kpi.currency}` : '—'}
+          label="Withdrawals"
+          value={data ? `${formatNumber(data.volume.withdrawals.completedTotal)} ${currency}` : '—'}
+          hint={data ? inflightHint(data.volume.withdrawals, currency) : rangeLabel(range)}
         />
         <KpiCard
-          label="Transactions"
-          value={data ? data.kpi.transactionCount.toLocaleString() : '—'}
+          label="Loads"
+          value={data ? `${formatNumber(data.volume.loads.completedTotal)} ${currency}` : '—'}
+          hint={data ? inflightHint(data.volume.loads, currency) : rangeLabel(range)}
         />
         <KpiCard
-          label="Average tx"
-          value={data ? `${formatNumber(data.kpi.averageAmount)} ${data.kpi.currency}` : '—'}
+          label="Payouts"
+          value={data ? `${formatNumber(data.volume.payouts.completedTotal)} ${currency}` : '—'}
+          hint={data ? inflightHint(data.volume.payouts, currency) : rangeLabel(range)}
         />
       </div>
 
@@ -115,7 +107,7 @@ export function OverviewView() {
         <CardHeader>
           <CardTitle>By source</CardTitle>
           <CardDescription>
-            Volume, transaction count, and fees per source over the last {days} days ({currency}).
+            Volume and transaction count per source over {rangeLabel(range)} ({currency}).
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -125,23 +117,19 @@ export function OverviewView() {
             <p className="text-sm text-muted-foreground">No transactions in this range.</p>
           ) : (
             <ul className="space-y-1 text-sm">
-              <li className="grid grid-cols-[1fr_auto_auto_auto] gap-4 border-b pb-1 text-xs font-medium text-muted-foreground">
+              <li className="grid grid-cols-[1fr_auto_auto] gap-4 border-b pb-1 text-xs font-medium text-muted-foreground">
                 <span>Source</span>
                 <span className="text-right">Count</span>
                 <span className="text-right">Volume</span>
-                <span className="text-right">Fees</span>
               </li>
               {data.topSources.map((s) => (
                 <li
                   key={s.sourceId}
-                  className="grid grid-cols-[1fr_auto_auto_auto] gap-4 border-b py-1 last:border-b-0"
+                  className="grid grid-cols-[1fr_auto_auto] gap-4 border-b py-1 last:border-b-0"
                 >
                   <span className="font-mono text-xs">{s.sourceCode}</span>
                   <span className="text-right font-mono">{s.count}</span>
                   <span className="text-right font-mono">{formatNumber(s.volume)}</span>
-                  <span className="text-right font-mono text-muted-foreground">
-                    {formatNumber(s.fees)}
-                  </span>
                 </li>
               ))}
             </ul>
@@ -220,6 +208,16 @@ export function OverviewView() {
 
 function Skeleton() {
   return <div className="h-72 w-full animate-pulse rounded bg-muted" />;
+}
+
+// KPI sub-line: how many settled, plus any money still in-flight (pending
+// approval / processing) so the company knows what hasn't landed yet.
+function inflightHint(m: VolumeMetric, currency: string): string {
+  const base = `${m.completedCount.toLocaleString()} completed`;
+  if (m.pendingCount > 0 || Number(m.pendingTotal) > 0) {
+    return `${base} · ${formatNumber(m.pendingTotal)} ${currency} in-flight`;
+  }
+  return base;
 }
 
 function formatNumber(s: string): string {

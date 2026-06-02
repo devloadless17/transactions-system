@@ -21,6 +21,7 @@ export type CreateCompanyInput = z.infer<typeof createCompanySchema>;
 export const updateCompanySchema = z.object({
   name: z.string().trim().min(2).max(120).optional(),
   status: z.nativeEnum(CompanyStatus).optional(),
+  visible: z.boolean().optional(),
 });
 export type UpdateCompanyInput = z.infer<typeof updateCompanySchema>;
 
@@ -29,6 +30,7 @@ export const companyResponseSchema = z.object({
   name: z.string(),
   slug: z.string(),
   status: z.nativeEnum(CompanyStatus),
+  visible: z.boolean(),
   defaultCurrency: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),

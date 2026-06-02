@@ -13,6 +13,7 @@ import {
   type UpdateAdminUserInput,
 } from '@app/shared';
 import { PrismaService } from '../../database/prisma.service';
+import { RealtimeService } from '../realtime/realtime.service';
 import {
   ConflictError,
   ForbiddenError,
@@ -31,10 +32,13 @@ import type { Prisma } from '@app/db';
 export class AdminUsersService {
   private readonly logger = new Logger(AdminUsersService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly realtime: RealtimeService,
+  ) {}
 
   async create(input: CreateAdminUserInput, actorId: string): Promise<CreateAdminUserResponse> {
-    return this.prisma.runAsAdmin(async (tx) => {
+    const result = await this.prisma.runAsAdmin(async (tx) => {
       const existing = await tx.user.findUnique({ where: { email: input.email.toLowerCase() } });
       if (existing) throw new ConflictError(`Email '${input.email}' is already in use`);
 
@@ -55,6 +59,8 @@ export class AdminUsersService {
       this.logger.log(`Admin ${actorId} created platform admin ${user.email} (${user.role})`);
       return { user: mapAdminUser(user), temporaryPassword: tempPassword };
     });
+    this.realtime.admin(['admin-users']);
+    return result;
   }
 
   async list(query: ListAdminUsersQuery): Promise<PaginatedResponse<AdminUserResponse>> {
@@ -125,6 +131,7 @@ export class AdminUsersService {
         data: { role: input.role ?? undefined, status: input.status ?? undefined },
       });
     });
+    this.realtime.admin(['admin-users']);
     return mapAdminUser(row);
   }
 

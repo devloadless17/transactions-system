@@ -6,6 +6,7 @@ import {
   type PaginatedResponse,
 } from '@app/shared';
 import { PrismaService } from '../../database/prisma.service';
+import { RealtimeService } from '../realtime/realtime.service';
 
 export interface AuditEntry {
   actorId?: string | null;
@@ -20,7 +21,10 @@ export interface AuditEntry {
 
 @Injectable()
 export class AuditService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly realtime: RealtimeService,
+  ) {}
 
   async record(entry: AuditEntry): Promise<void> {
     await this.prisma.runAsAdmin((tx) =>
@@ -37,6 +41,9 @@ export class AuditService {
         },
       }),
     );
+    // Refresh audit-log views live. Admin-only feed; pass companyId so a
+    // company's own audit panel refreshes too.
+    this.realtime.admin(['audit'], entry.companyId ?? null);
   }
 
   async list(query: ListAuditLogsQuery): Promise<PaginatedResponse<AuditLogResponse>> {

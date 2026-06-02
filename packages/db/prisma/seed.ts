@@ -32,10 +32,8 @@ async function main() {
 
   // --- Sources ---
   const sources = [
+    { code: 'whish', name: 'Whish Pay' },
     { code: 'omt', name: 'OMT' },
-    { code: 'bank_transfer', name: 'Bank Transfer' },
-    { code: 'crypto_gateway', name: 'Crypto Gateway' },
-    { code: 'utility_provider', name: 'Utility Provider' },
   ];
   for (const s of sources) {
     await prisma.source.upsert({

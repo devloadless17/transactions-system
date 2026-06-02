@@ -1,32 +1,66 @@
 'use client';
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { toast } from 'sonner';
 import Link from 'next/link';
 import type { PaginatedResponse, SourceResponse } from '@app/shared';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Switch } from '@/components/ui/switch';
 import { DataTable, type Column } from '@/components/ui/data-table';
 import { apiFetch } from '@/lib/api.client';
+import { ApiClientError } from '@/lib/api';
 import { EmptyState } from '@/components/empty-state';
 import { Boxes } from 'lucide-react';
 import { CreateSourceDialog } from './create-source-dialog';
 
 export function SourcesView() {
+  const qc = useQueryClient();
   const [createOpen, setCreateOpen] = useState(false);
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['admin', 'sources'],
     queryFn: () => apiFetch<PaginatedResponse<SourceResponse>>('/admin/sources?pageSize=100'),
   });
 
+  const toggleMu = useMutation({
+    mutationFn: ({ id, active }: { id: string; active: boolean }) =>
+      apiFetch<SourceResponse>(`/admin/sources/${id}`, {
+        method: 'PATCH',
+        body: { status: active ? 'ACTIVE' : 'INACTIVE' },
+      }),
+    onSuccess: (s) => {
+      toast.success(s.status === 'ACTIVE' ? 'Source activated' : 'Source deactivated');
+      qc.invalidateQueries({ queryKey: ['admin', 'sources'] });
+    },
+    onError: (err) => toast.error(err instanceof ApiClientError ? err.message : 'Failed'),
+  });
+
   const columns: Column<SourceResponse>[] = [
-    { key: 'name', header: 'Name', className: 'font-medium', cell: (s) => s.name },
+    {
+      key: 'name',
+      header: 'Name',
+      className: 'font-medium',
+      cell: (s) => (
+        <Link href={`/admin/sources/${s.id}`} className="hover:underline">
+          {s.name}
+        </Link>
+      ),
+    },
     { key: 'code', header: 'Code', className: 'font-mono text-xs', cell: (s) => s.code },
     {
       key: 'status',
       header: 'Status',
       cell: (s) => (
-        <Badge variant={s.status === 'ACTIVE' ? 'success' : 'secondary'}>{s.status}</Badge>
+        <div className="flex items-center gap-3">
+          <Switch
+            aria-label={`Source ${s.name} active`}
+            checked={s.status === 'ACTIVE'}
+            disabled={toggleMu.isPending}
+            onCheckedChange={(active) => toggleMu.mutate({ id: s.id, active })}
+          />
+          <Badge variant={s.status === 'ACTIVE' ? 'success' : 'secondary'}>{s.status}</Badge>
+        </div>
       ),
     },
     {
@@ -40,9 +74,14 @@ export function SourcesView() {
       header: '',
       align: 'right',
       cell: (s) => (
-        <Button asChild variant="ghost" size="sm">
-          <Link href={`/admin/sources/${s.id}/api-keys`}>API keys</Link>
-        </Button>
+        <div className="flex items-center justify-end gap-1">
+          <Button asChild variant="ghost" size="sm">
+            <Link href={`/admin/sources/${s.id}`}>View</Link>
+          </Button>
+          <Button asChild variant="ghost" size="sm">
+            <Link href={`/admin/sources/${s.id}/api-keys`}>API keys</Link>
+          </Button>
+        </div>
       ),
     },
   ];

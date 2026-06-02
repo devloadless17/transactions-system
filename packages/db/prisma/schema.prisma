@@ -162,6 +162,9 @@ model Company {
   name            String
   slug            String        @unique
   status          CompanyStatus @default(ACTIVE)
+  // When false, the company is hidden from discovery/list APIs (e.g. the
+  // source-facing GET /v1/ingest/companies). Toggled by SUPER_ADMIN.
+  visible         Boolean       @default(true)
   defaultCurrency String        @map("default_currency") @db.Char(3)
   metadata        Json?         @db.JsonB
   // Optional outbound webhook: where to POST payment events (e.g. whish.payment.paid),

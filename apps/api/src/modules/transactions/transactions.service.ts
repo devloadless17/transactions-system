@@ -16,6 +16,7 @@ import { CommissionsRepository } from '../commissions/commissions.repository';
 import { LedgerService } from '../ledger/ledger.service';
 import { WalletsService } from '../wallets/wallets.service';
 import { AnalyticsService } from '../analytics/analytics.service';
+import { RealtimeService } from '../realtime/realtime.service';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain.error';
 
 @Injectable()
@@ -29,6 +30,7 @@ export class TransactionsService {
     private readonly ledger: LedgerService,
     private readonly wallets: WalletsService,
     private readonly analytics: AnalyticsService,
+    private readonly realtime: RealtimeService,
     @InjectMetric('txn_ingest_total') private readonly ingestCounter: Counter<string>,
   ) {}
 
@@ -44,7 +46,7 @@ export class TransactionsService {
   async listCompaniesForSource(): Promise<{ data: IngestCompanyListItem[] }> {
     const rows = await this.prisma.runAsAdmin((tx) =>
       tx.company.findMany({
-        where: { status: 'ACTIVE' },
+        where: { status: 'ACTIVE', visible: true },
         orderBy: { slug: 'asc' },
         select: { id: true, slug: true, name: true, defaultCurrency: true },
       }),
@@ -219,6 +221,8 @@ export class TransactionsService {
       .invalidateAll()
       .catch((e) => this.logger.warn(`analytics cache invalidate failed: ${e}`));
 
+    this.realtime.company(companyId, ['transactions', 'wallets', 'ledger', 'analytics']);
+
     return result;
   }
 
@@ -320,6 +324,8 @@ export class TransactionsService {
     this.analytics
       .invalidateAll()
       .catch((e) => this.logger.warn(`analytics cache invalidate failed: ${e}`));
+
+    this.realtime.company(reversed.companyId, ['transactions', 'wallets', 'ledger', 'analytics']);
 
     return mapTxRow(reversed, (reversed as { source?: { code: string } }).source?.code ?? '');
   }

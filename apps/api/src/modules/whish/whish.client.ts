@@ -85,8 +85,8 @@ export class WhishClient {
     };
   }
 
-  /** Real account balance for a currency (LBP or USD). */
-  async getBalance(currency: 'USD' | 'LBP'): Promise<{ balance: number }> {
+  /** Real account balance for a currency (USD only). */
+  async getBalance(currency: 'USD'): Promise<{ balance: number }> {
     const data = await this.call<{ balance: number }>(
       'GET',
       `/payment/account/balance?currency=${currency}`,

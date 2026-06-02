@@ -57,6 +57,16 @@ export const payoutDetailsSchema = z.discriminatedUnion('method', [
   otherPayoutSchema,
 ]);
 export type PayoutDetails = z.infer<typeof payoutDetailsSchema>;
+
+// Restricted union — used for CREATING new withdrawals/payouts/loads. Only
+// cash and crypto are accepted; anything else is rejected at the API. The
+// full union above stays in use for reading legacy rows.
+export const createPayoutDetailsSchema = z.discriminatedUnion('method', [
+  cryptoPayoutSchema,
+  cashPayoutSchema,
+]);
+export type CreatePayoutDetails = z.infer<typeof createPayoutDetailsSchema>;
+
 export type BankPayoutDetails = z.infer<typeof bankPayoutSchema>;
 export type CryptoPayoutDetails = z.infer<typeof cryptoPayoutSchema>;
 export type CashPayoutDetails = z.infer<typeof cashPayoutSchema>;

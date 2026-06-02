@@ -10,22 +10,33 @@ import {
   type OverviewResponse,
   type PaginatedResponse,
   type TransactionResponse,
+  type VolumeMetric,
   type WalletResponse,
 } from '@app/shared';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Switch } from '@/components/ui/switch';
 import { DataTable, type Column } from '@/components/ui/data-table';
 import { apiFetch } from '@/lib/api.client';
 import { ApiClientError } from '@/lib/api';
 import { KpiCard } from '@/features/analytics/kpi-card';
 import { VolumeChart } from '@/features/analytics/volume-chart';
+import {
+  DateRangeControls,
+  DEFAULT_RANGE,
+  isRangeReady,
+  rangeKey,
+  rangeLabel,
+  resolveRange,
+  type DateRange,
+} from '@/features/analytics/date-range';
 import { CompanyUsersCard } from './company-users-card';
 
 export function CompanyDetailView({ companyId }: { companyId: string }) {
   const qc = useQueryClient();
   const [chartCurrency, setChartCurrency] = useState<string>('USD');
-  const [chartDays, setChartDays] = useState<number>(30);
+  const [range, setRange] = useState<DateRange>(DEFAULT_RANGE);
 
   const companyQ = useQuery({
     queryKey: ['admin', 'company', companyId],
@@ -33,19 +44,15 @@ export function CompanyDetailView({ companyId }: { companyId: string }) {
   });
 
   const overviewQ = useQuery({
-    queryKey: ['admin', 'company', companyId, 'overview', chartCurrency, chartDays],
+    queryKey: ['admin', 'company', companyId, 'overview', chartCurrency, rangeKey(range)],
     queryFn: () => {
-      const to = new Date();
-      const from = new Date(to.getTime() - chartDays * 24 * 3600 * 1000);
-      const params = new URLSearchParams({
-        from: from.toISOString(),
-        to: to.toISOString(),
-        currency: chartCurrency,
-      });
+      const { from, to } = resolveRange(range);
+      const params = new URLSearchParams({ from, to, currency: chartCurrency });
       return apiFetch<OverviewResponse>(
         `/admin/analytics/companies/${companyId}/overview?${params.toString()}`,
       );
     },
+    enabled: isRangeReady(range),
   });
   const walletsQ = useQuery({
     queryKey: ['admin', 'company', companyId, 'wallets'],
@@ -70,7 +77,32 @@ export function CompanyDetailView({ companyId }: { companyId: string }) {
     mutationFn: () =>
       apiFetch<CompanyResponse>(`/admin/companies/${companyId}/disable`, { method: 'POST' }),
     onSuccess: () => {
-      toast.success('Company disabled');
+      toast.success('Company deactivated');
+      qc.invalidateQueries({ queryKey: ['admin', 'company', companyId] });
+      qc.invalidateQueries({ queryKey: ['admin', 'companies'] });
+    },
+    onError: (err) => toast.error(err instanceof ApiClientError ? err.message : 'Failed'),
+  });
+
+  const activateMu = useMutation({
+    mutationFn: () =>
+      apiFetch<CompanyResponse>(`/admin/companies/${companyId}/activate`, { method: 'POST' }),
+    onSuccess: () => {
+      toast.success('Company activated');
+      qc.invalidateQueries({ queryKey: ['admin', 'company', companyId] });
+      qc.invalidateQueries({ queryKey: ['admin', 'companies'] });
+    },
+    onError: (err) => toast.error(err instanceof ApiClientError ? err.message : 'Failed'),
+  });
+
+  const visibilityMu = useMutation({
+    mutationFn: (visible: boolean) =>
+      apiFetch<CompanyResponse>(`/admin/companies/${companyId}`, {
+        method: 'PATCH',
+        body: { visible },
+      }),
+    onSuccess: (c) => {
+      toast.success(c.visible ? 'Company is now visible' : 'Company is now hidden');
       qc.invalidateQueries({ queryKey: ['admin', 'company', companyId] });
       qc.invalidateQueries({ queryKey: ['admin', 'companies'] });
     },
@@ -145,6 +177,41 @@ export function CompanyDetailView({ companyId }: { companyId: string }) {
     },
   ];
 
+  type SourceRow = NonNullable<typeof overviewQ.data>['topSources'][number];
+  const sourceColumns: Column<SourceRow>[] = [
+    {
+      key: 'source',
+      header: 'Source',
+      className: 'font-mono text-xs',
+      cell: (s) => (
+        <Link href={`/admin/sources/${s.sourceId}`} className="hover:underline">
+          {s.sourceCode}
+        </Link>
+      ),
+    },
+    {
+      key: 'count',
+      header: 'Count',
+      align: 'right',
+      className: 'font-mono',
+      cell: (s) => s.count.toLocaleString(),
+    },
+    {
+      key: 'volume',
+      header: 'Volume',
+      align: 'right',
+      className: 'font-mono',
+      cell: (s) => fmt(s.volume),
+    },
+    {
+      key: 'fees',
+      header: 'Fees',
+      align: 'right',
+      className: 'font-mono text-muted-foreground',
+      cell: (s) => fmt(s.fees),
+    },
+  ];
+
   const auditColumns: Column<AuditLogResponse>[] = [
     {
       key: 'when',
@@ -193,55 +260,123 @@ export function CompanyDetailView({ companyId }: { companyId: string }) {
             </p>
           )}
         </div>
-        {companyQ.data?.status === 'ACTIVE' && (
-          <Button
-            className="w-full sm:w-auto"
-            variant="destructive"
-            onClick={() => {
-              if (
-                confirm(
-                  `Disable ${companyQ.data?.name}? Their API keys will keep working until revoked.`,
-                )
-              ) {
-                disableMu.mutate();
-              }
-            }}
-            disabled={disableMu.isPending}
-          >
-            {disableMu.isPending ? 'Disabling…' : 'Disable company'}
-          </Button>
-        )}
+        {companyQ.data &&
+          (companyQ.data.status === 'ACTIVE' ? (
+            <Button
+              className="w-full sm:w-auto"
+              variant="destructive"
+              onClick={() => {
+                if (
+                  confirm(
+                    `Deactivate ${companyQ.data?.name}? It will immediately lose all access — ` +
+                      `users can't log in, API keys stop working, and it can't send or receive ` +
+                      `anything. All of its data is kept and access is fully restored if you ` +
+                      `reactivate it.`,
+                  )
+                ) {
+                  disableMu.mutate();
+                }
+              }}
+              disabled={disableMu.isPending}
+            >
+              {disableMu.isPending ? 'Deactivating…' : 'Deactivate company'}
+            </Button>
+          ) : (
+            <Button
+              className="w-full sm:w-auto"
+              onClick={() => {
+                if (confirm(`Reactivate ${companyQ.data?.name}? Full access will be restored.`)) {
+                  activateMu.mutate();
+                }
+              }}
+              disabled={activateMu.isPending}
+            >
+              {activateMu.isPending ? 'Activating…' : 'Activate company'}
+            </Button>
+          ))}
       </div>
+
+      {companyQ.data && (
+        <Card>
+          <CardContent className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-3">
+              <Switch
+                id="company-visible"
+                aria-label="Company visible in discovery APIs"
+                checked={companyQ.data.visible}
+                disabled={visibilityMu.isPending}
+                onCheckedChange={(v) => visibilityMu.mutate(v)}
+              />
+              <div>
+                <label htmlFor="company-visible" className="text-sm font-medium">
+                  Visible in API
+                </label>
+                <p className="text-sm text-muted-foreground">
+                  When off, this company is hidden from discovery/list APIs (e.g. the source-facing
+                  list of companies). Its data is fully retained.
+                </p>
+              </div>
+            </div>
+            <Badge variant={companyQ.data.visible ? 'success' : 'secondary'}>
+              {companyQ.data.visible ? 'Visible' : 'Hidden'}
+            </Badge>
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <KpiCard
-          label="Volume"
+          label="Deposits"
           value={
             overviewQ.data
-              ? `${fmt(overviewQ.data.kpi.totalVolume)} ${overviewQ.data.kpi.currency}`
+              ? `${fmt(overviewQ.data.volume.deposits.completedTotal)} ${chartCurrency}`
               : '—'
           }
-          hint={`Last ${chartDays}d`}
-        />
-        <KpiCard
-          label="Fees paid"
-          value={
+          hint={
             overviewQ.data
-              ? `${fmt(overviewQ.data.kpi.totalFees)} ${overviewQ.data.kpi.currency}`
-              : '—'
+              ? inflightHint(overviewQ.data.volume.deposits, chartCurrency)
+              : rangeLabel(range)
           }
         />
         <KpiCard
-          label="Transactions"
-          value={overviewQ.data ? overviewQ.data.kpi.transactionCount.toLocaleString() : '—'}
-        />
-        <KpiCard
-          label="Average tx"
+          label="Withdrawals"
           value={
             overviewQ.data
-              ? `${fmt(overviewQ.data.kpi.averageAmount)} ${overviewQ.data.kpi.currency}`
+              ? `${fmt(overviewQ.data.volume.withdrawals.completedTotal)} ${chartCurrency}`
               : '—'
           }
+          hint={
+            overviewQ.data ? inflightHint(overviewQ.data.volume.withdrawals, chartCurrency) : ''
+          }
+        />
+        <KpiCard
+          label="Loads"
+          value={
+            overviewQ.data
+              ? `${fmt(overviewQ.data.volume.loads.completedTotal)} ${chartCurrency}`
+              : '—'
+          }
+          hint={overviewQ.data ? inflightHint(overviewQ.data.volume.loads, chartCurrency) : ''}
+        />
+        <KpiCard
+          label="Payouts"
+          value={
+            overviewQ.data
+              ? `${fmt(overviewQ.data.volume.payouts.completedTotal)} ${chartCurrency}`
+              : '—'
+          }
+          hint={overviewQ.data ? inflightHint(overviewQ.data.volume.payouts, chartCurrency) : ''}
+        />
+        {/* Platform fees — admin-only. The company never sees this aggregate,
+            only the fee on each individual transaction. */}
+        <KpiCard
+          label="Platform fees"
+          value={
+            overviewQ.data?.kpi.totalFees
+              ? `${fmt(overviewQ.data.kpi.totalFees)} ${chartCurrency}`
+              : '—'
+          }
+          hint={`Commission earned · ${rangeLabel(range)}`}
         />
       </div>
 
@@ -253,18 +388,7 @@ export function CompanyDetailView({ companyId }: { companyId: string }) {
               <CardDescription>Daily completed transaction volume.</CardDescription>
             </div>
             <div className="flex flex-wrap gap-2">
-              <div className="flex items-center gap-1 rounded-md border bg-background p-1">
-                {[7, 30, 90].map((d) => (
-                  <Button
-                    key={d}
-                    variant={chartDays === d ? 'default' : 'ghost'}
-                    size="sm"
-                    onClick={() => setChartDays(d)}
-                  >
-                    {d}d
-                  </Button>
-                ))}
-              </div>
+              <DateRangeControls value={range} onChange={setRange} />
               <select
                 value={chartCurrency}
                 onChange={(e) => setChartCurrency(e.target.value)}
@@ -285,6 +409,29 @@ export function CompanyDetailView({ companyId }: { companyId: string }) {
           ) : (
             <div className="h-72 w-full animate-pulse rounded bg-muted" />
           )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>By source</CardTitle>
+          <CardDescription>
+            Every source this company transacted through over {rangeLabel(range)} ({chartCurrency}).
+            Click a source for its full breakdown.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="p-0">
+          <DataTable<SourceRow>
+            columns={sourceColumns}
+            rows={overviewQ.data?.topSources}
+            isLoading={overviewQ.isLoading}
+            rowKey={(s) => s.sourceId}
+            empty={
+              <div className="py-6 text-center text-muted-foreground">
+                No transactions in this range.
+              </div>
+            }
+          />
         </CardContent>
       </Card>
 
@@ -345,6 +492,16 @@ function fmt(s: string): string {
   if (n === 0) return '0';
   if (Math.abs(n) >= 1) return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
   return n.toString();
+}
+
+// KPI sub-line: settled count plus any money still in-flight (pending
+// approval / processing) for that operation type.
+function inflightHint(m: VolumeMetric, currency: string): string {
+  const base = `${m.completedCount.toLocaleString()} completed`;
+  if (m.pendingCount > 0 || Number(m.pendingTotal) > 0) {
+    return `${base} · ${fmt(m.pendingTotal)} ${currency} in-flight`;
+  }
+  return base;
 }
 
 function trimAmount(s: string): string {
