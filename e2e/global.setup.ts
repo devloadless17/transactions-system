@@ -2,7 +2,7 @@ import { test as setup, expect } from '@playwright/test';
 import path from 'node:path';
 import fs from 'node:fs';
 
-const ADMIN_EMAIL = process.env.E2E_ADMIN_EMAIL ?? 'ali@loadless.ai';
+const ADMIN_EMAIL = process.env.E2E_ADMIN_EMAIL ?? 'admin@example.com';
 const ADMIN_PASSWORD = process.env.E2E_ADMIN_PASSWORD ?? 'loadless';
 const STORAGE_PATH = path.join(__dirname, '.auth', 'admin.json');
 

@@ -2,15 +2,15 @@ import type { OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
 
-// Hourly sweep. These tables have an expiresAt index but no retention, so they
-// would otherwise grow unbounded.
+// Hourly sweep. The refresh_tokens table has an expiresAt index but no
+// retention, so it would otherwise grow unbounded.
 const CLEANUP_INTERVAL_MS = 60 * 60_000;
 
 /**
- * Periodic cleanup of expired auth / idempotency rows. Only deletes rows whose
- * expiresAt is in the past — an expired refresh token is already unusable
- * (refresh() rejects it), and reuse detection relies only on revoked-but-not-yet-
- * expired tokens, which are preserved until they expire.
+ * Periodic cleanup of expired auth rows. Only deletes rows whose expiresAt is
+ * in the past — an expired refresh token is already unusable (refresh() rejects
+ * it), and reuse detection relies only on revoked-but-not-yet-expired tokens,
+ * which are preserved until they expire.
  */
 @Injectable()
 export class MaintenanceService implements OnApplicationBootstrap, OnModuleDestroy {
@@ -29,12 +29,11 @@ export class MaintenanceService implements OnApplicationBootstrap, OnModuleDestr
     if (this.timer) clearInterval(this.timer);
   }
 
-  async cleanup(): Promise<{ refreshTokens: number; idempotencyKeys: number }> {
+  async cleanup(): Promise<{ refreshTokens: number }> {
     const now = new Date();
     return this.prisma.runAsAdmin(async (tx) => {
       const rt = await tx.refreshToken.deleteMany({ where: { expiresAt: { lt: now } } });
-      const ik = await tx.idempotencyKey.deleteMany({ where: { expiresAt: { lt: now } } });
-      return { refreshTokens: rt.count, idempotencyKeys: ik.count };
+      return { refreshTokens: rt.count };
     });
   }
 
@@ -43,10 +42,8 @@ export class MaintenanceService implements OnApplicationBootstrap, OnModuleDestr
     this.running = true;
     try {
       const r = await this.cleanup();
-      if (r.refreshTokens || r.idempotencyKeys) {
-        this.logger.log(
-          `Cleanup: removed ${r.refreshTokens} expired refresh tokens, ${r.idempotencyKeys} idempotency keys`,
-        );
+      if (r.refreshTokens) {
+        this.logger.log(`Cleanup: removed ${r.refreshTokens} expired refresh tokens`);
       }
     } catch (err) {
       this.logger.warn(`Cleanup tick failed: ${(err as Error).message}`);

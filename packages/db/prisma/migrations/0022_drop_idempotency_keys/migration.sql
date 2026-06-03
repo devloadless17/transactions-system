@@ -1,0 +1,14 @@
+-- ============================================================
+-- 0022_drop_idempotency_keys
+--
+-- Remove the unused generic `idempotency_keys` table. It was never written:
+-- request idempotency is implemented per-resource via the nullable
+-- `idempotency_key` COLUMN on `transactions` (and `whish_payments`), guarded by
+-- a `(company_id, idempotency_key)` unique constraint. The generic store was
+-- early scaffolding that the per-table approach superseded, so it only ever
+-- accumulated DDL and a no-op cleanup sweep. Dropping it removes dead schema.
+--
+-- Safe: the table holds no rows in any environment. Re-add via a new migration
+-- if a generic idempotency layer is ever needed.
+-- ============================================================
+DROP TABLE IF EXISTS "idempotency_keys";

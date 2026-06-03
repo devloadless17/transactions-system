@@ -8,7 +8,10 @@ import { apiFetch } from '@/lib/api.client';
 
 export function SourcesView() {
   const { data, isLoading, error } = useQuery({
-    queryKey: ['company', 'sources'],
+    // Keyed ['sources','all'] (not ['company',...]) so the realtime `sources`
+    // topic — which invalidates ['sources','all'] — refreshes this list live
+    // when the superadmin adds/toggles a global source.
+    queryKey: ['sources', 'all'],
     // TODO: this hits the admin-prefixed /admin/sources/all endpoint — there is
     // no company-scoped sources list endpoint yet. Swap to a /company/sources
     // route if/when the backend exposes one.

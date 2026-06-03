@@ -4,7 +4,6 @@
     "module": "node16",
     "moduleResolution": "node16",
     "outDir": "./dist",
-    "baseUrl": "./",
     "incremental": true,
     "removeComments": true,
     "noEmit": false,

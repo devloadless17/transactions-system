@@ -19,9 +19,6 @@ SET session_replication_role = replica;
 
 -- Order matters because of FKs. Innermost children first.
 
--- Idempotency cache
-DELETE FROM idempotency_keys;
-
 -- Ledger entries (children of transactions, withdrawals, companies)
 DELETE FROM ledger_entries;
 
@@ -67,7 +64,6 @@ UNION ALL SELECT 'wallets',           COUNT(*) FROM wallets
 UNION ALL SELECT 'ledger_entries',    COUNT(*) FROM ledger_entries
 UNION ALL SELECT 'withdrawals',       COUNT(*) FROM withdrawals
 UNION ALL SELECT 'audit_logs',        COUNT(*) FROM audit_logs
-UNION ALL SELECT 'idempotency_keys',  COUNT(*) FROM idempotency_keys
 UNION ALL SELECT 'refresh_tokens',    COUNT(*) FROM refresh_tokens
 UNION ALL SELECT 'sources (kept)',    COUNT(*) FROM sources
 UNION ALL SELECT 'commission_rules (global, kept)',  COUNT(*) FROM commission_rules WHERE company_id IS NULL

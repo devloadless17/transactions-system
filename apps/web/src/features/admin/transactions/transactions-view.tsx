@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { usePathname, useSearchParams } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import {
@@ -95,7 +95,6 @@ function urlParamsFromState(page: number, filters: Filters): string {
 
 export function TransactionsView({ scope }: { scope: 'admin' | 'company' }) {
   const qc = useQueryClient();
-  const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const urlString = searchParams.toString();
@@ -105,14 +104,17 @@ export function TransactionsView({ scope }: { scope: 'admin' | 'company' }) {
   const [page, setPage] = useState(() => Number(searchParams.get('page')) || 1);
   const [filters, setFilters] = useState<Filters>(() => filtersFromParams(searchParams));
 
-  // Single writer: update page/filters AND push them to the URL together
-  // (replace, so a stream of keystrokes doesn't pollute history). Because state
-  // and URL end up in sync, the read-back effect below stays a no-op — no loop.
+  // Single writer: update page/filters AND push them to the URL together.
+  // We use the native `history.replaceState` (which Next integrates with
+  // useSearchParams) rather than `router.replace`: a stream of search keystrokes
+  // would otherwise fire one RSC roundtrip each. replaceState updates the URL
+  // bar + Back/Forward without re-running server components. Because state and
+  // URL end up in sync, the read-back effect below stays a no-op — no loop.
   function applyState(nextPage: number, nextFilters: Filters) {
     setPage(nextPage);
     setFilters(nextFilters);
     const qs = urlParamsFromState(nextPage, nextFilters);
-    router.replace(pathname + (qs ? `?${qs}` : ''), { scroll: false });
+    window.history.replaceState(null, '', pathname + (qs ? `?${qs}` : ''));
   }
   // Changing any filter resets back to page 1.
   function setFilter(patch: Partial<Filters>) {
@@ -187,24 +189,35 @@ export function TransactionsView({ scope }: { scope: 'admin' | 'company' }) {
 
   const companyById = new Map(companiesQ.data?.data.map((c) => [c.id, c]) ?? []);
 
-  function downloadCsv() {
+  const [exporting, setExporting] = useState(false);
+  async function downloadCsv() {
     const exportParams = new URLSearchParams(params);
     exportParams.delete('page');
     exportParams.delete('pageSize');
     const path =
       scope === 'admin' ? '/admin/transactions/export.csv' : '/company/transactions/export.csv';
     const base = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:3001/v1';
-    // Use a hidden iframe-style download — fetch with credentials, then blob.
-    fetch(`${base}${path}?${exportParams.toString()}`, { credentials: 'include' })
-      .then((r) => r.blob())
-      .then((blob) => {
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `transactions-${Date.now()}.csv`;
-        a.click();
-        URL.revokeObjectURL(url);
+    setExporting(true);
+    try {
+      // Fetch with credentials, then download the blob. A failed request returns
+      // an error body, not a CSV, so check `ok` before saving — otherwise the
+      // user silently downloads a file full of error JSON.
+      const r = await fetch(`${base}${path}?${exportParams.toString()}`, {
+        credentials: 'include',
       });
+      if (!r.ok) throw new Error(`Export failed (${r.status})`);
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `transactions-${Date.now()}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Export failed. Please try again.');
+    } finally {
+      setExporting(false);
+    }
   }
 
   const columns: Column<TransactionResponse>[] = [
@@ -288,8 +301,13 @@ export function TransactionsView({ scope }: { scope: 'admin' | 'company' }) {
               : 'Transactions ingested via your API keys.'}
           </p>
         </div>
-        <Button className="w-full sm:w-auto" variant="outline" onClick={downloadCsv}>
-          Export CSV
+        <Button
+          className="w-full sm:w-auto"
+          variant="outline"
+          onClick={downloadCsv}
+          disabled={exporting}
+        >
+          {exporting ? 'Exporting…' : 'Export CSV'}
         </Button>
       </div>
 

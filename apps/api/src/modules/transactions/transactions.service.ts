@@ -39,6 +39,14 @@ const LIST_COUNT_CACHE_TTL_SEC = 30;
 const CSV_EXPORT_CHUNK = 1000;
 const MAX_EXPORT_ROWS = 50_000;
 
+// Offset pagination makes Postgres scan + discard every skipped row, so a very
+// deep page (e.g. page 50,000) turns into a half-million-row disk sort per
+// request. No human pages that deep through the UI — they filter by date/source
+// or export — so we cap the reachable offset and tell the caller to narrow the
+// query instead of silently serving a slow scan. Generous enough that no real
+// browsing hits it (100k rows at pageSize 100 = page 1,000).
+const MAX_LIST_OFFSET = 100_000;
+
 @Injectable()
 export class TransactionsService {
   private readonly logger = new Logger(TransactionsService.name);
@@ -511,6 +519,11 @@ export class TransactionsService {
       }
 
       const skip = (args.query.page - 1) * args.query.pageSize;
+      if (skip > MAX_LIST_OFFSET) {
+        throw new ValidationError(
+          `Page too deep to scan efficiently. Narrow the results with filters (date range, status, source) or use Export CSV.`,
+        );
+      }
       const countKey =
         `list-count:txn:${args.companyId ?? args.query.companyId ?? 'all'}` +
         `:${args.query.status ?? ''}:${args.query.sourceId ?? ''}:${args.query.currency ?? ''}` +

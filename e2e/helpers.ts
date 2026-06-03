@@ -1,6 +1,6 @@
 import { expect, type APIRequestContext, type Page, request as pwRequest } from '@playwright/test';
 
-export const ADMIN_EMAIL = process.env.E2E_ADMIN_EMAIL ?? 'ali@loadless.ai';
+export const ADMIN_EMAIL = process.env.E2E_ADMIN_EMAIL ?? 'admin@example.com';
 export const ADMIN_PASSWORD = process.env.E2E_ADMIN_PASSWORD ?? 'loadless';
 export const API_BASE = process.env.E2E_API_BASE ?? 'http://localhost:3001';
 

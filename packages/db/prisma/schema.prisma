@@ -194,7 +194,6 @@ model Company {
   payouts           Payout[]
   loads             Load[]
   auditLogs         AuditLog[]
-  idempotencyKeys   IdempotencyKey[]
   whishPayments     WhishPayment[]
   companySources    CompanySource[]
   webhookDeliveries WebhookDelivery[]
@@ -501,23 +500,6 @@ model AuditLog {
   @@index([actorId])
   @@index([entityType, entityId])
   @@map("audit_logs")
-}
-
-// -------------------- Idempotency Keys ---------------------------
-
-model IdempotencyKey {
-  id              String   @id @default(uuid()) @db.Uuid
-  companyId       String   @map("company_id") @db.Uuid
-  company         Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  key             String
-  requestHash     String   @map("request_hash")
-  responseSnapshot Json?   @map("response_snapshot") @db.JsonB
-  expiresAt       DateTime @map("expires_at") @db.Timestamptz(6)
-  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-
-  @@unique([companyId, key])
-  @@index([expiresAt])
-  @@map("idempotency_keys")
 }
 
 // -------------------------- Whish Payments -----------------------

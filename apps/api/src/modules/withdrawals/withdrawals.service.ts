@@ -191,17 +191,54 @@ export class WithdrawalsService {
     approvedById: string,
     input: RejectWithdrawalInput,
   ): Promise<WithdrawalResponse> {
-    const pre = await this.prisma.runAsAdmin((tx) =>
-      tx.withdrawal.findUnique({ where: { id }, select: { companyId: true } }),
-    );
-    if (!pre) throw new NotFoundError('Withdrawal', id);
-    const row = await this.prisma.runSerializableAsTenant(pre.companyId, async (tx) => {
+    return this.release(id, input.notes, { approvedById, status: 'REJECTED' });
+  }
+
+  /**
+   * Company-initiated cancel of a PENDING withdrawal. Releases the full
+   * reserved total back to available (no fee realized) so the company can
+   * re-request. Only PENDING can be cancelled — once approved, no.
+   */
+  async cancel(
+    id: string,
+    companyId: string,
+    cancelledById: string,
+    input: CancelRequestInput,
+  ): Promise<WithdrawalResponse> {
+    return this.release(id, input.notes, { cancelledById, status: 'CANCELLED', companyId });
+  }
+
+  /** Shared reserved-release used by reject (admin) and cancel (company). */
+  private async release(
+    id: string,
+    notes: string | undefined,
+    opts: {
+      status: WithdrawalStatus;
+      approvedById?: string;
+      cancelledById?: string;
+      companyId?: string;
+    },
+  ): Promise<WithdrawalResponse> {
+    // cancel passes the company; reject (admin) doesn't — resolve it so the
+    // mutation runs scoped and RLS WITH CHECK validates the writes.
+    const targetCompanyId =
+      opts.companyId ??
+      (
+        await this.prisma.runAsAdmin((tx) =>
+          tx.withdrawal.findUnique({ where: { id }, select: { companyId: true } }),
+        )
+      )?.companyId;
+    if (!targetCompanyId) throw new NotFoundError('Withdrawal', id);
+    const row = await this.prisma.runSerializableAsTenant(targetCompanyId, async (tx) => {
       const cTx = tx as unknown as PrismaClient;
 
       const w = await cTx.withdrawal.findUnique({ where: { id } });
-      if (!w) throw new NotFoundError('Withdrawal', id);
+      if (!w || (opts.companyId && w.companyId !== opts.companyId)) {
+        throw new NotFoundError('Withdrawal', id);
+      }
       if (w.status !== 'PENDING') {
-        throw new ConflictError(`Withdrawal is in status ${w.status} and cannot be rejected`);
+        const verb = opts.status === 'CANCELLED' ? 'cancelled' : 'rejected';
+        throw new ConflictError(`Withdrawal is in status ${w.status} and cannot be ${verb}`);
       }
 
       const reserved = reservedTotal(
@@ -224,62 +261,11 @@ export class WithdrawalsService {
       return cTx.withdrawal.update({
         where: { id },
         data: {
-          status: 'REJECTED',
-          approvedById,
+          status: opts.status,
+          approvedById: opts.approvedById ?? undefined,
+          cancelledById: opts.cancelledById ?? undefined,
           processedAt: new Date(),
-          notes: input.notes ?? w.notes,
-        },
-      });
-    });
-
-    await this.invalidateAnalytics();
-    this.notify(row.companyId);
-    return mapWithdrawal(row);
-  }
-
-  /**
-   * Company-initiated cancel of a PENDING withdrawal. Releases the full
-   * reserved total back to available (no fee realized) so the company can
-   * re-request. Only PENDING can be cancelled — once approved, no.
-   */
-  async cancel(
-    id: string,
-    companyId: string,
-    cancelledById: string,
-    input: CancelRequestInput,
-  ): Promise<WithdrawalResponse> {
-    const row = await this.prisma.runSerializableAsTenant(companyId, async (tx) => {
-      const cTx = tx as unknown as PrismaClient;
-
-      const w = await cTx.withdrawal.findUnique({ where: { id } });
-      if (!w || w.companyId !== companyId) throw new NotFoundError('Withdrawal', id);
-      if (w.status !== 'PENDING') {
-        throw new ConflictError(`Withdrawal is in status ${w.status} and cannot be cancelled`);
-      }
-
-      const reserved = reservedTotal(
-        Money.of(w.amount.toString()),
-        Money.of(w.feeAmount.toString()),
-        w.feeApplication,
-      );
-
-      await this.ledger.writeEntries(
-        cTx,
-        releaseEntries({ withdrawalId: w.id }, w.companyId, w.currency, reserved),
-      );
-      await this.wallets.applyDelta(cTx, {
-        companyId: w.companyId,
-        currency: w.currency,
-        delta: { reserved: reserved.mul(-1), available: reserved },
-      });
-
-      return cTx.withdrawal.update({
-        where: { id },
-        data: {
-          status: 'CANCELLED',
-          cancelledById,
-          processedAt: new Date(),
-          notes: input.notes ?? w.notes,
+          notes: notes ?? w.notes,
         },
       });
     });
