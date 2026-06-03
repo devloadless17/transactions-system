@@ -1,8 +1,8 @@
 import { z } from 'zod';
 import { WHISH_CURRENCIES, WhishPaymentStatus } from '../enums';
-import { paginationSchema } from './common';
+import { moneyAmountSchema, paginationSchema } from './common';
 
-const decimalString = z.string().regex(/^\d+(\.\d+)?$/, 'must be a positive decimal');
+const decimalString = moneyAmountSchema;
 
 // What a company submits to mint a Whish payment link.
 export const createWhishPaymentSchema = z.object({

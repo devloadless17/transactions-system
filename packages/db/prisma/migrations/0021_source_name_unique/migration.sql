@@ -1,0 +1,12 @@
+-- ============================================================
+-- 0021_source_name_unique
+--
+-- Sources are operator-declared labels for the external providers the
+-- platform deals with, so two sources must never share a name (the admin
+-- already can't reuse a `code`). Enforce it at the DB level, mirroring the
+-- existing unique constraint on `code`.
+--
+-- NOTE: any pre-existing duplicate names must be resolved before this runs,
+-- or the index creation fails.
+-- ============================================================
+CREATE UNIQUE INDEX "sources_name_key" ON "sources"("name");

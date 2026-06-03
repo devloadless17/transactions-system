@@ -1,5 +1,6 @@
 'use client';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import type { AuditLogResponse, CompanyResponse, PaginatedResponse } from '@app/shared';
 import { Card, CardContent } from '@/components/ui/card';
@@ -8,19 +9,74 @@ import { Label } from '@/components/ui/label';
 import { DataTable, type Column } from '@/components/ui/data-table';
 import { Pagination } from '@/components/ui/pagination';
 import { apiFetch } from '@/lib/api.client';
+import { useDebouncedValue } from '@/lib/use-debounced-value';
 
 const PAGE_SIZE = 50;
 
-export function AuditLogsView() {
-  const [page, setPage] = useState(1);
-  const [entityType, setEntityType] = useState('');
-  const [action, setAction] = useState('');
-  const [companyId, setCompanyId] = useState('');
+interface State {
+  page: number;
+  entityType: string;
+  action: string;
+  companyId: string;
+}
 
-  const params = new URLSearchParams({ page: String(page), pageSize: String(PAGE_SIZE) });
-  if (entityType) params.set('entityType', entityType);
-  if (action) params.set('action', action);
-  if (companyId) params.set('companyId', companyId);
+function stateFromParams(p: URLSearchParams): State {
+  return {
+    page: Number(p.get('page')) || 1,
+    entityType: p.get('entityType') ?? '',
+    action: p.get('action') ?? '',
+    companyId: p.get('companyId') ?? '',
+  };
+}
+
+// URL query string mirroring the state. Defaults (page 1, empty filters) are
+// omitted to keep the URL clean and comparisons stable.
+function paramsFromState(s: State): string {
+  const p = new URLSearchParams();
+  if (s.page > 1) p.set('page', String(s.page));
+  if (s.entityType) p.set('entityType', s.entityType);
+  if (s.action) p.set('action', s.action);
+  if (s.companyId) p.set('companyId', s.companyId);
+  return p.toString();
+}
+
+export function AuditLogsView() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const urlString = searchParams.toString();
+
+  // State is initialised from the URL on mount (shareable/bookmarkable links).
+  const [state, setState] = useState<State>(() => stateFromParams(searchParams));
+
+  // Single writer: update state AND push it to the URL together (replace, so we
+  // don't pollute history on every keystroke). Because state and URL end up in
+  // sync, the read-back effect below stays a no-op afterwards — no loop.
+  function update(patch: Partial<State>) {
+    const next = { ...state, ...patch };
+    setState(next);
+    const qs = paramsFromState(next);
+    router.replace(pathname + (qs ? `?${qs}` : ''), { scroll: false });
+  }
+
+  // Read-back: when the URL changes externally (Back/Forward), adopt it into
+  // state. Guarded by equality so our own writes don't trigger a re-sync.
+  useEffect(() => {
+    if (urlString !== paramsFromState(state)) {
+      setState(stateFromParams(new URLSearchParams(urlString)));
+    }
+    // We intentionally depend only on the URL string; `state` is read fresh.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlString]);
+
+  // Debounce the free-text filters into the query key only; inputs stay live.
+  const debouncedEntityType = useDebouncedValue(state.entityType, 300);
+  const debouncedAction = useDebouncedValue(state.action, 300);
+
+  const params = new URLSearchParams({ page: String(state.page), pageSize: String(PAGE_SIZE) });
+  if (debouncedEntityType) params.set('entityType', debouncedEntityType);
+  if (debouncedAction) params.set('action', debouncedAction);
+  if (state.companyId) params.set('companyId', state.companyId);
 
   const listQ = useQuery({
     queryKey: ['admin', 'audit-logs', params.toString()],
@@ -83,23 +139,23 @@ export function AuditLogsView() {
               <Label className="text-xs">Entity type</Label>
               <Input
                 placeholder="company"
-                value={entityType}
-                onChange={(e) => setEntityType(e.target.value)}
+                value={state.entityType}
+                onChange={(e) => update({ entityType: e.target.value, page: 1 })}
               />
             </div>
             <div className="space-y-1">
               <Label className="text-xs">Action</Label>
               <Input
                 placeholder="company.created"
-                value={action}
-                onChange={(e) => setAction(e.target.value)}
+                value={state.action}
+                onChange={(e) => update({ action: e.target.value, page: 1 })}
               />
             </div>
             <div className="space-y-1">
               <Label className="text-xs">Company</Label>
               <select
-                value={companyId}
-                onChange={(e) => setCompanyId(e.target.value)}
+                value={state.companyId}
+                onChange={(e) => update({ companyId: e.target.value, page: 1 })}
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
               >
                 <option value="">All</option>
@@ -132,7 +188,7 @@ export function AuditLogsView() {
           page={listQ.data.meta.page}
           total={listQ.data.meta.total}
           totalPages={listQ.data.meta.totalPages}
-          onPageChange={setPage}
+          onPageChange={(p) => update({ page: p })}
         />
       )}
     </div>

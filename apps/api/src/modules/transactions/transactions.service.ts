@@ -18,12 +18,26 @@ import { LedgerService } from '../ledger/ledger.service';
 import { WalletsService } from '../wallets/wallets.service';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { RealtimeService } from '../realtime/realtime.service';
+import { CacheService } from '../cache/cache.service';
 import {
   ConflictError,
   ForbiddenError,
   NotFoundError,
   ValidationError,
 } from '../../common/errors/domain.error';
+
+// The per-tenant list COUNT is cached briefly so paging reuses it and a whale
+// tenant's COUNT(*) doesn't re-run on every page load. The total can lag by up
+// to this window; the rows themselves are always live. Deliberately NOT
+// invalidated on mutation — the short TTL is the tradeoff that avoids per-write
+// cache churn.
+const LIST_COUNT_CACHE_TTL_SEC = 30;
+
+// CSV export walks rows in keyset chunks (no single huge query), up to a cap
+// that keeps the in-memory CSV string bounded. Stream from the controller if a
+// larger export is ever needed.
+const CSV_EXPORT_CHUNK = 1000;
+const MAX_EXPORT_ROWS = 50_000;
 
 @Injectable()
 export class TransactionsService {
@@ -38,25 +52,26 @@ export class TransactionsService {
     private readonly analytics: AnalyticsService,
     private readonly realtime: RealtimeService,
     @InjectMetric('txn_ingest_total') private readonly ingestCounter: Counter<string>,
+    private readonly cache: CacheService,
   ) {}
 
   /**
    * Public list of companies for source providers to discover slugs.
    * Called by Wish/OMT/etc on startup so they can cache slugs and then
-   * post transactions against them. Returns only ACTIVE companies and only
-   * the fields a third-party integrator needs to know.
+   * post transactions against them. Returns every ACTIVE + visible company —
+   * the superadmin's `visible` flag is the single switch that exposes a company
+   * to sources (there is no per-source opt-in). Only the fields a third-party
+   * integrator needs to know are returned.
    *
    * Guarded by `ApiKeyAuthGuard` + source-key check in the controller;
    * the service itself is unauthenticated for testability.
    */
-  async listCompaniesForSource(sourceId: string): Promise<{ data: IngestCompanyListItem[] }> {
-    // Only companies that have opted into THIS source — never the full tenant list.
+  async listVisibleCompanies(): Promise<{ data: IngestCompanyListItem[] }> {
     const rows = await this.prisma.runAsAdmin((tx) =>
       tx.company.findMany({
         where: {
           status: 'ACTIVE',
           visible: true,
-          companySources: { some: { sourceId, enabled: true } },
         },
         orderBy: { slug: 'asc' },
         select: { id: true, slug: true, name: true, defaultCurrency: true },
@@ -96,13 +111,10 @@ export class TransactionsService {
       throw new ValidationError('amount must be positive at up to 8 decimal places');
     }
 
-    const [foundSource, company, optIn] = await this.prisma.runAsAdmin((tx) =>
+    const [foundSource, company] = await this.prisma.runAsAdmin((tx) =>
       Promise.all([
         tx.source.findUnique({ where: { id: ctx.sourceId } }),
         tx.company.findUnique({ where: { id: input.companyId } }),
-        tx.companySource.findUnique({
-          where: { companyId_sourceId: { companyId: input.companyId, sourceId: ctx.sourceId } },
-        }),
       ]),
     );
     if (!foundSource || foundSource.status !== 'ACTIVE') {
@@ -111,12 +123,12 @@ export class TransactionsService {
     if (!company || company.status !== 'ACTIVE') {
       throw new ValidationError(`company '${input.companyId}' not found or inactive`);
     }
-    // The source must be explicitly enabled for this company. Without this, any
-    // source key could mint balance into any active company's wallet.
-    if (!optIn || !optIn.enabled) {
-      throw new ForbiddenError(
-        `source '${foundSource.code}' is not enabled for company '${input.companyId}'`,
-      );
+    // Any ACTIVE source may post to any ACTIVE company the superadmin has made
+    // `visible` — that flag is the single gate exposing a company to sources
+    // (there is no per-source opt-in). A hidden company is off-limits to every
+    // source, for both discovery and ingestion.
+    if (!company.visible) {
+      throw new ForbiddenError(`company '${input.companyId}' is not available to sources`);
     }
     const companyId = company.id;
     const source: { id: string; code: string; status: string } = foundSource;
@@ -246,9 +258,10 @@ export class TransactionsService {
 
     this.ingestCounter.inc({ source_code: source.code, currency: input.currency });
 
-    // Drop the analytics cache so the next dashboard read reflects this
-    // transaction immediately instead of waiting for the 60s TTL.
-    this.analytics
+    // Refresh ALL analytics (company + admin/platform) BEFORE announcing the
+    // change, so every dashboard's realtime refetch reads fresh data, not a
+    // warm cache. Awaited so the emit below can't race the invalidation.
+    await this.analytics
       .invalidateAll()
       .catch((e) => this.logger.warn(`analytics cache invalidate failed: ${e}`));
 
@@ -386,8 +399,8 @@ export class TransactionsService {
       `reversed tx=${reversed.id} co=${reversed.companyId} amount=${reversed.amount.toString()} reason=${args.reason}`,
     );
 
-    // Reversal flips the wallet + ledger — analytics need to recompute.
-    this.analytics
+    // Reversal flips the wallet + ledger — refresh all analytics before emit.
+    await this.analytics
       .invalidateAll()
       .catch((e) => this.logger.warn(`analytics cache invalidate failed: ${e}`));
 
@@ -397,31 +410,12 @@ export class TransactionsService {
   }
 
   /**
-   * Export up to 10k transactions matching the filters as a CSV string.
-   * Hard cap on row count to avoid pathological exports; users export in
+   * Export up to MAX_EXPORT_ROWS (50k) transactions matching the filters as a
+   * CSV string, walked in keyset chunks. Hard cap to bound memory; users export
+   * in
    * date-range slices for larger sets.
    */
   async exportCsv(args: { companyId?: string; query: ListTransactionsQuery }): Promise<string> {
-    const rows = await this.prisma.runAsScoped(args.companyId ?? null, async (tx) => {
-      const where: Prisma.TransactionWhereInput = {};
-      if (args.companyId) where.companyId = args.companyId;
-      else if (args.query.companyId) where.companyId = args.query.companyId;
-      if (args.query.status) where.status = args.query.status;
-      if (args.query.sourceId) where.sourceId = args.query.sourceId;
-      if (args.query.currency) where.currency = args.query.currency;
-      if (args.query.from || args.query.to) {
-        where.createdAt = {};
-        if (args.query.from) where.createdAt.gte = new Date(args.query.from);
-        if (args.query.to) where.createdAt.lte = new Date(args.query.to);
-      }
-      return tx.transaction.findMany({
-        where,
-        orderBy: { createdAt: 'desc' },
-        take: 10_000,
-        include: { source: { select: { code: true } } },
-      });
-    });
-
     const header = [
       'id',
       'created_at',
@@ -435,22 +429,64 @@ export class TransactionsService {
       'status',
     ];
     const lines = [header.join(',')];
-    for (const r of rows) {
-      lines.push(
-        [
-          r.id,
-          r.createdAt.toISOString(),
-          r.companyId,
-          r.source.code,
-          csvCell(r.externalTransactionId),
-          r.amount.toString(),
-          r.currency.trim(),
-          r.commissionAmount.toString(),
-          r.netAmount.toString(),
-          r.status,
-        ].join(','),
-      );
-    }
+
+    await this.prisma.runAsScoped(args.companyId ?? null, async (tx) => {
+      const where: Prisma.TransactionWhereInput = {};
+      if (args.companyId) where.companyId = args.companyId;
+      else if (args.query.companyId) where.companyId = args.query.companyId;
+      if (args.query.status) where.status = args.query.status;
+      if (args.query.sourceId) where.sourceId = args.query.sourceId;
+      if (args.query.currency) where.currency = args.query.currency;
+      if (args.query.from || args.query.to) {
+        where.createdAt = {};
+        if (args.query.from) where.createdAt.gte = new Date(args.query.from);
+        if (args.query.to) where.createdAt.lte = new Date(args.query.to);
+      }
+
+      // Keyset pagination over (createdAt desc, id desc): each chunk fetches the
+      // rows strictly "after" the previous chunk's last row, so we never
+      // materialize the whole result set in one query and can export past the
+      // old 10k cap. Bounded by MAX_EXPORT_ROWS to keep the CSV string sane.
+      let cursor: { createdAt: Date; id: string } | null = null;
+      while (lines.length <= MAX_EXPORT_ROWS) {
+        const pageWhere: Prisma.TransactionWhereInput = cursor
+          ? {
+              ...where,
+              OR: [
+                { createdAt: { lt: cursor.createdAt } },
+                { createdAt: cursor.createdAt, id: { lt: cursor.id } },
+              ],
+            }
+          : where;
+        const page = await tx.transaction.findMany({
+          where: pageWhere,
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+          take: CSV_EXPORT_CHUNK,
+          include: { source: { select: { code: true } } },
+        });
+        if (page.length === 0) break;
+        for (const r of page) {
+          lines.push(
+            [
+              r.id,
+              r.createdAt.toISOString(),
+              r.companyId,
+              r.source.code,
+              csvCell(r.externalTransactionId),
+              r.amount.toString(),
+              r.currency.trim(),
+              r.commissionAmount.toString(),
+              r.netAmount.toString(),
+              r.status,
+            ].join(','),
+          );
+        }
+        if (page.length < CSV_EXPORT_CHUNK) break;
+        const last = page[page.length - 1]!;
+        cursor = { createdAt: last.createdAt, id: last.id };
+      }
+    });
+
     return lines.join('\n');
   }
 
@@ -475,15 +511,21 @@ export class TransactionsService {
       }
 
       const skip = (args.query.page - 1) * args.query.pageSize;
+      const countKey =
+        `list-count:txn:${args.companyId ?? args.query.companyId ?? 'all'}` +
+        `:${args.query.status ?? ''}:${args.query.sourceId ?? ''}:${args.query.currency ?? ''}` +
+        `:${args.query.from ?? ''}:${args.query.to ?? ''}:${args.query.search ?? ''}`;
       const [rows, total, sources] = await Promise.all([
         tx.transaction.findMany({
           where,
-          orderBy: { createdAt: 'desc' },
+          // createdAt alone isn't a total order; add id so rows with the same
+          // timestamp can't shuffle across page boundaries under high ingest.
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
           skip,
           take: args.query.pageSize,
           include: { source: { select: { code: true } } },
         }),
-        tx.transaction.count({ where }),
+        this.cache.wrap(countKey, LIST_COUNT_CACHE_TTL_SEC, () => tx.transaction.count({ where })),
         tx.source.findMany({ select: { id: true, code: true } }),
       ]);
       const codeBySource = new Map(sources.map((s) => [s.id, s.code]));

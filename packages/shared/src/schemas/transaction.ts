@@ -1,8 +1,8 @@
 import { z } from 'zod';
 import { TransactionStatus } from '../enums';
-import { currencySchema } from './common';
+import { currencySchema, moneyAmountSchema } from './common';
 
-const decimalString = z.string().regex(/^\d+(\.\d+)?$/, 'must be a positive decimal');
+const decimalString = moneyAmountSchema;
 
 // What external providers POST to /v1/ingest/transactions.
 //

@@ -20,8 +20,10 @@ export class SourcesService {
 
   async create(input: CreateSourceInput): Promise<SourceResponse> {
     const created = await this.prisma.runAsAdmin(async (tx) => {
-      const existing = await tx.source.findUnique({ where: { code: input.code } });
-      if (existing) throw new ConflictError(`Source code '${input.code}' already exists`);
+      const existingCode = await tx.source.findUnique({ where: { code: input.code } });
+      if (existingCode) throw new ConflictError(`Source code '${input.code}' already exists`);
+      const existingName = await tx.source.findUnique({ where: { name: input.name } });
+      if (existingName) throw new ConflictError(`Source name '${input.name}' already exists`);
       const row = await tx.source.create({
         data: {
           name: input.name,
@@ -74,6 +76,10 @@ export class SourcesService {
     const row = await this.prisma.runAsAdmin(async (tx) => {
       const existing = await tx.source.findUnique({ where: { id } });
       if (!existing) throw new NotFoundError('Source', id);
+      if (input.name && input.name !== existing.name) {
+        const dupe = await tx.source.findUnique({ where: { name: input.name } });
+        if (dupe) throw new ConflictError(`Source name '${input.name}' already exists`);
+      }
       return tx.source.update({
         where: { id },
         data: {

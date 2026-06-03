@@ -207,7 +207,7 @@ model Company {
 
 model Source {
   id        String       @id @default(uuid()) @db.Uuid
-  name      String
+  name      String       @unique
   code      String       @unique
   status    SourceStatus @default(ACTIVE)
   metadata  Json?        @db.JsonB

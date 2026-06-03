@@ -72,6 +72,15 @@ test.describe('admin: source API keys', () => {
     const targetId = (await createCo.json()).company.id as string;
     expect(targetId).toBeTruthy();
 
+    // A source may only mint into companies that have OPTED IN. Enable the
+    // omt source for this target before ingesting (the opt-in gate is intended
+    // behaviour, not a bug). Without this the ingest is rejected with 403.
+    const optIn = await api.post(`/v1/admin/sources/${omt!.id}/companies`, {
+      headers: { 'x-csrf-token': csrf! },
+      data: { companyId: targetId, enabled: true },
+    });
+    expect(optIn.status(), await optIn.text()).toBeLessThan(300);
+
     // Ingest with the SOURCE key — URL path now identifies the source (omt).
     const ingestRes = await pwRequest.newContext({ baseURL: API_BASE });
     const ingest = await ingestRes.post('/v1/ingest/omt/transactions', {

@@ -1,9 +1,9 @@
 import { z } from 'zod';
 import { PayoutMethod, WithdrawalStatus } from '../enums';
-import { currencySchema } from './common';
+import { currencySchema, moneyAmountSchema } from './common';
 import { createPayoutDetailsSchema, payoutDetailsSchema } from './payout-method';
 
-const decimalString = z.string().regex(/^\d+(\.\d+)?$/, 'must be a positive decimal');
+const decimalString = moneyAmountSchema;
 
 // Loads: company tops up its own wallet (money in, not out). On request
 // we just persist the row in PENDING — no wallet or ledger move yet.

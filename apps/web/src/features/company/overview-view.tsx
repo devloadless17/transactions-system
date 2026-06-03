@@ -10,6 +10,7 @@ import {
 } from '@app/shared';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { apiFetch } from '@/lib/api.client';
+import { formatNumber } from '@/lib/format';
 import { useOverview } from '@/features/analytics/use-overview';
 import { KpiCard } from '@/features/analytics/kpi-card';
 import { VolumeChart } from '@/features/analytics/volume-chart';
@@ -29,18 +30,12 @@ export function OverviewView() {
     queryKey: ['company', 'wallets'],
     queryFn: () => apiFetch<{ data: WalletResponse[] }>('/company/wallets'),
     refetchInterval: 30_000,
-    refetchOnMount: 'always',
-    refetchOnWindowFocus: 'always',
-    staleTime: 0,
   });
   const txQ = useQuery({
     queryKey: ['company', 'transactions', 'recent'],
     queryFn: () =>
       apiFetch<PaginatedResponse<TransactionResponse>>('/company/transactions?pageSize=5'),
     refetchInterval: 30_000,
-    refetchOnMount: 'always',
-    refetchOnWindowFocus: 'always',
-    staleTime: 0,
   });
 
   const data = overviewQ.data;
@@ -218,12 +213,4 @@ function inflightHint(m: VolumeMetric, currency: string): string {
     return `${base} · ${formatNumber(m.pendingTotal)} ${currency} in-flight`;
   }
   return base;
-}
-
-function formatNumber(s: string): string {
-  const n = Number(s);
-  if (Number.isNaN(n)) return s;
-  if (n === 0) return '0';
-  if (Math.abs(n) >= 1) return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
-  return n.toString();
 }

@@ -57,7 +57,7 @@ export class AuditService {
       const [rows, total] = await Promise.all([
         tx.auditLog.findMany({
           where,
-          orderBy: { createdAt: 'desc' },
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
           skip,
           take: query.pageSize,
           include: { actor: { select: { email: true } } },

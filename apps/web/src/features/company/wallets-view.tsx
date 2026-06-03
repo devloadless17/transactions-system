@@ -4,6 +4,7 @@ import type { WalletResponse } from '@app/shared';
 import { Card, CardContent } from '@/components/ui/card';
 import { DataTable, type Column } from '@/components/ui/data-table';
 import { apiFetch } from '@/lib/api.client';
+import { trimAmount } from '@/lib/format';
 
 export function WalletsView() {
   const { data, isLoading, error } = useQuery({
@@ -65,9 +66,4 @@ export function WalletsView() {
       </Card>
     </div>
   );
-}
-
-function trimAmount(s: string): string {
-  if (!s.includes('.')) return s;
-  return s.replace(/\.?0+$/, '');
 }

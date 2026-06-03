@@ -12,6 +12,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { DataTable, type Column } from '@/components/ui/data-table';
 import { apiFetch } from '@/lib/api.client';
+import { formatNumber as fmt } from '@/lib/format';
 import { KpiCard } from '@/features/analytics/kpi-card';
 import { VolumeChart } from '@/features/analytics/volume-chart';
 import {
@@ -187,12 +188,4 @@ export function SourceDetailView({ sourceId }: { sourceId: string }) {
       </Card>
     </div>
   );
-}
-
-function fmt(s: string): string {
-  const n = Number(s);
-  if (Number.isNaN(n)) return s;
-  if (n === 0) return '0';
-  if (Math.abs(n) >= 1) return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
-  return n.toString();
 }

@@ -1,12 +1,34 @@
-import { expect, type Page, request as pwRequest } from '@playwright/test';
+import { expect, type APIRequestContext, type Page, request as pwRequest } from '@playwright/test';
 
 export const ADMIN_EMAIL = process.env.E2E_ADMIN_EMAIL ?? 'ali@loadless.ai';
 export const ADMIN_PASSWORD = process.env.E2E_ADMIN_PASSWORD ?? 'loadless';
 export const API_BASE = process.env.E2E_API_BASE ?? 'http://localhost:3001';
 
+// POST /v1/auth/login is throttled to 10 req / 60s per IP. A serial suite that
+// provisions several companies + owners easily exceeds that, so all API logins
+// funnel through a retry that waits out the throttle window. This is a test
+// orchestration concession to a real (correct) security control — not a relaxed
+// assertion.
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function apiLogin(api: APIRequestContext, email: string, password: string): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    const res = await api.post('/v1/auth/login', { data: { email, password } });
+    if (res.ok()) return;
+    if (res.status() === 429 && attempt < 6) {
+      // Throttle TTL is 60s; wait a slice of it and retry.
+      await sleep(12_000);
+      continue;
+    }
+    throw new Error(`login failed for ${email}: ${res.status()} ${await res.text()}`);
+  }
+}
+
 /**
- * Sign in with arbitrary credentials. Used for non-admin flows where
- * we can't rely on the shared admin storageState.
+ * Sign in via the UI with arbitrary credentials. Used for non-admin flows where
+ * we can't rely on the shared admin storageState. Retries through the auth
+ * throttle (429 surfaces in the UI as an "Invalid credentials"/error toast and
+ * the URL stays on /login).
  */
 export async function loginAs(
   page: Page,
@@ -14,13 +36,26 @@ export async function loginAs(
   password: string,
   expectedLanding: '/admin' | '/app' | '/change-password',
 ) {
-  // Make sure we don't bring an existing session to the login screen.
-  await page.context().clearCookies();
-  await page.goto('/login');
-  await page.locator('#email').fill(email);
-  await page.locator('#password').fill(password);
-  await page.getByRole('button', { name: 'Sign in' }).click();
-  await page.waitForURL(`**${expectedLanding}**`, { timeout: 10_000 });
+  for (let attempt = 0; ; attempt++) {
+    // Make sure we don't bring an existing session to the login screen.
+    await page.context().clearCookies();
+    await page.goto('/login');
+    await page.locator('#email').fill(email);
+    await page.locator('#password').fill(password);
+    await page.getByRole('button', { name: 'Sign in' }).click();
+    try {
+      await page.waitForURL(`**${expectedLanding}**`, { timeout: 12_000 });
+      return;
+    } catch (err) {
+      // If we were throttled, the URL stays on /login. Wait out a slice of the
+      // 60s window and retry a couple of times before giving up.
+      if (attempt < 4 && /\/login/.test(page.url())) {
+        await sleep(12_000);
+        continue;
+      }
+      throw err;
+    }
+  }
 }
 
 export function uniqueSlug(prefix: string) {
@@ -30,17 +65,13 @@ export function uniqueSlug(prefix: string) {
 /**
  * Provision a company + owner directly through the API. Returns the
  * owner credentials so a Playwright page can then sign in as them.
+ *
+ * Pass an existing admin context (from adminApiContext) to avoid burning a
+ * fresh admin login against the auth throttle.
  */
-export async function provisionCompanyOwner() {
-  const api = await pwRequest.newContext({ baseURL: API_BASE });
-  const login = await api.post('/v1/auth/login', {
-    data: { email: ADMIN_EMAIL, password: ADMIN_PASSWORD },
-  });
-  if (!login.ok()) throw new Error(`admin login failed: ${login.status()} ${await login.text()}`);
-
-  const state = await api.storageState();
-  const csrf = state.cookies.find((c) => c.name === 'csrf-token')?.value;
-  if (!csrf) throw new Error('csrf cookie missing after login');
+export async function provisionCompanyOwner(admin?: { api: APIRequestContext; csrf: string }) {
+  const owned = !admin;
+  const { api, csrf } = admin ?? (await adminApiContext());
 
   const slug = uniqueSlug('e2e-co');
   const ownerEmail = `owner-${slug}@example.com`;
@@ -57,13 +88,118 @@ export async function provisionCompanyOwner() {
     throw new Error(`create company failed: ${create.status()} ${await create.text()}`);
   }
   const body = await create.json();
-  await api.dispose();
+  if (owned) await api.dispose();
   return {
     slug,
     companyId: body.company.id as string,
     ownerEmail: body.owner.email as string,
     tempPassword: body.owner.temporaryPassword as string,
   };
+}
+
+/**
+ * Open an admin API request context and return it plus the csrf token.
+ * Caller is responsible for disposing the context.
+ */
+export async function adminApiContext(): Promise<{ api: APIRequestContext; csrf: string }> {
+  const api = await pwRequest.newContext({ baseURL: API_BASE });
+  await apiLogin(api, ADMIN_EMAIL, ADMIN_PASSWORD);
+  const state = await api.storageState();
+  const csrf = state.cookies.find((c) => c.name === 'csrf-token')?.value;
+  if (!csrf) throw new Error('csrf cookie missing after login');
+  return { api, csrf };
+}
+
+/** Find the seeded source id by code (e.g. 'omt'). */
+export async function findSourceId(api: APIRequestContext, code: string): Promise<string> {
+  const res = await api.get('/v1/admin/sources/all');
+  if (!res.ok()) throw new Error(`sources/all failed: ${res.status()} ${await res.text()}`);
+  const list = (await res.json()).data as Array<{ id: string; code: string }>;
+  const found = list.find((s) => s.code === code);
+  if (!found) throw new Error(`seeded source '${code}' not found`);
+  return found.id;
+}
+
+/** Opt a company in to a source so its source keys may ingest for it. */
+export async function enableSourceForCompany(
+  api: APIRequestContext,
+  csrf: string,
+  sourceId: string,
+  companyId: string,
+): Promise<void> {
+  const res = await api.post(`/v1/admin/sources/${sourceId}/companies`, {
+    headers: { 'x-csrf-token': csrf },
+    data: { companyId, enabled: true },
+  });
+  if (!res.ok()) {
+    throw new Error(`enable source failed: ${res.status()} ${await res.text()}`);
+  }
+}
+
+/** Mint a plaintext source API key (returned once). */
+export async function createSourceKey(
+  api: APIRequestContext,
+  csrf: string,
+  sourceId: string,
+  name: string,
+): Promise<string> {
+  const res = await api.post(`/v1/admin/sources/${sourceId}/api-keys`, {
+    headers: { 'x-csrf-token': csrf },
+    data: { name },
+  });
+  if (!res.ok()) throw new Error(`create source key failed: ${res.status()} ${await res.text()}`);
+  const body = await res.json();
+  return (body.plaintext ?? body.apiKey) as string;
+}
+
+/** Ingest a transaction with a source key. Returns the parsed response body. */
+export async function ingestTransaction(
+  sourceCode: string,
+  plaintext: string,
+  data: { companyId: string; externalTransactionId: string; amount: string; currency: string },
+): Promise<{ status: number; body: any }> {
+  const ctx = await pwRequest.newContext({ baseURL: API_BASE });
+  try {
+    const res = await ctx.post(`/v1/ingest/${sourceCode}/transactions`, {
+      headers: { Authorization: `Bearer ${plaintext}` },
+      data,
+    });
+    const text = await res.text();
+    return { status: res.status(), body: text ? JSON.parse(text) : null };
+  } finally {
+    await ctx.dispose();
+  }
+}
+
+/**
+ * Log in as a company owner who still has a temp password: walk through the
+ * forced /change-password flow, re-login, and return a context whose
+ * storageState carries the authenticated company session. Mirrors
+ * company-smoke.spec.ts.
+ */
+export async function loginOwnerApiContext(
+  ownerEmail: string,
+  tempPassword: string,
+  newPassword: string,
+): Promise<APIRequestContext> {
+  const api = await pwRequest.newContext({ baseURL: API_BASE });
+  await apiLogin(api, ownerEmail, tempPassword);
+  // mustChangePassword users get a session that can only hit change-password.
+  const state = await api.storageState();
+  const csrf = state.cookies.find((c) => c.name === 'csrf-token')?.value;
+  if (!csrf) throw new Error('csrf cookie missing after owner login');
+  const change = await api.post('/v1/auth/change-password', {
+    headers: { 'x-csrf-token': csrf },
+    data: { currentPassword: tempPassword, newPassword },
+  });
+  if (!change.ok()) {
+    throw new Error(`change-password failed: ${change.status()} ${await change.text()}`);
+  }
+  await api.dispose();
+  // Re-login fresh with the new password into a clean context.
+  const fresh = await pwRequest.newContext({ baseURL: API_BASE });
+  await apiLogin(fresh, ownerEmail, newPassword);
+  return fresh;
 }
 
 export { expect };

@@ -50,6 +50,16 @@ export class SourceApiKeysController {
     return this.apiKeys.revoke({ kind: 'source', sourceId }, id);
   }
 
+  @Post(':id/rotate')
+  @Audited({ action: 'source_api_key.rotated', entityType: 'api_key', idFrom: 'result.apiKey.id' })
+  async rotate(
+    @Param('sourceId', new ParseUUIDPipe()) sourceId: string,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ) {
+    await this.assertSourceExists(sourceId);
+    return this.apiKeys.rotate({ kind: 'source', sourceId }, id);
+  }
+
   private async assertSourceExists(sourceId: string) {
     const source = await this.prisma.runAsAdmin((tx) =>
       tx.source.findUnique({ where: { id: sourceId } }),

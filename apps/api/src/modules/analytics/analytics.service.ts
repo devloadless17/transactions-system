@@ -26,6 +26,18 @@ export class AnalyticsService {
    * read recomputes against fresh data. Cheap — analytics keys are
    * namespace-scanned by SCAN, not enumerated.
    */
+  /**
+   * Clear ALL cached analytics rollups (company dashboards + admin/platform
+   * aggregates). Called — AWAITED — after every financial mutation and BEFORE
+   * the realtime event is emitted, so each dashboard's socket-triggered refetch
+   * reads fresh data instead of a still-warm cache. The TTLs remain only as a
+   * backstop for quiet periods with no mutations.
+   *
+   * Tradeoff: at very high ingest volume the cross-tenant rollups recompute on
+   * the next admin read after each mutation. If that ever becomes a hotspot,
+   * move the platform aggregates to short-TTL + single-flight rather than
+   * narrowing this — live, correct dashboards come first.
+   */
   async invalidateAll(): Promise<void> {
     await this.cache.invalidate('analytics:');
   }

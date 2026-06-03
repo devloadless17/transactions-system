@@ -13,7 +13,15 @@ export async function getSession(): Promise<MeResponse | null> {
   try {
     return await apiServer<MeResponse>('/auth/me');
   } catch (err) {
-    if (err instanceof ApiClientError && err.status === 401) return null;
+    // 401 = no/invalid token. 403 on /auth/me means the session is valid but the
+    // company is no longer ACTIVE (suspended, or deleted out from under a live
+    // cookie) — assertCompanyActive throws ForbiddenError. Either way there's no
+    // usable session, so degrade to the login flow instead of crashing the
+    // server-rendered page. (Anything else — e.g. a 5xx — is a real error and
+    // still propagates.)
+    if (err instanceof ApiClientError && (err.status === 401 || err.status === 403)) {
+      return null;
+    }
     throw err;
   }
 }

@@ -60,8 +60,8 @@ export class IngestController {
   }
 
   /**
-   * Discovery endpoint for sources. Returns every active company so the
-   * provider can cache the id and use it as `companyId` in subsequent POSTs.
+   * Discovery endpoint for sources. Returns every ACTIVE + visible company so
+   * the provider can cache the id and use it as `companyId` in subsequent POSTs.
    * Source-key-authenticated; company keys (legacy) are rejected.
    */
   @Get('companies')
@@ -69,6 +69,6 @@ export class IngestController {
     if (!req.principal?.sourceId) {
       throw new ForbiddenError('this endpoint requires a source API key');
     }
-    return this.transactions.listCompaniesForSource(req.principal.sourceId);
+    return this.transactions.listVisibleCompanies();
   }
 }

@@ -172,13 +172,29 @@ export class AuthService {
     if (!user || user.status !== 'ACTIVE') throw new UnauthorizedError();
     await assertCompanyActive(this.prisma, user.companyId);
 
-    // Rotate: revoke the used refresh token and mint new tokens.
-    await this.prisma.runAsAdmin(async (tx) => {
-      await tx.refreshToken.update({
-        where: { id: stored.id },
+    // Rotate: revoke the used refresh token and mint new tokens. Use a
+    // CONDITIONAL updateMany (revokedAt: null) so two concurrent refreshes of
+    // the same token can't both win — the loser matches 0 rows and is treated
+    // as a reuse/race, revoking the whole family (same guard as the replay path
+    // above). This closes the check-then-update TOCTOU atomically at the row.
+    const rotated = await this.prisma.runAsAdmin((tx) =>
+      tx.refreshToken.updateMany({
+        where: { id: stored.id, revokedAt: null },
         data: { revokedAt: new Date() },
-      });
-    });
+      }),
+    );
+    if (rotated.count === 0) {
+      await this.prisma.runAsAdmin((tx) =>
+        tx.refreshToken.updateMany({
+          where: { userId: stored.userId, revokedAt: null },
+          data: { revokedAt: new Date() },
+        }),
+      );
+      this.logger.warn(
+        `refresh token rotation race for user ${stored.userId}; revoked all active sessions`,
+      );
+      throw new UnauthorizedError('Refresh token revoked or expired');
+    }
 
     const authed: AuthenticatedUser = {
       id: user.id,

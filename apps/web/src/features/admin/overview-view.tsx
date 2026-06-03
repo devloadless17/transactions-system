@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { DataTable, type Column } from '@/components/ui/data-table';
 import { apiFetch } from '@/lib/api.client';
+import { formatNumber as fmt } from '@/lib/format';
 import { KpiCard } from '@/features/analytics/kpi-card';
 import { FlowsChart } from '@/features/analytics/flows-chart';
 import { useOverview } from '@/features/analytics/use-overview';
@@ -40,8 +41,6 @@ export function AdminOverview() {
     queryFn: () =>
       apiFetch<PlatformAnalyticsResponse>(`/admin/analytics/platform?${rangeParams().toString()}`),
     refetchInterval: 60_000,
-    staleTime: 30_000,
-    retry: 1,
   });
 
   const flowsQ = useQuery({
@@ -51,16 +50,12 @@ export function AdminOverview() {
       params.set('currency', flowsCurrency);
       return apiFetch<FlowsResponse>(`/admin/analytics/flows?${params.toString()}`);
     },
-    staleTime: 30_000,
-    retry: 1,
   });
 
   const opsQ = useQuery({
     queryKey: ['admin', 'analytics', 'operations'],
     queryFn: () => apiFetch<OperationsResponse>('/admin/analytics/operations'),
     refetchInterval: 60_000,
-    staleTime: 30_000,
-    retry: 1,
   });
 
   const overviewQ = useOverview({ scope: 'admin', currency: flowsCurrency, range });
@@ -346,12 +341,4 @@ function OpsAction({
       <Link href="/admin/transactions">View</Link>
     </Button>
   );
-}
-
-function fmt(s: string): string {
-  const n = Number(s);
-  if (Number.isNaN(n)) return s;
-  if (n === 0) return '0';
-  if (Math.abs(n) >= 1) return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
-  return n.toString();
 }

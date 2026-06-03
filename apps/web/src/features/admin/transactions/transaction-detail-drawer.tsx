@@ -18,6 +18,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { apiFetch } from '@/lib/api.client';
+import { trimAmount } from '@/lib/format';
 
 interface Props {
   scope: 'admin' | 'company';
@@ -156,9 +157,4 @@ function DetailRow({
       <span className={`text-right text-sm ${mono ? 'font-mono break-all' : ''}`}>{value}</span>
     </div>
   );
-}
-
-function trimAmount(s: string): string {
-  if (!s.includes('.')) return s;
-  return s.replace(/\.?0+$/, '');
 }

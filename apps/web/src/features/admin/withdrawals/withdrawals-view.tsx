@@ -24,6 +24,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { apiFetch } from '@/lib/api.client';
 import { ApiClientError } from '@/lib/api';
+import { trimAmount } from '@/lib/format';
 import { PayoutInstructions, prettyMethod } from '@/features/company/withdrawals-view';
 
 interface ReviewState {
@@ -274,11 +275,6 @@ function ReviewDialog({
       </DialogContent>
     </Dialog>
   );
-}
-
-function trimAmount(s: string): string {
-  if (!s.includes('.')) return s;
-  return s.replace(/\.?0+$/, '');
 }
 
 function statusVariant(s: WithdrawalStatus): 'success' | 'warning' | 'destructive' | 'secondary' {

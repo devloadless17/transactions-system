@@ -62,29 +62,60 @@ export class CacheService implements OnModuleDestroy {
     }
   }
 
+  /**
+   * Invalidate a whole namespace by bumping its generation counter — O(1), no
+   * SCAN. Every cached key carries the generation it was written under (see
+   * `wrap`), so bumping makes all current entries unreachable at once and the
+   * next read recomputes.
+   *
+   * Crucially this is race-safe: a read already in flight when invalidation
+   * runs writes its (now-stale) result under the OLD generation, which nothing
+   * reads anymore — so a slow read can't re-poison the cache after a mutation
+   * (the bug that made dashboards show stale "old data" until a reload).
+   * Orphaned old-generation keys simply expire via their TTL.
+   *
+   * The namespace is the first `:`-delimited segment of `prefix`, matching how
+   * keys are namespaced (`analytics:…`, `commission:rules:…`).
+   */
   async invalidate(prefix: string): Promise<void> {
     if (!this.healthy) return;
     try {
-      // SCAN to avoid blocking on large datasets.
-      const stream = this.redis.scanStream({ match: `${prefix}*`, count: 200 });
-      const keys: string[] = [];
-      for await (const batch of stream) {
-        keys.push(...(batch as string[]));
-      }
-      if (keys.length) await this.redis.del(...keys);
+      await this.redis.incr(`cachegen:${namespaceOf(prefix)}`);
     } catch (e) {
       this.logger.warn(`cache invalidate failed for ${prefix}: ${(e as Error).message}`);
     }
   }
 
+  /** Current generation for a namespace (0 if unset or Redis is unavailable). */
+  private async generation(namespace: string): Promise<number> {
+    if (!this.healthy) return 0;
+    try {
+      const v = await this.redis.get(`cachegen:${namespace}`);
+      return v ? Number(v) || 0 : 0;
+    } catch {
+      return 0;
+    }
+  }
+
   /**
-   * Cache-aside: look up, otherwise compute and store.
+   * Cache-aside, generation-aware: look up under the namespace's current
+   * generation, otherwise compute and store under it. If an invalidation bumps
+   * the generation while `fn` runs, the store lands on the old (orphaned)
+   * generation and future reads — using the new generation — recompute fresh.
    */
   async wrap<T>(key: string, ttlSeconds: number, fn: () => Promise<T>): Promise<T> {
-    const cached = await this.get<T>(key);
+    const gen = await this.generation(namespaceOf(key));
+    const genKey = `${key}::g${gen}`;
+    const cached = await this.get<T>(genKey);
     if (cached !== null) return cached;
     const fresh = await fn();
-    await this.set(key, fresh, ttlSeconds);
+    await this.set(genKey, fresh, ttlSeconds);
     return fresh;
   }
+}
+
+/** First `:`-delimited segment of a key/prefix — the unit of invalidation. */
+function namespaceOf(key: string): string {
+  const i = key.indexOf(':');
+  return i === -1 ? key : key.slice(0, i);
 }

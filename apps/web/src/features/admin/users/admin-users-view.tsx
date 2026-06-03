@@ -102,8 +102,11 @@ export function AdminUsersView() {
       key: 'actions',
       header: '',
       align: 'right',
-      cell: (u) =>
-        u.status === 'ACTIVE' ? (
+      cell: (u) => {
+        // The super admin is the system owner and can never be disabled, so
+        // there's no disable/reactivate action for it.
+        if (u.role === UserRole.SUPER_ADMIN) return null;
+        return u.status === 'ACTIVE' ? (
           <Button
             variant="ghost"
             size="sm"
@@ -119,7 +122,8 @@ export function AdminUsersView() {
           >
             Reactivate
           </Button>
-        ),
+        );
+      },
     },
   ];
 

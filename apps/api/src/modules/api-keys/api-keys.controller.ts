@@ -46,4 +46,12 @@ export class ApiKeysController {
     if (!user.companyId) throw new ForbiddenError('No company in session');
     return this.apiKeys.revoke({ kind: 'company', companyId: user.companyId }, id);
   }
+
+  @Roles(UserRole.COMPANY_OWNER)
+  @Post(':id/rotate')
+  @Audited({ action: 'api_key.rotated', entityType: 'api_key', idFrom: 'result.apiKey.id' })
+  async rotate(@Param('id', new ParseUUIDPipe()) id: string, @CurrentUser() user: AuthPrincipal) {
+    if (!user.companyId) throw new ForbiddenError('No company in session');
+    return this.apiKeys.rotate({ kind: 'company', companyId: user.companyId }, id);
+  }
 }

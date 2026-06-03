@@ -79,6 +79,53 @@ export class ApiKeysService {
   }
 
   /**
+   * Rotate a key: mint a fresh key that inherits the old key's name + expiry,
+   * and revoke the old one — atomically, returning the new plaintext (shown
+   * once). For a zero-downtime swap, deploy the new key, then rotate: the old
+   * key keeps working until this call revokes it.
+   *
+   * The `(company_id, name)` unique index means we can't have two live keys
+   * with the same name, so the old key is renamed (its id appended) as it's
+   * revoked — freeing the original name for the new key.
+   */
+  async rotate(owner: Owner, id: string): Promise<CreateApiKeyResponse> {
+    const plaintext = generateKey();
+    const { prefix } = parseKey(plaintext)!;
+    const hash = await argon2.hash(plaintext, { type: argon2.argon2id });
+
+    const row = await this.prisma.runAsAdmin(async (tx) => {
+      const old = await tx.apiKey.findUnique({ where: { id } });
+      if (!old) throw new NotFoundError('ApiKey', id);
+      const matches =
+        (owner.kind === 'company' && old.companyId === owner.companyId) ||
+        (owner.kind === 'source' && old.sourceId === owner.sourceId);
+      if (!matches) throw new NotFoundError('ApiKey', id);
+
+      // Free the original name (unique per company) before reusing it.
+      await tx.apiKey.update({
+        where: { id },
+        data: {
+          name: `${old.name} (rotated:${old.id.slice(0, 8)})`,
+          revokedAt: old.revokedAt ?? new Date(),
+        },
+      });
+      return tx.apiKey.create({
+        data: {
+          companyId: old.companyId,
+          sourceId: old.sourceId,
+          name: old.name,
+          keyPrefix: prefix,
+          keyHash: hash,
+          expiresAt: old.expiresAt,
+        },
+      });
+    });
+
+    this.notify(owner);
+    return { apiKey: mapKey(row), plaintext };
+  }
+
+  /**
    * Look up by the 8-char prefix to narrow the candidate set, then argon2-verify
    * each candidate. There's a finite set (~1-10) per prefix, so this is fast.
    * Updates last_used_at on hit (best effort).

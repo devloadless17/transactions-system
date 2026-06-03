@@ -26,13 +26,7 @@ export function useOverview(args: {
     // A half-finished custom range (one date picked) shouldn't fire a query.
     enabled: isRangeReady(range),
     // Periodic refresh keeps the dashboard live without the user touching it.
+    // (staleTime / focus behaviour come from the global QueryClient defaults.)
     refetchInterval: 30_000,
-    // Always treat data as stale so navigating back to the dashboard after
-    // mutating something (ingesting a tx, requesting a withdrawal) refetches
-    // immediately on remount instead of showing the prior snapshot.
-    staleTime: 0,
-    refetchOnMount: 'always',
-    refetchOnWindowFocus: 'always',
-    retry: 1,
   });
 }

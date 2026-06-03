@@ -4,7 +4,6 @@ import {
   type ApprovePayoutInput,
   type CancelRequestInput,
   type CreatePayoutInput,
-  type FeeApplication,
   type ListPayoutsQuery,
   type PaginatedResponse,
   type PayoutDetails,
@@ -21,38 +20,15 @@ import { AnalyticsService } from '../analytics/analytics.service';
 import { RealtimeService } from '../realtime/realtime.service';
 import { FeesService } from '../commissions/fees.service';
 import {
-  ConflictError,
-  InsufficientBalanceError,
-  NotFoundError,
-  ValidationError,
-} from '../../common/errors/domain.error';
+  assertSufficient,
+  releaseEntries,
+  reserveEntries,
+  reservedTotal,
+  settleEntries,
+} from '../ledger/flow-ledger';
+import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain.error';
 
 const REQUESTABLE_STATUS: WithdrawalStatus = 'PENDING';
-
-/** Reserved total for a row = amount, or amount+fee when the fee is ON_TOP. */
-function reservedTotal(amount: Money, fee: Money, feeApplication: FeeApplication): Money {
-  return feeApplication === 'ON_TOP' ? amount.add(fee) : amount;
-}
-
-async function assertSufficient(
-  tx: PrismaClient,
-  companyId: string,
-  currency: string,
-  required: Money,
-): Promise<void> {
-  const wallet = await tx.wallet.findUnique({
-    where: { companyId_currency: { companyId, currency } },
-  });
-  const available = Money.of(wallet?.availableBalance.toString() ?? '0');
-  if (available.lt(required)) {
-    throw new InsufficientBalanceError({
-      currency,
-      required: required.toString(),
-      available: available.toString(),
-      shortfall: required.sub(available).toString(),
-    });
-  }
-}
 
 /**
  * Payouts: company withdraws funds to itself. Same lifecycle as a
@@ -73,8 +49,8 @@ export class PayoutsService {
     private readonly fees: FeesService,
   ) {}
 
-  private invalidateAnalytics() {
-    this.analytics
+  private async invalidateAnalytics(): Promise<void> {
+    await this.analytics
       .invalidateAll()
       .catch((e) => this.logger.warn(`analytics cache invalidate failed: ${e}`));
   }
@@ -132,24 +108,10 @@ export class PayoutsService {
         },
       });
 
-      await this.ledger.writeEntries(cTx, [
-        {
-          companyId,
-          payoutId: p.id,
-          accountType: 'AVAILABLE',
-          direction: 'DEBIT',
-          amount: reserved,
-          currency: input.currency,
-        },
-        {
-          companyId,
-          payoutId: p.id,
-          accountType: 'RESERVED',
-          direction: 'CREDIT',
-          amount: reserved,
-          currency: input.currency,
-        },
-      ]);
+      await this.ledger.writeEntries(
+        cTx,
+        reserveEntries({ payoutId: p.id }, companyId, input.currency, reserved),
+      );
       await this.wallets.applyDelta(cTx, {
         companyId,
         currency: input.currency,
@@ -159,7 +121,7 @@ export class PayoutsService {
       return p;
     });
 
-    this.invalidateAnalytics();
+    await this.invalidateAnalytics();
     this.notify(row.companyId);
     return mapPayout(row);
   }
@@ -187,37 +149,12 @@ export class PayoutsService {
       const reserved = reservedTotal(amount, fee, p.feeApplication);
       const external = p.feeApplication === 'ON_TOP' ? amount : amount.sub(fee);
 
-      const entries: Parameters<typeof this.ledger.writeEntries>[1] = [
-        {
-          companyId: p.companyId,
-          payoutId: p.id,
-          accountType: 'RESERVED',
-          direction: 'DEBIT',
-          amount: reserved,
-          currency: p.currency,
-        },
-      ];
-      if (external.isPositive()) {
-        entries.push({
-          companyId: p.companyId,
-          payoutId: p.id,
-          accountType: 'EXTERNAL',
-          direction: 'CREDIT',
-          amount: external,
-          currency: p.currency,
-        });
-      }
-      if (fee.isPositive()) {
-        entries.push({
-          companyId: p.companyId,
-          payoutId: p.id,
-          accountType: 'FEE',
-          direction: 'CREDIT',
-          amount: fee,
-          currency: p.currency,
-        });
-      }
-      await this.ledger.writeEntries(cTx, entries);
+      // Funds leave the platform; the fee is realized to the FEE account.
+      // Ledger: reserved → external(net) + FEE(fee). Zero lines are skipped.
+      await this.ledger.writeEntries(
+        cTx,
+        settleEntries({ payoutId: p.id }, p.companyId, p.currency, reserved, external, fee),
+      );
       await this.wallets.applyDelta(cTx, {
         companyId: p.companyId,
         currency: p.currency,
@@ -236,7 +173,7 @@ export class PayoutsService {
       });
     });
 
-    this.invalidateAnalytics();
+    await this.invalidateAnalytics();
     this.notify(row.companyId);
     return mapPayout(row);
   }
@@ -301,24 +238,10 @@ export class PayoutsService {
         p.feeApplication,
       );
 
-      await this.ledger.writeEntries(cTx, [
-        {
-          companyId: p.companyId,
-          payoutId: p.id,
-          accountType: 'RESERVED',
-          direction: 'DEBIT',
-          amount: reserved,
-          currency: p.currency,
-        },
-        {
-          companyId: p.companyId,
-          payoutId: p.id,
-          accountType: 'AVAILABLE',
-          direction: 'CREDIT',
-          amount: reserved,
-          currency: p.currency,
-        },
-      ]);
+      await this.ledger.writeEntries(
+        cTx,
+        releaseEntries({ payoutId: p.id }, p.companyId, p.currency, reserved),
+      );
       await this.wallets.applyDelta(cTx, {
         companyId: p.companyId,
         currency: p.currency,
@@ -337,7 +260,7 @@ export class PayoutsService {
       });
     });
 
-    this.invalidateAnalytics();
+    await this.invalidateAnalytics();
     this.notify(row.companyId);
     return mapPayout(row);
   }
@@ -358,7 +281,7 @@ export class PayoutsService {
       const [rows, total] = await Promise.all([
         tx.payout.findMany({
           where,
-          orderBy: { createdAt: 'desc' },
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
           skip,
           take: args.query.pageSize,
         }),

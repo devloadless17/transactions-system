@@ -27,4 +27,31 @@ export default [
       'no-console': ['warn', { allow: ['warn', 'error', 'info'] }],
     },
   },
+  {
+    // Plain CommonJS Node scripts (local Whish mock + UI smoke helper). They
+    // run under Node, not the bundler, so give them Node/CommonJS globals.
+    files: ['**/*.cjs'],
+    languageOptions: {
+      sourceType: 'commonjs',
+      globals: {
+        process: 'readonly',
+        console: 'readonly',
+        module: 'writable',
+        require: 'readonly',
+        __dirname: 'readonly',
+        __filename: 'readonly',
+        Buffer: 'readonly',
+        URL: 'readonly',
+        fetch: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        setInterval: 'readonly',
+        clearInterval: 'readonly',
+      },
+    },
+    rules: {
+      // require() is correct in CommonJS modules.
+      '@typescript-eslint/no-require-imports': 'off',
+    },
+  },
 ];

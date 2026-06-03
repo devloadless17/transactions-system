@@ -37,6 +37,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { apiFetch } from '@/lib/api.client';
 import { ApiClientError } from '@/lib/api';
+import { trimAmount } from '@/lib/format';
 
 // Withdrawal/Payout/Load have the same response shape; we type the
 // shared UI against WithdrawalResponse and the per-process endpoint
@@ -609,11 +610,6 @@ export function prettyMethod(m: PayoutMethod): string {
     default:
       return 'Other';
   }
-}
-
-function trimAmount(s: string): string {
-  if (!s.includes('.')) return s;
-  return s.replace(/\.?0+$/, '');
 }
 
 function statusVariant(s: WithdrawalStatus): 'success' | 'warning' | 'destructive' | 'secondary' {

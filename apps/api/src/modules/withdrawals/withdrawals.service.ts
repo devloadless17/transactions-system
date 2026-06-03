@@ -4,7 +4,6 @@ import {
   type ApproveWithdrawalInput,
   type CancelRequestInput,
   type CreateWithdrawalInput,
-  type FeeApplication,
   type ListWithdrawalsQuery,
   type PaginatedResponse,
   type PayoutDetails,
@@ -21,42 +20,15 @@ import { AnalyticsService } from '../analytics/analytics.service';
 import { RealtimeService } from '../realtime/realtime.service';
 import { FeesService } from '../commissions/fees.service';
 import {
-  ConflictError,
-  InsufficientBalanceError,
-  NotFoundError,
-  ValidationError,
-} from '../../common/errors/domain.error';
+  assertSufficient,
+  releaseEntries,
+  reserveEntries,
+  reservedTotal,
+  settleEntries,
+} from '../ledger/flow-ledger';
+import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain.error';
 
 const REQUESTABLE_STATUS: WithdrawalStatus = 'PENDING';
-
-/** Reserved total for a row = amount, or amount+fee when the fee is ON_TOP. */
-function reservedTotal(amount: Money, fee: Money, feeApplication: FeeApplication): Money {
-  return feeApplication === 'ON_TOP' ? amount.add(fee) : amount;
-}
-
-/**
- * Read the available balance inside the current tx and throw a clear
- * "top up" error if it can't cover `required`.
- */
-async function assertSufficient(
-  tx: PrismaClient,
-  companyId: string,
-  currency: string,
-  required: Money,
-): Promise<void> {
-  const wallet = await tx.wallet.findUnique({
-    where: { companyId_currency: { companyId, currency } },
-  });
-  const available = Money.of(wallet?.availableBalance.toString() ?? '0');
-  if (available.lt(required)) {
-    throw new InsufficientBalanceError({
-      currency,
-      required: required.toString(),
-      available: available.toString(),
-      shortfall: required.sub(available).toString(),
-    });
-  }
-}
 
 /**
  * Withdrawals: company pays an external third party. Funds move
@@ -80,8 +52,8 @@ export class WithdrawalsService {
     private readonly fees: FeesService,
   ) {}
 
-  private invalidateAnalytics() {
-    this.analytics
+  private async invalidateAnalytics(): Promise<void> {
+    await this.analytics
       .invalidateAll()
       .catch((e) => this.logger.warn(`analytics cache invalidate failed: ${e}`));
   }
@@ -143,24 +115,10 @@ export class WithdrawalsService {
       });
 
       // Reserve the full reserved total. Ledger move: available → reserved.
-      await this.ledger.writeEntries(cTx, [
-        {
-          companyId,
-          withdrawalId: w.id,
-          accountType: 'AVAILABLE',
-          direction: 'DEBIT',
-          amount: reserved,
-          currency: input.currency,
-        },
-        {
-          companyId,
-          withdrawalId: w.id,
-          accountType: 'RESERVED',
-          direction: 'CREDIT',
-          amount: reserved,
-          currency: input.currency,
-        },
-      ]);
+      await this.ledger.writeEntries(
+        cTx,
+        reserveEntries({ withdrawalId: w.id }, companyId, input.currency, reserved),
+      );
 
       await this.wallets.applyDelta(cTx, {
         companyId,
@@ -171,7 +129,7 @@ export class WithdrawalsService {
       return w;
     });
 
-    this.invalidateAnalytics();
+    await this.invalidateAnalytics();
     this.notify(row.companyId);
     return mapWithdrawal(row);
   }
@@ -200,38 +158,11 @@ export class WithdrawalsService {
       const external = w.feeApplication === 'ON_TOP' ? amount : amount.sub(fee);
 
       // Funds leave the platform; the fee is realized to the FEE account.
-      // Ledger: reserved → external(net) + FEE(fee). Skip any zero line.
-      const entries: Parameters<typeof this.ledger.writeEntries>[1] = [
-        {
-          companyId: w.companyId,
-          withdrawalId: w.id,
-          accountType: 'RESERVED',
-          direction: 'DEBIT',
-          amount: reserved,
-          currency: w.currency,
-        },
-      ];
-      if (external.isPositive()) {
-        entries.push({
-          companyId: w.companyId,
-          withdrawalId: w.id,
-          accountType: 'EXTERNAL',
-          direction: 'CREDIT',
-          amount: external,
-          currency: w.currency,
-        });
-      }
-      if (fee.isPositive()) {
-        entries.push({
-          companyId: w.companyId,
-          withdrawalId: w.id,
-          accountType: 'FEE',
-          direction: 'CREDIT',
-          amount: fee,
-          currency: w.currency,
-        });
-      }
-      await this.ledger.writeEntries(cTx, entries);
+      // Ledger: reserved → external(net) + FEE(fee). Zero lines are skipped.
+      await this.ledger.writeEntries(
+        cTx,
+        settleEntries({ withdrawalId: w.id }, w.companyId, w.currency, reserved, external, fee),
+      );
       await this.wallets.applyDelta(cTx, {
         companyId: w.companyId,
         currency: w.currency,
@@ -250,7 +181,7 @@ export class WithdrawalsService {
       });
     });
 
-    this.invalidateAnalytics();
+    await this.invalidateAnalytics();
     this.notify(row.companyId);
     return mapWithdrawal(row);
   }
@@ -280,24 +211,10 @@ export class WithdrawalsService {
       );
 
       // Return the full reserved total to available (no fee realized).
-      await this.ledger.writeEntries(cTx, [
-        {
-          companyId: w.companyId,
-          withdrawalId: w.id,
-          accountType: 'RESERVED',
-          direction: 'DEBIT',
-          amount: reserved,
-          currency: w.currency,
-        },
-        {
-          companyId: w.companyId,
-          withdrawalId: w.id,
-          accountType: 'AVAILABLE',
-          direction: 'CREDIT',
-          amount: reserved,
-          currency: w.currency,
-        },
-      ]);
+      await this.ledger.writeEntries(
+        cTx,
+        releaseEntries({ withdrawalId: w.id }, w.companyId, w.currency, reserved),
+      );
       await this.wallets.applyDelta(cTx, {
         companyId: w.companyId,
         currency: w.currency,
@@ -315,7 +232,7 @@ export class WithdrawalsService {
       });
     });
 
-    this.invalidateAnalytics();
+    await this.invalidateAnalytics();
     this.notify(row.companyId);
     return mapWithdrawal(row);
   }
@@ -346,24 +263,10 @@ export class WithdrawalsService {
         w.feeApplication,
       );
 
-      await this.ledger.writeEntries(cTx, [
-        {
-          companyId: w.companyId,
-          withdrawalId: w.id,
-          accountType: 'RESERVED',
-          direction: 'DEBIT',
-          amount: reserved,
-          currency: w.currency,
-        },
-        {
-          companyId: w.companyId,
-          withdrawalId: w.id,
-          accountType: 'AVAILABLE',
-          direction: 'CREDIT',
-          amount: reserved,
-          currency: w.currency,
-        },
-      ]);
+      await this.ledger.writeEntries(
+        cTx,
+        releaseEntries({ withdrawalId: w.id }, w.companyId, w.currency, reserved),
+      );
       await this.wallets.applyDelta(cTx, {
         companyId: w.companyId,
         currency: w.currency,
@@ -381,7 +284,7 @@ export class WithdrawalsService {
       });
     });
 
-    this.invalidateAnalytics();
+    await this.invalidateAnalytics();
     this.notify(row.companyId);
     return mapWithdrawal(row);
   }
@@ -402,7 +305,7 @@ export class WithdrawalsService {
       const [rows, total] = await Promise.all([
         tx.withdrawal.findMany({
           where,
-          orderBy: { createdAt: 'desc' },
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
           skip,
           take: args.query.pageSize,
         }),

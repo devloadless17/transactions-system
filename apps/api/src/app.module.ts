@@ -29,6 +29,7 @@ import { MaintenanceModule } from './modules/maintenance/maintenance.module';
 import { MetricsModule } from './modules/metrics/metrics.module';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 import { AuditInterceptor } from './modules/audit/audit.interceptor';
+import { RedisThrottlerStorage } from './common/throttler/redis-throttler-storage';
 import type { Env } from './config/env.schema';
 
 @Module({
@@ -47,6 +48,9 @@ import type { Env } from './config/env.schema';
             limit: cfg.get('RATE_LIMIT_MAX', { infer: true }),
           },
         ],
+        // Shared across instances + restart-durable (the in-memory default
+        // makes the login/refresh limits per-process — `limit × instances`).
+        storage: new RedisThrottlerStorage(cfg.get('REDIS_URL', { infer: true })),
       }),
     }),
     HealthModule,

@@ -8,14 +8,13 @@ export function QueryProvider({ children }: { children: React.ReactNode }) {
       new QueryClient({
         defaultOptions: {
           queries: {
-            // Treat data as stale immediately so navigating back to a page after
-            // mutating something always shows the latest. The backend has its
-            // own short Redis cache to keep the actual DB hit cheap.
-            staleTime: 0,
-            // Refresh on focus + on remount so dashboards stay accurate without
-            // the user needing to hard-reload.
-            refetchOnWindowFocus: true,
-            refetchOnMount: 'always',
+            // Realtime invalidation (Socket.IO) already refetches affected
+            // queries the moment data changes, so we don't need aggressive
+            // re-fetching defaults. A short staleTime avoids redundant
+            // network round-trips when navigating between views; focus
+            // refetching is off since the socket keeps things fresh.
+            staleTime: 30_000,
+            refetchOnWindowFocus: false,
             retry: 1,
           },
         },

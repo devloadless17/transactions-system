@@ -1,9 +1,9 @@
 import { z } from 'zod';
 import { PayoutMethod, WithdrawalStatus } from '../enums';
-import { currencySchema } from './common';
+import { currencySchema, moneyAmountSchema } from './common';
 import { createPayoutDetailsSchema, payoutDetailsSchema } from './payout-method';
 
-const decimalString = z.string().regex(/^\d+(\.\d+)?$/, 'must be a positive decimal');
+const decimalString = moneyAmountSchema;
 
 // Payouts: company withdraws funds to itself. Funds move
 // available → reserved on request, reserved → external on approval.

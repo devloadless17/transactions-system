@@ -1,5 +1,6 @@
 'use client';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import {
@@ -26,6 +27,8 @@ import {
 import { Label } from '@/components/ui/label';
 import { apiFetch } from '@/lib/api.client';
 import { ApiClientError } from '@/lib/api';
+import { trimAmount } from '@/lib/format';
+import { useDebouncedValue } from '@/lib/use-debounced-value';
 import { EmptyState } from '@/components/empty-state';
 import { Inbox } from 'lucide-react';
 import {
@@ -50,6 +53,18 @@ interface Filters {
 
 const PAGE_SIZE = 20;
 
+// Filter keys mirrored to the URL (page is handled separately).
+const FILTER_KEYS = [
+  'status',
+  'sourceId',
+  'companyId',
+  'search',
+  'from',
+  'to',
+  'fromTime',
+  'toTime',
+] as const;
+
 // Local YYYY-MM-DD, n days before today (0 = today).
 function dayKey(daysAgo = 0): string {
   const d = new Date();
@@ -57,10 +72,64 @@ function dayKey(daysAgo = 0): string {
   return new Date(d.getTime() - d.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
 }
 
+function filtersFromParams(p: URLSearchParams): Filters {
+  const f: Filters = {};
+  for (const k of FILTER_KEYS) {
+    const v = p.get(k);
+    if (v) (f as Record<string, string>)[k] = v;
+  }
+  return f;
+}
+
+// URL query string mirroring page + filters. Page 1 and empty filters are
+// omitted to keep the URL clean and the equality check stable.
+function urlParamsFromState(page: number, filters: Filters): string {
+  const p = new URLSearchParams();
+  if (page > 1) p.set('page', String(page));
+  for (const k of FILTER_KEYS) {
+    const v = filters[k];
+    if (v) p.set(k, v);
+  }
+  return p.toString();
+}
+
 export function TransactionsView({ scope }: { scope: 'admin' | 'company' }) {
   const qc = useQueryClient();
-  const [page, setPage] = useState(1);
-  const [filters, setFilters] = useState<Filters>({});
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const urlString = searchParams.toString();
+
+  // State is initialised from the URL on mount so a shared/bookmarked link (or
+  // the Back button) restores the exact filtered view.
+  const [page, setPage] = useState(() => Number(searchParams.get('page')) || 1);
+  const [filters, setFilters] = useState<Filters>(() => filtersFromParams(searchParams));
+
+  // Single writer: update page/filters AND push them to the URL together
+  // (replace, so a stream of keystrokes doesn't pollute history). Because state
+  // and URL end up in sync, the read-back effect below stays a no-op — no loop.
+  function applyState(nextPage: number, nextFilters: Filters) {
+    setPage(nextPage);
+    setFilters(nextFilters);
+    const qs = urlParamsFromState(nextPage, nextFilters);
+    router.replace(pathname + (qs ? `?${qs}` : ''), { scroll: false });
+  }
+  // Changing any filter resets back to page 1.
+  function setFilter(patch: Partial<Filters>) {
+    applyState(1, { ...filters, ...patch });
+  }
+
+  // Read-back: adopt external URL changes (Back/Forward) into state. Guarded by
+  // equality so our own writes don't trigger a redundant re-sync.
+  useEffect(() => {
+    if (urlString !== urlParamsFromState(page, filters)) {
+      const p = new URLSearchParams(urlString);
+      setPage(Number(p.get('page')) || 1);
+      setFilters(filtersFromParams(p));
+    }
+    // Depend only on the URL string; current state is read fresh above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlString]);
 
   const dateValue: PickedRange = {
     from: filters.from,
@@ -75,20 +144,21 @@ export function TransactionsView({ scope }: { scope: 'admin' | 'company' }) {
   ].map((p) => ({
     label: p.label,
     active: filters.from === p.from && filters.to === p.to && !filters.fromTime && !filters.toTime,
-    onSelect: () => {
-      setPage(1);
-      setFilters((f) => ({ ...f, from: p.from, to: p.to, fromTime: undefined, toTime: undefined }));
-    },
+    onSelect: () => setFilter({ from: p.from, to: p.to, fromTime: undefined, toTime: undefined }),
   }));
   const [reverseTarget, setReverseTarget] = useState<TransactionResponse | null>(null);
   const [detailTarget, setDetailTarget] = useState<TransactionResponse | null>(null);
+
+  // Debounce the free-text search into the query key only; the input stays live.
+  const debouncedSearch = useDebouncedValue(filters.search ?? '', 300);
+
   const params = new URLSearchParams();
   params.set('page', String(page));
   params.set('pageSize', String(PAGE_SIZE));
   if (filters.status) params.set('status', filters.status);
   if (filters.sourceId) params.set('sourceId', filters.sourceId);
   if (filters.companyId) params.set('companyId', filters.companyId);
-  if (filters.search) params.set('search', filters.search);
+  if (debouncedSearch) params.set('search', debouncedSearch);
   // Expand the picked dates/times to inclusive ISO bounds the API expects:
   // start of the "from" instant (default 00:00) through the end of the "to"
   // minute (default 23:59, i.e. end of day).
@@ -231,7 +301,7 @@ export function TransactionsView({ scope }: { scope: 'admin' | 'company' }) {
               <Input
                 placeholder="ext-001"
                 value={filters.search ?? ''}
-                onChange={(e) => setFilters((f) => ({ ...f, search: e.target.value }))}
+                onChange={(e) => setFilter({ search: e.target.value })}
                 className="w-40"
               />
             </div>
@@ -242,25 +312,21 @@ export function TransactionsView({ scope }: { scope: 'admin' | 'company' }) {
                 presets={datePresets}
                 placeholder="All dates"
                 className="w-64"
-                onChange={(v) => {
-                  setPage(1);
-                  setFilters((f) => ({
-                    ...f,
+                onChange={(v) =>
+                  setFilter({
                     from: v.from,
                     to: v.to,
                     fromTime: v.fromTime,
                     toTime: v.toTime,
-                  }));
-                }}
+                  })
+                }
               />
             </div>
             <div className="space-y-1">
               <label className="text-xs text-muted-foreground">Status</label>
               <select
                 value={filters.status ?? ''}
-                onChange={(e) =>
-                  setFilters((f) => ({ ...f, status: (e.target.value as TransactionStatus) || '' }))
-                }
+                onChange={(e) => setFilter({ status: (e.target.value as TransactionStatus) || '' })}
                 className="h-10 rounded-md border border-input bg-background px-3 text-sm"
               >
                 <option value="">All</option>
@@ -275,9 +341,7 @@ export function TransactionsView({ scope }: { scope: 'admin' | 'company' }) {
               <label className="text-xs text-muted-foreground">Source</label>
               <select
                 value={filters.sourceId ?? ''}
-                onChange={(e) =>
-                  setFilters((f) => ({ ...f, sourceId: e.target.value || undefined }))
-                }
+                onChange={(e) => setFilter({ sourceId: e.target.value || undefined })}
                 className="h-10 rounded-md border border-input bg-background px-3 text-sm"
               >
                 <option value="">All</option>
@@ -293,9 +357,7 @@ export function TransactionsView({ scope }: { scope: 'admin' | 'company' }) {
                 <label className="text-xs text-muted-foreground">Company</label>
                 <select
                   value={filters.companyId ?? ''}
-                  onChange={(e) =>
-                    setFilters((f) => ({ ...f, companyId: e.target.value || undefined }))
-                  }
+                  onChange={(e) => setFilter({ companyId: e.target.value || undefined })}
                   className="h-10 rounded-md border border-input bg-background px-3 text-sm"
                 >
                   <option value="">All</option>
@@ -357,7 +419,7 @@ export function TransactionsView({ scope }: { scope: 'admin' | 'company' }) {
           page={data.meta.page}
           total={data.meta.total}
           totalPages={data.meta.totalPages}
-          onPageChange={setPage}
+          onPageChange={(p) => applyState(p, filters)}
         />
       )}
     </div>
@@ -424,11 +486,6 @@ function ReverseTransactionDialog({
       </DialogContent>
     </Dialog>
   );
-}
-
-function trimAmount(s: string): string {
-  if (!s.includes('.')) return s;
-  return s.replace(/\.?0+$/, '');
 }
 
 function statusVariant(s: TransactionStatus): 'success' | 'warning' | 'destructive' | 'secondary' {

@@ -91,16 +91,15 @@ export function RealtimeBridge() {
     // `txn_access` cookie on the handshake; reconnection is on by default.
     const socket = io(origin + REALTIME_NAMESPACE, { withCredentials: true });
 
-    let firstConnect = true;
     socket.on('connect', () => {
-      // The socket only delivers events received while connected. Any change
-      // that happened during a gap (dev hot-reload dropped us, network blip,
-      // token refreshed) would be missed — so on every RE-connect, refetch all
-      // active queries to catch up. The first connect already has fresh data.
-      if (firstConnect) {
-        firstConnect = false;
-        return;
-      }
+      // The socket only delivers events received WHILE connected. Anything that
+      // happened before/while connecting — a transaction landing in the
+      // sub-second after a page load or reload, a dev hot-reload, a network blip
+      // or token refresh — would otherwise be missed forever. So on EVERY
+      // connect (including the first) refetch all active queries to catch up.
+      // The page's initial data was just loaded, so this costs at most one
+      // redundant refetch; guaranteeing "never miss a live update" is worth it
+      // and is what keeps the dashboard correct even right after a refresh.
       void qc.invalidateQueries();
     });
 

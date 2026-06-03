@@ -48,8 +48,8 @@ export class LoadsService {
     private readonly fees: FeesService,
   ) {}
 
-  private invalidateAnalytics() {
-    this.analytics
+  private async invalidateAnalytics(): Promise<void> {
+    await this.analytics
       .invalidateAll()
       .catch((e) => this.logger.warn(`analytics cache invalidate failed: ${e}`));
   }
@@ -96,7 +96,7 @@ export class LoadsService {
       });
     });
 
-    this.invalidateAnalytics();
+    await this.invalidateAnalytics();
     this.notify(row.companyId);
     return mapLoad(row);
   }
@@ -170,7 +170,7 @@ export class LoadsService {
       });
     });
 
-    this.invalidateAnalytics();
+    await this.invalidateAnalytics();
     this.notify(row.companyId);
     return mapLoad(row);
   }
@@ -232,7 +232,7 @@ export class LoadsService {
       });
     });
 
-    this.invalidateAnalytics();
+    await this.invalidateAnalytics();
     this.notify(row.companyId);
     return mapLoad(row);
   }
@@ -253,7 +253,7 @@ export class LoadsService {
       const [rows, total] = await Promise.all([
         tx.load.findMany({
           where,
-          orderBy: { createdAt: 'desc' },
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
           skip,
           take: args.query.pageSize,
         }),

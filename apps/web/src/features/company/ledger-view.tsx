@@ -13,6 +13,7 @@ import { Label } from '@/components/ui/label';
 import { DataTable, type Column } from '@/components/ui/data-table';
 import { Pagination } from '@/components/ui/pagination';
 import { apiFetch } from '@/lib/api.client';
+import { trimAmount } from '@/lib/format';
 
 const PAGE_SIZE = 50;
 
@@ -146,9 +147,4 @@ export function LedgerView() {
       )}
     </div>
   );
-}
-
-function trimAmount(s: string): string {
-  if (!s.includes('.')) return s;
-  return s.replace(/\.?0+$/, '');
 }

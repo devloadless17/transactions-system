@@ -20,6 +20,7 @@ import { Switch } from '@/components/ui/switch';
 import { DataTable, type Column } from '@/components/ui/data-table';
 import { apiFetch } from '@/lib/api.client';
 import { ApiClientError } from '@/lib/api';
+import { formatNumber as fmt, trimAmount } from '@/lib/format';
 import { KpiCard } from '@/features/analytics/kpi-card';
 import { VolumeChart } from '@/features/analytics/volume-chart';
 import {
@@ -486,14 +487,6 @@ export function CompanyDetailView({ companyId }: { companyId: string }) {
   );
 }
 
-function fmt(s: string): string {
-  const n = Number(s);
-  if (Number.isNaN(n)) return s;
-  if (n === 0) return '0';
-  if (Math.abs(n) >= 1) return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
-  return n.toString();
-}
-
 // KPI sub-line: settled count plus any money still in-flight (pending
 // approval / processing) for that operation type.
 function inflightHint(m: VolumeMetric, currency: string): string {
@@ -502,9 +495,4 @@ function inflightHint(m: VolumeMetric, currency: string): string {
     return `${base} · ${fmt(m.pendingTotal)} ${currency} in-flight`;
   }
   return base;
-}
-
-function trimAmount(s: string): string {
-  if (!s.includes('.')) return s;
-  return s.replace(/\.?0+$/, '');
 }

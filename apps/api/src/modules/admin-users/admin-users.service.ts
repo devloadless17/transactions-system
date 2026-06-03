@@ -106,19 +106,26 @@ export class AdminUsersService {
         throw new NotFoundError('AdminUser', id);
       }
 
-      // Protect the last active SUPER_ADMIN from demotion/disable so the
-      // platform can never be locked out.
+      // The SUPER_ADMIN is the system owner that runs the platform, so its
+      // account can never be disabled — by anyone, including another super
+      // admin. Without an active owner there'd be no one left to administer
+      // the system.
+      if (target.role === UserRole.SUPER_ADMIN && input.status === UserStatus.DISABLED) {
+        throw new ForbiddenError('The super admin account cannot be disabled');
+      }
+
+      // Protect the last active SUPER_ADMIN from demotion too, so the platform
+      // is never left without an owner. (Disabling is already rejected above.)
       if (
         target.role === UserRole.SUPER_ADMIN &&
-        (input.role || input.status === UserStatus.DISABLED)
+        input.role &&
+        input.role !== UserRole.SUPER_ADMIN
       ) {
         const superAdminCount = await tx.user.count({
           where: { role: UserRole.SUPER_ADMIN, status: UserStatus.ACTIVE, companyId: null },
         });
-        const stillSuperAdmin = (input.role ?? target.role) === UserRole.SUPER_ADMIN;
-        const stillActive = (input.status ?? target.status) === UserStatus.ACTIVE;
-        if (superAdminCount === 1 && (!stillSuperAdmin || !stillActive)) {
-          throw new ValidationError('Cannot remove or demote the last active super admin');
+        if (superAdminCount === 1) {
+          throw new ValidationError('Cannot demote the last active super admin');
         }
       }
 

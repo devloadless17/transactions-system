@@ -35,7 +35,7 @@ function parseArgs(): Args {
     concurrency: Number(get('--concurrency', '20')),
     count: Number(get('--count', '500')),
     email: get('--email', 'admin@example.com'),
-    password: get('--password', 'AdminPassw0rd!'),
+    password: get('--password', 'loadless'),
     source: get('--source', 'omt'),
   };
 }
@@ -100,7 +100,18 @@ async function main() {
     process.exit(1);
   }
 
-  // 2. Create a throwaway company.
+  // 2. Resolve the source id (needed for the opt-in + source key below).
+  const sourcesRes = await jsonFetch<{ data: Array<{ id: string; code: string }> }>(
+    `${args.base}/admin/sources/all`,
+    { cookies: adminCookies.jar },
+  );
+  const source = sourcesRes.body.data?.find((s) => s.code === args.source);
+  if (!source) {
+    console.error(`source '${args.source}' not found (is it seeded?)`);
+    process.exit(1);
+  }
+
+  // 3. Create a throwaway company + owner.
   const slug = `lt-${Date.now().toString(36)}`;
   const create = await jsonFetch<{
     company: { id: string };
@@ -120,31 +131,43 @@ async function main() {
     console.error(`create company failed: ${create.status}`, create.body);
     process.exit(1);
   }
+  const companyId = create.body.company.id;
   const { owner } = create.body;
 
-  // 3. Owner login.
+  // 4. Opt the company into the source — ingestion is rejected (403) otherwise.
+  const optIn = await jsonFetch<unknown>(`${args.base}/admin/sources/${source.id}/companies`, {
+    method: 'POST',
+    cookies: adminCookies.jar,
+    csrf: adminCookies.csrf,
+    body: JSON.stringify({ companyId, enabled: true }),
+  });
+  if (optIn.status !== 201 && optIn.status !== 200) {
+    console.error(`source opt-in failed: ${optIn.status}`, optIn.body);
+    process.exit(1);
+  }
+
+  // 5. Mint a SOURCE API key (ingestion is authenticated by source keys, not
+  // company keys), plus an owner session for the final wallet consistency read.
+  const keyRes = await jsonFetch<{ plaintext: string }>(
+    `${args.base}/admin/sources/${source.id}/api-keys`,
+    {
+      method: 'POST',
+      cookies: adminCookies.jar,
+      csrf: adminCookies.csrf,
+      body: JSON.stringify({ name: `loadtest-${slug}` }),
+    },
+  );
+  if (keyRes.status !== 201 && keyRes.status !== 200) {
+    console.error(`source api key failed: ${keyRes.status}`, keyRes.body);
+    process.exit(1);
+  }
+  const apiKey = keyRes.body.plaintext;
+
   const ownerLogin = await jsonFetch<unknown>(`${args.base}/auth/login`, {
     method: 'POST',
     body: JSON.stringify({ email: owner.email, password: owner.temporaryPassword }),
   });
   const ownerCookies = parseCookies(ownerLogin.setCookies);
-  if (!ownerCookies.csrf) {
-    console.error('owner login did not return csrf cookie');
-    process.exit(1);
-  }
-
-  // 4. Mint API key.
-  const keyRes = await jsonFetch<{ plaintext: string }>(`${args.base}/company/api-keys`, {
-    method: 'POST',
-    cookies: ownerCookies.jar,
-    csrf: ownerCookies.csrf,
-    body: JSON.stringify({ name: 'loadtest' }),
-  });
-  if (keyRes.status !== 201 && keyRes.status !== 200) {
-    console.error(`api key failed: ${keyRes.status}`, keyRes.body);
-    process.exit(1);
-  }
-  const apiKey = keyRes.body.plaintext;
 
   // 5. Fan out ingestion calls.
   const buckets = { ok: 0, rateLimited: 0, clientErr: 0, serverErr: 0 };
@@ -156,14 +179,14 @@ async function main() {
       const i = nextId();
       if (i === null) return;
       const t0 = performance.now();
-      const res = await fetch(`${args.base}/ingest/transactions`, {
+      const res = await fetch(`${args.base}/ingest/${args.source}/transactions`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
           authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
-          sourceCode: args.source,
+          companyId,
           externalTransactionId: `lt-${slug}-${i}`,
           amount: '2',
           currency: 'USD',
