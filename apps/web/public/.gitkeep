@@ -1,0 +1,2 @@
+# Keep this directory tracked. Next.js serves static assets placed here
+# (favicon, robots.txt, images). The prod Docker image COPYs it.

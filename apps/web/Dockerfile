@@ -15,6 +15,12 @@ RUN pnpm install --frozen-lockfile --filter @app/web... --filter @app/shared...
 COPY packages/shared packages/shared
 COPY apps/web apps/web
 
+# The browser-facing API base is inlined into the client bundle at BUILD time
+# (Next.js NEXT_PUBLIC_*), so it cannot be changed by a runtime env var. Pass a
+# build arg for any non-localhost deployment (e.g. an HTTPS gateway origin).
+ARG NEXT_PUBLIC_API_BASE_URL=http://localhost:3001/v1
+ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL
+
 RUN pnpm --filter @app/shared build \
  && pnpm --filter @app/web build
 

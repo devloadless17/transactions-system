@@ -30,3 +30,6 @@ packages/db/generated
 playwright-report
 test-results
 e2e/.auth
+
+# Local Caddy internal CA (full-HTTPS prod test) — generated, do not commit
+caddy-root-ca.crt

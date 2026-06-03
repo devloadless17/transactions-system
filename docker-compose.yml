@@ -63,10 +63,20 @@ services:
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:3000}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
+      # Whish Pay (optional 3rd-party gateway). Forwarded from the host env so a
+      # prod deploy is actually configured; empty by default = "not configured".
+      WHISH_BASE_URL: ${WHISH_BASE_URL:-https://api.sandbox.whish.money/itel-service/api}
+      WHISH_CHANNEL: ${WHISH_CHANNEL:-}
+      WHISH_SECRET: ${WHISH_SECRET:-}
+      WHISH_WEBSITE_URL: ${WHISH_WEBSITE_URL:-http://localhost:3000}
+      WHISH_CALLBACK_BASE: ${WHISH_CALLBACK_BASE:-http://localhost:3001/v1}
     ports:
       - '${API_PORT:-3001}:3001'
     healthcheck:
-      test: ['CMD-SHELL', 'wget -qO- http://localhost:3001/v1/health || exit 1']
+      # 127.0.0.1 (not localhost): the API binds IPv4 0.0.0.0, but the image's
+      # /etc/hosts maps localhost to ::1 too, and busybox wget hits IPv6 first
+      # → connection refused. Pin IPv4 so the healthcheck reaches the server.
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:3001/v1/health || exit 1']
       interval: 10s
       timeout: 5s
       retries: 6
