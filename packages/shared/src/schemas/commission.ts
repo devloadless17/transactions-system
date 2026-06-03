@@ -8,7 +8,11 @@ import { Money } from '../money';
 // 20,8-digit value cannot slip past the bound through float precision loss.
 const nonNegativeDecimalString = z
   .string()
-  .regex(/^\d+(\.\d+)?$/, 'must be a non-negative decimal string (e.g. "1.50")');
+  .regex(/^\d+(\.\d+)?$/, 'must be a non-negative decimal string (e.g. "1.50")')
+  // Bound to the ledger's Decimal(20,8) scale (matching moneyAmountSchema) so a
+  // rule value can't be silently rounded on store or overflow the column.
+  .refine((v) => (v.split('.')[1]?.length ?? 0) <= 8, 'at most 8 decimal places')
+  .refine((v) => v.split('.')[0]!.length <= 12, 'integer part is at most 12 digits');
 
 const HUNDRED = Money.of('100');
 
@@ -19,7 +23,10 @@ const HUNDRED = Money.of('100');
  * FIXED values are only bounded to be non-negative here; the resolver enforces
  * commission <= amount at compute time (see CommissionExceedsAmountError).
  */
-function commissionValueWithinBounds(commissionType: CommissionType, value: string): boolean {
+export function commissionValueWithinBounds(
+  commissionType: CommissionType,
+  value: string,
+): boolean {
   if (commissionType === CommissionType.PERCENTAGE) {
     return Money.of(value).lte(HUNDRED);
   }

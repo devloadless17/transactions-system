@@ -48,6 +48,17 @@ async function bootstrap() {
   const config = app.get(ConfigService<Env, true>);
   const logger = new Logger('Bootstrap');
 
+  // Safety net: a detached/fire-and-forget promise that rejects (e.g. a best-effort
+  // webhook delivery or notification whose error path wasn't caught) must NOT take
+  // the whole process down. Node's default is to throw on an unhandled rejection,
+  // which for a money API would drop every in-flight request. Log it loudly instead
+  // so monitoring still surfaces the bug, but keep serving.
+  process.on('unhandledRejection', (reason) => {
+    logger.error(
+      `Unhandled promise rejection: ${reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)}`,
+    );
+  });
+
   app.set('trust proxy', 1);
   // Tighter helmet config. CSP stays off for /docs (Swagger UI) which we
   // mount before this would matter; turn it on for everything else.
@@ -140,6 +151,14 @@ async function bootstrap() {
       swaggerOptions: { persistAuthorization: true },
     });
   }
+
+  // Graceful shutdown. Every deploy / rolling restart sends SIGTERM; without
+  // this, Nest tears the process down immediately and drops in-flight requests —
+  // including a withdrawal/ingest mid serializable transaction. enableShutdownHooks
+  // registers signal handlers that stop accepting new connections, let in-flight
+  // requests finish, then run OnModuleDestroy (Prisma $disconnect, Redis quit,
+  // reconciliation/maintenance timer clears) before exit.
+  app.enableShutdownHooks();
 
   const port = config.get('API_PORT', { infer: true });
   const host = config.get('API_HOST', { infer: true });

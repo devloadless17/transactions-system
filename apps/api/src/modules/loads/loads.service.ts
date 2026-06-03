@@ -16,6 +16,7 @@ import {
 import type { Prisma, PrismaClient } from '@app/db';
 import { PrismaService } from '../../database/prisma.service';
 import { LedgerService } from '../ledger/ledger.service';
+import { netOfFee } from '../ledger/flow-ledger';
 import { WalletsService } from '../wallets/wallets.service';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { RealtimeService } from '../realtime/realtime.service';
@@ -78,7 +79,7 @@ export class LoadsService {
         operationType: 'LOAD',
       });
       // Net credited to the wallet on approval.
-      const net = feeApplication === 'ON_TOP' ? amount : amount.sub(fee);
+      const net = netOfFee(amount, fee, feeApplication);
 
       return cTx.load.create({
         data: {
@@ -119,7 +120,7 @@ export class LoadsService {
       const amount = Money.of(l.amount.toString());
       const fee = Money.of(l.feeAmount.toString());
       const externalDebit = l.feeApplication === 'ON_TOP' ? amount.add(fee) : amount;
-      const availableCredit = l.feeApplication === 'ON_TOP' ? amount : amount.sub(fee);
+      const availableCredit = netOfFee(amount, fee, l.feeApplication);
 
       // Money in: DEBIT external, CREDIT available(net) + FEE(fee). Skip zero.
       const entries: Parameters<typeof this.ledger.writeEntries>[1] = [

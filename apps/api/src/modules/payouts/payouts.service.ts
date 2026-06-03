@@ -22,6 +22,7 @@ import { RealtimeService } from '../realtime/realtime.service';
 import { FeesService } from '../commissions/fees.service';
 import {
   assertSufficient,
+  netOfFee,
   releaseEntries,
   reserveEntries,
   reservedTotal,
@@ -89,7 +90,7 @@ export class PayoutsService {
         operationType: 'PAYOUT',
       });
       const reserved = reservedTotal(amount, fee, feeApplication);
-      const net = feeApplication === 'ON_TOP' ? amount : amount.sub(fee);
+      const net = netOfFee(amount, fee, feeApplication);
 
       await assertSufficient(cTx, companyId, input.currency, reserved);
 
@@ -160,7 +161,7 @@ export class PayoutsService {
       const amount = Money.of(p.amount.toString());
       const fee = Money.of(p.feeAmount.toString());
       const reserved = reservedTotal(amount, fee, p.feeApplication);
-      const external = p.feeApplication === 'ON_TOP' ? amount : amount.sub(fee);
+      const external = netOfFee(amount, fee, p.feeApplication);
 
       // Funds leave the platform; the fee is realized to the FEE account.
       // Ledger: reserved → external(net) + FEE(fee). Zero lines are skipped.

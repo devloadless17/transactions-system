@@ -1,12 +1,13 @@
 import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
+import { LedgerModule } from '../ledger/ledger.module';
 import { AnalyticsService } from './analytics.service';
 import { AnalyticsController } from './analytics.controller';
 import { PlatformAnalyticsService } from './platform-analytics.service';
 import { PlatformAnalyticsController } from './platform-analytics.controller';
 
 @Module({
-  imports: [AuthModule],
+  imports: [AuthModule, LedgerModule],
   controllers: [AnalyticsController, PlatformAnalyticsController],
   providers: [AnalyticsService, PlatformAnalyticsService],
   exports: [AnalyticsService, PlatformAnalyticsService],

@@ -34,7 +34,11 @@ export class WhishCallbackController {
 
   private async settle(externalId?: string, token?: string): Promise<void> {
     const id = Number(externalId);
-    if (!externalId || !token || !Number.isFinite(id)) return;
+    // Require a positive INTEGER (not just finite): a fractional externalId like
+    // "1.5" passes Number.isFinite but makes BigInt(id) throw a RangeError
+    // downstream — a 500 on this public, unauthenticated endpoint. Mirror the CRM
+    // controller's parseReference guard so a bad ref is a clean no-op 200.
+    if (!externalId || !token || !Number.isInteger(id) || id <= 0) return;
     await this.payments.handleCallback(id, token);
   }
 }

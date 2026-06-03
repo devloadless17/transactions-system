@@ -4,8 +4,12 @@ import { uniqueSlug } from './helpers';
 test.describe('admin: companies', () => {
   test('list page renders', async ({ page }) => {
     await page.goto('/admin/companies');
-    await expect(page.getByRole('heading', { name: 'Companies' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'New company' })).toBeVisible();
+    // exact: true so the page heading isn't ambiguous with the empty-state
+    // "No companies yet" heading on a fresh DB (strict-mode would match both).
+    await expect(page.getByRole('heading', { name: 'Companies', exact: true })).toBeVisible();
+    // .first(): on an empty DB the empty-state renders a second "New company" CTA
+    // (besides the header button), so an unscoped locator is ambiguous.
+    await expect(page.getByRole('button', { name: 'New company' }).first()).toBeVisible();
   });
 
   test('create a company via the dialog', async ({ page }) => {
@@ -15,7 +19,9 @@ test.describe('admin: companies', () => {
     const name = `E2E Acme ${slug}`;
     const ownerEmail = `owner-${slug}@example.com`;
 
-    await page.getByRole('button', { name: 'New company' }).click();
+    // .first(): same empty-state ambiguity — the header CTA opens the dialog, and
+    // on a fresh DB the empty-state CTA would otherwise make this locator strict-fail.
+    await page.getByRole('button', { name: 'New company' }).first().click();
     const dialog = page.getByRole('dialog');
     await expect(dialog.getByRole('heading', { name: 'Create company' })).toBeVisible();
 

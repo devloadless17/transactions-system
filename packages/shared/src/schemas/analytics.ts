@@ -127,6 +127,12 @@ export const walletSummaryResponseSchema = z.object({
   loads: z.object({ gross: z.string(), net: z.string() }),
   withdrawals: z.object({ total: z.string() }),
   payouts: z.object({ total: z.string() }),
+  // Outstanding RECEIVABLE — money the company owes the platform after a deposit
+  // reversal whose clawback exceeded the available balance. It's a 5th ledger
+  // account, so the identity is: net deposit + net load − withdrawals − payouts
+  // + receivable = available. Almost always "0"; included so the dashboard math
+  // ties out exactly even after a reversal shortfall.
+  receivable: z.string(),
 });
 export type WalletSummaryResponse = z.infer<typeof walletSummaryResponseSchema>;
 

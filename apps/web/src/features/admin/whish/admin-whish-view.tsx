@@ -1,5 +1,5 @@
 'use client';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { PaginatedResponse, WhishPaymentResponse } from '@app/shared';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -30,6 +30,13 @@ export function AdminWhishView() {
 
   const data = paymentsQ.data;
 
+  // Clamp back if the payment set shrinks below the current page so the operator
+  // isn't left on an empty page with the pagination controls hidden.
+  useEffect(() => {
+    const tp = data?.meta.totalPages;
+    if (tp && page > tp) setPage(tp);
+  }, [data, page]);
+
   const columns: Column<WhishPaymentResponse>[] = [
     {
       key: 'reference',
@@ -54,7 +61,19 @@ export function AdminWhishView() {
     {
       key: 'status',
       header: 'Status',
-      cell: (p) => <Badge variant={statusVariant(p.status)}>{p.status}</Badge>,
+      cell: (p) => (
+        <div className="flex items-center gap-2">
+          <Badge variant={statusVariant(p.status)}>{p.status}</Badge>
+          {p.needsAttention && (
+            <Badge
+              variant="destructive"
+              title="Paid at Whish but not settled — check its commission rule"
+            >
+              Needs attention
+            </Badge>
+          )}
+        </div>
+      ),
     },
     {
       key: 'created',

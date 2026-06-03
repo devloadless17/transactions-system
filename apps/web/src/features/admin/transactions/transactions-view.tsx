@@ -93,6 +93,16 @@ function urlParamsFromState(page: number, filters: Filters): string {
   return p.toString();
 }
 
+// Build an inclusive ISO bound from a date (YYYY-MM-DD) + optional time (HH:mm).
+// Returns undefined for a malformed value (e.g. a tampered/stale URL like ?from=x)
+// so `.toISOString()` can't throw RangeError during render and crash the page into
+// an inescapable error boundary.
+function isoBound(date: string, time: string | undefined, endOfDay: boolean): string | undefined {
+  const t = time || (endOfDay ? '23:59' : '00:00');
+  const d = new Date(`${date}T${t}:${endOfDay ? '59.999' : '00'}`);
+  return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
+}
+
 export function TransactionsView({ scope }: { scope: 'admin' | 'company' }) {
   const qc = useQueryClient();
   const pathname = usePathname();
@@ -164,10 +174,14 @@ export function TransactionsView({ scope }: { scope: 'admin' | 'company' }) {
   // Expand the picked dates/times to inclusive ISO bounds the API expects:
   // start of the "from" instant (default 00:00) through the end of the "to"
   // minute (default 23:59, i.e. end of day).
-  if (filters.from)
-    params.set('from', new Date(`${filters.from}T${filters.fromTime || '00:00'}:00`).toISOString());
-  if (filters.to)
-    params.set('to', new Date(`${filters.to}T${filters.toTime || '23:59'}:59.999`).toISOString());
+  if (filters.from) {
+    const fromIso = isoBound(filters.from, filters.fromTime, false);
+    if (fromIso) params.set('from', fromIso);
+  }
+  if (filters.to) {
+    const toIso = isoBound(filters.to, filters.toTime, true);
+    if (toIso) params.set('to', toIso);
+  }
 
   const basePath = scope === 'admin' ? '/admin/transactions' : '/company/transactions';
   const { data, isLoading, error } = useQuery({

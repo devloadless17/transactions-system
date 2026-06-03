@@ -40,7 +40,7 @@ beforeAll(async () => {
   h = buildHarness();
   await h.prisma.$connect();
   platformAnalytics = new PlatformAnalyticsService(h.prisma, passThroughCache);
-  analytics = new AnalyticsService(h.prisma, passThroughCache);
+  analytics = new AnalyticsService(h.prisma, passThroughCache, h.ledger);
 });
 
 afterAll(async () => {
@@ -195,5 +195,42 @@ describe('platform revenue (feesEarned) spans every flow type', () => {
     );
     expect(eq(Money.of(after!.volumeOut).sub(Money.of(outBefore)).toString(), '55')).toBe(true);
     expect(eq(Money.of(after!.volumeIn).sub(Money.of(inBefore)).toString(), '100')).toBe(true);
+  });
+
+  it('source-overview totalVolume counts net + fee for an ON_TOP deposit (not SUM(amount))', async () => {
+    const { companyId } = await createCompany(h);
+    const sourceId = await createEnabledSource(h, companyId);
+
+    // ON_TOP transaction fee of 10%: the stored `amount` is the net (fee is on
+    // top), so a SUM(amount) headline would drop the fee and disagree with the
+    // page's own daily + by-company figures. Guards computeSource().
+    await h.prisma.runAsAdmin((tx) =>
+      tx.commissionRule.create({
+        data: {
+          companyId,
+          sourceId: null,
+          operationType: 'TRANSACTION',
+          feeApplication: 'ON_TOP',
+          minAmount: '0.00000001',
+          maxAmount: '100000000',
+          commissionType: 'PERCENTAGE',
+          commissionValue: '10',
+          priority: 100,
+          active: true,
+        },
+      }),
+    );
+
+    await h.transactions.ingest({ kind: 'source', sourceId }, ingestInput(companyId, '100'));
+
+    const src = await analytics.sourceOverview({ sourceId, range: { currency: 'USD' } });
+    // Headline KPI = net 100 + fee 10 = 110 (money moved), NOT SUM(amount) = 100.
+    expect(eq(src.kpi.totalVolume, '110')).toBe(true);
+    expect(src.kpi.totalFees).toBeDefined();
+    expect(eq(src.kpi.totalFees!, '10')).toBe(true);
+    // …and it must match the page's own per-company row (which was already 110).
+    const row = src.byCompany.find((c) => c.companyId === companyId);
+    expect(row).toBeDefined();
+    expect(eq(row!.volume, '110')).toBe(true);
   });
 });

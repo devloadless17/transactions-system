@@ -144,136 +144,145 @@ export class TransactionsService {
     // Run the whole financial mutation scoped to the target company, so RLS
     // WITH CHECK validates that every row written (transaction, ledger, wallet)
     // belongs to `companyId` — a bug can't mis-book into another tenant.
-    const result = await this.prisma.runSerializableAsTenant(companyId, async (tx) => {
-      const cTx = tx as unknown as PrismaClient;
+    const { result, replayed } = await this.prisma.runSerializableAsTenant(
+      companyId,
+      async (tx) => {
+        const cTx = tx as unknown as PrismaClient;
 
-      // ---- idempotency: explicit key OR natural (source,external) pair ----
-      if (input.idempotencyKey) {
-        const existing = await cTx.transaction.findFirst({
-          where: { companyId, idempotencyKey: input.idempotencyKey },
-        });
-        if (existing) {
-          return this.mapTransaction(cTx, existing);
+        // ---- idempotency: explicit key OR natural (source,external) pair ----
+        if (input.idempotencyKey) {
+          const existing = await cTx.transaction.findFirst({
+            where: { companyId, idempotencyKey: input.idempotencyKey },
+          });
+          if (existing) {
+            return { result: await this.mapTransaction(cTx, existing), replayed: true };
+          }
         }
-      }
-      // Natural idempotency: a repeat of the same (source, externalId) for this
-      // company replays the existing row. The (source, externalId) unique index
-      // is global, so a *different* company reusing the same pair is rejected by
-      // that constraint on insert (surfaced as a 409) — it can't be observed
-      // here under tenant scope, so there's nothing to second-guess.
-      const dup = await cTx.transaction.findFirst({
-        where: { sourceId: source.id, externalTransactionId: input.externalTransactionId },
-      });
-      if (dup) {
-        return this.mapTransaction(cTx, dup);
-      }
+        // Natural idempotency: a repeat of the same (source, externalId) for this
+        // company replays the existing row. The (source, externalId) unique index
+        // is global, so a *different* company reusing the same pair is rejected by
+        // that constraint on insert (surfaced as a 409) — it can't be observed
+        // here under tenant scope, so there's nothing to second-guess.
+        const dup = await cTx.transaction.findFirst({
+          where: { sourceId: source.id, externalTransactionId: input.externalTransactionId },
+        });
+        if (dup) {
+          return { result: await this.mapTransaction(cTx, dup), replayed: true };
+        }
 
-      // ---- commission ----
-      const rules = await this.commissionsRepo.loadCandidates(cTx, {
-        companyId,
-        sourceId: source.id,
-        operationType: 'TRANSACTION',
-      });
-      const resolution = this.resolver.resolve({
-        companyId,
-        sourceId: source.id,
-        operationType: 'TRANSACTION',
-        amount,
-        rules,
-      });
-
-      // Honour the rule's fee application (mirrors loads.approve):
-      //   DEDUCTED: external = amount,       company credited amount − fee
-      //   ON_TOP:   external = amount + fee, company credited the full amount
-      // `availableCredit` is the persisted netAmount (what the wallet receives).
-      const fee = resolution.commissionAmount;
-      const { externalDebit, availableCredit } = ingestSplit(
-        amount,
-        fee,
-        resolution.feeApplication,
-      );
-
-      // ---- insert transaction row ----
-      const txRow = await cTx.transaction.create({
-        data: {
+        // ---- commission ----
+        const rules = await this.commissionsRepo.loadCandidates(cTx, {
           companyId,
           sourceId: source.id,
-          externalTransactionId: input.externalTransactionId,
-          amount: amount.toString(),
-          currency: input.currency,
-          commissionAmount: fee.toString(),
-          netAmount: availableCredit.toString(),
-          status: 'COMPLETED',
-          payload: (input.payload ?? {}) as Prisma.InputJsonValue,
-          idempotencyKey: input.idempotencyKey ?? null,
-          processedAt: new Date(),
-        },
-      });
-
-      // ---- ledger: balanced double-entry ----
-      // DEBIT  EXTERNAL  externalDebit   (the outside world owes us this)
-      // CREDIT AVAILABLE availableCredit (company's spendable balance grows) [skip if 0]
-      // CREDIT FEE       fee             (platform fee revenue)              [skip if 0]
-      const ledgerLines: import('../ledger/ledger.service').LedgerEntryInput[] = [
-        {
-          companyId,
-          transactionId: txRow.id,
-          accountType: 'EXTERNAL',
-          direction: 'DEBIT',
-          amount: externalDebit,
-          currency: input.currency,
-        },
-      ];
-      if (availableCredit.isPositive()) {
-        ledgerLines.push({
-          companyId,
-          transactionId: txRow.id,
-          accountType: 'AVAILABLE',
-          direction: 'CREDIT',
-          amount: availableCredit,
-          currency: input.currency,
+          operationType: 'TRANSACTION',
         });
-      }
-      if (fee.isPositive()) {
-        ledgerLines.push({
+        const resolution = this.resolver.resolve({
           companyId,
-          transactionId: txRow.id,
-          accountType: 'FEE',
-          direction: 'CREDIT',
-          amount: fee,
-          currency: input.currency,
+          sourceId: source.id,
+          operationType: 'TRANSACTION',
+          amount,
+          rules,
         });
-      }
-      await this.ledger.writeEntries(cTx, ledgerLines);
 
-      // ---- wallet delta (only if the company is credited something) ----
-      if (availableCredit.isPositive()) {
-        await this.wallets.applyDelta(cTx, {
-          companyId,
-          currency: input.currency,
-          delta: { available: availableCredit },
+        // Honour the rule's fee application (mirrors loads.approve):
+        //   DEDUCTED: external = amount,       company credited amount − fee
+        //   ON_TOP:   external = amount + fee, company credited the full amount
+        // `availableCredit` is the persisted netAmount (what the wallet receives).
+        const fee = resolution.commissionAmount;
+        const { externalDebit, availableCredit } = ingestSplit(
+          amount,
+          fee,
+          resolution.feeApplication,
+        );
+
+        // ---- insert transaction row ----
+        const txRow = await cTx.transaction.create({
+          data: {
+            companyId,
+            sourceId: source.id,
+            externalTransactionId: input.externalTransactionId,
+            amount: amount.toString(),
+            currency: input.currency,
+            commissionAmount: fee.toString(),
+            netAmount: availableCredit.toString(),
+            status: 'COMPLETED',
+            payload: (input.payload ?? {}) as Prisma.InputJsonValue,
+            idempotencyKey: input.idempotencyKey ?? null,
+            processedAt: new Date(),
+          },
         });
-      }
 
-      this.logger.log(
-        `ingest tx=${txRow.id} co=${companyId} src=${source.code} ` +
-          `amount=${amount.toString()} fee=${fee.toString()} ` +
-          `net=${availableCredit.toString()} app=${resolution.feeApplication} ${input.currency}`,
-      );
+        // ---- ledger: balanced double-entry ----
+        // DEBIT  EXTERNAL  externalDebit   (the outside world owes us this)
+        // CREDIT AVAILABLE availableCredit (company's spendable balance grows) [skip if 0]
+        // CREDIT FEE       fee             (platform fee revenue)              [skip if 0]
+        const ledgerLines: import('../ledger/ledger.service').LedgerEntryInput[] = [
+          {
+            companyId,
+            transactionId: txRow.id,
+            accountType: 'EXTERNAL',
+            direction: 'DEBIT',
+            amount: externalDebit,
+            currency: input.currency,
+          },
+        ];
+        if (availableCredit.isPositive()) {
+          ledgerLines.push({
+            companyId,
+            transactionId: txRow.id,
+            accountType: 'AVAILABLE',
+            direction: 'CREDIT',
+            amount: availableCredit,
+            currency: input.currency,
+          });
+        }
+        if (fee.isPositive()) {
+          ledgerLines.push({
+            companyId,
+            transactionId: txRow.id,
+            accountType: 'FEE',
+            direction: 'CREDIT',
+            amount: fee,
+            currency: input.currency,
+          });
+        }
+        await this.ledger.writeEntries(cTx, ledgerLines);
 
-      return this.mapTransaction(cTx, txRow);
-    });
+        // ---- wallet delta (only if the company is credited something) ----
+        if (availableCredit.isPositive()) {
+          await this.wallets.applyDelta(cTx, {
+            companyId,
+            currency: input.currency,
+            delta: { available: availableCredit },
+          });
+        }
 
-    this.ingestCounter.inc({ source_code: source.code, currency: input.currency });
+        this.logger.log(
+          `ingest tx=${txRow.id} co=${companyId} src=${source.code} ` +
+            `amount=${amount.toString()} fee=${fee.toString()} ` +
+            `net=${availableCredit.toString()} app=${resolution.feeApplication} ${input.currency}`,
+        );
 
-    // Refresh ALL analytics (company + admin/platform) BEFORE announcing the
-    // change, so every dashboard's realtime refetch reads fresh data, not a
-    // warm cache. Awaited so the emit below can't race the invalidation.
-    await this.analytics
-      .invalidateAll()
-      .catch((e) => this.logger.warn(`analytics cache invalidate failed: ${e}`));
+        return { result: await this.mapTransaction(cTx, txRow), replayed: false };
+      },
+    );
 
-    this.realtime.company(companyId, ['transactions', 'wallets', 'ledger', 'analytics']);
+    // An idempotent replay (explicit key or natural (source,externalId) pair)
+    // books NO new money — the ledger/wallet writes were skipped above — so it
+    // must not bump the ingest counter, churn the analytics cache, or push a
+    // realtime refresh. Only a genuinely new transaction triggers the side effects.
+    if (!replayed) {
+      this.ingestCounter.inc({ source_code: source.code, currency: input.currency });
+
+      // Refresh ALL analytics (company + admin/platform) BEFORE announcing the
+      // change, so every dashboard's realtime refetch reads fresh data, not a
+      // warm cache. Awaited so the emit below can't race the invalidation.
+      await this.analytics
+        .invalidateAll()
+        .catch((e) => this.logger.warn(`analytics cache invalidate failed: ${e}`));
+
+      this.realtime.company(companyId, ['transactions', 'wallets', 'ledger', 'analytics']);
+    }
 
     return result;
   }
@@ -449,6 +458,12 @@ export class TransactionsService {
       if (args.query.status) where.status = args.query.status;
       if (args.query.sourceId) where.sourceId = args.query.sourceId;
       if (args.query.currency) where.currency = args.query.currency;
+      // Mirror the list view's search so an exported CSV contains exactly the
+      // filtered rows the user is looking at. (Was previously omitted here, so an
+      // export-after-search silently returned rows that didn't match the search.)
+      if (args.query.search) {
+        where.externalTransactionId = { contains: args.query.search };
+      }
       if (args.query.from || args.query.to) {
         where.createdAt = {};
         if (args.query.from) where.createdAt.gte = new Date(args.query.from);

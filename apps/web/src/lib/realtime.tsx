@@ -103,6 +103,9 @@ export function RealtimeBridge() {
       void qc.invalidateQueries();
     });
 
+    // Cleared on unmount so a refresh-then-reconnect already in flight can't
+    // reopen this socket after the effect has torn it down (fast unmount/remount).
+    let active = true;
     let retry: ReturnType<typeof setTimeout> | undefined;
     socket.on('disconnect', (reason) => {
       // socket.io auto-reconnects on transport drops, but NOT when the server
@@ -113,7 +116,9 @@ export function RealtimeBridge() {
       // On success the `connect` handler above catches up anything missed.
       if (reason === 'io server disconnect') {
         retry = setTimeout(() => {
-          void refreshSession().finally(() => socket.connect());
+          void refreshSession().finally(() => {
+            if (active) socket.connect();
+          });
         }, 1500);
       }
     });
@@ -130,6 +135,7 @@ export function RealtimeBridge() {
     });
 
     return () => {
+      active = false;
       if (retry) clearTimeout(retry);
       socket.off();
       socket.disconnect();

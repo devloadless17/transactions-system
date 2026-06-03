@@ -17,6 +17,18 @@ export function reservedTotal(amount: Money, fee: Money, feeApplication: FeeAppl
   return feeApplication === 'ON_TOP' ? amount.add(fee) : amount;
 }
 
+/**
+ * The recipient's net for a flow:
+ *   - ON_TOP:   the fee is charged on top, so the recipient gets the full `amount`.
+ *   - DEDUCTED: the fee comes out of the amount, so the recipient gets amount − fee.
+ * One definition shared by withdrawals/payouts (the `net` at request, the
+ * `external` at approval) and loads (the credited net), so the split can't drift
+ * between the sibling flows.
+ */
+export function netOfFee(amount: Money, fee: Money, feeApplication: FeeApplication): Money {
+  return feeApplication === 'ON_TOP' ? amount : amount.sub(fee);
+}
+
 /** Read available inside the current tx and throw a clear "top up" error if it can't cover `required`. */
 export async function assertSufficient(
   tx: PrismaClient,

@@ -19,6 +19,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { DataTable, type Column } from '@/components/ui/data-table';
+import { Pagination } from '@/components/ui/pagination';
 import {
   Dialog,
   DialogContent,
@@ -195,13 +196,22 @@ export function WithdrawalsView({ config }: { config: ProcessConfig }) {
   const [open, setOpen] = useState(false);
   const [detail, setDetail] = useState<WithdrawalResponse | null>(null);
   const [filters, setFilters] = useState<FlowFilters>(EMPTY_FLOW_FILTERS);
+  const [page, setPage] = useState(1);
 
-  const params = flowFilterParams(filters, { pageSize: '50' });
+  const params = flowFilterParams(filters, { pageSize: '50', page: String(page) });
   const listQ = useQuery({
     queryKey: [...config.queryKey, 'list', params.toString()],
     queryFn: () =>
       apiFetch<PaginatedResponse<WithdrawalResponse>>(`${config.endpoint}?${params.toString()}`),
   });
+
+  // If the result set shrinks (rows cancelled/approved out of the current filter)
+  // while parked on a later page, clamp back so the user isn't stranded on an empty
+  // page with the pagination controls hidden (totalPages collapses to 1).
+  useEffect(() => {
+    const tp = listQ.data?.meta.totalPages;
+    if (tp && page > tp) setPage(tp);
+  }, [listQ.data, page]);
 
   const cancelMu = useMutation({
     mutationFn: (id: string) =>
@@ -290,7 +300,13 @@ export function WithdrawalsView({ config }: { config: ProcessConfig }) {
         <Button onClick={() => setOpen(true)}>{config.newButton}</Button>
       </div>
 
-      <FlowFilterBar value={filters} onChange={setFilters} />
+      <FlowFilterBar
+        value={filters}
+        onChange={(f) => {
+          setFilters(f);
+          setPage(1);
+        }}
+      />
 
       <Card>
         <CardContent className="p-0">
@@ -307,6 +323,15 @@ export function WithdrawalsView({ config }: { config: ProcessConfig }) {
           />
         </CardContent>
       </Card>
+
+      {listQ.data && (
+        <Pagination
+          page={listQ.data.meta.page}
+          total={listQ.data.meta.total}
+          totalPages={listQ.data.meta.totalPages}
+          onPageChange={setPage}
+        />
+      )}
 
       <NewRowDialog
         open={open}

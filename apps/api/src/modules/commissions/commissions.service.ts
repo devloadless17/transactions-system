@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { Money } from '@app/shared';
+import { Money, commissionValueWithinBounds } from '@app/shared';
 import type {
   CommissionRuleResponse,
   CreateCommissionRuleInput,
@@ -97,6 +97,17 @@ export class CommissionsService {
       // 20,8 values, matching the create() guard + the schema's stated invariant.
       if (Money.of(minA).gt(Money.of(maxA))) {
         throw new ValidationError('minAmount must be <= maxAmount');
+      }
+      // Validate the EFFECTIVE post-merge rule, not just the patch. The create
+      // schema's Zod refine only fires when BOTH commissionType and commissionValue
+      // are present, so a partial PATCH (e.g. only commissionValue, or only flipping
+      // the type to PERCENTAGE) could otherwise store a PERCENTAGE rule > 100% — an
+      // unbounded ON_TOP overcharge. Re-check against the merged values here.
+      // (Also backstopped by a DB CHECK; see migration 0023.)
+      const effectiveType = input.commissionType ?? existing.commissionType;
+      const effectiveValue = input.commissionValue ?? existing.commissionValue.toString();
+      if (!commissionValueWithinBounds(effectiveType, effectiveValue)) {
+        throw new ValidationError('PERCENTAGE commissionValue must be between 0 and 100');
       }
       return tx.commissionRule.update({
         where: { id },

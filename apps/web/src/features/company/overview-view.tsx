@@ -63,6 +63,10 @@ export function OverviewView() {
   const wallet = walletsQ.data?.data.find((w) => w.currency === currency);
   const available = wallet?.availableBalance ?? '0';
   const reserved = wallet?.reservedBalance ?? '0';
+  // Money owed back to the platform after a reversed-deposit clawback shortfall.
+  // Normally "0"; included so the identity ties out exactly even after a reversal.
+  const receivable = sum?.receivable ?? '0';
+  const hasReceivable = Number(receivable) > 0;
 
   const money = (s: string | undefined) =>
     s !== undefined ? `${formatNumber(s)} ${currency}` : '—';
@@ -117,10 +121,19 @@ export function OverviewView() {
         />
         <KpiCard label="Payouts" value={money(sum?.payouts.total)} hint="includes in-flight" />
       </div>
-      <p className="text-xs text-muted-foreground">
-        Totals for {rangeLabel(range)}. Net deposit + Net load − Withdrawals − Payouts. Over an
-        all-time range this equals your live wallet balance above.
-      </p>
+      <div className="text-xs text-muted-foreground">
+        <p>
+          Totals for {rangeLabel(range)}. Net deposit + Net load − Withdrawals − Payouts
+          {hasReceivable ? ' + receivable' : ''}. Over an all-time range this equals your live
+          wallet balance above.
+        </p>
+        {hasReceivable && (
+          <p className="mt-1 text-foreground">
+            + {money(receivable)} receivable — owed back to the platform from a reversed deposit
+            (included so the math ties out).
+          </p>
+        )}
+      </div>
 
       <Card>
         <CardHeader>

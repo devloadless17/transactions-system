@@ -37,6 +37,11 @@ export type WhishWebhookConfig = z.infer<typeof whishWebhookConfigSchema>;
 
 export const listWhishPaymentsQuerySchema = paginationSchema.extend({
   status: z.nativeEnum(WhishPaymentStatus).optional(),
+  // Filter to payments flagged for operator attention (PAID at Whish but the
+  // wallet couldn't be settled). Query strings are text, so the service treats
+  // only the literal "true" as enabling the filter. (Kept as an enum rather than
+  // a transform so the schema stays a plain ZodObject the ZodPipe accepts.)
+  needsAttention: z.enum(['true', 'false']).optional(),
 });
 export type ListWhishPaymentsQuery = z.infer<typeof listWhishPaymentsQuerySchema>;
 
@@ -52,6 +57,11 @@ export const whishPaymentResponseSchema = z.object({
   collectUrl: z.string().nullable(),
   payerPhoneNumber: z.string().nullable(),
   transactionId: z.string().uuid().nullable(),
+  // True when the payment is PAID at Whish but settlement into the ledger failed
+  // (usually its commission rule changed after the link was minted). The
+  // reconciler keeps retrying, but it needs operator attention — surfaced here so
+  // it's visible in the UI/API instead of only in logs.
+  needsAttention: z.boolean(),
   createdAt: z.string(),
   paidAt: z.string().nullable(),
 });

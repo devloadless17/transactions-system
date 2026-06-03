@@ -102,6 +102,25 @@ export const envSchema = z
     if (env.CSRF_SECRET === env.JWT_ACCESS_SECRET || env.CSRF_SECRET === env.JWT_REFRESH_SECRET) {
       fail('CSRF_SECRET', 'must differ from the JWT secrets');
     }
+
+    // When Whish is wired up (channel/secret set), the dev defaults — the sandbox
+    // API base and a localhost callback — would silently mean "wrong environment /
+    // no live callbacks reach us". Fail closed so a misconfigured prod can't run
+    // collecting real money it can never settle automatically.
+    if (env.WHISH_CHANNEL || env.WHISH_SECRET) {
+      if (!env.WHISH_CALLBACK_BASE.startsWith('https://')) {
+        fail('WHISH_CALLBACK_BASE', 'must use https in production');
+      }
+      if (/localhost|127\.0\.0\.1/.test(env.WHISH_CALLBACK_BASE)) {
+        fail(
+          'WHISH_CALLBACK_BASE',
+          'must be a publicly reachable host in production, not localhost',
+        );
+      }
+      if (env.WHISH_BASE_URL.includes('sandbox')) {
+        fail('WHISH_BASE_URL', 'must not point at the Whish sandbox in production');
+      }
+    }
   });
 
 export type Env = z.infer<typeof envSchema>;

@@ -10,6 +10,16 @@ const SERIALIZABLE_BASE_BACKOFF_MS = 10;
 
 function isRetryableTxError(err: unknown): boolean {
   if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2034') return true;
+  // A unique-violation (P2002 / 23505) inside a SERIALIZABLE money mutation is a
+  // transient lost race, not a logic error: two concurrent writers raced to
+  // lazily-provision the same (company, currency) wallet, or to insert the same
+  // (source, externalId) / idempotency key. Postgres raises 23505 (not 40001) for
+  // a unique conflict, so without this it surfaces as a spurious 409. Re-running
+  // the whole closure converges correctly: the wallet now exists (read+update),
+  // and ingest's idempotency check finds the committed row and replays it. Only
+  // runSerializable* uses this retry, so non-serializable paths (e.g. a duplicate
+  // company slug) still fail fast with their 409.
+  if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') return true;
   const code = (err as { code?: string } | null)?.code;
   if (code === '40001' || code === '40P01') return true;
   const message = err instanceof Error ? err.message : '';
@@ -60,11 +70,20 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
    * Run `fn` inside a DB transaction with RLS bypass enabled (for
    * SUPER_ADMIN / ADMIN_OPERATOR endpoints and system jobs).
    */
-  async runAsAdmin<T>(fn: (tx: PrismaClient) => Promise<T>): Promise<T> {
-    return this.$transaction(async (tx) => {
-      await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
-      return fn(tx as unknown as PrismaClient);
-    });
+  async runAsAdmin<T>(
+    fn: (tx: PrismaClient) => Promise<T>,
+    opts?: { timeout?: number },
+  ): Promise<T> {
+    return this.$transaction(
+      async (tx) => {
+        await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
+        return fn(tx as unknown as PrismaClient);
+      },
+      // Heavy cross-tenant reads (e.g. the reconciliation full sweep over the whole
+      // ledger) pass an explicit timeout so they don't hit Prisma's 5s interactive
+      // -transaction default and abort at scale. Reads, so a long timeout is safe.
+      opts?.timeout ? { timeout: opts.timeout, maxWait: 5_000 } : undefined,
+    );
   }
 
   /**

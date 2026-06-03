@@ -1,5 +1,5 @@
 'use client';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import {
@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { DataTable, type Column } from '@/components/ui/data-table';
+import { Pagination } from '@/components/ui/pagination';
 import {
   Dialog,
   DialogContent,
@@ -62,8 +63,9 @@ export function AdminWithdrawalsView({ config }: { config: AdminProcessConfig })
   // Operators land on the pending queue by default; all other filters start "any".
   const [filters, setFilters] = useState<FlowFilters>({ ...EMPTY_FLOW_FILTERS, status: 'PENDING' });
   const [review, setReview] = useState<ReviewState | null>(null);
+  const [page, setPage] = useState(1);
 
-  const params = flowFilterParams(filters, { pageSize: '50' });
+  const params = flowFilterParams(filters, { pageSize: '50', page: String(page) });
 
   const listQ = useQuery({
     queryKey: [...config.queryKey, params.toString()],
@@ -72,6 +74,13 @@ export function AdminWithdrawalsView({ config }: { config: AdminProcessConfig })
         `${config.listEndpoint}?${params.toString()}`,
       ),
   });
+
+  // Clamp back if the result set shrinks below the current page (e.g. a queue of
+  // pending items gets approved) so the operator isn't stranded on an empty page.
+  useEffect(() => {
+    const tp = listQ.data?.meta.totalPages;
+    if (tp && page > tp) setPage(tp);
+  }, [listQ.data, page]);
 
   const companiesQ = useQuery({
     queryKey: ['admin', 'companies', 'all'],
@@ -155,7 +164,14 @@ export function AdminWithdrawalsView({ config }: { config: AdminProcessConfig })
         <p className="text-sm text-muted-foreground">{config.subhead}</p>
       </div>
 
-      <FlowFilterBar value={filters} onChange={setFilters} companies={companiesQ.data?.data} />
+      <FlowFilterBar
+        value={filters}
+        onChange={(f) => {
+          setFilters(f);
+          setPage(1);
+        }}
+        companies={companiesQ.data?.data}
+      />
 
       <Card>
         <CardContent className="p-0">
@@ -169,6 +185,15 @@ export function AdminWithdrawalsView({ config }: { config: AdminProcessConfig })
           />
         </CardContent>
       </Card>
+
+      {listQ.data && (
+        <Pagination
+          page={listQ.data.meta.page}
+          total={listQ.data.meta.total}
+          totalPages={listQ.data.meta.totalPages}
+          onPageChange={setPage}
+        />
+      )}
 
       <ReviewDialog
         review={review}

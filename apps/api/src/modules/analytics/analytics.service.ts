@@ -9,6 +9,7 @@ import {
 } from '@app/shared';
 import { PrismaService } from '../../database/prisma.service';
 import { CacheService } from '../cache/cache.service';
+import { LedgerService } from '../ledger/ledger.service';
 
 const DEFAULT_DAYS = 30;
 const DEFAULT_CURRENCY = 'USD';
@@ -19,6 +20,7 @@ export class AnalyticsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly cache: CacheService,
+    private readonly ledger: LedgerService,
   ) {}
 
   /**
@@ -112,6 +114,14 @@ export class AnalyticsService {
           _sum: { netAmount: true, feeAmount: true },
         }),
       ]);
+      // Outstanding RECEIVABLE (debt owed by the company to the platform from a
+      // reversal clawback shortfall) = Σ(DEBIT) − Σ(CREDIT) on the RECEIVABLE
+      // account. ALWAYS all-time (not date-windowed) so it matches the live
+      // wallet: with it, net deposit + net load − withdrawals − payouts +
+      // receivable == available, even after a reversal. Uses the single canonical
+      // implementation on LedgerService so this can't drift from the withdrawal/
+      // payout debt block that reads the same method.
+      const receivable = await this.ledger.outstandingReceivable(tx, companyId, currency);
       const m = (v: { toString(): string } | null | undefined) => Money.of((v ?? 0).toString());
       const depNet = m(deposits._sum.netAmount);
       // Deposits gross = net + fee, matching loads.gross — so gross - net is the
@@ -127,6 +137,7 @@ export class AnalyticsService {
         loads: { gross: loadNet.add(m(loads._sum.feeAmount)).toString(), net: loadNet.toString() },
         withdrawals: { total: wdTotal.toString() },
         payouts: { total: poTotal.toString() },
+        receivable: receivable.toString(),
       };
     });
   }
@@ -234,7 +245,13 @@ export class AnalyticsService {
           name: source?.name ?? p.sourceId.slice(0, 8),
         },
         kpi: {
-          totalVolume: Money.of((agg._sum.amount ?? 0).toString()).toString(),
+          // Volume = net + fee (money moved), consistent with the daily series,
+          // the by-company rows, and every other volume surface. NOT SUM(amount)
+          // — for an ON_TOP deposit `amount` is the net, so it would drop the fee
+          // and disagree with the rest of this very page.
+          totalVolume: Money.of((agg._sum.netAmount ?? 0).toString())
+            .add(Money.of((agg._sum.commissionAmount ?? 0).toString()))
+            .toString(),
           totalFees: Money.of((agg._sum.commissionAmount ?? 0).toString()).toString(),
           transactionCount: agg._count._all,
           averageAmount: Money.of((agg._avg.amount ?? 0).toString()).toString(),
@@ -435,15 +452,18 @@ export class AnalyticsService {
           },
           _sum: { amount: true, netAmount: true, commissionAmount: true },
           _count: { _all: true },
-          orderBy: { _sum: { amount: 'desc' } },
-          ...(companyFilter ? {} : { take: TOP_LIMIT }),
+          // No DB `take`: we rank by the DISPLAYED volume (net + fee), which Prisma
+          // groupBy can't ORDER BY, so fetch all in-window source groups (a small
+          // set) and sort + slice below. A net-only top-N could otherwise exclude a
+          // fee-heavy source that belongs in the top-5 by volume.
+          orderBy: { _sum: { netAmount: 'desc' } },
         });
         const sourceIds = topSrcRows.map((r) => r.sourceId);
         const sources = sourceIds.length
           ? await tx.source.findMany({ where: { id: { in: sourceIds } } })
           : [];
         const sourceCode = new Map(sources.map((s) => [s.id, s.code]));
-        const topSources = topSrcRows.map((r) => ({
+        const topSourcesAll = topSrcRows.map((r) => ({
           sourceId: r.sourceId,
           sourceCode: sourceCode.get(r.sourceId) ?? '',
           // net + fee (money moved), matching totalVolume and the deposit card.
@@ -453,6 +473,10 @@ export class AnalyticsService {
           fees: Money.of((r._sum.commissionAmount ?? 0).toString()).toString(),
           count: r._count._all,
         }));
+        // Order by the displayed volume; the platform view shows the top few, a
+        // single-company drilldown returns all of its sources.
+        topSourcesAll.sort((a, b) => Money.of(b.volume).cmp(Money.of(a.volume)));
+        const topSources = companyFilter ? topSourcesAll : topSourcesAll.slice(0, TOP_LIMIT);
 
         // Top companies — admin scope only.
         let topCompanies:
@@ -468,15 +492,17 @@ export class AnalyticsService {
             },
             _sum: { amount: true, netAmount: true, commissionAmount: true },
             _count: { _all: true },
-            orderBy: { _sum: { amount: 'desc' } },
-            take: TOP_LIMIT,
+            // No DB `take`: rank by the displayed volume (net + fee), which groupBy
+            // can't ORDER BY. Fetch all in-window company groups and sort + slice
+            // below, so a fee-heavy company isn't dropped by a net-only top-N.
+            orderBy: { _sum: { netAmount: 'desc' } },
           });
           const companyIds = rows.map((r) => r.companyId);
           const companies = companyIds.length
             ? await tx.company.findMany({ where: { id: { in: companyIds } } })
             : [];
           const nameById = new Map(companies.map((c) => [c.id, c.name]));
-          topCompanies = rows.map((r) => ({
+          const mappedCompanies = rows.map((r) => ({
             companyId: r.companyId,
             companyName: nameById.get(r.companyId) ?? r.companyId.slice(0, 8),
             // net + fee (money moved), consistent with totalVolume.
@@ -485,6 +511,8 @@ export class AnalyticsService {
               .toString(),
             count: r._count._all,
           }));
+          mappedCompanies.sort((a, b) => Money.of(b.volume).cmp(Money.of(a.volume)));
+          topCompanies = mappedCompanies.slice(0, TOP_LIMIT);
         }
 
         return {

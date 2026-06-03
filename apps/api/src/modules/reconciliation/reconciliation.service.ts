@@ -16,6 +16,11 @@ const MAX_AUDITED_DISCREPANCIES = 50;
 // watermark but commits after the tick's read) is caught within at most N
 // intervals. At the 15-min cadence, N=4 => a full sweep hourly.
 const FULL_RECONCILE_EVERY_N_TICKS = 4;
+// The reconciliation sweeps fold the whole ledger (full) or every active company's
+// full history (windowed); at multi-million-row scale they exceed Prisma's 5s
+// interactive-tx default and would abort — silently killing the only detective
+// control. Give them a generous read timeout instead.
+const RECONCILE_TX_TIMEOUT_MS = 120_000;
 
 // Only these ledger accounts have a wallet projection. FEE and EXTERNAL are
 // platform/counterparty accounts with no corresponding wallet column.
@@ -221,6 +226,10 @@ export class ReconciliationService implements OnApplicationBootstrap, OnModuleDe
     this.timer = setInterval(() => void this.tick(), RECONCILE_INTERVAL_MS);
     // Don't keep the event loop alive just for this ticker.
     this.timer.unref?.();
+    // Establish a baseline + gauge immediately rather than 15 minutes later, so a
+    // post-deploy Prometheus scrape can't read a default-0 (falsely healthy)
+    // divergence gauge during the startup window. tick() self-guards against overlap.
+    void this.tick();
   }
 
   onModuleDestroy(): void {
@@ -281,37 +290,40 @@ export class ReconciliationService implements OnApplicationBootstrap, OnModuleDe
    * detailed report is refreshed on demand.
    */
   private async reconcileChanged(since: Date): Promise<void> {
-    const result = await this.prisma.runAsAdmin(async (tx) => {
-      const changed = await tx.ledgerEntry.groupBy({
-        by: ['companyId'],
-        where: { createdAt: { gt: since } },
-      });
-      const companyIds = changed.map((c) => c.companyId);
-      if (companyIds.length === 0) return null;
+    const result = await this.prisma.runAsAdmin(
+      async (tx) => {
+        const changed = await tx.ledgerEntry.groupBy({
+          by: ['companyId'],
+          where: { createdAt: { gt: since } },
+        });
+        const companyIds = changed.map((c) => c.companyId);
+        if (companyIds.length === 0) return null;
 
-      const grouped = await tx.ledgerEntry.groupBy({
-        by: ['companyId', 'currency', 'accountType', 'direction'],
-        where: { companyId: { in: companyIds } },
-        _sum: { amount: true },
-      });
-      const wallets = await tx.wallet.findMany({ where: { companyId: { in: companyIds } } });
-      const ledgerRows: LedgerSumRow[] = grouped.map((g) => ({
-        companyId: g.companyId,
-        currency: g.currency,
-        accountType: g.accountType,
-        direction: g.direction,
-        sum: (g._sum.amount ?? 0).toString(),
-      }));
-      const walletRows: WalletRow[] = wallets.map((w) => ({
-        companyId: w.companyId,
-        currency: w.currency,
-        availableBalance: w.availableBalance.toString(),
-        pendingBalance: w.pendingBalance.toString(),
-        reservedBalance: w.reservedBalance.toString(),
-      }));
-      const report = buildReconciliationReport(ledgerRows, walletRows, new Date().toISOString());
-      return { report, companyIds };
-    });
+        const grouped = await tx.ledgerEntry.groupBy({
+          by: ['companyId', 'currency', 'accountType', 'direction'],
+          where: { companyId: { in: companyIds } },
+          _sum: { amount: true },
+        });
+        const wallets = await tx.wallet.findMany({ where: { companyId: { in: companyIds } } });
+        const ledgerRows: LedgerSumRow[] = grouped.map((g) => ({
+          companyId: g.companyId,
+          currency: g.currency,
+          accountType: g.accountType,
+          direction: g.direction,
+          sum: (g._sum.amount ?? 0).toString(),
+        }));
+        const walletRows: WalletRow[] = wallets.map((w) => ({
+          companyId: w.companyId,
+          currency: w.currency,
+          availableBalance: w.availableBalance.toString(),
+          pendingBalance: w.pendingBalance.toString(),
+          reservedBalance: w.reservedBalance.toString(),
+        }));
+        const report = buildReconciliationReport(ledgerRows, walletRows, new Date().toISOString());
+        return { report, companyIds };
+      },
+      { timeout: RECONCILE_TX_TIMEOUT_MS },
+    );
 
     if (!result) {
       // No ledger activity this window — nothing can have drifted.
@@ -334,7 +346,20 @@ export class ReconciliationService implements OnApplicationBootstrap, OnModuleDe
     }
     this.divergentGauge.set(this.knownDivergent.size);
     // Receivables are platform-wide; refresh from the focused (indexed) query.
-    this.setReceivableGauge(await this.listReceivables());
+    const receivables = await this.listReceivables();
+    this.setReceivableGauge(receivables);
+    // Refresh the on-demand detail report from the cumulative known-divergent set
+    // so GET /admin/reconciliation reflects a windowed-detected divergence right
+    // away, instead of lagging until the next full reconcile (up to ~1h later).
+    // (The first tick after boot is always a FULL reconcile, so lastReport is
+    // already populated before any windowed tick runs.)
+    this.lastReport = {
+      checkedAt: report.checkedAt,
+      walletsChecked: this.lastReport?.walletsChecked ?? this.knownDivergent.size,
+      divergentCount: this.knownDivergent.size,
+      discrepancies: [...this.knownDivergent.values()],
+      receivables,
+    };
 
     if (newly.length > 0) {
       this.logger.error(
@@ -394,30 +419,33 @@ export class ReconciliationService implements OnApplicationBootstrap, OnModuleDe
   }
 
   private async computeReport(): Promise<ReconciliationReport> {
-    return this.prisma.runAsAdmin(async (tx) => {
-      const grouped = await tx.ledgerEntry.groupBy({
-        by: ['companyId', 'currency', 'accountType', 'direction'],
-        _sum: { amount: true },
-      });
-      const wallets = await tx.wallet.findMany();
+    return this.prisma.runAsAdmin(
+      async (tx) => {
+        const grouped = await tx.ledgerEntry.groupBy({
+          by: ['companyId', 'currency', 'accountType', 'direction'],
+          _sum: { amount: true },
+        });
+        const wallets = await tx.wallet.findMany();
 
-      const ledgerRows: LedgerSumRow[] = grouped.map((g) => ({
-        companyId: g.companyId,
-        currency: g.currency,
-        accountType: g.accountType,
-        direction: g.direction,
-        sum: (g._sum.amount ?? 0).toString(),
-      }));
-      const walletRows: WalletRow[] = wallets.map((w) => ({
-        companyId: w.companyId,
-        currency: w.currency,
-        availableBalance: w.availableBalance.toString(),
-        pendingBalance: w.pendingBalance.toString(),
-        reservedBalance: w.reservedBalance.toString(),
-      }));
+        const ledgerRows: LedgerSumRow[] = grouped.map((g) => ({
+          companyId: g.companyId,
+          currency: g.currency,
+          accountType: g.accountType,
+          direction: g.direction,
+          sum: (g._sum.amount ?? 0).toString(),
+        }));
+        const walletRows: WalletRow[] = wallets.map((w) => ({
+          companyId: w.companyId,
+          currency: w.currency,
+          availableBalance: w.availableBalance.toString(),
+          pendingBalance: w.pendingBalance.toString(),
+          reservedBalance: w.reservedBalance.toString(),
+        }));
 
-      return buildReconciliationReport(ledgerRows, walletRows, new Date().toISOString());
-    });
+        return buildReconciliationReport(ledgerRows, walletRows, new Date().toISOString());
+      },
+      { timeout: RECONCILE_TX_TIMEOUT_MS },
+    );
   }
 
   private async tick(): Promise<void> {
@@ -439,7 +467,10 @@ export class ReconciliationService implements OnApplicationBootstrap, OnModuleDe
         this.lastTickAt = startedAt;
       }
     } catch (err) {
-      this.logger.warn(`Reconciliation tick failed: ${(err as Error).message}`);
+      // Error, not warn: a failing reconcile means the ledger<->wallet detective
+      // control isn't running, so balance divergence could go undetected. This
+      // must be alertable, not buried.
+      this.logger.error(`Reconciliation tick failed: ${(err as Error).message}`);
     } finally {
       this.running = false;
     }
