@@ -43,6 +43,26 @@ async function main() {
     });
   }
 
+  // --- Whish externalId base (avoid cross-environment collisions) ---
+  // whish_payments.external_id is a per-DB autoincrement that doubles as the
+  // idempotency key sent to the Whish account. Local dev and the docker stack
+  // point at the SAME (sandbox) Whish account, so a fresh DB starting at 1,2,3…
+  // reuses ids dev already burned — Whish then returns the existing (empty)
+  // record and the app surfaces "Whish did not return a collect URL". Seed the
+  // sequence to the current epoch seconds (monotonic, and never below the
+  // existing max) so every freshly-seeded DB starts in its own high, unused
+  // range and can't collide. GREATEST keeps it safe on a non-reset re-seed.
+  await prisma.$queryRawUnsafe(`
+    SELECT setval(
+      'public.whish_payments_external_id_seq',
+      GREATEST(
+        floor(extract(epoch from now()))::bigint,
+        (SELECT COALESCE(MAX(external_id), 0) FROM whish_payments)
+      ),
+      true
+    )
+  `);
+
   // --- Sample global commission rules (company_id NULL = applies to all) ---
   // The spec example:
   //   1 → 100     => fixed 1$

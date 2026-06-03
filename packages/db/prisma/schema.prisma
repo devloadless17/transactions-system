@@ -221,11 +221,11 @@ model Source {
   @@map("sources")
 }
 
-// ----------------------- Company ↔ Source opt-in ------------------
-// A SOURCE API key (held by an external provider like OMT) may only ingest
-// transactions for companies that have an enabled pairing here. Without this,
-// any source key could credit any active company. Managed by admins; the Whish
-// flow self-provisions a pairing when a company mints its first payment link.
+// ----------------------- Company ↔ Source pairing -----------------
+// Sources are system-wide: any ACTIVE + visible company may ingest from any
+// ACTIVE source. This table is an OPTIONAL admin record/convenience, NOT an
+// ingest authorization gate — TransactionsService.ingest gates only on
+// source.status, company.status and company.visible, and never reads this table.
 model CompanySource {
   id        String   @id @default(uuid()) @db.Uuid
   companyId String   @map("company_id") @db.Uuid
@@ -246,8 +246,8 @@ model CompanySource {
 // API keys come in two flavours:
 //   - SOURCE keys (sourceId set, companyId null): held by external providers
 //     like OMT/wish. Caller posts to /v1/ingest/transactions with a
-//     `companySlug` in the body. Can only target companies that have opted
-//     into this source via `company_sources`.
+//     `companySlug` in the body. Can target any ACTIVE + visible company
+//     (sources are system-wide; see CompanySource above).
 //   - COMPANY keys (companyId set, sourceId null): legacy company-held keys.
 //     The company picks `sourceCode` per request.
 // Exactly one of `companyId` / `sourceId` is set — enforced by CHECK.

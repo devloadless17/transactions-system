@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseUUIDPipe,
@@ -24,6 +25,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CsrfGuard } from '../auth/guards/csrf.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { Audited } from '../audit/audit.decorator';
 import { CommissionsService } from './commissions.service';
 
 @UseGuards(JwtAuthGuard, RolesGuard, CsrfGuard)
@@ -34,6 +36,11 @@ export class CommissionsController {
 
   @Post()
   @UsePipes(new ZodPipe(createCommissionRuleSchema))
+  @Audited({
+    action: 'commission_rule.created',
+    entityType: 'commission_rule',
+    idFrom: 'result.id',
+  })
   async create(@Body() body: CreateCommissionRuleInput) {
     return this.commissions.create(body);
   }
@@ -44,6 +51,11 @@ export class CommissionsController {
   }
 
   @Patch(':id')
+  @Audited({
+    action: 'commission_rule.updated',
+    entityType: 'commission_rule',
+    idFrom: 'params.id',
+  })
   async update(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body(new ZodPipe(updateCommissionRuleSchema)) body: UpdateCommissionRuleInput,
@@ -52,7 +64,26 @@ export class CommissionsController {
   }
 
   @Post(':id/deactivate')
+  @Audited({
+    action: 'commission_rule.deactivated',
+    entityType: 'commission_rule',
+    idFrom: 'params.id',
+  })
   async deactivate(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.commissions.deactivate(id);
+  }
+
+  // Hard delete is destructive (the rule is gone, not just disabled), so it is
+  // narrowed to SUPER_ADMIN — overriding the controller-wide role set. Operators
+  // can still disable a rule via the deactivate endpoint above.
+  @Delete(':id')
+  @Roles(UserRole.SUPER_ADMIN)
+  @Audited({
+    action: 'commission_rule.deleted',
+    entityType: 'commission_rule',
+    idFrom: 'params.id',
+  })
+  async remove(@Param('id', new ParseUUIDPipe()) id: string) {
+    return this.commissions.remove(id);
   }
 }

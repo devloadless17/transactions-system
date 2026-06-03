@@ -165,12 +165,12 @@ export function AdminOverview() {
         <KpiCard
           label="Volume in"
           value={primary ? `${fmt(primary.volumeIn)} ${primary.currency}` : '—'}
-          hint={`Completed ingestion · ${primary?.ingestCount ?? 0} txs`}
+          hint={`Deposits + loads · ${primary?.ingestCount ?? 0} ingested`}
         />
         <KpiCard
           label="Volume out"
           value={primary ? `${fmt(primary.volumeOut)} ${primary.currency}` : '—'}
-          hint={`Withdrawal payouts · ${primary?.withdrawalCount ?? 0}`}
+          hint={`Withdrawals + payouts · ${primary?.withdrawalCount ?? 0} withdrawals`}
         />
         <KpiCard
           label="Pending actions"

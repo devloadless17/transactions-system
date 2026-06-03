@@ -239,6 +239,35 @@ export function TransactionsView({ scope }: { scope: 'admin' | 'company' }) {
         ]
       : []),
     {
+      key: 'customer',
+      header: 'Customer',
+      cell: (t) =>
+        t.customer || t.phone ? (
+          <div>
+            <div>{t.customer ?? '—'}</div>
+            {t.phone && <div className="text-xs text-muted-foreground">{t.phone}</div>}
+          </div>
+        ) : (
+          '—'
+        ),
+    },
+    { key: 'target', header: 'Target', cell: (t) => t.target ?? '—' },
+    {
+      key: 'note',
+      header: 'Note',
+      cell: (t) =>
+        t.note ? (
+          <span
+            className="block max-w-[14rem] truncate text-xs text-muted-foreground"
+            title={t.note}
+          >
+            {t.note}
+          </span>
+        ) : (
+          '—'
+        ),
+    },
+    {
       key: 'amount',
       header: 'Amount',
       align: 'right',

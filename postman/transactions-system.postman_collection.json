@@ -414,14 +414,14 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"companyId\": \"{{companyId}}\",\n  \"externalTransactionId\": \"postman-{{$timestamp}}-50\",\n  \"amount\": \"50\",\n  \"currency\": \"USD\",\n  \"payload\": {\n    \"customer\": { \"name\": \"Alice (payer)\",     \"phone\": \"+961-3-111-111\" },\n    \"target\":   { \"name\": \"Bob (recipient)\",  \"phone\": \"+961-3-222-222\" },\n    \"note\": \"test-from-postman\"\n  }\n}"
+              "raw": "{\n  \"companyId\": \"{{companyId}}\",\n  \"externalTransactionId\": \"postman-{{$timestamp}}-50\",\n  \"amount\": \"50\",\n  \"currency\": \"USD\",\n  \"payload\": {\n    \"customer\": \"Alice (payer)\",\n    \"target\": \"Bob (recipient)\",\n    \"phone\": \"+961-3-111-111\",\n    \"note\": \"test-from-postman\"\n  }\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/ingest/{{sourceCode}}/transactions",
               "host": ["{{baseUrl}}"],
               "path": ["ingest", "{{sourceCode}}", "transactions"]
             },
-            "description": "Matches the **1–100 USD FIXED 1** seeded commission rule. The `{{$timestamp}}` keeps the externalTransactionId unique on re-run.\n\n**Payload conventions** (free-form jsonb but providers should follow these so dashboards render consistently):\n- `customer` — the *sender* / payer (name, phone, …)\n- `target` — the *recipient* / beneficiary (name, phone, …)\n- `note` — free-text comment from the provider\n- anything else under `payload` is preserved as-is"
+            "description": "Matches the **1–100 USD FIXED 1** seeded commission rule. The `{{$timestamp}}` keeps the externalTransactionId unique on re-run.\n\n**Payload fields** (the API recognises these plain-string fields; any extra keys are preserved):\n- `customer` — the *sender* / payer name\n- `target` — the *recipient* / beneficiary name\n- `phone` — a contact phone number\n- `note` — free-text comment from the provider\n- any other keys under `payload` are preserved as-is"
           }
         },
         {
@@ -434,7 +434,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"companyId\": \"{{companyId}}\",\n  \"externalTransactionId\": \"postman-{{$timestamp}}-200\",\n  \"amount\": \"200\",\n  \"currency\": \"USD\",\n  \"payload\": {\n    \"customer\": { \"name\": \"Bob (payer)\" },\n    \"target\":   { \"name\": \"Dana (recipient)\", \"phone\": \"+961-3-333-333\" },\n    \"note\": \"bill payment\"\n  }\n}"
+              "raw": "{\n  \"companyId\": \"{{companyId}}\",\n  \"externalTransactionId\": \"postman-{{$timestamp}}-200\",\n  \"amount\": \"200\",\n  \"currency\": \"USD\",\n  \"payload\": {\n    \"customer\": \"Bob (payer)\",\n    \"target\": \"Dana (recipient)\",\n    \"phone\": \"+961-3-333-333\",\n    \"note\": \"bill payment\"\n  }\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/ingest/{{sourceCode}}/transactions",
@@ -454,7 +454,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"companyId\": \"{{companyId}}\",\n  \"externalTransactionId\": \"postman-{{$timestamp}}-500\",\n  \"amount\": \"500\",\n  \"currency\": \"USD\",\n  \"payload\": {\n    \"customer\": { \"name\": \"Carol (payer)\", \"phone\": \"+961-3-444-444\" },\n    \"target\":   { \"name\": \"Eve (recipient)\", \"phone\": \"+961-3-555-555\" },\n    \"note\": \"large purchase\"\n  }\n}"
+              "raw": "{\n  \"companyId\": \"{{companyId}}\",\n  \"externalTransactionId\": \"postman-{{$timestamp}}-500\",\n  \"amount\": \"500\",\n  \"currency\": \"USD\",\n  \"payload\": {\n    \"customer\": \"Carol (payer)\",\n    \"target\": \"Eve (recipient)\",\n    \"phone\": \"+961-3-444-444\",\n    \"note\": \"large purchase\"\n  }\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/ingest/{{sourceCode}}/transactions",

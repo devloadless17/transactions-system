@@ -110,6 +110,33 @@ export async function adminApiContext(): Promise<{ api: APIRequestContext; csrf:
   return { api, csrf };
 }
 
+/** Read the csrf-token cookie from an authed context (needed on mutations). */
+export async function getCsrf(api: APIRequestContext): Promise<string> {
+  const state = await api.storageState();
+  const csrf = state.cookies.find((c) => c.name === 'csrf-token')?.value;
+  if (!csrf) throw new Error('csrf cookie missing on context');
+  return csrf;
+}
+
+/**
+ * Create a commission rule (admin). `data` mirrors createCommissionRuleSchema:
+ * { companyId?, sourceId?, operationType, feeApplication, minAmount, maxAmount,
+ *   commissionType, commissionValue, priority?, active? }. Returns the rule.
+ */
+export async function createCommissionRule(
+  api: APIRequestContext,
+  csrf: string,
+  data: Record<string, unknown>,
+): Promise<{ id: string }> {
+  const res = await api.post('/v1/admin/commission-rules', {
+    headers: { 'x-csrf-token': csrf },
+    data,
+  });
+  if (!res.ok())
+    throw new Error(`create commission rule failed: ${res.status()} ${await res.text()}`);
+  return res.json();
+}
+
 /** Find the seeded source id by code (e.g. 'omt'). */
 export async function findSourceId(api: APIRequestContext, code: string): Promise<string> {
   const res = await api.get('/v1/admin/sources/all');

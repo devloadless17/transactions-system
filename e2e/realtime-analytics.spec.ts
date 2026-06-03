@@ -50,8 +50,10 @@ test.describe('realtime analytics — live dashboard updates', () => {
       await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible({
         timeout: 30_000,
       });
+      // The company overview reconciliation cards label this tile "Deposit"
+      // (gross = net + fee); it updates live via the analytics invalidation.
       const deposits = page
-        .getByText('Deposits', { exact: true })
+        .getByText('Deposit', { exact: true })
         .locator('..')
         .locator('.text-2xl');
       await expect(deposits).toContainText('0', { timeout: 15_000 });
@@ -90,7 +92,7 @@ test.describe('realtime analytics — live dashboard updates', () => {
         timeout: 30_000,
       });
       const depositsAfter = page
-        .getByText('Deposits', { exact: true })
+        .getByText('Deposit', { exact: true })
         .locator('..')
         .locator('.text-2xl');
       await expect(depositsAfter).toContainText('337', { timeout: 20_000 });

@@ -435,6 +435,10 @@ export class TransactionsService {
       'commission_amount',
       'net_amount',
       'status',
+      'customer',
+      'target',
+      'phone',
+      'note',
     ];
     const lines = [header.join(',')];
 
@@ -486,6 +490,10 @@ export class TransactionsService {
               r.commissionAmount.toString(),
               r.netAmount.toString(),
               r.status,
+              csvCell(payloadString(r.payload, 'customer') ?? ''),
+              csvCell(payloadString(r.payload, 'target') ?? ''),
+              csvCell(payloadString(r.payload, 'phone') ?? ''),
+              csvCell(payloadString(r.payload, 'note') ?? ''),
             ].join(','),
           );
         }
@@ -615,6 +623,7 @@ export class TransactionsService {
       commissionAmount: { toString(): string };
       netAmount: { toString(): string };
       status: TransactionResponse['status'];
+      payload?: unknown;
       processedAt: Date | null;
       createdAt: Date;
     },
@@ -673,6 +682,7 @@ function mapTxRow(
     commissionAmount: { toString(): string };
     netAmount: { toString(): string };
     status: TransactionResponse['status'];
+    payload?: unknown;
     processedAt: Date | null;
     createdAt: Date;
   },
@@ -689,9 +699,27 @@ function mapTxRow(
     commissionAmount: row.commissionAmount.toString(),
     netAmount: row.netAmount.toString(),
     status: row.status,
+    customer: payloadString(row.payload, 'customer'),
+    target: payloadString(row.payload, 'target'),
+    phone: payloadString(row.payload, 'phone'),
+    note: payloadString(row.payload, 'note'),
     processedAt: row.processedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
   };
+}
+
+/**
+ * Lift a known descriptive field out of the JSONB payload. Returns the string
+ * value, or null when absent — or when a legacy row still has it as an object
+ * (pre-flattening), so old data degrades gracefully instead of leaking `[object
+ * Object]` into the response.
+ */
+function payloadString(payload: unknown, key: string): string | null {
+  if (payload && typeof payload === 'object') {
+    const v = (payload as Record<string, unknown>)[key];
+    if (typeof v === 'string' && v.length > 0) return v;
+  }
+  return null;
 }
 
 function csvCell(s: string): string {

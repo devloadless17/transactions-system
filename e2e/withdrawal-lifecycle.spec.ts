@@ -90,10 +90,12 @@ test.describe('withdrawal lifecycle (request + approve through the UI)', () => {
     // Amount.
     await dialog.locator('#amount').fill('40');
 
-    // Method defaults to CRYPTO; fill network + a >=20 char wallet address.
-    // The CryptoFields labels aren't wired to inputs via htmlFor, so target by
-    // placeholder (Network) and by class (the wallet address is the only
-    // font-mono input in the crypto group).
+    // The request dialog defaults to CASH; switch to Crypto for this test.
+    await dialog.getByRole('button', { name: 'Crypto', exact: true }).click();
+
+    // Fill network + a >=20 char wallet address. The CryptoFields labels aren't
+    // wired to inputs via htmlFor, so target by placeholder (Network) and by
+    // class (the wallet address is the only font-mono input in the crypto group).
     await dialog.getByPlaceholder('BTC, ETH, TRC20, SOL, …').fill('TRC20');
     await dialog.locator('input.font-mono').fill('TQ1234567890ABCDEFGHIJ1234567890XYZ');
 

@@ -28,6 +28,9 @@ test.describe.serial('company portal: smoke', () => {
   });
 
   test('owner logs in with temp password and is forced to change it', async ({ page, context }) => {
+    // Temp-login → forced change-password → re-login is 3 logins; under the auth
+    // throttle the 12s backoffs can exceed the default 30s test timeout.
+    test.setTimeout(120_000);
     await loginAs(page, ownerEmail, tempPassword, '/change-password');
 
     await page.locator('#currentPassword').fill(tempPassword);

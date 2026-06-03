@@ -114,11 +114,12 @@ export const PayoutMethod = {
 } as const;
 export type PayoutMethod = (typeof PayoutMethod)[keyof typeof PayoutMethod];
 
-// Methods offered to companies for withdrawal/payout/load flows. Only cash
-// handover and crypto are supported; other methods (bank transfer, Whish,
-// other) remain in the enum for legacy rows but are not selectable.
+// Methods offered to companies for withdrawal/payout/load flows, in display
+// order (cash is the default). Bank transfer and "other" remain in the enum
+// for legacy rows but are not selectable.
 export const SUPPORTED_PAYOUT_METHODS: ReadonlyArray<PayoutMethod> = [
   PayoutMethod.CASH,
+  PayoutMethod.WISH,
   PayoutMethod.CRYPTO,
 ];
 

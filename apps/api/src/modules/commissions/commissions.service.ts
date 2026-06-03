@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { Money } from '@app/shared';
 import type {
   CommissionRuleResponse,
   CreateCommissionRuleInput,
@@ -82,14 +83,29 @@ export class CommissionsService {
     const row = await this.prisma.runAsAdmin(async (tx) => {
       const existing = await tx.commissionRule.findUnique({ where: { id } });
       if (!existing) throw new NotFoundError('CommissionRule', id);
+      if (input.companyId) {
+        const co = await tx.company.findUnique({ where: { id: input.companyId } });
+        if (!co) throw new ValidationError('companyId does not exist');
+      }
+      if (input.sourceId) {
+        const src = await tx.source.findUnique({ where: { id: input.sourceId } });
+        if (!src) throw new ValidationError('sourceId does not exist');
+      }
       const minA = input.minAmount ?? existing.minAmount.toString();
       const maxA = input.maxAmount ?? existing.maxAmount.toString();
-      if (Number(minA) > Number(maxA)) {
+      // Decimal compare (never JS float): Number() collapses high-precision
+      // 20,8 values, matching the create() guard + the schema's stated invariant.
+      if (Money.of(minA).gt(Money.of(maxA))) {
         throw new ValidationError('minAmount must be <= maxAmount');
       }
       return tx.commissionRule.update({
         where: { id },
         data: {
+          // companyId/sourceId are nullable scope: undefined = leave as-is,
+          // null = make global. `?? undefined` would lose an explicit null, so
+          // distinguish "absent" from "explicit null" by checking for undefined.
+          companyId: input.companyId !== undefined ? input.companyId : undefined,
+          sourceId: input.sourceId !== undefined ? input.sourceId : undefined,
           operationType: input.operationType ?? undefined,
           feeApplication: input.feeApplication ?? undefined,
           minAmount: input.minAmount ?? undefined,
@@ -108,6 +124,17 @@ export class CommissionsService {
 
   async deactivate(id: string): Promise<CommissionRuleResponse> {
     return this.update(id, { active: false });
+  }
+
+  async remove(id: string): Promise<CommissionRuleResponse> {
+    const row = await this.prisma.runAsAdmin(async (tx) => {
+      const existing = await tx.commissionRule.findUnique({ where: { id } });
+      if (!existing) throw new NotFoundError('CommissionRule', id);
+      return tx.commissionRule.delete({ where: { id } });
+    });
+    await this.repo.invalidate();
+    this.realtime.admin(['commissions']);
+    return mapRule(row);
   }
 }
 

@@ -1,6 +1,12 @@
 import { Controller, Get, Query, UseGuards } from '@nestjs/common';
 import { SkipThrottle } from '@nestjs/throttler';
-import { analyticsRangeSchema, UserRole, type AnalyticsRange } from '@app/shared';
+import {
+  analyticsRangeSchema,
+  walletSummaryQuerySchema,
+  UserRole,
+  type AnalyticsRange,
+  type WalletSummaryQuery,
+} from '@app/shared';
 import { ZodPipe } from '../../common/pipes/zod-validation.pipe';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -32,5 +38,18 @@ export class AnalyticsController {
   ) {
     if (!user.companyId) throw new ForbiddenError('No company in session');
     return this.analytics.overview({ scope: { companyId: user.companyId }, range });
+  }
+
+  @Roles(UserRole.COMPANY_OWNER, UserRole.COMPANY_MANAGER, UserRole.COMPANY_VIEWER)
+  @Get('company/analytics/wallet-summary')
+  async companyWalletSummary(
+    @Query(new ZodPipe(walletSummaryQuerySchema)) query: WalletSummaryQuery,
+    @CurrentUser() user: AuthPrincipal,
+  ) {
+    if (!user.companyId) throw new ForbiddenError('No company in session');
+    return this.analytics.walletSummary(user.companyId, query.currency, {
+      from: query.from,
+      to: query.to,
+    });
   }
 }

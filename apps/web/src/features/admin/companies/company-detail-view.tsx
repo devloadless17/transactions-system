@@ -487,12 +487,16 @@ export function CompanyDetailView({ companyId }: { companyId: string }) {
   );
 }
 
-// KPI sub-line: settled count plus any money still in-flight (pending
-// approval / processing) for that operation type.
+// KPI sub-line: settled count, the net vs. fee split of the completed total
+// (gross = net + fee; per-flow fees tie out to the Platform fees card), plus
+// any money still in-flight for that operation type.
 function inflightHint(m: VolumeMetric, currency: string): string {
-  const base = `${m.completedCount.toLocaleString()} completed`;
-  if (m.pendingCount > 0 || Number(m.pendingTotal) > 0) {
-    return `${base} · ${fmt(m.pendingTotal)} ${currency} in-flight`;
+  const parts = [`${m.completedCount.toLocaleString()} completed`];
+  if (Number(m.completedFees) > 0) {
+    parts.push(`${fmt(m.completedNet)} net`, `${fmt(m.completedFees)} fee`);
   }
-  return base;
+  if (m.pendingCount > 0 || Number(m.pendingTotal) > 0) {
+    parts.push(`${fmt(m.pendingTotal)} ${currency} in-flight`);
+  }
+  return parts.join(' · ');
 }

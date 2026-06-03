@@ -4,13 +4,26 @@ import { currencySchema, moneyAmountSchema } from './common';
 
 const decimalString = moneyAmountSchema;
 
+// Recognised fields inside the ingest payload. They are PLAIN STRINGS (not
+// nested objects) so they're easy to read, display, and reason about — the
+// `customer` who paid, the `target` they paid, a contact `phone`, and a free
+// `note`. `.passthrough()` keeps any extra provider-specific keys (branch code,
+// terminal id, OMT fields, …) the source attaches alongside them.
+export const transactionPayloadSchema = z
+  .object({
+    customer: z.string().trim().max(200).optional(),
+    target: z.string().trim().max(200).optional(),
+    phone: z.string().trim().max(40).optional(),
+    note: z.string().trim().max(1000).optional(),
+  })
+  .passthrough();
+export type TransactionPayload = z.infer<typeof transactionPayloadSchema>;
+
 // What external providers POST to /v1/ingest/transactions.
 //
-// The source is identified by the Authorization Bearer key. The body
-// carries the target `companyId` + the transaction. Anything else the
-// provider wants to attach (customer phone/name, target, note, branch
-// code, terminal id, OMT-specific fields, …) goes under the free-form
-// `payload`.
+// The source is identified by the Authorization Bearer key. The body carries
+// the target `companyId` + the transaction. Descriptive details (customer,
+// target, phone, note, plus any extra provider keys) go under `payload`.
 //
 // Providers discover the available company ids via GET /v1/ingest/companies.
 export const ingestTransactionSchema = z.object({
@@ -19,8 +32,9 @@ export const ingestTransactionSchema = z.object({
   amount: decimalString,
   currency: currencySchema,
 
-  // Free-form catchall. Stored verbatim for audit.
-  payload: z.record(z.unknown()).default({}),
+  // Typed known fields (customer/target/phone/note) + passthrough extras.
+  // Stored verbatim for audit.
+  payload: transactionPayloadSchema.default({}),
 
   // Optional client-supplied idempotency key. If omitted, the
   // (sourceId, externalTransactionId) pair acts as one.
@@ -39,6 +53,11 @@ export const transactionResponseSchema = z.object({
   commissionAmount: z.string(),
   netAmount: z.string(),
   status: z.nativeEnum(TransactionStatus),
+  // Descriptive fields lifted from the ingest payload (null when not provided).
+  customer: z.string().nullable(),
+  target: z.string().nullable(),
+  phone: z.string().nullable(),
+  note: z.string().nullable(),
   processedAt: z.string().nullable(),
   createdAt: z.string(),
 });

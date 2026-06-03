@@ -27,8 +27,9 @@ const INGEST_CURL = `curl -X POST ${API_BASE}/ingest/omt/transactions \\
     "amount": "200.00",
     "currency": "USD",
     "payload": {
-      "customer": { "name": "Alice", "phone": "+961-3-...-payer" },
-      "target":   { "name": "Bob",   "phone": "+961-3-...-recipient" },
+      "customer": "Alice",
+      "target": "Bob",
+      "phone": "+961-3-000000",
       "note": "monthly bill"
     },
     "idempotencyKey": "optional-uuid-or-stable-key"
@@ -119,26 +120,25 @@ export function ApiDocsView() {
           <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
             <p className="mb-1 font-medium text-foreground">Payload conventions</p>
             <p>
-              <code className="font-mono">payload</code> is stored verbatim (free-form JSON), but
-              providers should follow these conventional fields so dashboards and exports can render
-              them consistently:
+              The API recognises these <strong>plain string</strong> fields in the{' '}
+              <code className="font-mono">payload</code> so dashboards and exports render them
+              consistently:
             </p>
             <ul className="mt-1 space-y-0.5">
               <li>
-                <code className="font-mono">customer</code> — the <em>sender</em> / payer:{' '}
-                <code className="font-mono">{'{ name, phone, … }'}</code>
+                <code className="font-mono">customer</code> — the <em>sender</em> / payer name
               </li>
               <li>
-                <code className="font-mono">target</code> — the <em>recipient</em> / beneficiary:{' '}
-                <code className="font-mono">{'{ name, phone, … }'}</code>
+                <code className="font-mono">target</code> — the <em>recipient</em> / beneficiary
+                name
+              </li>
+              <li>
+                <code className="font-mono">phone</code> — a contact phone number
               </li>
               <li>
                 <code className="font-mono">note</code> — free-text comment from the provider
               </li>
-              <li>
-                anything else under the payload is preserved as-is; add whatever your integration
-                needs
-              </li>
+              <li>any other keys are preserved as-is; add whatever your integration needs</li>
             </ul>
           </div>
         </CardContent>

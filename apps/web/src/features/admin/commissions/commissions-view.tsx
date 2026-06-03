@@ -17,10 +17,22 @@ import { ApiClientError } from '@/lib/api';
 import { CreateCommissionRuleDialog } from './create-commission-rule-dialog';
 import { EditCommissionRuleDialog } from './edit-commission-rule-dialog';
 
-export function CommissionsView() {
+export function CommissionsView({ canDelete = false }: { canDelete?: boolean }) {
   const qc = useQueryClient();
   const [createOpen, setCreateOpen] = useState(false);
   const [editing, setEditing] = useState<CommissionRuleResponse | null>(null);
+
+  const deleteMu = useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<CommissionRuleResponse>(`/admin/commission-rules/${id}`, {
+        method: 'DELETE',
+      }),
+    onSuccess: () => {
+      toast.success('Rule deleted');
+      qc.invalidateQueries({ queryKey: ['admin', 'commission-rules'] });
+    },
+    onError: (err) => toast.error(err instanceof ApiClientError ? err.message : 'Failed'),
+  });
 
   const deactivateMu = useMutation({
     mutationFn: (id: string) =>
@@ -152,6 +164,21 @@ export function CommissionsView() {
               Reactivate
             </Button>
           )}
+          {canDelete && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-destructive hover:text-destructive"
+              disabled={deleteMu.isPending}
+              onClick={() => {
+                if (confirm(deleteWarning(r, rulesQ.data?.data ?? []))) {
+                  deleteMu.mutate(r.id);
+                }
+              }}
+            >
+              Delete
+            </Button>
+          )}
         </div>
       ),
     },
@@ -197,6 +224,8 @@ export function CommissionsView() {
 
       <EditCommissionRuleDialog
         rule={editing}
+        sources={sourcesQ.data?.data ?? []}
+        companies={companiesQ.data?.data ?? []}
         onClose={() => setEditing(null)}
         onSaved={() => {
           setEditing(null);
@@ -210,4 +239,50 @@ export function CommissionsView() {
 function trimDecimal(s: string): string {
   if (!s.includes('.')) return s;
   return s.replace(/\.?0+$/, '');
+}
+
+/**
+ * True when another active TRANSACTION rule of equal-or-broader scope (same or
+ * global company/source) fully covers this rule's amount range — i.e. pricing
+ * would still resolve a rule for everything this one matched. A sufficient
+ * safety check: if true, deleting this rule cannot leave a transaction unpriced.
+ * (Coverage by a *union* of narrower rules isn't detected, so we under-claim
+ * safety rather than over-claim it.)
+ */
+function hasBroaderFallback(
+  target: CommissionRuleResponse,
+  rules: CommissionRuleResponse[],
+): boolean {
+  return rules.some(
+    (r) =>
+      r.id !== target.id &&
+      r.active &&
+      r.operationType === 'TRANSACTION' &&
+      (r.companyId === null || r.companyId === target.companyId) &&
+      (r.sourceId === null || r.sourceId === target.sourceId) &&
+      Number(r.minAmount) <= Number(target.minAmount) &&
+      Number(r.maxAmount) >= Number(target.maxAmount),
+  );
+}
+
+/** Tailor the delete confirmation to the rule's actual blast radius. */
+function deleteWarning(rule: CommissionRuleResponse, rules: CommissionRuleResponse[]): string {
+  const tail = '\n\nDelete this rule permanently? This cannot be undone.';
+  if (rule.operationType === 'TRANSACTION') {
+    if (!hasBroaderFallback(rule, rules)) {
+      return (
+        'Warning: no other active rule covers this scope and amount range. ' +
+        'Deleting it may cause matching transactions to be REJECTED with a pricing error. ' +
+        'Consider disabling it instead.' +
+        tail
+      );
+    }
+    return 'Another active rule still covers this range, so pricing falls back to it.' + tail;
+  }
+  const op = rule.operationType.toLowerCase();
+  return (
+    `Deleting this ${op} fee rule means matching ${op}s will be charged no fee ` +
+    `until another rule applies.` +
+    tail
+  );
 }

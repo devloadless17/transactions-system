@@ -1,58 +1,18 @@
-# Local FULL-HTTPS prod test (auto-merged by `docker compose`).
+# Local-only overrides (auto-merged by `docker compose`). Runs the prod-profile
+# images on plain localhost — no TLS gateway — for local testing.
 #
-# Runs the prod-profile images in TRUE NODE_ENV=production behind a Caddy TLS
-# gateway, so the production security posture (HTTPS, Secure cookies, strong
-# secrets, non-localhost cookie domain) is actually exercised on a laptop.
+#   docker compose --profile prod up --build -d
+#     → web  http://localhost:3000
+#     → api  http://localhost:3001/v1
 #
-# Bring up:  docker compose --profile prod up --build -d
-# Then open: https://app.localtest.me   (trust Caddy's root CA first — see README note)
+# The API runs in development mode so the production-only env validation
+# (which requires HTTPS, Secure cookies, a non-localhost cookie domain, and
+# strong secrets) doesn't reject this localhost/http config. A real deployment
+# runs NODE_ENV=production behind its own TLS — Caddy lives only on the server.
 #
-# Secrets come from .env (PROD_JWT_ACCESS_SECRET / PROD_JWT_REFRESH_SECRET /
-# PROD_CSRF_SECRET) so no secret material lives in this committed file.
+# Whish Pay credentials (WHISH_CHANNEL / WHISH_SECRET / WHISH_WEBSITE_URL / …)
+# are forwarded by the base compose from .env, so nothing Whish is repeated here.
 services:
   api:
     environment:
-      NODE_ENV: production
-      # Production security posture — satisfied by the HTTPS gateway below.
-      COOKIE_SECURE: 'true'
-      COOKIE_DOMAIN: localtest.me
-      WEB_ORIGIN: https://app.localtest.me
-      ALLOWED_ORIGINS: https://app.localtest.me
-      JWT_ACCESS_SECRET: ${PROD_JWT_ACCESS_SECRET}
-      JWT_REFRESH_SECRET: ${PROD_JWT_REFRESH_SECRET}
-      CSRF_SECRET: ${PROD_CSRF_SECRET}
-      # Whish public-facing URLs point at the HTTPS gateway. NOTE: Whish's
-      # servers can't reach *.localtest.me (loopback), so inbound callbacks
-      # won't arrive locally — outbound calls (balance, create link) still work.
-      WHISH_WEBSITE_URL: https://app.localtest.me
-      WHISH_CALLBACK_BASE: https://api.localtest.me/v1
-
-  web:
-    build:
-      args:
-        # Inlined into the client bundle at build time (see apps/web/Dockerfile).
-        NEXT_PUBLIC_API_BASE_URL: https://api.localtest.me/v1
-    environment:
-      # SSR/server-side calls stay on the internal compose network (no TLS hop).
-      API_INTERNAL_BASE_URL: http://api:3001/v1
-
-  caddy:
-    image: caddy:2-alpine
-    container_name: txn_caddy
-    profiles: ['prod']
-    restart: unless-stopped
-    depends_on:
-      api:
-        condition: service_healthy
-      web:
-        condition: service_started
-    ports:
-      - '443:443'
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-
-volumes:
-  caddy_data:
-  caddy_config:
+      NODE_ENV: development

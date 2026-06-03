@@ -13,9 +13,9 @@ import {
 import type { FlowsBucket } from '@app/shared';
 
 /**
- * Daily ingestion vs withdrawal flows for a currency, with fees overlaid
- * as a line. "In" and "out" are stacked areas so the operator can see
- * net flow at a glance.
+ * Daily money-in (deposits + loads) vs money-out (withdrawals + payouts) flows
+ * for a currency, with fees overlaid as a line. "In" and "out" are stacked
+ * areas so the operator can see net flow at a glance.
  */
 export function FlowsChart({ buckets, currency }: { buckets: FlowsBucket[]; currency: string }) {
   const data = buckets.map((b) => ({
@@ -55,16 +55,20 @@ export function FlowsChart({ buckets, currency }: { buckets: FlowsBucket[]; curr
             }}
             formatter={(value: number, name: string) => [
               `${Math.abs(value).toLocaleString()} ${currency}`,
-              name === 'in' ? 'In (ingestion)' : name === 'out' ? 'Out (withdrawals)' : 'Fees',
+              name === 'in'
+                ? 'In (deposits + loads)'
+                : name === 'out'
+                  ? 'Out (withdrawals + payouts)'
+                  : 'Fees',
             ]}
           />
           <Legend
             wrapperStyle={{ fontSize: 12 }}
             formatter={(value: string) =>
               value === 'in'
-                ? 'In (ingestion)'
+                ? 'In (deposits + loads)'
                 : value === 'out'
-                  ? 'Out (withdrawals)'
+                  ? 'Out (withdrawals + payouts)'
                   : 'Fees earned'
             }
           />

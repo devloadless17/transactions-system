@@ -51,6 +51,8 @@ export type CreateCommissionRuleInput = z.infer<typeof createCommissionRuleSchem
 
 export const updateCommissionRuleSchema = z
   .object({
+    companyId: z.string().uuid().nullable().optional(),
+    sourceId: z.string().uuid().nullable().optional(),
     operationType: z.nativeEnum(FeeOperationType).optional(),
     feeApplication: z.nativeEnum(FeeApplication).optional(),
     minAmount: nonNegativeDecimalString.optional(),

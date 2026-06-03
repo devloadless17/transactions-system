@@ -6,8 +6,13 @@ import { useMutation } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import {
   CommissionType,
+  FeeApplication,
+  FeeOperationType,
+  FEE_OPERATION_TYPES,
   updateCommissionRuleSchema,
   type CommissionRuleResponse,
+  type CompanyResponse,
+  type SourceResponse,
   type UpdateCommissionRuleInput,
 } from '@app/shared';
 import {
@@ -26,11 +31,13 @@ import { ApiClientError } from '@/lib/api';
 
 interface Props {
   rule: CommissionRuleResponse | null;
+  sources: SourceResponse[];
+  companies: CompanyResponse[];
   onClose: () => void;
   onSaved: () => void;
 }
 
-export function EditCommissionRuleDialog({ rule, onClose, onSaved }: Props) {
+export function EditCommissionRuleDialog({ rule, sources, companies, onClose, onSaved }: Props) {
   const {
     register,
     handleSubmit,
@@ -43,10 +50,15 @@ export function EditCommissionRuleDialog({ rule, onClose, onSaved }: Props) {
     defaultValues: {},
   });
 
-  // Reset form whenever the targeted rule changes.
+  // Reset form whenever the targeted rule changes, populating every field so the
+  // whole rule can be edited (not just amounts/type/priority).
   useEffect(() => {
     if (rule) {
       reset({
+        companyId: rule.companyId,
+        sourceId: rule.sourceId,
+        operationType: rule.operationType,
+        feeApplication: rule.feeApplication,
         minAmount: rule.minAmount,
         maxAmount: rule.maxAmount,
         commissionType: rule.commissionType,
@@ -57,7 +69,12 @@ export function EditCommissionRuleDialog({ rule, onClose, onSaved }: Props) {
     }
   }, [rule, reset]);
 
+  const companyId = watch('companyId');
+  const sourceId = watch('sourceId');
   const type = watch('commissionType');
+  const operationType = watch('operationType');
+  const feeApplication = watch('feeApplication');
+  const active = watch('active');
 
   const mu = useMutation({
     mutationFn: (input: UpdateCommissionRuleInput) => {
@@ -80,11 +97,88 @@ export function EditCommissionRuleDialog({ rule, onClose, onSaved }: Props) {
         <DialogHeader>
           <DialogTitle>Edit commission rule</DialogTitle>
           <DialogDescription>
-            Scope (company / source) is fixed at creation — create a new rule if you need to change
-            scope.
+            Edit any field of this rule — operation, scope, fee application, range, value, priority,
+            or active state.
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit((values) => mu.mutate(values))} className="space-y-4">
+          <div className="space-y-2">
+            <Label>Operation</Label>
+            <div className="flex flex-wrap gap-2">
+              {FEE_OPERATION_TYPES.map((op) => (
+                <Button
+                  key={op}
+                  type="button"
+                  size="sm"
+                  variant={operationType === op ? 'default' : 'outline'}
+                  onClick={() => {
+                    setValue('operationType', op);
+                    if (op !== FeeOperationType.TRANSACTION) setValue('sourceId', null);
+                  }}
+                >
+                  {op.charAt(0) + op.slice(1).toLowerCase()}
+                </Button>
+              ))}
+            </div>
+          </div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="companyId">Company (optional)</Label>
+              <select
+                id="companyId"
+                value={companyId ?? ''}
+                onChange={(e) => setValue('companyId', e.target.value || null)}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              >
+                <option value="">(global)</option>
+                {companies.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {operationType === FeeOperationType.TRANSACTION ? (
+              <div className="space-y-2">
+                <Label htmlFor="sourceId">Source (optional)</Label>
+                <select
+                  id="sourceId"
+                  value={sourceId ?? ''}
+                  onChange={(e) => setValue('sourceId', e.target.value || null)}
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                >
+                  <option value="">(global)</option>
+                  {sources.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.code}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <Label>Fee application</Label>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={feeApplication === 'DEDUCTED' ? 'default' : 'outline'}
+                    onClick={() => setValue('feeApplication', FeeApplication.DEDUCTED)}
+                  >
+                    Deducted
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={feeApplication === 'ON_TOP' ? 'default' : 'outline'}
+                    onClick={() => setValue('feeApplication', FeeApplication.ON_TOP)}
+                  >
+                    On top
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="minAmount">Min amount</Label>
@@ -128,11 +222,41 @@ export function EditCommissionRuleDialog({ rule, onClose, onSaved }: Props) {
                 {type === 'PERCENTAGE' ? 'Percent' : 'Amount'}
               </Label>
               <Input id="commissionValue" {...register('commissionValue')} />
+              {errors.commissionValue && (
+                <p className="text-sm text-destructive">{errors.commissionValue.message}</p>
+              )}
             </div>
           </div>
-          <div className="space-y-2">
-            <Label htmlFor="priority">Priority</Label>
-            <Input id="priority" type="number" {...register('priority', { valueAsNumber: true })} />
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="priority">Priority</Label>
+              <Input
+                id="priority"
+                type="number"
+                {...register('priority', { valueAsNumber: true })}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Active</Label>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={active ? 'default' : 'outline'}
+                  onClick={() => setValue('active', true)}
+                >
+                  Active
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={active === false ? 'default' : 'outline'}
+                  onClick={() => setValue('active', false)}
+                >
+                  Inactive
+                </Button>
+              </div>
+            </div>
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose}>

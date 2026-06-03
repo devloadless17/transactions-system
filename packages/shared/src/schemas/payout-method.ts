@@ -32,7 +32,10 @@ const cashPayoutSchema = z.object({
   method: z.literal(PayoutMethod.CASH),
   recipientName: z.string().trim().min(2).max(120),
   recipientPhone: z.string().trim().min(4).max(30),
-  pickupLocation: z.string().trim().min(2).max(200),
+  // Optional: a load (money in) has no pickup, and an outbound cash handover
+  // can be arranged off the location field. Empty input is treated as absent
+  // (same idiom as the optional `instructions`/`memo` fields).
+  pickupLocation: z.string().trim().max(200).optional(),
   instructions: z.string().trim().max(500).optional(),
 });
 
@@ -58,12 +61,14 @@ export const payoutDetailsSchema = z.discriminatedUnion('method', [
 ]);
 export type PayoutDetails = z.infer<typeof payoutDetailsSchema>;
 
-// Restricted union — used for CREATING new withdrawals/payouts/loads. Only
-// cash and crypto are accepted; anything else is rejected at the API. The
-// full union above stays in use for reading legacy rows.
+// Restricted union — used for CREATING new withdrawals/payouts/loads. Cash,
+// Whish, and crypto are accepted (in display order); bank transfer and "other"
+// are rejected at the API. The full union above stays in use for reading
+// legacy rows.
 export const createPayoutDetailsSchema = z.discriminatedUnion('method', [
-  cryptoPayoutSchema,
   cashPayoutSchema,
+  wishPayoutSchema,
+  cryptoPayoutSchema,
 ]);
 export type CreatePayoutDetails = z.infer<typeof createPayoutDetailsSchema>;
 

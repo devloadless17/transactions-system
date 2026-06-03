@@ -10,12 +10,17 @@ export type AdminAnalyticsRange = z.infer<typeof adminAnalyticsRangeSchema>;
 // ---------------- platform multi-currency ----------------
 export const currencyRollupSchema = z.object({
   currency: z.string(),
-  volumeIn: z.string(), // sum of completed transaction amounts
-  feesEarned: z.string(), // platform fee revenue
-  volumeOut: z.string(), // sum of completed withdrawal amounts
+  // Money in = every settled in-flow (transaction ingestion + load approvals);
+  // money out = every settled out-flow (withdrawal + payout approvals). Both
+  // are net + fee (the money that actually moved): summing the raw `amount`
+  // column would equal net+fee only for DEDUCTED fees and undercount ON_TOP by
+  // the fee. Mirrors the per-company cards and walletSummary.
+  volumeIn: z.string(),
+  feesEarned: z.string(), // platform fee revenue (FEE ledger, all flows)
+  volumeOut: z.string(),
   netHeld: z.string(), // wallet total still parked in the platform (sum of available + pending + reserved)
-  ingestCount: z.number().int(),
-  withdrawalCount: z.number().int(),
+  ingestCount: z.number().int(), // completed transaction (ingestion) count
+  withdrawalCount: z.number().int(), // completed withdrawal count
 });
 export type CurrencyRollup = z.infer<typeof currencyRollupSchema>;
 
@@ -33,9 +38,9 @@ export type FlowsRange = z.infer<typeof flowsRangeSchema>;
 
 export const flowsBucketSchema = z.object({
   date: z.string(),
-  in: z.string(), // ingestion volume that day
-  out: z.string(), // withdrawal volume that day
-  fees: z.string(), // fees earned that day
+  in: z.string(), // money in that day (transactions + loads), net + fee
+  out: z.string(), // money out that day (withdrawals + payouts), net + fee
+  fees: z.string(), // fees earned that day (FEE ledger, all flows)
 });
 export type FlowsBucket = z.infer<typeof flowsBucketSchema>;
 

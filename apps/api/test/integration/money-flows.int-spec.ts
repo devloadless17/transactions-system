@@ -175,4 +175,37 @@ describe('reversal', () => {
       h.withdrawals.request(companyId, userId, cashWithdrawalInput('5')),
     ).rejects.toThrow(/owed to the platform/i);
   });
+
+  it('blocks APPROVING a pending withdrawal when a reversal booked a RECEIVABLE after it reserved', async () => {
+    const { companyId, userId } = await createCompany(h);
+    const sourceId = await createEnabledSource(h, companyId);
+    await addTransactionFee(h, companyId, '10');
+
+    // Ingest 100 → net 90 available.
+    const txn = await h.transactions.ingest(
+      { kind: 'source', sourceId },
+      ingestInput(companyId, '100'),
+    );
+    // Request a withdrawal (reserves 90: available 90→0, reserved 90) — but DON'T approve yet.
+    const w = await h.withdrawals.request(companyId, userId, cashWithdrawalInput('90'));
+
+    // Reverse the funding ingest WHILE the withdrawal is still PENDING. The
+    // clawback claims `available` (now 0), so the full 90 books to RECEIVABLE
+    // and the reserved 90 is left intact and still PENDING.
+    await h.transactions.reverse(txn.id, { actorId: userId, reason: 'chargeback' });
+    const mid = await snapshot(h, companyId);
+    expect(eq(mid.receivableLedger, '90')).toBe(true);
+    expect(eq(mid.reservedLedger, '90')).toBe(true);
+
+    // FIX D: approving now would send 90 out while the company owes 90 (a double
+    // loss). Approval must be blocked until the debt is settled.
+    await expect(
+      h.withdrawals.approve(w.id, userId, { externalReference: 'should-be-blocked' }),
+    ).rejects.toThrow(/owed to the platform/i);
+
+    // The withdrawal stays PENDING and the books remain balanced (no money left).
+    const after = await snapshot(h, companyId);
+    expect(after.balanced).toBe(true);
+    expect(eq(after.reservedLedger, '90')).toBe(true);
+  });
 });

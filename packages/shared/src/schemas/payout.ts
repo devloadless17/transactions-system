@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { PayoutMethod, WithdrawalStatus } from '../enums';
+import { FeeApplication, PayoutMethod, WithdrawalStatus } from '../enums';
 import { currencySchema, moneyAmountSchema } from './common';
 import { createPayoutDetailsSchema, payoutDetailsSchema } from './payout-method';
 
@@ -33,7 +33,12 @@ export const payoutResponseSchema = z.object({
   amount: z.string(),
   currency: z.string(),
   feeAmount: z.string(),
+  feeApplication: z.nativeEnum(FeeApplication),
   netAmount: z.string(),
+  // Total the company is actually charged = net + fee (the money that moves).
+  // Equals `amount` for a DEDUCTED fee; for ON_TOP the fee is added on top, so
+  // this exceeds the requested `amount`.
+  totalAmount: z.string(),
   status: z.nativeEnum(WithdrawalStatus),
   payoutMethod: z.nativeEnum(PayoutMethod),
   payoutDetails: payoutDetailsSchema.nullable(),
@@ -54,5 +59,8 @@ export const listPayoutsQuerySchema = z.object({
   companyId: z.string().uuid().optional(),
   currency: currencySchema.optional(),
   payoutMethod: z.nativeEnum(PayoutMethod).optional(),
+  // ISO date strings — filter by request (createdAt) time.
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
 });
 export type ListPayoutsQuery = z.infer<typeof listPayoutsQuerySchema>;

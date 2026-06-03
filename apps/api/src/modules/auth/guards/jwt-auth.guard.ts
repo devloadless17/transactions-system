@@ -42,11 +42,30 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedError('Invalid or expired access token');
     }
 
+    // Re-validate the USER live (not just the JWT): a disabled or role-changed
+    // user must lose / update access promptly, exactly like the company-status
+    // gate below — a still-valid 15-min access token must not retain revoked
+    // privileges. (This guard covers human dashboard/admin requests; ingest uses
+    // ApiKeyAuthGuard, so there's no hot-path cost here.)
+    const user = await this.prisma.runAsAdmin((tx) =>
+      tx.user.findUnique({
+        where: { id: payload.sub },
+        select: { status: true, role: true, companyId: true },
+      }),
+    );
+    if (!user || user.status !== 'ACTIVE') {
+      throw new UnauthorizedError('User account is inactive');
+    }
+    if (user.role !== payload.role) {
+      throw new UnauthorizedError('Session is stale (role changed); please sign in again');
+    }
+
     const principal: AuthPrincipal = {
       userId: payload.sub,
       email: payload.email,
-      role: payload.role,
-      companyId: payload.companyId,
+      // Use the live role/company, not the (possibly stale) token claims.
+      role: user.role,
+      companyId: user.companyId,
     };
     // Freeze access for inactive tenants immediately — even with a still-valid
     // token. Platform admins (no companyId) are never gated.

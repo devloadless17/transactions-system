@@ -4,6 +4,7 @@ import {
   type ApproveWithdrawalInput,
   type CancelRequestInput,
   type CreateWithdrawalInput,
+  type FeeApplication,
   type ListWithdrawalsQuery,
   type PaginatedResponse,
   type PayoutDetails,
@@ -152,6 +153,18 @@ export class WithdrawalsService {
         throw new ConflictError(`Withdrawal is in status ${w.status} and cannot be approved`);
       }
 
+      // A reversal may have booked a RECEIVABLE for this company AFTER this
+      // withdrawal reserved its funds (clawback claims `available`, not the
+      // reserved bucket). Re-assert the money-out block at approval so reserved
+      // funds can't leave while the company owes the platform — mirrors request().
+      const owed = await this.ledger.outstandingReceivable(cTx, w.companyId, w.currency);
+      if (owed.isPositive()) {
+        throw new ConflictError(
+          `Outstanding balance of ${owed.toString()} ${w.currency} owed to the platform must be settled before this withdrawal can be approved`,
+          { currency: w.currency, outstanding: owed.toString() },
+        );
+      }
+
       const amount = Money.of(w.amount.toString());
       const fee = Money.of(w.feeAmount.toString());
       const reserved = reservedTotal(amount, fee, w.feeApplication);
@@ -286,6 +299,12 @@ export class WithdrawalsService {
       if (args.query.status) where.status = args.query.status;
       if (args.query.currency) where.currency = args.query.currency;
       if (args.query.payoutMethod) where.payoutMethod = args.query.payoutMethod;
+      if (args.query.from || args.query.to) {
+        where.createdAt = {
+          ...(args.query.from ? { gte: new Date(args.query.from) } : {}),
+          ...(args.query.to ? { lte: new Date(args.query.to) } : {}),
+        };
+      }
 
       const skip = (args.query.page - 1) * args.query.pageSize;
       const [rows, total] = await Promise.all([
@@ -326,6 +345,7 @@ function mapWithdrawal(row: {
   amount: { toString(): string };
   currency: string;
   feeAmount: { toString(): string };
+  feeApplication: FeeApplication;
   netAmount: { toString(): string };
   status: WithdrawalStatus;
   payoutMethod: PayoutMethod;
@@ -344,7 +364,11 @@ function mapWithdrawal(row: {
     amount: row.amount.toString(),
     currency: row.currency.trim(),
     feeAmount: row.feeAmount.toString(),
+    feeApplication: row.feeApplication,
     netAmount: row.netAmount.toString(),
+    totalAmount: Money.of(row.netAmount.toString())
+      .add(Money.of(row.feeAmount.toString()))
+      .toString(),
     status: row.status,
     payoutMethod: row.payoutMethod,
     payoutDetails: (row.payoutDetails as PayoutDetails | null) ?? null,

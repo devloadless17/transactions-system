@@ -70,6 +70,11 @@ services:
       WHISH_SECRET: ${WHISH_SECRET:-}
       WHISH_WEBSITE_URL: ${WHISH_WEBSITE_URL:-http://localhost:3000}
       WHISH_CALLBACK_BASE: ${WHISH_CALLBACK_BASE:-http://localhost:3001/v1}
+      # User-Agent header sent on every Whish call, and the currencies Whish is
+      # live for. Forwarded too — without these the container falls back to the
+      # schema defaults and silently ignores the .env values.
+      WHISH_USER_AGENT: '${WHISH_USER_AGENT:-Whish/1.0 (https://whish.money; support@whish.money)}'
+      WHISH_ENABLED_CURRENCIES: ${WHISH_ENABLED_CURRENCIES:-USD}
     ports:
       - '${API_PORT:-3001}:3001'
     healthcheck:

@@ -10,6 +10,7 @@ import {
   SUPPORTED_CURRENCIES,
   WithdrawalStatus,
   type CreateWithdrawalInput,
+  type FeeApplication,
   type PaginatedResponse,
   type WalletResponse,
   type WithdrawalResponse,
@@ -62,15 +63,144 @@ export interface ProcessConfig {
   noun: string;
 }
 
+// Shared filter bar for the load / withdrawal / payout lists (company + admin).
+// All filters are backend-supported query params; an empty value means "any".
+export interface FlowFilters {
+  status: WithdrawalStatus | '';
+  currency: string;
+  method: PayoutMethod | '';
+  from: string; // YYYY-MM-DD
+  to: string; // YYYY-MM-DD
+  companyId: string; // admin-only
+}
+
+export const EMPTY_FLOW_FILTERS: FlowFilters = {
+  status: '',
+  currency: '',
+  method: '',
+  from: '',
+  to: '',
+  companyId: '',
+};
+
+/** Build the list query string from the active filters (+ any base params). */
+export function flowFilterParams(f: FlowFilters, base: Record<string, string>): URLSearchParams {
+  const p = new URLSearchParams(base);
+  if (f.status) p.set('status', f.status);
+  if (f.currency) p.set('currency', f.currency);
+  if (f.method) p.set('payoutMethod', f.method);
+  if (f.companyId) p.set('companyId', f.companyId);
+  if (f.from) p.set('from', new Date(`${f.from}T00:00:00`).toISOString());
+  if (f.to) p.set('to', new Date(`${f.to}T23:59:59.999`).toISOString());
+  return p;
+}
+
+export function FlowFilterBar({
+  value,
+  onChange,
+  companies,
+}: {
+  value: FlowFilters;
+  onChange: (f: FlowFilters) => void;
+  companies?: { id: string; name: string }[];
+}) {
+  const set = (patch: Partial<FlowFilters>) => onChange({ ...value, ...patch });
+  const selectClass =
+    'h-9 w-full rounded-md border border-input bg-background px-3 text-sm sm:w-auto';
+  const active = Object.values(value).some((v) => v !== '');
+  return (
+    <Card>
+      <CardContent className="flex flex-wrap items-end gap-3 p-4">
+        <Field label="Status">
+          <select
+            className={selectClass}
+            value={value.status}
+            onChange={(e) => set({ status: (e.target.value as WithdrawalStatus) || '' })}
+          >
+            <option value="">All</option>
+            {Object.values(WithdrawalStatus).map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Currency">
+          <select
+            className={selectClass}
+            value={value.currency}
+            onChange={(e) => set({ currency: e.target.value })}
+          >
+            <option value="">All</option>
+            {SUPPORTED_CURRENCIES.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Method">
+          <select
+            className={selectClass}
+            value={value.method}
+            onChange={(e) => set({ method: (e.target.value as PayoutMethod) || '' })}
+          >
+            <option value="">All</option>
+            {Object.values(PayoutMethod).map((m) => (
+              <option key={m} value={m}>
+                {prettyMethod(m)}
+              </option>
+            ))}
+          </select>
+        </Field>
+        {companies && (
+          <Field label="Company">
+            <select
+              className={selectClass}
+              value={value.companyId}
+              onChange={(e) => set({ companyId: e.target.value })}
+            >
+              <option value="">All</option>
+              {companies.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+        )}
+        <Field label="From">
+          <Input type="date" value={value.from} onChange={(e) => set({ from: e.target.value })} />
+        </Field>
+        <Field label="To">
+          <Input type="date" value={value.to} onChange={(e) => set({ to: e.target.value })} />
+        </Field>
+        {active && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => onChange(EMPTY_FLOW_FILTERS)}
+          >
+            Clear
+          </Button>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export function WithdrawalsView({ config }: { config: ProcessConfig }) {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const [detail, setDetail] = useState<WithdrawalResponse | null>(null);
+  const [filters, setFilters] = useState<FlowFilters>(EMPTY_FLOW_FILTERS);
 
+  const params = flowFilterParams(filters, { pageSize: '50' });
   const listQ = useQuery({
-    queryKey: [...config.queryKey, 'list'],
+    queryKey: [...config.queryKey, 'list', params.toString()],
     queryFn: () =>
-      apiFetch<PaginatedResponse<WithdrawalResponse>>(`${config.endpoint}?pageSize=50`),
+      apiFetch<PaginatedResponse<WithdrawalResponse>>(`${config.endpoint}?${params.toString()}`),
   });
 
   const cancelMu = useMutation({
@@ -99,7 +229,9 @@ export function WithdrawalsView({ config }: { config: ProcessConfig }) {
       header: 'Amount',
       align: 'right',
       className: 'font-mono',
-      cell: (w) => trimAmount(w.amount),
+      // Total charged = net + fee (so Amount = Net + Fee on every row). For an
+      // ON_TOP fee this exceeds the requested amount.
+      cell: (w) => trimAmount(w.totalAmount),
     },
     {
       key: 'fee',
@@ -157,6 +289,8 @@ export function WithdrawalsView({ config }: { config: ProcessConfig }) {
         </div>
         <Button onClick={() => setOpen(true)}>{config.newButton}</Button>
       </div>
+
+      <FlowFilterBar value={filters} onChange={setFilters} />
 
       <Card>
         <CardContent className="p-0">
@@ -221,9 +355,10 @@ function NewRowDialog({
       currency: 'USD',
       notes: '',
       payout: {
-        method: PayoutMethod.CRYPTO,
-        network: '',
-        walletAddress: '',
+        method: PayoutMethod.CASH,
+        recipientName: '',
+        recipientPhone: '',
+        pickupLocation: '',
       },
     },
   });
@@ -237,22 +372,23 @@ function NewRowDialog({
         currency: 'USD',
         notes: '',
         payout: {
-          method: PayoutMethod.CRYPTO,
-          network: '',
-          walletAddress: '',
+          method: PayoutMethod.CASH,
+          recipientName: '',
+          recipientPhone: '',
+          pickupLocation: '',
         },
       });
-      setMethod(PayoutMethod.CRYPTO);
+      setMethod(PayoutMethod.CASH);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   const currency = watch('currency');
-  // Drive the method selector from local state so clicking Cash/Crypto
+  // Drive the method selector from local state so clicking a method button
   // re-renders immediately. (setValue on the nested object alone doesn't
   // reliably notify a watch() subscriber, which made the button appear to
   // need a second, unrelated click to "apply".)
-  const [method, setMethod] = useState<PayoutMethod>(PayoutMethod.CRYPTO);
+  const [method, setMethod] = useState<PayoutMethod>(PayoutMethod.CASH);
   const wallet = walletsQ.data?.data.find((w) => w.currency === currency);
 
   const createMu = useMutation({
@@ -269,13 +405,10 @@ function NewRowDialog({
   function switchMethod(next: PayoutMethod) {
     const fresh: CreateWithdrawalInput['payout'] =
       next === PayoutMethod.CASH
-        ? {
-            method: PayoutMethod.CASH,
-            recipientName: '',
-            recipientPhone: '',
-            pickupLocation: '',
-          }
-        : { method: PayoutMethod.CRYPTO, network: '', walletAddress: '' };
+        ? { method: PayoutMethod.CASH, recipientName: '', recipientPhone: '', pickupLocation: '' }
+        : next === PayoutMethod.WISH
+          ? { method: PayoutMethod.WISH, recipientName: '', recipientPhone: '' }
+          : { method: PayoutMethod.CRYPTO, network: '', walletAddress: '' };
     setValue('payout', fresh, { shouldValidate: false, shouldDirty: true });
     setMethod(next);
   }
@@ -342,8 +475,9 @@ function NewRowDialog({
               ))}
             </div>
 
-            {method === PayoutMethod.CRYPTO && <CryptoFields form={form} />}
             {method === PayoutMethod.CASH && <CashFields form={form} />}
+            {method === PayoutMethod.WISH && <WishFields form={form} />}
+            {method === PayoutMethod.CRYPTO && <CryptoFields form={form} />}
           </section>
 
           <div className="space-y-2">
@@ -365,9 +499,13 @@ function NewRowDialog({
   );
 }
 
-// Only cash and crypto are offered. Operators settle every flow off-platform
-// via cash handover or crypto transfer.
-const METHOD_OPTIONS: ReadonlyArray<PayoutMethod> = [PayoutMethod.CRYPTO, PayoutMethod.CASH];
+// Offered methods, in display order (cash is the default). Operators settle
+// every flow off-platform — cash handover, Whish transfer, or crypto.
+const METHOD_OPTIONS: ReadonlyArray<PayoutMethod> = [
+  PayoutMethod.CASH,
+  PayoutMethod.WISH,
+  PayoutMethod.CRYPTO,
+];
 
 // ============================================================
 // Per-method field groups
@@ -418,10 +556,32 @@ function CashFields({ form }: { form: UseFormReturn<CreateWithdrawalInput> }) {
         <Input {...register('payout.recipientPhone')} />
       </Field>
       <div className="sm:col-span-2">
-        <Field label="Pickup location" error={err.pickupLocation?.message}>
+        <Field label="Pickup location (optional)" error={err.pickupLocation?.message}>
           <Input {...register('payout.pickupLocation')} />
         </Field>
       </div>
+      <div className="sm:col-span-2">
+        <Field label="Instructions (optional)" error={err.instructions?.message}>
+          <Input {...register('payout.instructions')} />
+        </Field>
+      </div>
+    </div>
+  );
+}
+
+function WishFields({ form }: { form: UseFormReturn<CreateWithdrawalInput> }) {
+  const { register, formState } = form as unknown as UseFormReturn<{
+    payout: { recipientName: string; recipientPhone: string; instructions?: string };
+  }>;
+  const err = (formState.errors.payout ?? {}) as Record<string, { message?: string } | undefined>;
+  return (
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      <Field label="Recipient name" error={err.recipientName?.message}>
+        <Input {...register('payout.recipientName')} />
+      </Field>
+      <Field label="Whish phone" error={err.recipientPhone?.message}>
+        <Input {...register('payout.recipientPhone')} />
+      </Field>
       <div className="sm:col-span-2">
         <Field label="Instructions (optional)" error={err.instructions?.message}>
           <Input {...register('payout.instructions')} />
@@ -479,13 +639,15 @@ function DetailDrawer({
               />
               <DetailRow
                 label="Amount"
-                value={`${trimAmount(withdrawal.amount)} ${withdrawal.currency}`}
+                value={`${trimAmount(withdrawal.totalAmount)} ${withdrawal.currency}`}
                 mono
               />
               {trimAmount(withdrawal.feeAmount) !== '0' && (
                 <DetailRow
                   label="Fee"
-                  value={`${trimAmount(withdrawal.feeAmount)} ${withdrawal.currency}`}
+                  value={`${trimAmount(withdrawal.feeAmount)} ${withdrawal.currency} (${feeApplicationLabel(
+                    withdrawal.feeApplication,
+                  )})`}
                   mono
                 />
               )}
@@ -548,7 +710,7 @@ export function PayoutInstructions({ w }: { w: WithdrawalResponse }) {
           <>
             <KV k="Recipient" v={d.recipientName} />
             <KV k="Phone" v={d.recipientPhone} />
-            <KV k="Pickup" v={d.pickupLocation} />
+            {d.pickupLocation && <KV k="Pickup" v={d.pickupLocation} />}
             {d.instructions && <KV k="Instructions" v={d.instructions} />}
           </>
         )}
@@ -594,6 +756,13 @@ function DetailRow({
       <span className={`text-right text-sm ${mono ? 'font-mono' : ''}`}>{value}</span>
     </div>
   );
+}
+
+// How the fee was applied. "Deducted" comes out of the amount (recipient gets
+// amount − fee); "on top" is added to it (recipient gets the full amount, the
+// company pays amount + fee). Either way the company is charged the fee.
+export function feeApplicationLabel(app: FeeApplication): string {
+  return app === 'ON_TOP' ? 'on top' : 'deducted';
 }
 
 export function prettyMethod(m: PayoutMethod): string {

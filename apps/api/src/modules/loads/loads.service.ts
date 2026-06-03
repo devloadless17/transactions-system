@@ -4,6 +4,7 @@ import {
   type ApproveLoadInput,
   type CancelRequestInput,
   type CreateLoadInput,
+  type FeeApplication,
   type LoadResponse,
   type ListLoadsQuery,
   type PaginatedResponse,
@@ -248,6 +249,12 @@ export class LoadsService {
       if (args.query.status) where.status = args.query.status;
       if (args.query.currency) where.currency = args.query.currency;
       if (args.query.payoutMethod) where.payoutMethod = args.query.payoutMethod;
+      if (args.query.from || args.query.to) {
+        where.createdAt = {
+          ...(args.query.from ? { gte: new Date(args.query.from) } : {}),
+          ...(args.query.to ? { lte: new Date(args.query.to) } : {}),
+        };
+      }
 
       const skip = (args.query.page - 1) * args.query.pageSize;
       const [rows, total] = await Promise.all([
@@ -288,6 +295,7 @@ function mapLoad(row: {
   amount: { toString(): string };
   currency: string;
   feeAmount: { toString(): string };
+  feeApplication: FeeApplication;
   netAmount: { toString(): string };
   status: WithdrawalStatus;
   payoutMethod: PayoutMethod;
@@ -306,7 +314,11 @@ function mapLoad(row: {
     amount: row.amount.toString(),
     currency: row.currency.trim(),
     feeAmount: row.feeAmount.toString(),
+    feeApplication: row.feeApplication,
     netAmount: row.netAmount.toString(),
+    totalAmount: Money.of(row.netAmount.toString())
+      .add(Money.of(row.feeAmount.toString()))
+      .toString(),
     status: row.status,
     payoutMethod: row.payoutMethod,
     payoutDetails: (row.payoutDetails as PayoutDetails | null) ?? null,

@@ -135,9 +135,21 @@ export class WhishClient {
     }
 
     if (!res.ok || !json.status) {
-      const msg = json.dialog?.message ?? json.code ?? `Whish call failed (HTTP ${res.status})`;
-      this.logger.warn(`Whish ${path} failed: code=${json.code} msg=${msg}`);
-      throw new WhishError(msg, { path, code: json.code ?? undefined, httpStatus: res.status });
+      const code = json.code ?? undefined;
+      const upstreamMessage =
+        json.dialog?.message ?? code ?? `Whish call failed (HTTP ${res.status})`;
+      this.logger.warn(`Whish ${path} failed: code=${json.code} msg=${upstreamMessage}`);
+      // Whish reports invalid/expired API credentials as a consumer-facing
+      // "Please sign in again. You have been signed out." dialog. Relaying that
+      // verbatim makes a platform misconfiguration look like the company user's
+      // own app session expired, so translate auth failures into an honest
+      // message. The real upstream code/message stay in the log + error details.
+      const isAuthFailure =
+        res.status === 401 || res.status === 403 || (code?.startsWith('auth.') ?? false);
+      const message = isAuthFailure
+        ? 'Whish rejected the request — the payment provider is not configured correctly (invalid or expired credentials). Please contact support.'
+        : upstreamMessage;
+      throw new WhishError(message, { path, code, httpStatus: res.status, upstreamMessage });
     }
 
     return json.data as T;

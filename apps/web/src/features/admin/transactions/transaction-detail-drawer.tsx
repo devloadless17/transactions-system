@@ -73,6 +73,16 @@ export function TransactionDetailDrawer({ scope, transaction, onClose }: Props) 
               <DetailRow label="Created at" value={new Date(tx.createdAt).toLocaleString()} />
             </section>
 
+            {(tx.customer || tx.target || tx.phone || tx.note) && (
+              <section className="space-y-2">
+                <h3 className="text-xs font-medium uppercase text-muted-foreground">Details</h3>
+                {tx.customer && <DetailRow label="Customer" value={tx.customer} />}
+                {tx.target && <DetailRow label="Target" value={tx.target} />}
+                {tx.phone && <DetailRow label="Phone" value={tx.phone} mono />}
+                {tx.note && <DetailRow label="Note" value={tx.note} />}
+              </section>
+            )}
+
             {detailQ.data && (
               <>
                 <section className="space-y-2">

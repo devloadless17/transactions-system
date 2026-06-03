@@ -1,4 +1,5 @@
 import 'reflect-metadata';
+import { timingSafeEqual } from 'node:crypto';
 import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import { Logger } from '@nestjs/common';
@@ -77,8 +78,14 @@ async function bootstrap() {
   // production. When METRICS_TOKEN is empty (dev) the endpoint stays open.
   const metricsToken = config.get('METRICS_TOKEN', { infer: true });
   if (metricsToken) {
+    const expected = Buffer.from(`Bearer ${metricsToken}`);
     app.use('/metrics', (req: Request, res: Response, next: NextFunction) => {
-      if (req.headers.authorization === `Bearer ${metricsToken}`) return next();
+      // Constant-time compare (matches the project's timing-safe posture for
+      // secrets) so a correct prefix of the token can't be recovered byte-by-byte.
+      const provided = Buffer.from(req.headers.authorization ?? '');
+      if (provided.length === expected.length && timingSafeEqual(provided, expected)) {
+        return next();
+      }
       res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'metrics token required' } });
     });
   } else if (config.get('NODE_ENV', { infer: true }) === 'production') {

@@ -3,10 +3,10 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import {
-  WithdrawalStatus,
   type CompanyResponse,
   type PaginatedResponse,
   type WithdrawalResponse,
+  type WithdrawalStatus,
 } from '@app/shared';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -25,7 +25,15 @@ import { Label } from '@/components/ui/label';
 import { apiFetch } from '@/lib/api.client';
 import { ApiClientError } from '@/lib/api';
 import { trimAmount } from '@/lib/format';
-import { PayoutInstructions, prettyMethod } from '@/features/company/withdrawals-view';
+import {
+  EMPTY_FLOW_FILTERS,
+  feeApplicationLabel,
+  FlowFilterBar,
+  flowFilterParams,
+  PayoutInstructions,
+  prettyMethod,
+  type FlowFilters,
+} from '@/features/company/withdrawals-view';
 
 interface ReviewState {
   withdrawal: WithdrawalResponse;
@@ -51,11 +59,11 @@ export interface AdminProcessConfig {
 
 export function AdminWithdrawalsView({ config }: { config: AdminProcessConfig }) {
   const qc = useQueryClient();
-  const [filter, setFilter] = useState<WithdrawalStatus | ''>('PENDING');
+  // Operators land on the pending queue by default; all other filters start "any".
+  const [filters, setFilters] = useState<FlowFilters>({ ...EMPTY_FLOW_FILTERS, status: 'PENDING' });
   const [review, setReview] = useState<ReviewState | null>(null);
 
-  const params = new URLSearchParams({ pageSize: '50' });
-  if (filter) params.set('status', filter);
+  const params = flowFilterParams(filters, { pageSize: '50' });
 
   const listQ = useQuery({
     queryKey: [...config.queryKey, params.toString()],
@@ -79,7 +87,23 @@ export function AdminWithdrawalsView({ config }: { config: AdminProcessConfig })
       header: 'Amount',
       align: 'right',
       className: 'font-mono',
-      cell: (w) => trimAmount(w.amount),
+      // Total charged = net + fee (Amount = Net + Fee on every row; for an
+      // ON_TOP fee this exceeds the requested amount).
+      cell: (w) => trimAmount(w.totalAmount),
+    },
+    {
+      key: 'fee',
+      header: 'Fee',
+      align: 'right',
+      className: 'font-mono text-xs text-muted-foreground',
+      cell: (w) => (trimAmount(w.feeAmount) === '0' ? '—' : trimAmount(w.feeAmount)),
+    },
+    {
+      key: 'net',
+      header: 'Net',
+      align: 'right',
+      className: 'font-mono text-xs',
+      cell: (w) => trimAmount(w.netAmount),
     },
     { key: 'currency', header: 'Currency', cell: (w) => w.currency },
     {
@@ -131,25 +155,7 @@ export function AdminWithdrawalsView({ config }: { config: AdminProcessConfig })
         <p className="text-sm text-muted-foreground">{config.subhead}</p>
       </div>
 
-      <Card>
-        <CardContent className="space-y-4 p-4">
-          <div className="space-y-1">
-            <Label className="text-xs">Status</Label>
-            <select
-              value={filter}
-              onChange={(e) => setFilter((e.target.value as WithdrawalStatus) || '')}
-              className="h-10 rounded-md border border-input bg-background px-3 text-sm"
-            >
-              <option value="">All</option>
-              {Object.values(WithdrawalStatus).map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
-          </div>
-        </CardContent>
-      </Card>
+      <FlowFilterBar value={filters} onChange={setFilters} companies={companiesQ.data?.data} />
 
       <Card>
         <CardContent className="p-0">
@@ -227,13 +233,38 @@ function ReviewDialog({
           </DialogTitle>
           <DialogDescription>
             {review &&
-              `${trimAmount(review.withdrawal.amount)} ${review.withdrawal.currency} — ${
-                review.action === 'approve'
-                  ? 'Send the money out-of-band, then record the reference here.'
-                  : 'Reserved funds will return to available.'
-              }`}
+              (review.action === 'approve'
+                ? `Send ${trimAmount(review.withdrawal.netAmount)} ${review.withdrawal.currency} to the recipient out-of-band, then record the reference here.`
+                : `Reserved ${trimAmount(review.withdrawal.totalAmount)} ${review.withdrawal.currency} returns to available.`)}
           </DialogDescription>
         </DialogHeader>
+
+        {review && (
+          <div className="space-y-1 rounded-md border bg-muted/30 p-3 text-sm">
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-muted-foreground">Amount</span>
+              <span className="font-mono">
+                {trimAmount(review.withdrawal.totalAmount)} {review.withdrawal.currency}
+              </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-muted-foreground">Fee (platform revenue)</span>
+              <span className="font-mono">
+                {trimAmount(review.withdrawal.feeAmount) === '0'
+                  ? '—'
+                  : `${trimAmount(review.withdrawal.feeAmount)} ${review.withdrawal.currency} (${feeApplicationLabel(
+                      review.withdrawal.feeApplication,
+                    )})`}
+              </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-muted-foreground">Net</span>
+              <span className="font-mono">
+                {trimAmount(review.withdrawal.netAmount)} {review.withdrawal.currency}
+              </span>
+            </div>
+          </div>
+        )}
 
         {review && review.action === 'approve' && <PayoutInstructions w={review.withdrawal} />}
 
