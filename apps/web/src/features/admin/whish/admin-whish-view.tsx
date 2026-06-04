@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import type { PaginatedResponse, WhishPaymentResponse } from '@app/shared';
+import type { CompanyResponse, PaginatedResponse, WhishPaymentResponse } from '@app/shared';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { DataTable, type Column } from '@/components/ui/data-table';
@@ -37,6 +37,14 @@ export function AdminWhishView() {
     if (tp && page > tp) setPage(tp);
   }, [data, page]);
 
+  // Resolve companyId -> name so the table shows the company, not a raw id prefix.
+  const companiesQ = useQuery({
+    queryKey: ['admin', 'companies', 'all'],
+    queryFn: () => apiFetch<PaginatedResponse<CompanyResponse>>('/admin/companies?pageSize=100'),
+  });
+  const companyName = (id: string) =>
+    companiesQ.data?.data.find((c) => c.id === id)?.name ?? id.slice(0, 8);
+
   const columns: Column<WhishPaymentResponse>[] = [
     {
       key: 'reference',
@@ -47,8 +55,7 @@ export function AdminWhishView() {
     {
       key: 'company',
       header: 'Company',
-      className: 'font-mono text-xs text-muted-foreground',
-      cell: (p) => p.companyId.slice(0, 8),
+      cell: (p) => companyName(p.companyId),
     },
     { key: 'invoice', header: 'Invoice', cell: (p) => p.invoice },
     {

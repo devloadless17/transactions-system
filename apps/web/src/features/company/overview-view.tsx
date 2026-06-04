@@ -70,6 +70,13 @@ export function OverviewView() {
 
   const money = (s: string | undefined) =>
     s !== undefined ? `${formatNumber(s)} ${currency}` : '—';
+  // Outflows: shown with a leading minus so the right-hand column reads as a
+  // literal subtraction (Net deposit + Net load − Withdrawals − Payouts = wallet).
+  const outMoney = (s: string | undefined) => {
+    if (s === undefined) return '—';
+    const sign = Number(s) > 0 ? '− ' : '';
+    return `${sign}${formatNumber(s)} ${currency}`;
+  };
 
   return (
     <div className="space-y-6">
@@ -107,19 +114,28 @@ export function OverviewView() {
         )}
       </Card>
 
-      {/* All-time reconciliation: each row pairs the gross with the net that
-          actually moved in/out of the wallet. */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <KpiCard label="Deposit" value={money(sum?.deposits.gross)} />
-        <KpiCard label="Net deposit" value={money(sum?.deposits.net)} />
-        <KpiCard label="Loads" value={money(sum?.loads.gross)} />
-        <KpiCard label="Net loads" value={money(sum?.loads.net)} />
-        <KpiCard
+      {/* All-time reconciliation. The right-hand column is the company's check on
+          its own wallet: the net IN figures (Net deposit, Net load) are right-
+          aligned, and the money-OUT rows (Withdrawals, Payouts) are full-width with
+          their value on the same right edge — so the whole column reads straight
+          down as Net deposit + Net load − Withdrawals − Payouts = wallet. */}
+      <div className="space-y-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <KpiCard label="Deposit" value={money(sum?.deposits.gross)} />
+          <KpiCard label="Net deposit" value={money(sum?.deposits.net)} align="right" />
+          <KpiCard label="Loads" value={money(sum?.loads.gross)} />
+          <KpiCard label="Net loads" value={money(sum?.loads.net)} align="right" />
+        </div>
+        <FlowRowCard
           label="Withdrawals"
-          value={money(sum?.withdrawals.total)}
           hint="includes in-flight"
+          value={outMoney(sum?.withdrawals.total)}
         />
-        <KpiCard label="Payouts" value={money(sum?.payouts.total)} hint="includes in-flight" />
+        <FlowRowCard
+          label="Payouts"
+          hint="includes in-flight"
+          value={outMoney(sum?.payouts.total)}
+        />
       </div>
       <div className="text-xs text-muted-foreground">
         <p>
@@ -212,6 +228,22 @@ export function OverviewView() {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+// Full-width money-out row: label (+ hint) on the left, value on the far right so
+// it lines up directly under the right-aligned Net deposit / Net load figures.
+function FlowRowCard({ label, value, hint }: { label: string; value: string; hint?: string }) {
+  return (
+    <Card>
+      <CardContent className="flex items-center justify-between gap-4 px-6 py-5">
+        <div className="space-y-0.5">
+          <CardDescription>{label}</CardDescription>
+          {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
+        </div>
+        <span className="font-mono text-2xl">{value}</span>
+      </CardContent>
+    </Card>
   );
 }
 
