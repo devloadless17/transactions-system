@@ -86,7 +86,7 @@ test.describe('admin: source API keys', () => {
     const ingest = await ingestRes.post('/v1/ingest/omt/transactions', {
       headers: { Authorization: `Bearer ${plaintext}` },
       data: {
-        companyId: targetId,
+        operatingId: targetId,
         externalTransactionId: `e2e-${Date.now()}`,
         amount: '120.00',
         currency: 'USD',
@@ -103,7 +103,7 @@ test.describe('admin: source API keys', () => {
     const mismatch = await ingestRes.post('/v1/ingest/whish/transactions', {
       headers: { Authorization: `Bearer ${plaintext}` },
       data: {
-        companyId: targetId,
+        operatingId: targetId,
         externalTransactionId: `e2e-mismatch-${Date.now()}`,
         amount: '10',
         currency: 'USD',
@@ -116,8 +116,12 @@ test.describe('admin: source API keys', () => {
       headers: { Authorization: `Bearer ${plaintext}` },
     });
     expect(discover.status()).toBe(200);
-    const list = (await discover.json()).data as Array<{ id: string; slug: string; name: string }>;
-    expect(list.some((c) => c.id === targetId)).toBeTruthy();
+    const list = (await discover.json()).data as Array<{
+      operatingId: string;
+      slug: string;
+      name: string;
+    }>;
+    expect(list.some((c) => c.operatingId === targetId)).toBeTruthy();
 
     await api.dispose();
     await ingestRes.dispose();

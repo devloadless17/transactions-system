@@ -187,9 +187,11 @@ export async function ingestTransaction(
 ): Promise<{ status: number; body: any }> {
   const ctx = await pwRequest.newContext({ baseURL: API_BASE });
   try {
+    // The source-facing API names the company field `operatingId`.
+    const { companyId, ...rest } = data;
     const res = await ctx.post(`/v1/ingest/${sourceCode}/transactions`, {
       headers: { Authorization: `Bearer ${plaintext}` },
-      data,
+      data: { operatingId: companyId, ...rest },
     });
     const text = await res.text();
     return { status: res.status(), body: text ? JSON.parse(text) : null };

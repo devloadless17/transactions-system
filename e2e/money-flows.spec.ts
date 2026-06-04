@@ -217,7 +217,8 @@ test.describe.serial('money flows end-to-end (API)', () => {
     });
     expect(ing.status, JSON.stringify(ing.body)).toBe(201);
     near(ing.body.amount, 100);
-    near(ing.body.netAmount, 90);
+    // The source-facing response does NOT expose the fee/net; the wallet
+    // assertion below verifies the 90 net credited from the company's view.
     await expectWallet(ownerA, 90, 0);
 
     // 2) Load 100 → PENDING (no wallet move yet); approve credits net 90.
@@ -354,7 +355,7 @@ test.describe.serial('money flows end-to-end (API)', () => {
       currency: 'USD',
     });
     expect(ing.status, JSON.stringify(ing.body)).toBe(201);
-    near(ing.body.netAmount, 1000); // FIXED 0 fee
+    // Net is not exposed to sources; the wallet check confirms the 1000 (0 fee).
     await expectWallet(ownerB, 1000, 0);
 
     // DEDUCTED (amount 100, bracket ≤150): fee taken from the amount.
