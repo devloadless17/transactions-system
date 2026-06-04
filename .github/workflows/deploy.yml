@@ -135,7 +135,7 @@ jobs:
       # shared runner IPs (Azure) intermittently get flagged and their SYNs are
       # silently dropped (-> "dial tcp :22: i/o timeout") — invisible to ufw/sshd
       # because the packets never reach the host. The scrub window is short
-      # (~1-2 min), so poll the SSH port from THIS runner until it clears before
+      # (~1-2 min), so poll the SSH port from THIS runner until it clears before t
       # the scp/ssh steps run. If it never clears (~5 min), fail — a re-run draws
       # a fresh runner IP.
       #
