@@ -4,6 +4,11 @@
 #
 # Single workflow: the typecheck job runs on every event; the build-and-deploy
 # job is gated to non-PR events, so PRs never touch the server.
+#
+# SSH auth: the deploy key is stored base64-encoded (single line) in the
+# VPS_SSH_KEY_B64 secret — a single line can't get its newlines mangled on
+# paste, which is what broke the multi-line VPS_SSH_KEY. We decode it to a file
+# and use plain ssh/scp (no appleboy key-parsing quirks).
 name: Deploy to Production
 
 on:
@@ -70,7 +75,7 @@ jobs:
       - name: Validate required secrets
         env:
           REQUIRED: |
-            DOCKER_USERNAME DOCKER_SECRET VPS_HOST VPS_USER VPS_SSH_KEY DOMAIN
+            DOCKER_USERNAME DOCKER_SECRET VPS_HOST VPS_USER VPS_SSH_KEY_B64 DOMAIN
             POSTGRES_PASSWORD POSTGRES_PASSWORD_RLS
             JWT_ACCESS_SECRET JWT_REFRESH_SECRET CSRF_SECRET METRICS_TOKEN
             SEED_ADMIN_EMAIL SEED_ADMIN_PASSWORD
@@ -129,18 +134,23 @@ jobs:
           cache-to: type=gha,mode=max,scope=web
 
       # ---------------------------------------------------------------
-      # Wait out Hostinger's edge DDoS scrubbing.
-      #
-      # Hostinger runs always-on edge scrubbing IN FRONT of the VPS. GitHub's
-      # shared runner IPs (Azure) intermittently get flagged and their SYNs are
-      # silently dropped (-> "dial tcp :22: i/o timeout") — invisible to ufw/sshd
-      # because the packets never reach the host. The scrub window is short
-      # (~1-2 min), so poll the SSH port from THIS runner until it clears before t
-      # the scp/ssh steps run. If it never clears (~5 min), fail — a re-run draws
-      # a fresh runner IP.
-      #
-      # Tip: set the VPS_PORT secret to a non-22 SSH port — Hostinger's edge
-      # brute-force scrubbing targets 22, so a custom port usually bypasses it.
+      # Decode the SSH key (base64 single-line secret → no newline mangling).
+      # ---------------------------------------------------------------
+      - name: Prepare SSH key
+        env:
+          KEY_B64: ${{ secrets.VPS_SSH_KEY_B64 }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s' "$KEY_B64" | base64 -d > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          head -1 ~/.ssh/deploy_key | grep -q "BEGIN OPENSSH PRIVATE KEY" \
+            || { echo "::error::VPS_SSH_KEY_B64 did not decode to a valid private key"; exit 1; }
+          echo "✓ SSH key decoded"
+
+      # ---------------------------------------------------------------
+      # Wait out Hostinger's edge DDoS scrubbing (poll the SSH port until the
+      # runner IP clears). The scrub targets 22; set VPS_PORT to a non-22 port
+      # (e.g. 2222) to bypass it entirely.
       # ---------------------------------------------------------------
       - name: Wait for VPS SSH to be reachable
         env:
@@ -152,90 +162,96 @@ jobs:
               echo "✓ $HOST:$PORT reachable (attempt $i/20)"
               exit 0
             fi
-            echo "… $HOST:$PORT unreachable (attempt $i/20) — likely Hostinger edge scrub on this runner IP; retrying in 15s"
+            echo "… $HOST:$PORT unreachable (attempt $i/20) — likely Hostinger edge scrub; retrying in 15s"
             sleep 15
           done
-          echo "::error::$HOST:$PORT never became reachable (~5 min) — sustained edge scrub. Re-run for a fresh runner IP, set VPS_PORT to a non-22 port, or use a self-hosted runner."
+          echo "::error::$HOST:$PORT never became reachable (~5 min). Re-run for a fresh runner IP or set VPS_PORT to a non-22 port."
           exit 1
 
-      # Ship deploy files + render the server-side .env from secrets.
-      - name: Copy deploy files to server
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          port: ${{ secrets.VPS_PORT || '22' }}
-          source: 'docker-compose.prod.yml,Caddyfile,.env.prod.example'
-          target: ${{ env.DEPLOY_DIR }}
+      # ---------------------------------------------------------------
+      # Render .env from secrets ON THE RUNNER, then ship config + .env
+      # and deploy — all over plain ssh/scp.
+      # ---------------------------------------------------------------
+      - name: Render .env
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOMAIN: ${{ secrets.DOMAIN }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          POSTGRES_PASSWORD_RLS: ${{ secrets.POSTGRES_PASSWORD_RLS }}
+          JWT_ACCESS_SECRET: ${{ secrets.JWT_ACCESS_SECRET }}
+          JWT_REFRESH_SECRET: ${{ secrets.JWT_REFRESH_SECRET }}
+          CSRF_SECRET: ${{ secrets.CSRF_SECRET }}
+          METRICS_TOKEN: ${{ secrets.METRICS_TOKEN }}
+          SEED_ADMIN_EMAIL: ${{ secrets.SEED_ADMIN_EMAIL }}
+          SEED_ADMIN_PASSWORD: ${{ secrets.SEED_ADMIN_PASSWORD }}
+          WHISH_CHANNEL: ${{ secrets.WHISH_CHANNEL }}
+          WHISH_SECRET: ${{ secrets.WHISH_SECRET }}
+          SEED_DATABASE: ${{ github.event.inputs.seed_database || 'false' }}
+        run: |
+          cp .env.prod.example .env.rendered
+          sed -i "s|__DOCKER_USERNAME__|$DOCKER_USERNAME|g" .env.rendered
+          sed -i "s|__DOMAIN__|$DOMAIN|g" .env.rendered
+          sed -i "s|__POSTGRES_PASSWORD__|$POSTGRES_PASSWORD|g" .env.rendered
+          sed -i "s|__POSTGRES_PASSWORD_RLS__|$POSTGRES_PASSWORD_RLS|g" .env.rendered
+          sed -i "s|__JWT_ACCESS_SECRET__|$JWT_ACCESS_SECRET|g" .env.rendered
+          sed -i "s|__JWT_REFRESH_SECRET__|$JWT_REFRESH_SECRET|g" .env.rendered
+          sed -i "s|__CSRF_SECRET__|$CSRF_SECRET|g" .env.rendered
+          sed -i "s|__METRICS_TOKEN__|$METRICS_TOKEN|g" .env.rendered
+          sed -i "s|__SEED_ADMIN_EMAIL__|$SEED_ADMIN_EMAIL|g" .env.rendered
+          sed -i "s|__SEED_ADMIN_PASSWORD__|$SEED_ADMIN_PASSWORD|g" .env.rendered
+          sed -i "s|__WHISH_CHANNEL__|$WHISH_CHANNEL|g" .env.rendered
+          sed -i "s|__WHISH_SECRET__|$WHISH_SECRET|g" .env.rendered
+          sed -i "s|^SEED_DATABASE=false|SEED_DATABASE=$SEED_DATABASE|g" .env.rendered
 
-      - name: Render .env from secrets
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          port: ${{ secrets.VPS_PORT || '22' }}
-          script: |
-            set -e
-            cd ${{ env.DEPLOY_DIR }}
-            cp .env.prod.example .env
-            sed -i "s|__DOCKER_USERNAME__|${{ secrets.DOCKER_USERNAME }}|g" .env
-            sed -i "s|__DOMAIN__|${{ secrets.DOMAIN }}|g" .env
-            sed -i "s|__POSTGRES_PASSWORD__|${{ secrets.POSTGRES_PASSWORD }}|g" .env
-            sed -i "s|__POSTGRES_PASSWORD_RLS__|${{ secrets.POSTGRES_PASSWORD_RLS }}|g" .env
-            sed -i "s|__JWT_ACCESS_SECRET__|${{ secrets.JWT_ACCESS_SECRET }}|g" .env
-            sed -i "s|__JWT_REFRESH_SECRET__|${{ secrets.JWT_REFRESH_SECRET }}|g" .env
-            sed -i "s|__CSRF_SECRET__|${{ secrets.CSRF_SECRET }}|g" .env
-            sed -i "s|__METRICS_TOKEN__|${{ secrets.METRICS_TOKEN }}|g" .env
-            sed -i "s|__SEED_ADMIN_EMAIL__|${{ secrets.SEED_ADMIN_EMAIL }}|g" .env
-            sed -i "s|__SEED_ADMIN_PASSWORD__|${{ secrets.SEED_ADMIN_PASSWORD }}|g" .env
-            sed -i "s|__WHISH_CHANNEL__|${{ secrets.WHISH_CHANNEL }}|g" .env
-            sed -i "s|__WHISH_SECRET__|${{ secrets.WHISH_SECRET }}|g" .env
-            sed -i "s|^SEED_DATABASE=false|SEED_DATABASE=${{ github.event.inputs.seed_database || 'false' }}|g" .env
-            chmod 600 .env
+      - name: Ship & deploy
+        env:
+          HOST: ${{ secrets.VPS_HOST }}
+          SSH_USER: ${{ secrets.VPS_USER }}
+          PORT: ${{ secrets.VPS_PORT || '22' }}
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_SECRET: ${{ secrets.DOCKER_SECRET }}
+        run: |
+          set -e
+          KEY=~/.ssh/deploy_key
+          COMMON="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 
-      # Pull images, run DB migrate/seed, bring the stack up, health-gate.
-      # The VPS_USER is in the `docker` group, so no sudo is needed.
-      - name: Deploy to server
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          port: ${{ secrets.VPS_PORT || '22' }}
-          command_timeout: 20m
-          script: |
-            set -e
-            cd ${{ env.DEPLOY_DIR }}
+          echo "==> Copying files to $SSH_USER@$HOST:$DEPLOY_DIR"
+          scp -i "$KEY" -P "$PORT" $COMMON \
+            docker-compose.prod.yml Caddyfile .env.rendered \
+            "$SSH_USER@$HOST:$DEPLOY_DIR/"
 
-            echo "${{ secrets.DOCKER_SECRET }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+          echo "==> Activating .env + deploying"
+          ssh -i "$KEY" -p "$PORT" $COMMON \
+            "$SSH_USER@$HOST" \
+            "DEPLOY_DIR='$DEPLOY_DIR' DOCKER_USERNAME='$DOCKER_USERNAME' DOCKER_SECRET='$DOCKER_SECRET' bash -s" <<'REMOTE'
+          set -e
+          cd "$DEPLOY_DIR"
+          mv -f .env.rendered .env
+          chmod 600 .env
 
-            echo "==> Pulling images"
-            docker compose -f docker-compose.prod.yml pull
+          echo "$DOCKER_SECRET" | docker login -u "$DOCKER_USERNAME" --password-stdin
 
-            echo "==> Running migrations / RLS rotation / seed"
-            docker compose -f docker-compose.prod.yml run --rm migrate
+          echo "==> Pulling images"
+          docker compose -f docker-compose.prod.yml pull
 
-            echo "==> Starting stack"
-            docker compose -f docker-compose.prod.yml up -d --remove-orphans
+          echo "==> Migrations / RLS rotation / seed"
+          docker compose -f docker-compose.prod.yml run --rm migrate
 
-            docker image prune -f
+          echo "==> Starting stack"
+          docker compose -f docker-compose.prod.yml up -d --remove-orphans
+          docker image prune -f
 
-            echo "==> Waiting for API to become healthy"
-            RETRIES=0; MAX=45
-            until [ "$RETRIES" -ge "$MAX" ]; do
-              STATUS=$(docker inspect --format='{{.State.Health.Status}}' txn_api 2>/dev/null || echo "starting")
-              if [ "$STATUS" = "healthy" ]; then echo "API is healthy!"; break; fi
-              RETRIES=$((RETRIES + 1))
-              echo "  ...($RETRIES/$MAX) status=$STATUS"
-              sleep 4
-            done
-
-            if [ "$RETRIES" -ge "$MAX" ]; then
-              echo "::error::API did not become healthy in time. Recent logs:"
-              docker compose -f docker-compose.prod.yml logs --tail 80 api
-              exit 1
-            fi
-
-            docker compose -f docker-compose.prod.yml ps
+          echo "==> Waiting for API health"
+          RETRIES=0; MAX=45
+          until [ "$RETRIES" -ge "$MAX" ]; do
+            STATUS=$(docker inspect --format='{{.State.Health.Status}}' txn_api 2>/dev/null || echo "starting")
+            [ "$STATUS" = "healthy" ] && { echo "API is healthy!"; break; }
+            RETRIES=$((RETRIES + 1)); echo "  ...($RETRIES/$MAX) status=$STATUS"; sleep 4
+          done
+          if [ "$RETRIES" -ge "$MAX" ]; then
+            echo "API did not become healthy in time:"
+            docker compose -f docker-compose.prod.yml logs --tail 80 api
+            exit 1
+          fi
+          docker compose -f docker-compose.prod.yml ps
+          REMOTE
