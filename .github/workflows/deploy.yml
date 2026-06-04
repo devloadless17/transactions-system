@@ -1,9 +1,15 @@
+# PR → typecheck + lint only.
+# Push to main (or manual run) → typecheck → build & push both images →
+#                                ship to the VPS → migrate/seed → health-gate.
+#
+# Single workflow: the typecheck job runs on every event; the build-and-deploy
+# job is gated to non-PR events, so PRs never touch the server.
 name: Deploy to Production
 
-# Auto-deploys on every push to main. Use the manual "Run workflow" button with
-# seed_database=true for the FIRST deploy only (creates the initial super admin).
 on:
   push:
+    branches: [main]
+  pull_request:
     branches: [main]
   workflow_dispatch:
     inputs:
@@ -16,25 +22,51 @@ on:
           - 'false'
           - 'true'
 
-# Never let two deploys race on the server.
 concurrency:
-  group: deploy-production
-  cancel-in-progress: false
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # Deploy target dir on the VPS (owned by the VPS_USER deploy user).
   DEPLOY_DIR: /home/deploy/transactions-system
 
 jobs:
+  # ---------------------------------------------------------------
+  # Runs on EVERY event (PR + push). PRs stop here.
+  # ---------------------------------------------------------------
+  typecheck:
+    name: Typecheck & Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      # No --ignore-scripts: @prisma/client's postinstall generates the client
+      # (skipping it makes `@prisma/client` export nothing → packages:build fails).
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm db:generate
+      - run: pnpm packages:build
+      - run: pnpm typecheck
+      - run: pnpm lint
+
+  # ---------------------------------------------------------------
+  # Build + ship. Skipped on pull_request; needs typecheck green.
+  # ---------------------------------------------------------------
   build-and-deploy:
     name: Build, Push & Deploy
+    if: github.event_name != 'pull_request'
+    needs: typecheck
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
     steps:
-      # ---------------------------------------------------------------
       # Fail fast with a clear message if a required secret is missing.
-      # ---------------------------------------------------------------
       - name: Validate required secrets
         env:
           REQUIRED: |
@@ -67,10 +99,7 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_SECRET }}
 
-      # ---------------------------------------------------------------
       # Build & push both images (latest + commit SHA for rollbacks).
-      # Separate gha cache scopes so the two builds don't evict each other.
-      # ---------------------------------------------------------------
       - name: Build & push API image
         uses: docker/build-push-action@v6
         with:
@@ -107,8 +136,8 @@ jobs:
       # silently dropped (-> "dial tcp :22: i/o timeout") — invisible to ufw/sshd
       # because the packets never reach the host. The scrub window is short
       # (~1-2 min), so poll the SSH port from THIS runner until it clears before
-      # the scp/ssh steps run (they share the runner's egress IP). If it never
-      # clears (~5 min), fail — a re-run draws a fresh runner IP.
+      # the scp/ssh steps run. If it never clears (~5 min), fail — a re-run draws
+      # a fresh runner IP.
       #
       # Tip: set the VPS_PORT secret to a non-22 SSH port — Hostinger's edge
       # brute-force scrubbing targets 22, so a custom port usually bypasses it.
@@ -129,10 +158,7 @@ jobs:
           echo "::error::$HOST:$PORT never became reachable (~5 min) — sustained edge scrub. Re-run for a fresh runner IP, set VPS_PORT to a non-22 port, or use a self-hosted runner."
           exit 1
 
-      # ---------------------------------------------------------------
       # Ship deploy files + render the server-side .env from secrets.
-      # Auth: VPS_USER + VPS_SSH_KEY (SSH key), optional VPS_PORT (default 22).
-      # ---------------------------------------------------------------
       - name: Copy deploy files to server
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -169,10 +195,8 @@ jobs:
             sed -i "s|^SEED_DATABASE=false|SEED_DATABASE=${{ github.event.inputs.seed_database || 'false' }}|g" .env
             chmod 600 .env
 
-      # ---------------------------------------------------------------
       # Pull images, run DB migrate/seed, bring the stack up, health-gate.
       # The VPS_USER is in the `docker` group, so no sudo is needed.
-      # ---------------------------------------------------------------
       - name: Deploy to server
         uses: appleboy/ssh-action@v1.2.0
         with:
