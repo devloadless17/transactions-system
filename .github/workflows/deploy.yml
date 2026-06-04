@@ -22,11 +22,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # Non-root deploy user (in the `docker` group) — auth is SSH key, not password.
-  # Key auth that succeeds first try avoids Hostinger's SSH brute-force edge
-  # protection, which can flag a runner IP after failed password attempts and
-  # silently drop its packets (the "dial tcp :22: i/o timeout" we were hitting).
-  DEPLOY_USER: deploy
+  # Deploy target dir on the VPS (owned by the VPS_USER deploy user).
   DEPLOY_DIR: /home/deploy/transactions-system
 
 jobs:
@@ -42,7 +38,7 @@ jobs:
       - name: Validate required secrets
         env:
           REQUIRED: |
-            DOCKER_USERNAME DOCKER_SECRET SERVER_IP SSH_PRIVATE_KEY DOMAIN
+            DOCKER_USERNAME DOCKER_SECRET VPS_HOST VPS_USER VPS_SSH_KEY DOMAIN
             POSTGRES_PASSWORD POSTGRES_PASSWORD_RLS
             JWT_ACCESS_SECRET JWT_REFRESH_SECRET CSRF_SECRET METRICS_TOKEN
             SEED_ADMIN_EMAIL SEED_ADMIN_PASSWORD
@@ -110,44 +106,50 @@ jobs:
       # shared runner IPs (Azure) intermittently get flagged and their SYNs are
       # silently dropped (-> "dial tcp :22: i/o timeout") — invisible to ufw/sshd
       # because the packets never reach the host. The scrub window is short
-      # (~1-2 min), so poll port 22 from THIS runner until it clears before the
-      # scp/ssh steps run (they share the runner's egress IP). If it never clears
-      # (~5 min), fail — a re-run draws a fresh runner IP.
+      # (~1-2 min), so poll the SSH port from THIS runner until it clears before
+      # the scp/ssh steps run (they share the runner's egress IP). If it never
+      # clears (~5 min), fail — a re-run draws a fresh runner IP.
+      #
+      # Tip: set the VPS_PORT secret to a non-22 SSH port — Hostinger's edge
+      # brute-force scrubbing targets 22, so a custom port usually bypasses it.
       # ---------------------------------------------------------------
       - name: Wait for VPS SSH to be reachable
         env:
-          HOST: ${{ secrets.SERVER_IP }}
+          HOST: ${{ secrets.VPS_HOST }}
+          PORT: ${{ secrets.VPS_PORT || '22' }}
         run: |
           for i in $(seq 1 20); do
-            if timeout 8 bash -c "exec 3<>/dev/tcp/$HOST/22" 2>/dev/null; then
-              echo "✓ $HOST:22 reachable (attempt $i/20)"
+            if timeout 8 bash -c "exec 3<>/dev/tcp/$HOST/$PORT" 2>/dev/null; then
+              echo "✓ $HOST:$PORT reachable (attempt $i/20)"
               exit 0
             fi
-            echo "… $HOST:22 unreachable (attempt $i/20) — likely Hostinger edge scrub on this runner IP; retrying in 15s"
+            echo "… $HOST:$PORT unreachable (attempt $i/20) — likely Hostinger edge scrub on this runner IP; retrying in 15s"
             sleep 15
           done
-          echo "::error::$HOST:22 never became reachable (~5 min) — sustained edge scrub. Re-run the job to draw a fresh runner IP, or move deploy to a self-hosted runner."
+          echo "::error::$HOST:$PORT never became reachable (~5 min) — sustained edge scrub. Re-run for a fresh runner IP, set VPS_PORT to a non-22 port, or use a self-hosted runner."
           exit 1
 
       # ---------------------------------------------------------------
       # Ship deploy files + render the server-side .env from secrets.
-      # Auth is the deploy user's SSH key (secrets.SSH_PRIVATE_KEY).
+      # Auth: VPS_USER + VPS_SSH_KEY (SSH key), optional VPS_PORT (default 22).
       # ---------------------------------------------------------------
       - name: Copy deploy files to server
         uses: appleboy/scp-action@v0.1.7
         with:
-          host: ${{ secrets.SERVER_IP }}
-          username: ${{ env.DEPLOY_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || '22' }}
           source: 'docker-compose.prod.yml,Caddyfile,.env.prod.example'
           target: ${{ env.DEPLOY_DIR }}
 
       - name: Render .env from secrets
         uses: appleboy/ssh-action@v1.2.0
         with:
-          host: ${{ secrets.SERVER_IP }}
-          username: ${{ env.DEPLOY_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || '22' }}
           script: |
             set -e
             cd ${{ env.DEPLOY_DIR }}
@@ -169,14 +171,15 @@ jobs:
 
       # ---------------------------------------------------------------
       # Pull images, run DB migrate/seed, bring the stack up, health-gate.
-      # The deploy user is in the `docker` group, so no sudo is needed.
+      # The VPS_USER is in the `docker` group, so no sudo is needed.
       # ---------------------------------------------------------------
       - name: Deploy to server
         uses: appleboy/ssh-action@v1.2.0
         with:
-          host: ${{ secrets.SERVER_IP }}
-          username: ${{ env.DEPLOY_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || '22' }}
           command_timeout: 20m
           script: |
             set -e
