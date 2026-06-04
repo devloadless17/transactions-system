@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { DataTable, type Column } from '@/components/ui/data-table';
+import { Pagination } from '@/components/ui/pagination';
 import { apiFetch } from '@/lib/api.client';
 import { ApiClientError } from '@/lib/api';
 import { CreateCommissionRuleDialog } from './create-commission-rule-dialog';
@@ -21,6 +22,8 @@ export function CommissionsView({ canDelete = false }: { canDelete?: boolean }) 
   const qc = useQueryClient();
   const [createOpen, setCreateOpen] = useState(false);
   const [editing, setEditing] = useState<CommissionRuleResponse | null>(null);
+  const [page, setPage] = useState(1);
+  const PAGE_SIZE = 50;
 
   const deleteMu = useMutation({
     mutationFn: (id: string) =>
@@ -60,9 +63,11 @@ export function CommissionsView({ canDelete = false }: { canDelete?: boolean }) 
   });
 
   const rulesQ = useQuery({
-    queryKey: ['admin', 'commission-rules'],
+    queryKey: ['admin', 'commission-rules', { page }],
     queryFn: () =>
-      apiFetch<PaginatedResponse<CommissionRuleResponse>>('/admin/commission-rules?pageSize=100'),
+      apiFetch<PaginatedResponse<CommissionRuleResponse>>(
+        `/admin/commission-rules?page=${page}&pageSize=${PAGE_SIZE}`,
+      ),
   });
   const sourcesQ = useQuery({
     queryKey: ['admin', 'sources', 'all'],
@@ -210,6 +215,15 @@ export function CommissionsView({ canDelete = false }: { canDelete?: boolean }) 
           />
         </CardContent>
       </Card>
+
+      {rulesQ.data && (
+        <Pagination
+          page={rulesQ.data.meta.page}
+          totalPages={rulesQ.data.meta.totalPages}
+          total={rulesQ.data.meta.total}
+          onPageChange={setPage}
+        />
+      )}
 
       <CreateCommissionRuleDialog
         open={createOpen}

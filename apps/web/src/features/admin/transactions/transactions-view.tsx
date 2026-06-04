@@ -5,7 +5,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import {
   TransactionStatus,
-  type CompanyResponse,
   type PaginatedResponse,
   type SourceResponse,
   type TransactionResponse,
@@ -36,6 +35,7 @@ import {
   type PickedRange,
   type RangePreset,
 } from '@/components/ui/date-range-picker';
+import { CompanyFilter, useCompanyNames } from '@/features/admin/company-filter';
 import { TransactionDetailDrawer } from './transaction-detail-drawer';
 
 interface Filters {
@@ -204,13 +204,10 @@ export function TransactionsView({
     queryFn: () => apiFetch<{ data: SourceResponse[] }>('/admin/sources/all'),
   });
 
-  const companiesQ = useQuery({
-    enabled: scope === 'admin',
-    queryKey: ['admin', 'companies', 'all'],
-    queryFn: () => apiFetch<PaginatedResponse<CompanyResponse>>('/admin/companies?pageSize=100'),
-  });
-
-  const companyById = new Map(companiesQ.data?.data.map((c) => [c.id, c]) ?? []);
+  // Resolve names only for the companies shown on THIS page (no bulk fetch).
+  const companyNames = useCompanyNames(
+    scope === 'admin' ? (data?.data.map((t) => t.companyId) ?? []) : [],
+  );
 
   const [exporting, setExporting] = useState(false);
   async function downloadCsv() {
@@ -257,7 +254,7 @@ export function TransactionsView({
             key: 'company',
             header: 'Company',
             cell: (t: TransactionResponse) =>
-              companyById.get(t.companyId)?.name ?? t.companyId.slice(0, 8),
+              companyNames.get(t.companyId) ?? t.companyId.slice(0, 8),
           } as Column<TransactionResponse>,
         ]
       : []),
@@ -425,18 +422,10 @@ export function TransactionsView({
             {scope === 'admin' && (
               <div className="space-y-1">
                 <label className="text-xs text-muted-foreground">Company</label>
-                <select
+                <CompanyFilter
                   value={filters.companyId ?? ''}
-                  onChange={(e) => setFilter({ companyId: e.target.value || undefined })}
-                  className="h-10 rounded-md border border-input bg-background px-3 text-sm"
-                >
-                  <option value="">All</option>
-                  {companiesQ.data?.data.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(id) => setFilter({ companyId: id || undefined })}
+                />
               </div>
             )}
           </div>

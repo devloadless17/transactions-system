@@ -3,7 +3,6 @@ import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import {
-  type CompanyResponse,
   type PaginatedResponse,
   type WithdrawalResponse,
   type WithdrawalStatus,
@@ -35,6 +34,7 @@ import {
   prettyMethod,
   type FlowFilters,
 } from '@/features/company/withdrawals-view';
+import { useCompanyNames } from '@/features/admin/company-filter';
 
 interface ReviewState {
   withdrawal: WithdrawalResponse;
@@ -82,12 +82,9 @@ export function AdminWithdrawalsView({ config }: { config: AdminProcessConfig })
     if (tp && page > tp) setPage(tp);
   }, [listQ.data, page]);
 
-  const companiesQ = useQuery({
-    queryKey: ['admin', 'companies', 'all'],
-    queryFn: () => apiFetch<PaginatedResponse<CompanyResponse>>('/admin/companies?pageSize=100'),
-  });
-  const companyName = (id: string) =>
-    companiesQ.data?.data.find((c) => c.id === id)?.name ?? id.slice(0, 8);
+  // Names for just the companies on this page (no bulk fetch of all companies).
+  const companyNames = useCompanyNames(listQ.data?.data.map((w) => w.companyId) ?? []);
+  const companyName = (id: string) => companyNames.get(id) ?? id.slice(0, 8);
 
   const columns: Column<WithdrawalResponse>[] = [
     { key: 'company', header: 'Company', cell: (w) => companyName(w.companyId) },
@@ -170,7 +167,7 @@ export function AdminWithdrawalsView({ config }: { config: AdminProcessConfig })
           setFilters(f);
           setPage(1);
         }}
-        companies={companiesQ.data?.data}
+        showCompanyFilter
       />
 
       <Card>

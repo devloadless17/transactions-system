@@ -93,6 +93,13 @@ export class CompaniesService {
           { slug: { contains: query.search.toLowerCase() } },
         ];
       }
+      // Targeted lookup: resolve a specific set of companies (e.g. the ones on
+      // the current page of an admin list) without scanning the whole table.
+      const idList = query.ids
+        ?.split(',')
+        .map((s) => s.trim())
+        .filter((s) => /^[0-9a-f-]{36}$/i.test(s));
+      if (idList?.length) where.id = { in: idList };
       const skip = (query.page - 1) * query.pageSize;
       const [rows, total] = await Promise.all([
         tx.company.findMany({

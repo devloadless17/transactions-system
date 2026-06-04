@@ -1,13 +1,14 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import type { CompanyResponse, PaginatedResponse, WhishPaymentResponse } from '@app/shared';
+import type { PaginatedResponse, WhishPaymentResponse } from '@app/shared';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { DataTable, type Column } from '@/components/ui/data-table';
 import { Pagination } from '@/components/ui/pagination';
 import { apiFetch } from '@/lib/api.client';
 import { ApiClientError } from '@/lib/api';
+import { useCompanyNames } from '@/features/admin/company-filter';
 
 const PAGE_SIZE = 20;
 
@@ -37,13 +38,9 @@ export function AdminWhishView() {
     if (tp && page > tp) setPage(tp);
   }, [data, page]);
 
-  // Resolve companyId -> name so the table shows the company, not a raw id prefix.
-  const companiesQ = useQuery({
-    queryKey: ['admin', 'companies', 'all'],
-    queryFn: () => apiFetch<PaginatedResponse<CompanyResponse>>('/admin/companies?pageSize=100'),
-  });
-  const companyName = (id: string) =>
-    companiesQ.data?.data.find((c) => c.id === id)?.name ?? id.slice(0, 8);
+  // Resolve companyId -> name for just the companies on this page (no bulk fetch).
+  const companyNames = useCompanyNames(data?.data.map((p) => p.companyId) ?? []);
+  const companyName = (id: string) => companyNames.get(id) ?? id.slice(0, 8);
 
   const columns: Column<WhishPaymentResponse>[] = [
     {

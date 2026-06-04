@@ -42,6 +42,10 @@ export const listCompaniesQuerySchema = z.object({
   pageSize: z.coerce.number().int().min(1).max(100).default(20),
   search: z.string().trim().optional(),
   status: z.nativeEnum(CompanyStatus).optional(),
+  // Comma-separated company ids — resolve names for just the rows on screen
+  // (the admin lists fetch only the companies they actually display, instead of
+  // pulling the whole company list).
+  ids: z.string().trim().optional(),
 });
 export type ListCompaniesQuery = z.infer<typeof listCompaniesQuerySchema>;
 

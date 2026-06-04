@@ -8,6 +8,7 @@ import {
   createWithdrawalSchema,
   PayoutMethod,
   SUPPORTED_CURRENCIES,
+  SUPPORTED_PAYOUT_METHODS,
   WithdrawalStatus,
   type CreateWithdrawalInput,
   type FeeApplication,
@@ -37,6 +38,8 @@ import {
 } from '@/components/ui/sheet';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { DateRangePicker, type RangePreset } from '@/components/ui/date-range-picker';
+import { CompanyFilter } from '@/features/admin/company-filter';
 import { apiFetch } from '@/lib/api.client';
 import { ApiClientError } from '@/lib/api';
 import { trimAmount } from '@/lib/format';
@@ -72,6 +75,8 @@ export interface FlowFilters {
   method: PayoutMethod | '';
   from: string; // YYYY-MM-DD
   to: string; // YYYY-MM-DD
+  fromTime?: string; // HH:mm (optional; whole-day window when absent)
+  toTime?: string; // HH:mm
   companyId: string; // admin-only
 }
 
@@ -81,8 +86,27 @@ export const EMPTY_FLOW_FILTERS: FlowFilters = {
   method: '',
   from: '',
   to: '',
+  fromTime: undefined,
+  toTime: undefined,
   companyId: '',
 };
+
+// Inclusive ISO bound from a date (YYYY-MM-DD) + optional time (HH:mm). Returns
+// undefined for a malformed value so the query-string build can't throw.
+function isoBound(date: string, time: string | undefined, endOfDay: boolean): string | undefined {
+  const t = time || (endOfDay ? '23:59' : '00:00');
+  const d = new Date(`${date}T${t}:${endOfDay ? '59.999' : '00'}`);
+  return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
+}
+
+// YYYY-MM-DD for `offsetDays` ago (local), for the quick-range presets.
+function dayKey(offsetDays: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - offsetDays);
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${m}-${day}`;
+}
 
 /** Build the list query string from the active filters (+ any base params). */
 export function flowFilterParams(f: FlowFilters, base: Record<string, string>): URLSearchParams {
@@ -91,24 +115,40 @@ export function flowFilterParams(f: FlowFilters, base: Record<string, string>): 
   if (f.currency) p.set('currency', f.currency);
   if (f.method) p.set('payoutMethod', f.method);
   if (f.companyId) p.set('companyId', f.companyId);
-  if (f.from) p.set('from', new Date(`${f.from}T00:00:00`).toISOString());
-  if (f.to) p.set('to', new Date(`${f.to}T23:59:59.999`).toISOString());
+  if (f.from) {
+    const iso = isoBound(f.from, f.fromTime, false);
+    if (iso) p.set('from', iso);
+  }
+  if (f.to) {
+    const iso = isoBound(f.to, f.toTime, true);
+    if (iso) p.set('to', iso);
+  }
   return p;
 }
 
 export function FlowFilterBar({
   value,
   onChange,
-  companies,
+  showCompanyFilter,
 }: {
   value: FlowFilters;
   onChange: (f: FlowFilters) => void;
-  companies?: { id: string; name: string }[];
+  /** Admin-only: show a searchable company filter (company-scoped views omit it). */
+  showCompanyFilter?: boolean;
 }) {
   const set = (patch: Partial<FlowFilters>) => onChange({ ...value, ...patch });
   const selectClass =
     'h-9 w-full rounded-md border border-input bg-background px-3 text-sm sm:w-auto';
-  const active = Object.values(value).some((v) => v !== '');
+  const active = Object.values(value).some((v) => Boolean(v));
+  const datePresets: RangePreset[] = [
+    { label: 'Today', from: dayKey(0), to: dayKey(0) },
+    { label: 'Last 7 days', from: dayKey(6), to: dayKey(0) },
+    { label: 'Last 30 days', from: dayKey(29), to: dayKey(0) },
+  ].map((p) => ({
+    label: p.label,
+    active: value.from === p.from && value.to === p.to && !value.fromTime && !value.toTime,
+    onSelect: () => set({ from: p.from, to: p.to, fromTime: undefined, toTime: undefined }),
+  }));
   return (
     <Card>
       <CardContent className="flex flex-wrap items-end gap-3 p-4">
@@ -147,34 +187,38 @@ export function FlowFilterBar({
             onChange={(e) => set({ method: (e.target.value as PayoutMethod) || '' })}
           >
             <option value="">All</option>
-            {Object.values(PayoutMethod).map((m) => (
+            {SUPPORTED_PAYOUT_METHODS.map((m) => (
               <option key={m} value={m}>
                 {prettyMethod(m)}
               </option>
             ))}
           </select>
         </Field>
-        {companies && (
+        {showCompanyFilter && (
           <Field label="Company">
-            <select
-              className={selectClass}
-              value={value.companyId}
-              onChange={(e) => set({ companyId: e.target.value })}
-            >
-              <option value="">All</option>
-              {companies.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
+            <CompanyFilter value={value.companyId} onChange={(companyId) => set({ companyId })} />
           </Field>
         )}
-        <Field label="From">
-          <Input type="date" value={value.from} onChange={(e) => set({ from: e.target.value })} />
-        </Field>
-        <Field label="To">
-          <Input type="date" value={value.to} onChange={(e) => set({ to: e.target.value })} />
+        <Field label="Date">
+          <DateRangePicker
+            value={{
+              from: value.from || undefined,
+              to: value.to || undefined,
+              fromTime: value.fromTime,
+              toTime: value.toTime,
+            }}
+            onChange={(v) =>
+              set({
+                from: v.from ?? '',
+                to: v.to ?? '',
+                fromTime: v.fromTime,
+                toTime: v.toTime,
+              })
+            }
+            presets={datePresets}
+            align="end"
+            placeholder="Any date"
+          />
         </Field>
         {active && (
           <Button

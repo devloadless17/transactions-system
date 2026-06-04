@@ -421,11 +421,25 @@ export class ReconciliationService implements OnApplicationBootstrap, OnModuleDe
   private async computeReport(): Promise<ReconciliationReport> {
     return this.prisma.runAsAdmin(
       async (tx) => {
+        // The heavy table (ledger_entries — potentially millions of rows) is
+        // reduced to bounded per-(company,currency,account,direction) sums by the
+        // DB, never streamed into memory. Wallets are already one row per
+        // (company,currency) — that IS the grain we reconcile at, so there's no
+        // sum to push down; we just project the columns we compare (skip
+        // id/timestamps) to keep the payload minimal.
         const grouped = await tx.ledgerEntry.groupBy({
           by: ['companyId', 'currency', 'accountType', 'direction'],
           _sum: { amount: true },
         });
-        const wallets = await tx.wallet.findMany();
+        const wallets = await tx.wallet.findMany({
+          select: {
+            companyId: true,
+            currency: true,
+            availableBalance: true,
+            pendingBalance: true,
+            reservedBalance: true,
+          },
+        });
 
         const ledgerRows: LedgerSumRow[] = grouped.map((g) => ({
           companyId: g.companyId,

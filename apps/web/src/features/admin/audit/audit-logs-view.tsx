@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
-import type { AuditLogResponse, CompanyResponse, PaginatedResponse } from '@app/shared';
+import type { AuditLogResponse, PaginatedResponse } from '@app/shared';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -10,6 +10,7 @@ import { DataTable, type Column } from '@/components/ui/data-table';
 import { Pagination } from '@/components/ui/pagination';
 import { apiFetch } from '@/lib/api.client';
 import { useDebouncedValue } from '@/lib/use-debounced-value';
+import { CompanyFilter, useCompanyNames } from '@/features/admin/company-filter';
 
 const PAGE_SIZE = 50;
 
@@ -84,12 +85,8 @@ export function AuditLogsView() {
       apiFetch<PaginatedResponse<AuditLogResponse>>(`/admin/audit-logs?${params.toString()}`),
   });
 
-  const companiesQ = useQuery({
-    queryKey: ['admin', 'companies', 'all'],
-    queryFn: () => apiFetch<PaginatedResponse<CompanyResponse>>('/admin/companies?pageSize=100'),
-  });
-  const companyName = (id: string | null) =>
-    !id ? '—' : (companiesQ.data?.data.find((c) => c.id === id)?.name ?? id.slice(0, 8));
+  const companyNames = useCompanyNames(listQ.data?.data.map((r) => r.companyId) ?? []);
+  const companyName = (id: string | null) => (!id ? '—' : (companyNames.get(id) ?? id.slice(0, 8)));
 
   const columns: Column<AuditLogResponse>[] = [
     {
@@ -153,18 +150,11 @@ export function AuditLogsView() {
             </div>
             <div className="space-y-1">
               <Label className="text-xs">Company</Label>
-              <select
+              <CompanyFilter
                 value={state.companyId}
-                onChange={(e) => update({ companyId: e.target.value, page: 1 })}
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-              >
-                <option value="">All</option>
-                {companiesQ.data?.data.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
+                onChange={(id) => update({ companyId: id, page: 1 })}
+                className="w-full"
+              />
             </div>
           </div>
         </CardContent>
