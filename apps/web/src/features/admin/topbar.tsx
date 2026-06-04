@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { MobileNav } from '@/components/nav/mobile-nav';
 import { apiFetch } from '@/lib/api.client';
-import { adminNavItems } from './sidebar';
+import { adminNavItemsFor } from './sidebar';
 
 export function AdminTopbar({ session }: { session: MeResponse }) {
   const router = useRouter();
@@ -25,7 +25,7 @@ export function AdminTopbar({ session }: { session: MeResponse }) {
   return (
     <header className="flex h-14 items-center justify-between gap-2 border-b bg-background px-4 sm:px-6">
       <div className="flex min-w-0 items-center gap-2">
-        <MobileNav title="Txn Admin" items={adminNavItems} />
+        <MobileNav title="Txn Admin" items={adminNavItemsFor(session.role)} />
         <div className="hidden truncate text-sm text-muted-foreground sm:block">
           Signed in as {session.email} · {session.role}
         </div>

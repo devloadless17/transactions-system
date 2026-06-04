@@ -31,6 +31,7 @@ import { LoadsService } from '../../src/modules/loads/loads.service';
 import type { CacheService } from '../../src/modules/cache/cache.service';
 import type { AnalyticsService } from '../../src/modules/analytics/analytics.service';
 import type { RealtimeService } from '../../src/modules/realtime/realtime.service';
+import type { CrmDispatchService } from '../../src/modules/crm/crm-dispatch.service';
 
 export interface Harness {
   prisma: PrismaService;
@@ -60,6 +61,12 @@ const fakeRealtime = {
 
 const fakeCounter = { inc: () => undefined } as unknown as Counter<string>;
 
+// CRM dispatch is a fire-and-forget side effect; no-op it in the harness.
+const fakeCrm = {
+  emitFromTransaction: () => undefined,
+  emitWhish: () => undefined,
+} as unknown as CrmDispatchService;
+
 export function buildHarness(): Harness {
   // Guardrail: never let the integration suite touch a non-test database.
   if (!process.env.DATABASE_URL?.includes('_test')) {
@@ -85,6 +92,7 @@ export function buildHarness(): Harness {
     fakeRealtime,
     fakeCounter,
     fakeCache,
+    fakeCrm,
   );
   const withdrawals = new WithdrawalsService(
     prisma,

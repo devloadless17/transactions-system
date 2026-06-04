@@ -60,6 +60,7 @@ const TOPIC_KEYS: Record<RealtimeTopic, KeysFor> = {
     ['admin', 'whish'],
   ],
   audit: (c) => [['admin', 'audit-logs'], ...(c ? [['admin', 'company', c, 'audit']] : [])],
+  crm: () => [['company', 'crm']],
 };
 
 /** Origin of the API (strip the `/v1` path) so we can reach the socket server. */

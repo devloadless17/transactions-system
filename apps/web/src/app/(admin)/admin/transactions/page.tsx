@@ -3,6 +3,8 @@ import type { PaginatedResponse, TransactionResponse } from '@app/shared';
 import { TransactionsView } from '@/features/admin/transactions/transactions-view';
 import { apiServer } from '@/lib/api.server';
 import { makeServerQueryClient } from '@/lib/server-query-client';
+import { getSession } from '@/lib/session';
+import { FULL_ADMIN_ROLES } from '@/features/admin/access';
 
 export const dynamic = 'force-dynamic';
 
@@ -12,6 +14,9 @@ export default async function Page({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const sp = await searchParams;
+  // Back office views transactions but can't reverse them.
+  const session = await getSession();
+  const canReverse = !!session && FULL_ADMIN_ROLES.includes(session.role);
   const qc = makeServerQueryClient();
 
   // Only prefetch the hot first-paint case: a bare load with no filters/page.
@@ -35,7 +40,7 @@ export default async function Page({
 
   return (
     <HydrationBoundary state={dehydrate(qc)}>
-      <TransactionsView scope="admin" />
+      <TransactionsView scope="admin" canReverse={canReverse} />
     </HydrationBoundary>
   );
 }

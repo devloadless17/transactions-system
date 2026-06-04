@@ -19,3 +19,4 @@ export * from './ledger';
 export * from './admin-analytics';
 export * from './admin-user';
 export * from './whish';
+export * from './crm';

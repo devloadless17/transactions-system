@@ -43,6 +43,10 @@ export class CompaniesController {
     return this.companies.create(body);
   }
 
+  // Back-office staff may view the list of companies (who's on the platform),
+  // but not a company's detail/analytics — so this read is widened to BACKOFFICE
+  // while every other route on this controller stays SUPER_ADMIN/ADMIN_OPERATOR.
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
   @Get()
   async list(@Query(new ZodPipe(listCompaniesQuerySchema)) query: ListCompaniesQuery) {
     return this.companies.list(query);

@@ -16,6 +16,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { apiFetch } from '@/lib/api.client';
 import { ApiClientError } from '@/lib/api';
+import { adminLandingPath } from '@/features/admin/access';
 
 export function LoginForm() {
   const router = useRouter();
@@ -35,7 +36,7 @@ export function LoginForm() {
       const me = await apiFetch<MeResponse>('/auth/login', { method: 'POST', body: values });
       toast.success('Signed in');
       // Pick landing page based on role.
-      if (ADMIN_ROLES.includes(me.role)) router.push('/admin');
+      if (ADMIN_ROLES.includes(me.role)) router.push(adminLandingPath(me.role));
       else if (COMPANY_ROLES.includes(me.role)) router.push('/app');
       else router.push('/');
       router.refresh();

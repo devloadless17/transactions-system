@@ -15,7 +15,7 @@ import { WhishPaymentsService } from './whish-payments.service';
 
 /** Admin view of Whish: platform balance + all payments across companies. */
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR)
+@Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
 @Controller('admin/whish')
 export class WhishAdminController {
   constructor(private readonly payments: WhishPaymentsService) {}

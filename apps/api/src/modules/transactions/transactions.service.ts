@@ -19,6 +19,7 @@ import { WalletsService } from '../wallets/wallets.service';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { RealtimeService } from '../realtime/realtime.service';
 import { CacheService } from '../cache/cache.service';
+import { CrmDispatchService } from '../crm/crm-dispatch.service';
 import {
   ConflictError,
   ForbiddenError,
@@ -61,6 +62,7 @@ export class TransactionsService {
     private readonly realtime: RealtimeService,
     @InjectMetric('txn_ingest_total') private readonly ingestCounter: Counter<string>,
     private readonly cache: CacheService,
+    private readonly crm: CrmDispatchService,
   ) {}
 
   /**
@@ -282,6 +284,12 @@ export class TransactionsService {
         .catch((e) => this.logger.warn(`analytics cache invalidate failed: ${e}`));
 
       this.realtime.company(companyId, ['transactions', 'wallets', 'ledger', 'analytics']);
+
+      // Push the completed transaction to the company's CRM (durable, retried,
+      // fire-and-forget). For a Whish-originated tx this carries the same
+      // `whish:<externalId>` reference as the earlier PENDING event, so the CRM
+      // upserts the existing record from pending → completed.
+      this.crm.emitFromTransaction(result, 'transaction.completed');
     }
 
     return result;
@@ -423,7 +431,14 @@ export class TransactionsService {
 
     this.realtime.company(reversed.companyId, ['transactions', 'wallets', 'ledger', 'analytics']);
 
-    return mapTxRow(reversed, (reversed as { source?: { code: string } }).source?.code ?? '');
+    const response = mapTxRow(
+      reversed,
+      (reversed as { source?: { code: string } }).source?.code ?? '',
+    );
+    // Tell the company's CRM the record was reversed (same reference as the
+    // original completed event, so the CRM flips that record to REVERSED).
+    this.crm.emitFromTransaction(response, 'transaction.reversed');
+    return response;
   }
 
   /**

@@ -24,6 +24,7 @@ import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { TeamModule } from './modules/team/team.module';
 import { AdminUsersModule } from './modules/admin-users/admin-users.module';
 import { WhishModule } from './modules/whish/whish.module';
+import { CrmModule } from './modules/crm/crm.module';
 import { ReconciliationModule } from './modules/reconciliation/reconciliation.module';
 import { MaintenanceModule } from './modules/maintenance/maintenance.module';
 import { MetricsModule } from './modules/metrics/metrics.module';
@@ -70,6 +71,7 @@ import type { Env } from './config/env.schema';
     TeamModule,
     AdminUsersModule,
     WhishModule,
+    CrmModule,
     ReconciliationModule,
     MaintenanceModule,
     MetricsModule,

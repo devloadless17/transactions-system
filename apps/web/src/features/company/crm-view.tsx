@@ -1,0 +1,279 @@
+'use client';
+import { useEffect } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { toast } from 'sonner';
+import {
+  setCrmConfigSchema,
+  type CrmConfigResponse,
+  type CrmDemoEventResponse,
+  type CrmTransactionStatus,
+  type SetCrmConfigInput,
+} from '@app/shared';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { apiFetch } from '@/lib/api.client';
+import { ApiClientError } from '@/lib/api';
+
+const CONFIG_KEY = ['company', 'crm', 'config'] as const;
+const INBOX_KEY = ['company', 'crm'] as const;
+
+function statusVariant(s: CrmTransactionStatus) {
+  if (s === 'COMPLETED') return 'success' as const;
+  if (s === 'FAILED' || s === 'EXPIRED' || s === 'REVERSED') return 'destructive' as const;
+  return 'secondary' as const;
+}
+
+export function CrmView() {
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-semibold">CRM integration</h1>
+        <p className="text-sm text-muted-foreground">
+          We POST every transaction to your CRM as its status changes — pending when it starts, then
+          completed once it settles (and failed / expired / reversed). Records are matched by a
+          stable <span className="font-mono">reference</span>, so your CRM updates the same row in
+          place.
+        </p>
+      </div>
+
+      <ConfigCard />
+      <ContractCard />
+      <DemoInbox />
+    </div>
+  );
+}
+
+function ConfigCard() {
+  const qc = useQueryClient();
+  const cfgQ = useQuery({
+    queryKey: CONFIG_KEY,
+    queryFn: () => apiFetch<CrmConfigResponse>('/company/crm/config'),
+  });
+  const cfg = cfgQ.data;
+
+  const {
+    register,
+    handleSubmit,
+    reset,
+    formState: { errors },
+  } = useForm<SetCrmConfigInput>({
+    resolver: zodResolver(setCrmConfigSchema),
+    defaultValues: { apiUrl: '', apiKey: '' },
+  });
+
+  // Reflect the saved URL once it loads (the key itself is never returned).
+  useEffect(() => {
+    if (cfg) reset({ apiUrl: cfg.apiUrl ?? '', apiKey: '' });
+  }, [cfg, reset]);
+
+  const saveMu = useMutation({
+    mutationFn: (input: SetCrmConfigInput) =>
+      apiFetch<CrmConfigResponse>('/company/crm/config', { method: 'PUT', body: input }),
+    onSuccess: () => {
+      toast.success('CRM connected');
+      qc.invalidateQueries({ queryKey: INBOX_KEY });
+    },
+    onError: (err) => toast.error(err instanceof ApiClientError ? err.message : 'Failed'),
+  });
+
+  const clearMu = useMutation({
+    mutationFn: () => apiFetch<CrmConfigResponse>('/company/crm/config', { method: 'DELETE' }),
+    onSuccess: () => {
+      toast.success('CRM disconnected');
+      qc.invalidateQueries({ queryKey: INBOX_KEY });
+    },
+    onError: (err) => toast.error(err instanceof ApiClientError ? err.message : 'Failed'),
+  });
+
+  const demoMu = useMutation({
+    mutationFn: () => apiFetch<CrmConfigResponse>('/company/crm/demo/enable', { method: 'POST' }),
+    onSuccess: () => {
+      toast.success('Demo CRM connected — trigger a transaction to see it land below');
+      qc.invalidateQueries({ queryKey: INBOX_KEY });
+    },
+    onError: (err) => toast.error(err instanceof ApiClientError ? err.message : 'Failed'),
+  });
+
+  const usingDemo = !!cfg?.demoUrl && cfg.apiUrl === cfg.demoUrl;
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <CardTitle>Your CRM endpoint</CardTitle>
+            <CardDescription>
+              The POST URL of your CRM and the API key it expects. We send the key as{' '}
+              <span className="font-mono">Authorization: Bearer &lt;key&gt;</span> on every request.
+            </CardDescription>
+          </div>
+          <Badge variant={cfg?.enabled ? 'success' : 'secondary'}>
+            {cfg?.enabled ? (usingDemo ? 'DEMO ACTIVE' : 'CONNECTED') : 'NOT CONNECTED'}
+          </Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <form onSubmit={handleSubmit((values) => saveMu.mutate(values))} className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="apiUrl">CRM POST URL</Label>
+            <Input
+              id="apiUrl"
+              placeholder="https://your-crm.com/api/transactions"
+              {...register('apiUrl')}
+            />
+            {errors.apiUrl && <p className="text-sm text-destructive">{errors.apiUrl.message}</p>}
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="apiKey">API key</Label>
+            <Input
+              id="apiKey"
+              type="password"
+              placeholder={
+                cfg?.hasApiKey ? '•••••••• (saved — type to replace)' : 'Your CRM API key'
+              }
+              {...register('apiKey')}
+            />
+            {errors.apiKey && <p className="text-sm text-destructive">{errors.apiKey.message}</p>}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button type="submit" disabled={saveMu.isPending}>
+              {saveMu.isPending ? 'Saving…' : 'Save & connect'}
+            </Button>
+            {cfg?.enabled && (
+              <Button
+                type="button"
+                variant="outline"
+                disabled={clearMu.isPending}
+                onClick={() => clearMu.mutate()}
+              >
+                Disconnect
+              </Button>
+            )}
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={demoMu.isPending}
+              onClick={() => demoMu.mutate()}
+            >
+              {demoMu.isPending ? 'Enabling…' : 'Try the demo CRM'}
+            </Button>
+          </div>
+        </form>
+        {usingDemo && (
+          <p className="text-xs text-muted-foreground">
+            You&apos;re pointed at the built-in demo CRM. Trigger a transaction (e.g. create a Whish
+            payment link) and watch it arrive in the inbox below, exactly as your own CRM would
+            receive it.
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function ContractCard() {
+  const example = `POST https://your-crm.com/api/transactions
+Authorization: Bearer <your-api-key>
+Content-Type: application/json
+x-crm-event: transaction.completed
+
+{
+  "event": "transaction.completed",
+  "reference": "whish:10231",
+  "sentAt": "2026-06-04T12:00:00.000Z",
+  "transaction": {
+    "id": "0e1c…",
+    "status": "COMPLETED",
+    "source": "whish",
+    "externalTransactionId": "10231",
+    "amount": "25.00",
+    "currency": "USD",
+    "netAmount": "24.50",
+    "commissionAmount": "0.50",
+    "customer": "John Doe",
+    "target": null,
+    "phone": "+961…",
+    "note": "Order #1234",
+    "occurredAt": "2026-06-04T12:00:00.000Z"
+  }
+}`;
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>What we send</CardTitle>
+        <CardDescription>
+          Each event carries the full transaction and a stable{' '}
+          <span className="font-mono">reference</span>. Upsert by reference so one record moves
+          PENDING → COMPLETED (and FAILED / EXPIRED / REVERSED). Respond 2xx to acknowledge; we
+          retry with backoff otherwise.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <pre className="overflow-x-auto rounded-md border bg-muted/30 p-3 text-xs leading-relaxed">
+          {example}
+        </pre>
+      </CardContent>
+    </Card>
+  );
+}
+
+function DemoInbox() {
+  const inboxQ = useQuery({
+    queryKey: INBOX_KEY,
+    queryFn: () => apiFetch<CrmDemoEventResponse[]>('/company/crm/demo/inbox'),
+  });
+  const events = inboxQ.data ?? [];
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Demo CRM inbox</CardTitle>
+        <CardDescription>
+          A live preview of the events we POST. This is the exact payload your CRM would receive —
+          watch records flip from pending to completed in real time.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {events.length === 0 ? (
+          <div className="py-10 text-center text-sm text-muted-foreground">
+            No events yet. Enable the demo CRM above, then create a Whish payment link or ingest a
+            transaction.
+          </div>
+        ) : (
+          <ul className="space-y-2">
+            {events.map((e) => (
+              <li
+                key={e.reference}
+                className="flex items-center justify-between gap-3 rounded-md border p-3"
+              >
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-xs text-muted-foreground">{e.reference}</span>
+                    <Badge variant={statusVariant(e.status)}>{e.status}</Badge>
+                  </div>
+                  <div className="mt-1 truncate text-sm">
+                    {e.transaction.customer ?? e.transaction.note ?? '—'}
+                    <span className="text-muted-foreground"> · {e.transaction.source}</span>
+                  </div>
+                </div>
+                <div className="shrink-0 text-right">
+                  <div className="font-mono text-sm">
+                    {e.transaction.amount} {e.transaction.currency}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    {new Date(e.receivedAt).toLocaleTimeString()}
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
+  );
+}

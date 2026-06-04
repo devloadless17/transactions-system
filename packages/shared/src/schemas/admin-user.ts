@@ -3,7 +3,12 @@ import { UserRole, UserStatus } from '../enums';
 import { paginationSchema } from './common';
 
 // Platform admins only — company roles are managed via the team endpoints.
-const ADMIN_ROLE_VALUES = [UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR] as const;
+// BACKOFFICE is a platform admin too, so a super admin can create/assign it here.
+const ADMIN_ROLE_VALUES = [
+  UserRole.SUPER_ADMIN,
+  UserRole.ADMIN_OPERATOR,
+  UserRole.BACKOFFICE,
+] as const;
 
 export const createAdminUserSchema = z.object({
   email: z.string().email(),

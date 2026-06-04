@@ -5,13 +5,25 @@
 export const UserRole = {
   SUPER_ADMIN: 'SUPER_ADMIN',
   ADMIN_OPERATOR: 'ADMIN_OPERATOR',
+  // Operational back-office staff: handle the money-movement queues
+  // (withdrawals/payouts/loads) and view companies, transactions & Whish —
+  // but cannot reach platform configuration (sources, commissions, audit,
+  // platform admins) or company detail/analytics.
+  BACKOFFICE: 'BACKOFFICE',
   COMPANY_OWNER: 'COMPANY_OWNER',
   COMPANY_MANAGER: 'COMPANY_MANAGER',
   COMPANY_VIEWER: 'COMPANY_VIEWER',
 } as const;
 export type UserRole = (typeof UserRole)[keyof typeof UserRole];
 
-export const ADMIN_ROLES: ReadonlyArray<UserRole> = [UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR];
+// Platform-level (no company) roles. BACKOFFICE is an admin so it lands in the
+// /admin area and is managed via the platform-admins flow; its narrower page
+// access is enforced per-endpoint (it is never spread into a guard).
+export const ADMIN_ROLES: ReadonlyArray<UserRole> = [
+  UserRole.SUPER_ADMIN,
+  UserRole.ADMIN_OPERATOR,
+  UserRole.BACKOFFICE,
+];
 export const COMPANY_ROLES: ReadonlyArray<UserRole> = [
   UserRole.COMPANY_OWNER,
   UserRole.COMPANY_MANAGER,

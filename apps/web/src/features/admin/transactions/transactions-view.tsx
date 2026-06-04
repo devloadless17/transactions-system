@@ -103,7 +103,16 @@ function isoBound(date: string, time: string | undefined, endOfDay: boolean): st
   return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
 }
 
-export function TransactionsView({ scope }: { scope: 'admin' | 'company' }) {
+// `canReverse` gates the admin-only Reverse action. Back office can view
+// transactions (and the detail drawer / CSV) but not reverse them; defaults to
+// false so the destructive action is opt-in.
+export function TransactionsView({
+  scope,
+  canReverse = false,
+}: {
+  scope: 'admin' | 'company';
+  canReverse?: boolean;
+}) {
   const qc = useQueryClient();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -313,7 +322,7 @@ export function TransactionsView({ scope }: { scope: 'admin' | 'company' }) {
       className: 'text-muted-foreground text-xs',
       cell: (t) => new Date(t.createdAt).toLocaleString(),
     },
-    ...(scope === 'admin'
+    ...(scope === 'admin' && canReverse
       ? [
           {
             key: 'actions',

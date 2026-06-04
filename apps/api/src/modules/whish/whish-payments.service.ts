@@ -22,6 +22,7 @@ import { CommissionsRepository } from '../commissions/commissions.repository';
 import { WhishClient, WhishError } from './whish.client';
 import { WhishWebhookService } from './whish-webhook.service';
 import { RealtimeService } from '../realtime/realtime.service';
+import { CrmDispatchService } from '../crm/crm-dispatch.service';
 
 const WHISH_SOURCE_CODE = 'whish';
 // Stale-payment reconciliation window.
@@ -41,6 +42,7 @@ export class WhishPaymentsService {
     private readonly commissionResolver: CommissionResolverService,
     private readonly commissionsRepo: CommissionsRepository,
     private readonly realtime: RealtimeService,
+    private readonly crm: CrmDispatchService,
   ) {}
 
   /** Currencies live for Whish links (USD only by default). */
@@ -126,6 +128,16 @@ export class WhishPaymentsService {
         `Whish link created: company=${companyId} externalId=${externalId} amount=${input.amount} ${input.currency}`,
       );
       this.realtime.company(companyId, ['whish']);
+      // Push a PENDING transaction to the company's CRM right away — it flips to
+      // COMPLETED via the settlement ingest (same `whish:<externalId>` reference).
+      this.crm.emitWhish({
+        companyId,
+        externalId,
+        amount: input.amount,
+        currency: input.currency,
+        invoice: input.invoice,
+        event: 'transaction.pending',
+      });
       return mapWhishPayment(updated);
     } catch (err) {
       await this.prisma.runAsTenant(companyId, (tx) =>
@@ -138,6 +150,14 @@ export class WhishPaymentsService {
         }),
       );
       this.realtime.company(companyId, ['whish']);
+      this.crm.emitWhish({
+        companyId,
+        externalId,
+        amount: input.amount,
+        currency: input.currency,
+        invoice: input.invoice,
+        event: 'transaction.failed',
+      });
       throw err;
     }
   }
@@ -270,6 +290,15 @@ export class WhishPaymentsService {
       );
       this.logger.log(`Whish payment ${payment.externalId} FAILED`);
       this.realtime.company(payment.companyId, ['whish']);
+      this.crm.emitWhish({
+        companyId: payment.companyId,
+        externalId: payment.externalId,
+        amount: payment.amount.toString(),
+        currency,
+        invoice: payment.invoice,
+        payerPhoneNumber,
+        event: 'transaction.failed',
+      });
       return mapWhishPayment(updated);
     }
 
@@ -407,6 +436,14 @@ export class WhishPaymentsService {
           );
           if (res.count === 1) {
             this.realtime.company(p.companyId, ['whish']);
+            this.crm.emitWhish({
+              companyId: p.companyId,
+              externalId: p.externalId,
+              amount: p.amount.toString(),
+              currency: p.currency.trim(),
+              invoice: p.invoice,
+              event: 'transaction.expired',
+            });
             expired++;
           }
         }

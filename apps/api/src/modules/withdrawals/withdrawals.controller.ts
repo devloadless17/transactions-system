@@ -74,19 +74,19 @@ export class WithdrawalsController {
 
   // ---------------- Admin endpoints ----------------
 
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR)
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
   @Get('admin/withdrawals')
   async adminList(@Query(new ZodPipe(listWithdrawalsQuerySchema)) query: ListWithdrawalsQuery) {
     return this.withdrawals.list({ query });
   }
 
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR)
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
   @Get('admin/withdrawals/:id')
   async adminGet(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.withdrawals.getById(id);
   }
 
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR)
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
   @Post('admin/withdrawals/:id/approve')
   @Audited({ action: 'withdrawal.approved', entityType: 'withdrawal', idFrom: 'params.id' })
   async approve(
@@ -97,7 +97,7 @@ export class WithdrawalsController {
     return this.withdrawals.approve(id, user.userId, body);
   }
 
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR)
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
   @Post('admin/withdrawals/:id/reject')
   @Audited({ action: 'withdrawal.rejected', entityType: 'withdrawal', idFrom: 'params.id' })
   async reject(

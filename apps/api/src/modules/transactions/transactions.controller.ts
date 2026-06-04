@@ -35,13 +35,13 @@ export class TransactionsReadController {
   constructor(private readonly transactions: TransactionsService) {}
 
   // ---------- Admin ----------
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR)
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
   @Get('admin/transactions')
   async adminList(@Query(new ZodPipe(listTransactionsQuerySchema)) query: ListTransactionsQuery) {
     return this.transactions.list({ query });
   }
 
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR)
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
   @Get('admin/transactions/export.csv')
   @Header('Content-Type', 'text/csv; charset=utf-8')
   async adminExport(
@@ -52,13 +52,13 @@ export class TransactionsReadController {
     return this.transactions.exportCsv({ query });
   }
 
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR)
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
   @Get('admin/transactions/:id')
   async adminGet(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.transactions.getById(id);
   }
 
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR)
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
   @Get('admin/transactions/:id/detail')
   async adminGetDetail(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.transactions.getDetail(id);

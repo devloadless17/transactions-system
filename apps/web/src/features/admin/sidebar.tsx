@@ -13,8 +13,10 @@ import {
   Link2,
   Settings,
 } from 'lucide-react';
+import type { UserRole } from '@app/shared';
 import { DashboardSidebar } from '@/components/nav/dashboard-sidebar';
 import type { NavItem } from '@/components/nav/sidebar-nav';
+import { canSeeAdminSection } from './access';
 
 export const adminNavItems: NavItem[] = [
   { href: '/admin', label: 'Overview', icon: LayoutDashboard },
@@ -31,11 +33,16 @@ export const adminNavItems: NavItem[] = [
   { href: '/admin/settings', label: 'Settings', icon: Settings },
 ];
 
-export function AdminSidebar() {
+/** Nav items visible to the given admin role (back office sees a subset). */
+export function adminNavItemsFor(role: UserRole): NavItem[] {
+  return adminNavItems.filter((item) => canSeeAdminSection(role, item.href));
+}
+
+export function AdminSidebar({ role }: { role: UserRole }) {
   return (
     <DashboardSidebar
       title="Txn Admin"
-      items={adminNavItems}
+      items={adminNavItemsFor(role)}
       storageKey="admin-sidebar-collapsed"
     />
   );

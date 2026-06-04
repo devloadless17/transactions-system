@@ -74,19 +74,19 @@ export class PayoutsController {
 
   // ---------------- Admin endpoints ----------------
 
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR)
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
   @Get('admin/payouts')
   async adminList(@Query(new ZodPipe(listPayoutsQuerySchema)) query: ListPayoutsQuery) {
     return this.payouts.list({ query });
   }
 
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR)
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
   @Get('admin/payouts/:id')
   async adminGet(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.payouts.getById(id);
   }
 
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR)
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
   @Post('admin/payouts/:id/approve')
   @Audited({ action: 'payout.approved', entityType: 'payout', idFrom: 'params.id' })
   async approve(
@@ -97,7 +97,7 @@ export class PayoutsController {
     return this.payouts.approve(id, user.userId, body);
   }
 
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR)
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
   @Post('admin/payouts/:id/reject')
   @Audited({ action: 'payout.rejected', entityType: 'payout', idFrom: 'params.id' })
   async reject(

@@ -30,6 +30,11 @@ export const envSchema = z
     WEB_ORIGIN: z.string().url().default('http://localhost:3000'),
     ALLOWED_ORIGINS: z.string().default('http://localhost:3000'),
 
+    // The API's own externally reachable base URL, including the global prefix
+    // (e.g. https://api.example.com/v1). Used to build the built-in CRM demo
+    // inbox URL so a company can preview the integration end-to-end.
+    API_PUBLIC_URL: z.string().url().default('http://localhost:3001/v1'),
+
     RATE_LIMIT_TTL: z.coerce.number().int().positive().default(60),
     RATE_LIMIT_MAX: z.coerce.number().int().positive().default(100),
 

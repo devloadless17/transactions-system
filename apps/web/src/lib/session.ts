@@ -2,6 +2,7 @@ import 'server-only';
 import { redirect } from 'next/navigation';
 import type { MeResponse, UserRole } from '@app/shared';
 import { ADMIN_ROLES, COMPANY_ROLES } from '@app/shared';
+import { adminLandingPath } from '@/features/admin/access';
 import { apiServer } from './api.server';
 import { ApiClientError } from './api';
 
@@ -42,8 +43,9 @@ export async function requireRole(
   // Force a password change before any role-gated page is reachable.
   if (session.mustChangePassword) redirect('/change-password');
   if (!roles.includes(session.role)) {
-    // Send users to wherever their role naturally lives.
-    if (ADMIN_ROLES.includes(session.role)) redirect('/admin');
+    // Send users to wherever their role naturally lives. Admins go to their
+    // role's landing (back office can't see the Overview, so it lands deeper).
+    if (ADMIN_ROLES.includes(session.role)) redirect(adminLandingPath(session.role));
     if (COMPANY_ROLES.includes(session.role)) redirect('/app');
     redirect(redirectTo);
   }

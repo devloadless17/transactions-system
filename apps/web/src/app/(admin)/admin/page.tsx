@@ -8,6 +8,8 @@ import type {
 import { AdminOverview } from '@/features/admin/overview-view';
 import { apiServer } from '@/lib/api.server';
 import { makeServerQueryClient } from '@/lib/server-query-client';
+import { requireRole } from '@/lib/session';
+import { FULL_ADMIN_ROLES } from '@/features/admin/access';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,6 +31,9 @@ function defaultRangeParams(): URLSearchParams {
 }
 
 export default async function Page() {
+  // Overview is platform analytics — full admins only. Back office is redirected
+  // to its landing page (it never sees this route in its nav).
+  await requireRole(FULL_ADMIN_ROLES);
   const qc = makeServerQueryClient();
   const rp = defaultRangeParams();
   const flowsParams = new URLSearchParams(rp);

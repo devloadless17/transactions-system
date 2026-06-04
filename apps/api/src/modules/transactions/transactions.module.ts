@@ -5,6 +5,7 @@ import { CommissionsModule } from '../commissions/commissions.module';
 import { LedgerModule } from '../ledger/ledger.module';
 import { WalletsModule } from '../wallets/wallets.module';
 import { AnalyticsModule } from '../analytics/analytics.module';
+import { CrmModule } from '../crm/crm.module';
 import { IngestController } from './ingest.controller';
 import { TransactionsReadController } from './transactions.controller';
 import { TransactionsService } from './transactions.service';
@@ -17,6 +18,7 @@ import { TransactionsService } from './transactions.service';
     LedgerModule,
     WalletsModule,
     AnalyticsModule,
+    CrmModule,
   ],
   controllers: [IngestController, TransactionsReadController],
   providers: [TransactionsService],

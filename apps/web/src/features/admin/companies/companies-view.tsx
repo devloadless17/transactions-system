@@ -14,7 +14,9 @@ import { CreateCompanyDialog } from './create-company-dialog';
 
 const PAGE_SIZE = 20;
 
-export function CompaniesView() {
+// `canManage` is false for BACKOFFICE: it may see which companies exist but not
+// create one or drill into a company's detail/analytics.
+export function CompaniesView({ canManage }: { canManage: boolean }) {
   const router = useRouter();
   const [page, setPage] = useState(1);
   const [createOpen, setCreateOpen] = useState(false);
@@ -46,12 +48,16 @@ export function CompaniesView() {
         <div>
           <h1 className="text-2xl font-semibold">Companies</h1>
           <p className="text-sm text-muted-foreground">
-            Tenants on the platform. Create a company to provision its owner and a default wallet.
+            {canManage
+              ? 'Tenants on the platform. Create a company to provision its owner and a default wallet.'
+              : 'Tenants on the platform.'}
           </p>
         </div>
-        <Button className="w-full sm:w-auto" onClick={() => setCreateOpen(true)}>
-          New company
-        </Button>
+        {canManage && (
+          <Button className="w-full sm:w-auto" onClick={() => setCreateOpen(true)}>
+            New company
+          </Button>
+        )}
       </div>
 
       <Card>
@@ -62,13 +68,21 @@ export function CompaniesView() {
             isLoading={isLoading}
             error={error}
             rowKey={(c) => c.id}
-            onRowClick={(c) => router.push(`/admin/companies/${c.id}`)}
+            onRowClick={canManage ? (c) => router.push(`/admin/companies/${c.id}`) : undefined}
             empty={
               <EmptyState
                 icon={Building2}
                 title="No companies yet"
-                description="Provision the first tenant. You'll get an owner login and a default-currency wallet seeded automatically."
-                action={{ label: 'New company', onClick: () => setCreateOpen(true) }}
+                description={
+                  canManage
+                    ? "Provision the first tenant. You'll get an owner login and a default-currency wallet seeded automatically."
+                    : 'No tenants on the platform yet.'
+                }
+                action={
+                  canManage
+                    ? { label: 'New company', onClick: () => setCreateOpen(true) }
+                    : undefined
+                }
               />
             }
           />
@@ -84,14 +98,16 @@ export function CompaniesView() {
         />
       )}
 
-      <CreateCompanyDialog
-        open={createOpen}
-        onOpenChange={setCreateOpen}
-        onCreated={() => {
-          setCreateOpen(false);
-          void refetch();
-        }}
-      />
+      {canManage && (
+        <CreateCompanyDialog
+          open={createOpen}
+          onOpenChange={setCreateOpen}
+          onCreated={() => {
+            setCreateOpen(false);
+            void refetch();
+          }}
+        />
+      )}
     </div>
   );
 }

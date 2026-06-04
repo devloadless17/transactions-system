@@ -74,19 +74,19 @@ export class LoadsController {
 
   // ---------------- Admin endpoints ----------------
 
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR)
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
   @Get('admin/loads')
   async adminList(@Query(new ZodPipe(listLoadsQuerySchema)) query: ListLoadsQuery) {
     return this.loads.list({ query });
   }
 
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR)
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
   @Get('admin/loads/:id')
   async adminGet(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.loads.getById(id);
   }
 
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR)
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
   @Post('admin/loads/:id/approve')
   @Audited({ action: 'load.approved', entityType: 'load', idFrom: 'params.id' })
   async approve(
@@ -97,7 +97,7 @@ export class LoadsController {
     return this.loads.approve(id, user.userId, body);
   }
 
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR)
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
   @Post('admin/loads/:id/reject')
   @Audited({ action: 'load.rejected', entityType: 'load', idFrom: 'params.id' })
   async reject(

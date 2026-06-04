@@ -22,6 +22,7 @@ datasource db {
 enum UserRole {
   SUPER_ADMIN
   ADMIN_OPERATOR
+  BACKOFFICE
   COMPANY_OWNER
   COMPANY_MANAGER
   COMPANY_VIEWER
@@ -181,6 +182,15 @@ model Company {
   // and the secret used to HMAC-sign the body. Configured by the company.
   webhookUrl      String?       @map("webhook_url")
   webhookSecret   String?       @map("webhook_secret")
+  // Per-company CRM integration: we POST each transaction's status lifecycle
+  // (pending → completed, failed/expired, reversed) to the company's own CRM
+  // endpoint, authenticating with their API key in the Authorization header.
+  // The crmDemo* pair backs the built-in live "mock CRM" preview.
+  crmApiUrl       String?       @map("crm_api_url")
+  crmApiKey       String?       @map("crm_api_key")
+  crmEnabled      Boolean       @default(false) @map("crm_enabled")
+  crmDemoToken    String?       @unique @map("crm_demo_token")
+  crmDemoKey      String?       @map("crm_demo_key")
   createdAt       DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt       DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -197,6 +207,7 @@ model Company {
   whishPayments     WhishPayment[]
   companySources    CompanySource[]
   webhookDeliveries WebhookDelivery[]
+  crmDemoEvents     CrmDemoEvent[]
 
   @@index([status])
   @@map("companies")
@@ -562,4 +573,25 @@ model WebhookDelivery {
   @@index([companyId, createdAt])
   @@index([status, nextRetryAt])
   @@map("webhook_deliveries")
+}
+
+// ------------------------- CRM demo inbox ------------------------
+// Backs the built-in "mock CRM" preview: a live feed of the exact events we
+// POST to a company's CRM. One row per logical transaction, upserted by
+// `reference` so the same record visibly transitions PENDING → COMPLETED (and
+// FAILED/EXPIRED/REVERSED). Tenant-scoped (RLS by company_id). Pruned to the
+// most recent rows per company by the writer.
+model CrmDemoEvent {
+  id         String   @id @default(uuid()) @db.Uuid
+  companyId  String   @map("company_id") @db.Uuid
+  company    Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  reference  String
+  eventType  String   @map("event_type")
+  status     String
+  payload    Json     @db.JsonB
+  receivedAt DateTime @default(now()) @map("received_at") @db.Timestamptz(6)
+
+  @@unique([companyId, reference])
+  @@index([companyId, receivedAt])
+  @@map("crm_demo_events")
 }
