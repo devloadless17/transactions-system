@@ -96,6 +96,32 @@ jobs:
           cache-to: type=gha,mode=max,scope=web
 
       # ---------------------------------------------------------------
+      # Wait out Hostinger's edge DDoS scrubbing.
+      #
+      # Hostinger runs always-on edge scrubbing IN FRONT of the VPS. GitHub's
+      # shared runner IPs (Azure) intermittently get flagged and their SYNs are
+      # silently dropped (-> "dial tcp :22: i/o timeout") — invisible to ufw/sshd
+      # because the packets never reach the host. The scrub window is short
+      # (~1-2 min), so poll port 22 from THIS runner until it clears before the
+      # scp/ssh steps run (they share the runner's egress IP). If it never clears
+      # (~5 min), fail — a re-run draws a fresh runner IP.
+      # ---------------------------------------------------------------
+      - name: Wait for VPS SSH to be reachable
+        env:
+          HOST: ${{ secrets.SERVER_IP }}
+        run: |
+          for i in $(seq 1 20); do
+            if timeout 8 bash -c "exec 3<>/dev/tcp/$HOST/22" 2>/dev/null; then
+              echo "✓ $HOST:22 reachable (attempt $i/20)"
+              exit 0
+            fi
+            echo "… $HOST:22 unreachable (attempt $i/20) — likely Hostinger edge scrub on this runner IP; retrying in 15s"
+            sleep 15
+          done
+          echo "::error::$HOST:22 never became reachable (~5 min) — sustained edge scrub. Re-run the job to draw a fresh runner IP, or move deploy to a self-hosted runner."
+          exit 1
+
+      # ---------------------------------------------------------------
       # Ship deploy files + render the server-side .env from secrets.
       # ---------------------------------------------------------------
       - name: Copy deploy files to server
