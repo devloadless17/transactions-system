@@ -18,6 +18,10 @@ const STATUS_FOR_EVENT: Record<CrmEventType, CrmTransactionStatus> = {
   'transaction.reversed': 'REVERSED',
 };
 
+// How long a freshly-enqueued delivery is withheld from the retry sweep so the
+// inline immediate attempt (≤5s) can finish first and we don't double-POST.
+const DISPATCH_SWEEP_HEADSTART_MS = 60_000;
+
 /**
  * The single entry point other modules call to push a transaction's status to a
  * company's CRM. Every method is fire-and-forget and fully guarded — a CRM
@@ -133,6 +137,11 @@ export class CrmDispatchService {
           payload: payload as unknown as Prisma.InputJsonValue,
           targetUrl: company.crmApiUrl!,
           status: 'PENDING',
+          // Hold the row back from the retry sweep briefly so the immediate
+          // attempt below (≤5s) gets a clear head start — otherwise a sweep tick
+          // landing while it's still in flight would POST the same event twice.
+          // If the process dies right after insert, the sweep still picks it up.
+          nextRetryAt: new Date(Date.now() + DISPATCH_SWEEP_HEADSTART_MS),
         },
         select: { id: true },
       }),

@@ -31,8 +31,12 @@ FROM node:24-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 
-# Need openssl for the Prisma engines at runtime
-RUN apk add --no-cache openssl libc6-compat
+# openssl for the Prisma engines at runtime. pnpm (installed globally so it's on
+# PATH for the non-root `node` user with no runtime download) so the one-shot
+# deploy migrate container (docker-compose.prod.yml `migrate`, which reuses this
+# image) can run `prisma migrate deploy`, rotate the RLS role password, and seed.
+RUN apk add --no-cache openssl libc6-compat \
+  && npm install -g pnpm@10.33.3
 
 # Copy the whole built workspace. pnpm uses symlinks from each project's
 # local node_modules into the root .pnpm store — preserve that structure

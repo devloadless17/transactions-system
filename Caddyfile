@@ -1,0 +1,25 @@
+# Production reverse proxy with automatic HTTPS (Let's Encrypt).
+#
+# Single domain, path-based:
+#   https://DOMAIN/v1/*        → API (NestJS)
+#   https://DOMAIN/socket.io/* → API realtime (Socket.IO; WebSocket upgrade auto)
+#   https://DOMAIN/*           → web app (Next.js)
+#
+# Same-origin web ↔ API, so cookies/CORS need no cross-site config. Caddy
+# obtains and renews the TLS cert automatically once DNS points DOMAIN at this
+# server and ports 80/443 are reachable. DOMAIN is injected from the env.
+{$DOMAIN} {
+	encode zstd gzip
+
+	# API: versioned REST + realtime socket. `handle` blocks are mutually
+	# exclusive and ordered, so this never shadows the web catch-all below.
+	@api path /v1/* /socket.io/*
+	handle @api {
+		reverse_proxy api:3001
+	}
+
+	# Everything else is the web app.
+	handle {
+		reverse_proxy web:3000
+	}
+}

@@ -1,0 +1,178 @@
+name: Deploy to Production
+
+# Auto-deploys on every push to main. Use the manual "Run workflow" button with
+# seed_database=true for the FIRST deploy only (creates the initial super admin).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      seed_database:
+        description: 'Seed the database (first deploy only — creates the super admin)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+# Never let two deploys race on the server.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    name: Build, Push & Deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # ---------------------------------------------------------------
+      # Fail fast with a clear message if a required secret is missing.
+      # ---------------------------------------------------------------
+      - name: Validate required secrets
+        env:
+          REQUIRED: |
+            DOCKER_USERNAME DOCKER_SECRET SERVER_IP SERVER_SECRET DOMAIN
+            POSTGRES_PASSWORD POSTGRES_PASSWORD_RLS
+            JWT_ACCESS_SECRET JWT_REFRESH_SECRET CSRF_SECRET METRICS_TOKEN
+            SEED_ADMIN_EMAIL SEED_ADMIN_PASSWORD
+          SECRETS_JSON: ${{ toJSON(secrets) }}
+        run: |
+          missing=""
+          for key in $REQUIRED; do
+            val=$(printf '%s' "$SECRETS_JSON" | jq -r --arg k "$key" '.[$k] // ""')
+            [ -z "$val" ] && missing="$missing $key"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Missing required GitHub secret(s):$missing"
+            exit 1
+          fi
+          echo "All required secrets present."
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_SECRET }}
+
+      # ---------------------------------------------------------------
+      # Build & push both images (latest + commit SHA for rollbacks).
+      # Separate gha cache scopes so the two builds don't evict each other.
+      # ---------------------------------------------------------------
+      - name: Build & push API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/transactions-api:latest
+            ${{ secrets.DOCKER_USERNAME }}/transactions-api:${{ github.sha }}
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+
+      - name: Build & push Web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/web/Dockerfile
+          push: true
+          # NEXT_PUBLIC_* is inlined into the browser bundle at BUILD time, so the
+          # production API URL must be baked here (same-origin: https://DOMAIN/v1).
+          build-args: |
+            NEXT_PUBLIC_API_BASE_URL=https://${{ secrets.DOMAIN }}/v1
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/transactions-web:latest
+            ${{ secrets.DOCKER_USERNAME }}/transactions-web:${{ github.sha }}
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
+
+      # ---------------------------------------------------------------
+      # Ship deploy files + render the server-side .env from secrets.
+      # ---------------------------------------------------------------
+      - name: Copy deploy files to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: root
+          password: ${{ secrets.SERVER_SECRET }}
+          source: 'docker-compose.prod.yml,Caddyfile,.env.prod.example'
+          target: /root/transactions-system
+
+      - name: Render .env from secrets
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: root
+          password: ${{ secrets.SERVER_SECRET }}
+          script: |
+            set -e
+            cd /root/transactions-system
+            cp .env.prod.example .env
+            sed -i "s|__DOCKER_USERNAME__|${{ secrets.DOCKER_USERNAME }}|g" .env
+            sed -i "s|__DOMAIN__|${{ secrets.DOMAIN }}|g" .env
+            sed -i "s|__POSTGRES_PASSWORD__|${{ secrets.POSTGRES_PASSWORD }}|g" .env
+            sed -i "s|__POSTGRES_PASSWORD_RLS__|${{ secrets.POSTGRES_PASSWORD_RLS }}|g" .env
+            sed -i "s|__JWT_ACCESS_SECRET__|${{ secrets.JWT_ACCESS_SECRET }}|g" .env
+            sed -i "s|__JWT_REFRESH_SECRET__|${{ secrets.JWT_REFRESH_SECRET }}|g" .env
+            sed -i "s|__CSRF_SECRET__|${{ secrets.CSRF_SECRET }}|g" .env
+            sed -i "s|__METRICS_TOKEN__|${{ secrets.METRICS_TOKEN }}|g" .env
+            sed -i "s|__SEED_ADMIN_EMAIL__|${{ secrets.SEED_ADMIN_EMAIL }}|g" .env
+            sed -i "s|__SEED_ADMIN_PASSWORD__|${{ secrets.SEED_ADMIN_PASSWORD }}|g" .env
+            sed -i "s|__WHISH_CHANNEL__|${{ secrets.WHISH_CHANNEL }}|g" .env
+            sed -i "s|__WHISH_SECRET__|${{ secrets.WHISH_SECRET }}|g" .env
+            sed -i "s|^SEED_DATABASE=false|SEED_DATABASE=${{ github.event.inputs.seed_database || 'false' }}|g" .env
+            chmod 600 .env
+
+      # ---------------------------------------------------------------
+      # Pull images, run DB migrate/seed, bring the stack up, health-gate.
+      # ---------------------------------------------------------------
+      - name: Deploy to server
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: root
+          password: ${{ secrets.SERVER_SECRET }}
+          command_timeout: 20m
+          script: |
+            set -e
+            cd /root/transactions-system
+
+            echo "${{ secrets.DOCKER_SECRET }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+
+            echo "==> Pulling images"
+            docker compose -f docker-compose.prod.yml pull
+
+            echo "==> Running migrations / RLS rotation / seed"
+            docker compose -f docker-compose.prod.yml run --rm migrate
+
+            echo "==> Starting stack"
+            docker compose -f docker-compose.prod.yml up -d --remove-orphans
+
+            docker image prune -f
+
+            echo "==> Waiting for API to become healthy"
+            RETRIES=0; MAX=45
+            until [ "$RETRIES" -ge "$MAX" ]; do
+              STATUS=$(docker inspect --format='{{.State.Health.Status}}' txn_api 2>/dev/null || echo "starting")
+              if [ "$STATUS" = "healthy" ]; then echo "API is healthy!"; break; fi
+              RETRIES=$((RETRIES + 1))
+              echo "  ...($RETRIES/$MAX) status=$STATUS"
+              sleep 4
+            done
+
+            if [ "$RETRIES" -ge "$MAX" ]; then
+              echo "::error::API did not become healthy in time. Recent logs:"
+              docker compose -f docker-compose.prod.yml logs --tail 80 api
+              exit 1
+            fi
+
+            docker compose -f docker-compose.prod.yml ps

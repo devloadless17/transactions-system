@@ -51,16 +51,26 @@ export class LedgerService {
   async writeEntries(tx: PrismaClient, entries: LedgerEntryInput[]): Promise<void> {
     if (entries.length === 0) return;
 
-    // Validate amounts.
-    for (const e of entries) {
+    // Round every amount to the 8dp money scale up front, so the balance check
+    // and the value actually persisted are the exact same number. Otherwise a
+    // caller that hands us an unrounded Money (e.g. from a multiply/divide) could
+    // pass the in-memory balance check while Postgres rounds the Decimal(20,8)
+    // column differently on insert — silently booking an off-by-1e-8 imbalance —
+    // or persist a line that rounds to 0 and trips the amount>0 CHECK as a 500.
+    // All current callers already pass <=8dp amounts, so this is a no-op for
+    // them and pure defense-in-depth for any future flow.
+    const rounded = entries.map((e) => ({ ...e, amount: e.amount.round() }));
+
+    // Validate amounts (on the rounded value that will be stored).
+    for (const e of rounded) {
       if (!e.amount.isPositive()) {
-        throw new Error(`ledger amount must be positive: got ${e.amount.toString()}`);
+        throw new Error(`ledger amount must be positive at 8dp: got ${e.amount.toString()}`);
       }
     }
 
-    // Balance check per currency.
+    // Balance check per currency (on the rounded amounts that will be persisted).
     const byCurrency = new Map<string, { dr: Money; cr: Money }>();
-    for (const e of entries) {
+    for (const e of rounded) {
       const slot = byCurrency.get(e.currency) ?? { dr: Money.zero(), cr: Money.zero() };
       if (e.direction === 'DEBIT') slot.dr = slot.dr.add(e.amount);
       else slot.cr = slot.cr.add(e.amount);
@@ -76,7 +86,7 @@ export class LedgerService {
 
     // Insert as a single createMany call for atomicity.
     await tx.ledgerEntry.createMany({
-      data: entries.map((e) => ({
+      data: rounded.map((e) => ({
         companyId: e.companyId,
         transactionId: e.transactionId ?? null,
         withdrawalId: e.withdrawalId ?? null,

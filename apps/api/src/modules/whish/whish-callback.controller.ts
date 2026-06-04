@@ -1,5 +1,5 @@
 import { Controller, Get, Query } from '@nestjs/common';
-import { SkipThrottle } from '@nestjs/throttler';
+import { Throttle } from '@nestjs/throttler';
 import { WhishPaymentsService } from './whish-payments.service';
 
 /**
@@ -8,8 +8,13 @@ import { WhishPaymentsService } from './whish-payments.service';
  * externalId). UNAUTHENTICATED by design — the handler never trusts the
  * callback: it matches the token and re-verifies the real status with Whish
  * before settling. We always reply 200 so Whish considers us notified.
+ *
+ * Throttled (not skipped): the route is unauthenticated and externalId is a
+ * sequential, enumerable reference, so a generous-but-finite per-IP cap stops
+ * an attacker from hammering the DB / burning Whish API quota by spraying
+ * guessed ids, while staying well above any real Whish callback volume.
  */
-@SkipThrottle()
+@Throttle({ default: { limit: 120, ttl: 60_000 } })
 @Controller('whish/callback')
 export class WhishCallbackController {
   constructor(private readonly payments: WhishPaymentsService) {}

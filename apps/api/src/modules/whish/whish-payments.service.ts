@@ -90,19 +90,39 @@ export class WhishPaymentsService {
 
     const callbackToken = crypto.randomBytes(24).toString('base64url');
 
-    const created = await this.prisma.runAsTenant(companyId, (tx) =>
-      tx.whishPayment.create({
-        data: {
-          companyId,
-          callbackToken,
-          amount: input.amount,
-          currency: input.currency,
-          invoice: input.invoice,
-          idempotencyKey: input.idempotencyKey ?? null,
-          status: WhishPaymentStatus.PENDING,
-        },
-      }),
-    );
+    let created: WhishPayment;
+    try {
+      created = await this.prisma.runAsTenant(companyId, (tx) =>
+        tx.whishPayment.create({
+          data: {
+            companyId,
+            callbackToken,
+            amount: input.amount,
+            currency: input.currency,
+            invoice: input.invoice,
+            idempotencyKey: input.idempotencyKey ?? null,
+            status: WhishPaymentStatus.PENDING,
+          },
+        }),
+      );
+    } catch (err) {
+      // A concurrent retry with the same idempotencyKey raced us to the unique
+      // (companyId, idempotencyKey) insert. Return the original link instead of a
+      // 409 — the check-then-create above can't see the in-flight winner.
+      if (
+        input.idempotencyKey &&
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2002'
+      ) {
+        const existing = await this.prisma.runAsTenant(companyId, (tx) =>
+          tx.whishPayment.findFirst({
+            where: { companyId, idempotencyKey: input.idempotencyKey },
+          }),
+        );
+        if (existing) return mapWhishPayment(existing);
+      }
+      throw err;
+    }
 
     const externalId = Number(created.externalId);
     const apiBase = this.config.get('WHISH_CALLBACK_BASE', { infer: true });
@@ -282,24 +302,31 @@ export class WhishPaymentsService {
     }
 
     if (collectStatus === 'failed') {
-      const updated = await this.prisma.runAsAdmin((tx) =>
-        tx.whishPayment.update({
-          where: { id: payment.id },
+      // Guard on still-PENDING: a delayed 'failed' status from Whish must never
+      // overwrite a payment a concurrent callback/settle already moved to PAID.
+      const res = await this.prisma.runAsAdmin((tx) =>
+        tx.whishPayment.updateMany({
+          where: { id: payment.id, status: WhishPaymentStatus.PENDING },
           data: { status: WhishPaymentStatus.FAILED, payerPhoneNumber },
         }),
       );
-      this.logger.log(`Whish payment ${payment.externalId} FAILED`);
-      this.realtime.company(payment.companyId, ['whish']);
-      this.crm.emitWhish({
-        companyId: payment.companyId,
-        externalId: payment.externalId,
-        amount: payment.amount.toString(),
-        currency,
-        invoice: payment.invoice,
-        payerPhoneNumber,
-        event: 'transaction.failed',
-      });
-      return mapWhishPayment(updated);
+      const current = await this.prisma.runAsAdmin((tx) =>
+        tx.whishPayment.findUniqueOrThrow({ where: { id: payment.id } }),
+      );
+      if (res.count === 1) {
+        this.logger.log(`Whish payment ${payment.externalId} FAILED`);
+        this.realtime.company(payment.companyId, ['whish']);
+        this.crm.emitWhish({
+          companyId: payment.companyId,
+          externalId: payment.externalId,
+          amount: payment.amount.toString(),
+          currency,
+          invoice: payment.invoice,
+          payerPhoneNumber,
+          event: 'transaction.failed',
+        });
+      }
+      return mapWhishPayment(current);
     }
 
     // success → write a ledger Transaction via the existing ingest pipeline
@@ -362,35 +389,44 @@ export class WhishPaymentsService {
       }
     }
 
-    const updated = await this.prisma.runAsAdmin((tx) =>
-      tx.whishPayment.update({
-        where: { id: payment.id },
+    // Guard the settle on still-PENDING so only ONE racer marks it PAID and fires
+    // the side effects. A concurrent winner (the success callback racing this
+    // stale-reconcile/manual refresh) already booked the SAME transaction (the
+    // (source, externalId) unique constraint guarantees it), so the loser must
+    // not double-deliver the webhook or re-stamp paidAt.
+    const settled = await this.prisma.runAsAdmin((tx) =>
+      tx.whishPayment.updateMany({
+        where: { id: payment.id, status: WhishPaymentStatus.PENDING },
         data: {
           status: WhishPaymentStatus.PAID,
           transactionId: txn.id,
           payerPhoneNumber,
           paidAt: new Date(),
-          // Clear any prior paid-but-unsettled marker so a payment that recovers
-          // (its rule was fixed, or a concurrent winner settled it) stops showing
-          // as "needs attention".
+          // Clear any prior paid-but-unsettled marker so a recovered payment stops
+          // showing as "needs attention".
           metadata: Prisma.JsonNull,
         },
       }),
     );
-    this.logger.log(
-      `Whish payment ${payment.externalId} PAID → transaction ${txn.id} (company ${payment.companyId})`,
+    const updated = await this.prisma.runAsAdmin((tx) =>
+      tx.whishPayment.findUniqueOrThrow({ where: { id: payment.id } }),
     );
-    // Notify the company's webhook (best-effort, never blocks settlement). The
-    // .catch is required: this is a detached promise, and deliverPaid's first DB
-    // lookup is outside its own try/catch, so a transient DB error here would
-    // otherwise become an unhandled rejection.
-    void this.webhooks
-      .deliverPaid(updated)
-      .catch((e) =>
-        this.logger.warn(
-          `Whish webhook delivery failed for ${payment.externalId}: ${(e as Error).message}`,
-        ),
+    if (settled.count === 1) {
+      this.logger.log(
+        `Whish payment ${payment.externalId} PAID → transaction ${txn.id} (company ${payment.companyId})`,
       );
+      // Notify the company's webhook (best-effort, never blocks settlement). The
+      // .catch is required: this is a detached promise, and deliverPaid's first DB
+      // lookup is outside its own try/catch, so a transient DB error here would
+      // otherwise become an unhandled rejection.
+      void this.webhooks
+        .deliverPaid(updated)
+        .catch((e) =>
+          this.logger.warn(
+            `Whish webhook delivery failed for ${payment.externalId}: ${(e as Error).message}`,
+          ),
+        );
+    }
     // `transactions.ingest` already announced transactions/wallets/ledger;
     // this refreshes the Whish payment views.
     this.realtime.company(payment.companyId, ['whish']);
@@ -422,7 +458,12 @@ export class WhishPaymentsService {
         // Always ask Whish for the authoritative status first — never expire a
         // payment that actually settled just before the cutoff.
         const result = await this.reconcile(p);
-        if (tooOld && result.status === WhishPaymentStatus.PENDING) {
+        // Never EXPIRE a paid-but-unsettled payment: Whish HAS the customer's
+        // money but we couldn't book it (e.g. its commission rule changed). It
+        // stays PENDING + needsAttention for an operator; aging it out to EXPIRED
+        // would silently hide real collected money. Only expire truly-abandoned
+        // links.
+        if (tooOld && result.status === WhishPaymentStatus.PENDING && !result.needsAttention) {
           // Guard the EXPIRE on the row STILL being PENDING. reconcile() acted on a
           // stale snapshot; a success callback may have settled this payment to PAID
           // in the meantime. Without the status guard (and there is no DB

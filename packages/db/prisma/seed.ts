@@ -12,12 +12,20 @@ const prisma = new PrismaClient();
 
 async function main() {
   const adminEmail = process.env.SEED_ADMIN_EMAIL ?? 'admin@example.com';
+  // Never seed a default/known super-admin password into production.
+  if (process.env.NODE_ENV === 'production' && !process.env.SEED_ADMIN_PASSWORD) {
+    throw new Error(
+      'SEED_ADMIN_PASSWORD must be set in production — refusing to seed a default admin password.',
+    );
+  }
   const adminPassword = process.env.SEED_ADMIN_PASSWORD ?? 'AdminPassw0rd!';
 
   // Bypass RLS for seeding.
   await prisma.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
 
   // --- Admin user ---
+  // Force a password change on first login so the seeded credential can't live
+  // forever (set only on create; a re-seed won't re-flag a rotated admin).
   const passwordHash = await argon2.hash(adminPassword, { type: argon2.argon2id });
   const admin = await prisma.user.upsert({
     where: { email: adminEmail },
@@ -27,6 +35,7 @@ async function main() {
       passwordHash,
       role: UserRole.SUPER_ADMIN,
       status: UserStatus.ACTIVE,
+      mustChangePassword: true,
     },
   });
 
@@ -99,7 +108,13 @@ async function main() {
   console.log(' Seed complete.');
   console.log(' Super admin:');
   console.log('   email:    ', admin.email);
-  console.log('   password: ', adminPassword);
+  // Never print the real credential into production deploy logs.
+  console.log(
+    '   password: ',
+    process.env.NODE_ENV === 'production'
+      ? '(from SEED_ADMIN_PASSWORD — change required on first login)'
+      : adminPassword,
+  );
   console.log('==========================================');
   console.log('');
 }

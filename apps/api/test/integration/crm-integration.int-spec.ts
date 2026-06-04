@@ -169,11 +169,12 @@ describe('CRM dispatch → demo inbox lifecycle', () => {
   });
 });
 
-describe('CRM delivery retry/backoff', () => {
-  it('retries an unsafe/unreachable URL with backoff, then marks it FAILED', async () => {
+describe('CRM delivery fail-fast', () => {
+  it('marks an unsafe/private URL FAILED on the first attempt (no retry storm)', async () => {
     const { companyId } = await createCompany(h);
-    // A private address is rejected by the SSRF guard at send time, so every
-    // attempt fails — exactly the bookkeeping we want to prove.
+    // A private address is rejected by the SSRF guard at send time. That is a
+    // permanent config error (a re-pointed/internal CRM URL), not a transient
+    // failure, so it must FAIL immediately rather than retry for hours.
     const payload = {
       event: 'transaction.completed',
       reference: 'omt:x',
@@ -193,24 +194,12 @@ describe('CRM delivery retry/backoff', () => {
       }),
     );
 
-    // First attempt → RETRYING, attempts=1, nextRetryAt scheduled.
     await delivery.deliver(row.id);
-    let cur = await prisma.runAsAdmin((tx) =>
+    const cur = await prisma.runAsAdmin((tx) =>
       tx.webhookDelivery.findUnique({ where: { id: row.id } }),
     );
-    expect(cur!.status).toBe('RETRYING');
-    expect(cur!.attempts).toBe(1);
-    expect(cur!.nextRetryAt).not.toBeNull();
-
-    // Drive it to exhaustion.
-    for (let i = 0; i < 10 && cur!.status === 'RETRYING'; i++) {
-      await delivery.deliver(row.id);
-      cur = await prisma.runAsAdmin((tx) =>
-        tx.webhookDelivery.findUnique({ where: { id: row.id } }),
-      );
-    }
     expect(cur!.status).toBe('FAILED');
+    expect(cur!.attempts).toBe(1);
     expect(cur!.nextRetryAt).toBeNull();
-    expect(cur!.attempts).toBeGreaterThanOrEqual(6);
   });
 });

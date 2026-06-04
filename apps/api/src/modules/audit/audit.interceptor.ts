@@ -6,12 +6,13 @@ import { AUDIT_METADATA_KEY, type AuditMetadata } from './audit.decorator';
 import { AuditService } from './audit.service';
 
 /**
- * Reads `@Audited()` metadata after a route handler completes. On
- * success, writes an audit_logs row. Failures are NOT audited (the
- * GlobalExceptionFilter logs them separately).
+ * Reads `@Audited()` metadata around a route handler and writes an audit_logs
+ * row on BOTH success and failure. A denied/failed money or admin mutation
+ * (rejected approval, authz ForbiddenError, ConflictError) leaves a trail with
+ * `outcome: 'error'` for fraud/incident forensics — not just the happy path.
  *
- * Best-effort: an audit-write error is logged but doesn't fail the
- * request — the operation has already succeeded.
+ * Best-effort: an audit-write error is logged but doesn't change the request
+ * outcome; on the error path the original error still propagates unchanged.
  */
 @Injectable()
 export class AuditInterceptor implements NestInterceptor {
@@ -34,22 +35,40 @@ export class AuditInterceptor implements NestInterceptor {
     const ip = req.ip ?? null;
     const userAgent = (req.headers['user-agent'] as string | undefined) ?? null;
 
+    const write = (result: unknown, outcome: 'success' | 'error', err?: unknown) => {
+      const entityId = pickPath(result, req, meta.idFrom) ?? null;
+      const companyId = pickPath(result, req, meta.companyIdFrom) ?? principal?.companyId ?? null;
+      const metadata: Record<string, unknown> = {
+        method: req.method,
+        path: req.originalUrl,
+        outcome,
+      };
+      if (outcome === 'error') {
+        metadata.error = err instanceof Error ? err.message : String(err);
+        const status = (err as { status?: number } | undefined)?.status;
+        if (typeof status === 'number') metadata.status = status;
+      }
+      this.audit
+        .record({
+          actorId: principal?.userId ?? null,
+          companyId,
+          action: meta.action,
+          entityType: meta.entityType,
+          entityId,
+          metadata,
+          ipAddress: ip,
+          userAgent,
+        })
+        .catch((e) => this.logger.warn(`audit write failed: ${e}`));
+    };
+
+    // Audit the happy path AND failures (denied/conflicting/rejected money
+    // actions). `tap`'s error callback observes without swallowing, so the
+    // original error still propagates to the exception filter unchanged.
     return next.handle().pipe(
-      tap((result) => {
-        const entityId = pickPath(result, req, meta.idFrom) ?? null;
-        const companyId = pickPath(result, req, meta.companyIdFrom) ?? principal?.companyId ?? null;
-        this.audit
-          .record({
-            actorId: principal?.userId ?? null,
-            companyId,
-            action: meta.action,
-            entityType: meta.entityType,
-            entityId,
-            metadata: { method: req.method, path: req.originalUrl },
-            ipAddress: ip,
-            userAgent,
-          })
-          .catch((err) => this.logger.warn(`audit write failed: ${err}`));
+      tap({
+        next: (result) => write(result, 'success'),
+        error: (err) => write(undefined, 'error', err),
       }),
     );
   }

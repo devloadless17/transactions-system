@@ -83,14 +83,39 @@ export const envSchema = z
     if (!env.WEB_ORIGIN.startsWith('https://')) {
       fail('WEB_ORIGIN', 'must use https in production');
     }
-    const insecureOrigins = env.ALLOWED_ORIGINS.split(',')
+    const origins = env.ALLOWED_ORIGINS.split(',')
       .map((o) => o.trim())
-      .filter(Boolean)
-      .filter((o) => !o.startsWith('https://'));
+      .filter(Boolean);
+    const insecureOrigins = origins.filter((o) => !o.startsWith('https://'));
     if (insecureOrigins.length > 0) {
       fail(
         'ALLOWED_ORIGINS',
         `all origins must use https in production (got: ${insecureOrigins.join(', ')})`,
+      );
+    }
+    // An empty/incomplete CORS allowlist is a foot-gun: the real web app is
+    // blocked while credentialed no-Origin requests still pass. Fail closed.
+    if (origins.length === 0) {
+      fail('ALLOWED_ORIGINS', 'must be a non-empty https origin list in production');
+    } else if (!origins.includes(env.WEB_ORIGIN)) {
+      fail('ALLOWED_ORIGINS', 'must include WEB_ORIGIN in production');
+    }
+
+    // /metrics leaks operational + tenant-topology data; require the bearer gate.
+    if (!env.METRICS_TOKEN) {
+      fail('METRICS_TOKEN', 'must be set in production (else GET /metrics is world-readable)');
+    }
+
+    // Never run a real-money deploy against the committed dev/default DB
+    // passwords (the runtime RLS role + superuser ship with public defaults).
+    if (
+      /txn_app_dev_password|txn_app_rls_dev_password|dev_password|change[_-]?me/i.test(
+        env.DATABASE_URL,
+      )
+    ) {
+      fail(
+        'DATABASE_URL',
+        'must not use a dev/default database password in production — rotate the txn_app_rls role password',
       );
     }
 
@@ -124,6 +149,18 @@ export const envSchema = z
       }
       if (env.WHISH_BASE_URL.includes('sandbox')) {
         fail('WHISH_BASE_URL', 'must not point at the Whish sandbox in production');
+      }
+      // WHISH_WEBSITE_URL is an auth header Whish matches against the registered
+      // domain — a stale localhost value makes every Whish call fail auth at
+      // runtime (and it is NOT otherwise validated).
+      if (
+        !env.WHISH_WEBSITE_URL.startsWith('https://') ||
+        /localhost|127\.0\.0\.1/.test(env.WHISH_WEBSITE_URL)
+      ) {
+        fail(
+          'WHISH_WEBSITE_URL',
+          'must be your registered https domain in production (not localhost)',
+        );
       }
     }
   });

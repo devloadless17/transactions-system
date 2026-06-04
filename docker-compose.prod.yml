@@ -1,0 +1,148 @@
+# ============================================================================
+# Production stack — pulled images + Caddy (auto-HTTPS). Shipped to the server
+# by .github/workflows/deploy.yml and driven with:
+#
+#   docker compose -f docker-compose.prod.yml pull
+#   docker compose -f docker-compose.prod.yml run --rm migrate   # migrate/seed
+#   docker compose -f docker-compose.prod.yml up -d --remove-orphans
+#
+# Only Caddy publishes ports (80/443). Postgres, Redis, the API and the web app
+# talk over the internal compose network and are NOT exposed to the host.
+# All config/secrets come from the server-side .env (rendered by the deploy
+# workflow from .env.prod.example + GitHub secrets).
+# ============================================================================
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: txn_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: txn_redis
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes']
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One-shot deploy task: apply migrations, rotate the RLS role password off its
+  # committed dev default, optionally seed. Profile-gated so `up` never starts it;
+  # the deploy runs it explicitly with `run --rm migrate` before bringing up the
+  # API. Reuses the API image (it carries the Prisma CLI, tsx and the schema).
+  migrate:
+    profiles: ['migrate']
+    image: ${DOCKER_USERNAME}/transactions-api:${IMAGE_TAG:-latest}
+    container_name: txn_migrate
+    restart: 'no'
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_MIGRATIONS_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public
+      POSTGRES_USER_RLS: ${POSTGRES_USER_RLS:-txn_app_rls}
+      POSTGRES_PASSWORD_RLS: ${POSTGRES_PASSWORD_RLS}
+      SEED_DATABASE: ${SEED_DATABASE:-false}
+      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD}
+    command: ['sh', '/repo/packages/db/deploy.sh']
+
+  api:
+    image: ${DOCKER_USERNAME}/transactions-api:${IMAGE_TAG:-latest}
+    container_name: txn_api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      API_PORT: 3001
+      API_HOST: 0.0.0.0
+      API_GLOBAL_PREFIX: v1
+      # Runtime connects as the non-superuser RLS role so Row Level Security is
+      # actually enforced. Its password was rotated to POSTGRES_PASSWORD_RLS by
+      # the migrate step above.
+      DATABASE_URL: postgresql://${POSTGRES_USER_RLS:-txn_app_rls}:${POSTGRES_PASSWORD_RLS}@postgres:5432/${POSTGRES_DB}?schema=public
+      REDIS_URL: redis://redis:6379
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      CSRF_SECRET: ${CSRF_SECRET}
+      COOKIE_DOMAIN: ${COOKIE_DOMAIN}
+      COOKIE_SECURE: 'true'
+      WEB_ORIGIN: ${WEB_ORIGIN}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+      API_PUBLIC_URL: ${API_PUBLIC_URL}
+      METRICS_TOKEN: ${METRICS_TOKEN}
+      # Whish Pay (optional). Empty channel/secret = "not configured" (the API
+      # boots fine and Whish features stay off).
+      WHISH_BASE_URL: ${WHISH_BASE_URL}
+      WHISH_CHANNEL: ${WHISH_CHANNEL:-}
+      WHISH_SECRET: ${WHISH_SECRET:-}
+      WHISH_WEBSITE_URL: ${WHISH_WEBSITE_URL}
+      WHISH_CALLBACK_BASE: ${WHISH_CALLBACK_BASE}
+      WHISH_USER_AGENT: '${WHISH_USER_AGENT}'
+      WHISH_ENABLED_CURRENCIES: ${WHISH_ENABLED_CURRENCIES:-USD}
+    healthcheck:
+      # 127.0.0.1 (not localhost): the API binds IPv4; busybox wget would hit
+      # IPv6 ::1 first and get connection-refused. Pin IPv4.
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:3001/v1/health || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  web:
+    image: ${DOCKER_USERNAME}/transactions-web:${IMAGE_TAG:-latest}
+    container_name: txn_web
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_started
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      # SSR → API over the internal network. The browser uses the build-time
+      # NEXT_PUBLIC_API_BASE_URL baked into the image (https://DOMAIN/v1).
+      API_INTERNAL_BASE_URL: http://api:3001/v1
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: txn_caddy
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_started
+      web:
+        condition: service_started
+    ports:
+      - '80:80'
+      - '443:443'
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  postgres_data:
+  redis_data:
+  caddy_data:
+  caddy_config:

@@ -56,9 +56,22 @@ export class CrmDeliveryService implements OnApplicationBootstrap, OnModuleDestr
     if (!row || row.status === 'DELIVERED' || row.status === 'FAILED') return;
 
     const payload = row.payload as unknown as CrmEventPayload;
+    const company = await this.prisma.runAsAdmin((tx) =>
+      tx.company.findUnique({
+        where: { id: row.companyId },
+        select: { crmApiKey: true, crmDemoToken: true },
+      }),
+    );
 
     // Built-in demo target → capture in-process (instant, no SSRF, works locally).
-    if (this.isDemoUrl(row.targetUrl)) {
+    // Routed by the company's OWN demo token (exact match), never a look-alike
+    // free-text URL, so the SSRF-bypassing in-process path can't be triggered by
+    // a crafted crmApiUrl.
+    const base = this.config.get('API_PUBLIC_URL', { infer: true });
+    if (
+      company?.crmDemoToken &&
+      row.targetUrl === `${base}/crm-demo/${company.crmDemoToken}/inbox`
+    ) {
       try {
         await this.demoInbox.receive(row.companyId, payload);
         await this.markDelivered(row.id, row.attempts + 1, 200);
@@ -69,16 +82,13 @@ export class CrmDeliveryService implements OnApplicationBootstrap, OnModuleDestr
     }
 
     // Real external CRM → outbound POST with the company's API key.
-    const company = await this.prisma.runAsAdmin((tx) =>
-      tx.company.findUnique({ where: { id: row.companyId }, select: { crmApiKey: true } }),
-    );
-
     try {
       // Re-validate at send time (DNS rebinding / a URL re-pointed at an internal
-      // address after it was saved).
+      // address after it was saved). An unsafe URL is a permanent config error,
+      // not a transient failure — fail it fast instead of retrying for hours.
       await assertSafeWebhookUrl(row.targetUrl);
     } catch (err) {
-      await this.markFailedAttempt(row, null, `unsafe URL: ${(err as Error).message}`);
+      await this.markFailedAttempt(row, null, `unsafe URL: ${(err as Error).message}`, true);
       return;
     }
 
@@ -109,13 +119,6 @@ export class CrmDeliveryService implements OnApplicationBootstrap, OnModuleDestr
     }
   }
 
-  // The dispatcher constructs the demo URL from API_PUBLIC_URL, so a stored
-  // target under `${API_PUBLIC_URL}/crm-demo/` is our own first-party inbox.
-  private isDemoUrl(url: string): boolean {
-    const base = this.config.get('API_PUBLIC_URL', { infer: true });
-    return url.startsWith(`${base}/crm-demo/`);
-  }
-
   private async markDelivered(id: string, attempts: number, status: number): Promise<void> {
     await this.prisma.runAsAdmin((tx) =>
       tx.webhookDelivery.update({
@@ -136,13 +139,16 @@ export class CrmDeliveryService implements OnApplicationBootstrap, OnModuleDestr
     row: WebhookDelivery,
     responseStatus: number | null,
     responseBody: string,
+    nonRetryable = false,
   ): Promise<void> {
     const attempts = row.attempts + 1;
     // Only retry TRANSIENT failures: network/timeout (null), rate limit (429),
-    // and 5xx. An auth/client error (401, 403, 400, 404, 409, 422 …) won't fix
-    // itself by retrying — it needs a config change (e.g. the wrong API key) —
-    // so fail it immediately instead of re-hammering the CRM for hours.
-    const retryable = responseStatus === null || responseStatus === 429 || responseStatus >= 500;
+    // and 5xx. An auth/client error (401, 403, 400, 404, 409, 422 …) or a
+    // permanently-unsafe URL (`nonRetryable`) won't fix itself by retrying — it
+    // needs a config change — so fail it immediately instead of re-hammering the
+    // CRM for hours.
+    const retryable =
+      !nonRetryable && (responseStatus === null || responseStatus === 429 || responseStatus >= 500);
     const exhausted = !retryable || attempts >= MAX_ATTEMPTS;
     const backoff = RETRY_BACKOFF_MS[Math.min(attempts - 1, RETRY_BACKOFF_MS.length - 1)]!;
     await this.prisma.runAsAdmin((tx) =>
