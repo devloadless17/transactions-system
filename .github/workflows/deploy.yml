@@ -161,9 +161,15 @@ jobs:
           echo "✓ SSH key decoded"
 
       # ---------------------------------------------------------------
-      # Wait out Hostinger's edge DDoS scrubbing (poll the SSH port until the
-      # runner IP clears). The scrub targets 22; set VPS_PORT to a non-22 port
-      # (e.g. 2222) to bypass it entirely.
+      # Hostinger runs always-on edge DDoS scrubbing in front of the VPS: GitHub's
+      # shared runner IPs intermittently get flagged and their SYNs are silently
+      # dropped before they reach the host (→ connection timeout, invisible to
+      # ufw/sshd — no failed-login line). It is IP-BASED, not port-based: moving
+      # SSH off 22 does NOT avoid it (our other Hostinger deploy hits the same
+      # scrub on port 22). The window is short (~1-2 min), so poll until the runner
+      # IP clears instead of failing. A sustained block (rare) still exits non-zero
+      # below, at which point a re-run draws a fresh IP. The real fix is to drop the
+      # public-SSH hop entirely — a self-hosted runner on the VPS, or Tailscale.
       # ---------------------------------------------------------------
       - name: Wait for VPS SSH to be reachable
         env:
@@ -178,7 +184,7 @@ jobs:
             echo "… $HOST:$PORT unreachable (attempt $i/20) — likely Hostinger edge scrub; retrying in 15s"
             sleep 15
           done
-          echo "::error::$HOST:$PORT never became reachable (~5 min). Re-run for a fresh runner IP or set VPS_PORT to a non-22 port."
+          echo "::error::$HOST:$PORT never became reachable (~5 min) — sustained Hostinger edge scrub. Re-run for a fresh runner IP, or move the deploy to a self-hosted runner / Tailscale to drop the public-SSH hop."
           exit 1
 
       # ---------------------------------------------------------------
