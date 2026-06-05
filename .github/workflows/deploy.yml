@@ -1,4 +1,4 @@
-# PR → typecheck + lint only.
+# PR → typecheck + lint only
 # Push to main (or manual run) → typecheck → build & push both images →
 #                                ship to the VPS → migrate/seed → health-gate.
 #
