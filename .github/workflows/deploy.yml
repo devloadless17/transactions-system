@@ -61,14 +61,65 @@ jobs:
       - run: pnpm lint
 
   # ---------------------------------------------------------------
-  # Build + ship. Skipped on pull_request; needs typecheck green.
+  # Build + push the api and web images IN PARALLEL — one matrix leg each, on
+  # its own runner, so the slower (web / next build) no longer waits behind the
+  # api. Skipped on pull_request; needs typecheck green.
   # ---------------------------------------------------------------
-  build-and-deploy:
-    name: Build, Push & Deploy
+  build:
+    name: Build & push (${{ matrix.app }})
     if: github.event_name != 'pull_request'
     needs: typecheck
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - app: api
+            dockerfile: apps/api/Dockerfile
+          - app: web
+            dockerfile: apps/web/Dockerfile
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_SECRET }}
+
+      # Tags: latest + commit SHA (the SHA tag is what the deploy pins to, for
+      # rollbacks). secrets.* can't be read in `strategy.matrix`, so the web's
+      # NEXT_PUBLIC_API_BASE_URL build-arg (inlined into the browser bundle at
+      # BUILD time, same-origin https://DOMAIN/v1) is computed here in the step,
+      # conditionally — the api image takes no build args.
+      - name: Build & push ${{ matrix.app }} image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          build-args: ${{ matrix.app == 'web' && format('NEXT_PUBLIC_API_BASE_URL=https://{0}/v1', secrets.DOMAIN) || '' }}
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/transactions-${{ matrix.app }}:latest
+            ${{ secrets.DOCKER_USERNAME }}/transactions-${{ matrix.app }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.app }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.app }}
+
+  # ---------------------------------------------------------------
+  # Ship config, render .env, migrate, recreate the stack. Needs BOTH images
+  # (the whole matrix build job) to have been pushed first.
+  # ---------------------------------------------------------------
+  deploy:
+    name: Ship & Deploy
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       # Fail fast with a clear message if a required secret is missing.
@@ -94,44 +145,6 @@ jobs:
 
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_SECRET }}
-
-      # Build & push both images (latest + commit SHA for rollbacks).
-      - name: Build & push API image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: apps/api/Dockerfile
-          push: true
-          tags: |
-            ${{ secrets.DOCKER_USERNAME }}/transactions-api:latest
-            ${{ secrets.DOCKER_USERNAME }}/transactions-api:${{ github.sha }}
-          cache-from: type=gha,scope=api
-          cache-to: type=gha,mode=max,scope=api
-
-      - name: Build & push Web image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: apps/web/Dockerfile
-          push: true
-          # NEXT_PUBLIC_* is inlined into the browser bundle at BUILD time, so the
-          # production API URL must be baked here (same-origin: https://DOMAIN/v1).
-          build-args: |
-            NEXT_PUBLIC_API_BASE_URL=https://${{ secrets.DOMAIN }}/v1
-          tags: |
-            ${{ secrets.DOCKER_USERNAME }}/transactions-web:latest
-            ${{ secrets.DOCKER_USERNAME }}/transactions-web:${{ github.sha }}
-          cache-from: type=gha,scope=web
-          cache-to: type=gha,mode=max,scope=web
 
       # ---------------------------------------------------------------
       # Decode the SSH key (base64 single-line secret → no newline mangling).
