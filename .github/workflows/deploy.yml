@@ -253,12 +253,14 @@ jobs:
           echo "==> Pulling images"
           docker compose -f docker-compose.prod.yml pull
 
-          # -T detaches stdin. WITHOUT it, `docker compose run` attaches to stdin and
-          # consumes the rest of THIS heredoc script (it's piped into `bash -s` over
-          # ssh), so everything below — including `up -d` — silently never ran. That
-          # made the deploy go green while the containers stayed on the old image.
+          # `</dev/null` is load-bearing. This whole script is piped into `bash -s`
+          # over ssh, so the remote bash reads it from stdin. `docker compose run`
+          # ATTACHES + DRAINS stdin (even with -T, which only disables the TTY), so
+          # it swallows the rest of THIS script — `up -d` and everything below never
+          # ran, and the deploy went green with the containers left on the old image.
+          # Redirecting stdin to /dev/null severs it from the heredoc. (-T kept too.)
           echo "==> Migrations / RLS rotation / seed"
-          docker compose -f docker-compose.prod.yml run --rm -T migrate
+          docker compose -f docker-compose.prod.yml run --rm -T migrate </dev/null
 
           # IMAGE_TAG is pinned to this commit's SHA, so only api/web (whose image ref
           # changed) get recreated. postgres/redis/caddy keep running untouched — the
