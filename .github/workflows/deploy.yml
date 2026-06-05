@@ -176,15 +176,18 @@ jobs:
           HOST: ${{ secrets.VPS_HOST }}
           PORT: ${{ secrets.VPS_PORT || '22' }}
         run: |
-          for i in $(seq 1 20); do
+          # Cap the wait at ~2 min (7 probes × ~16s): rides out the short ~1-2 min
+          # scrub window, then fails fast so a re-run can draw a fresh runner IP
+          # rather than blocking the job for 5 min.
+          for i in $(seq 1 7); do
             if timeout 8 bash -c "exec 3<>/dev/tcp/$HOST/$PORT" 2>/dev/null; then
-              echo "✓ $HOST:$PORT reachable (attempt $i/20)"
+              echo "✓ $HOST:$PORT reachable (attempt $i/7)"
               exit 0
             fi
-            echo "… $HOST:$PORT unreachable (attempt $i/20) — likely Hostinger edge scrub; retrying in 15s"
-            sleep 15
+            echo "… $HOST:$PORT unreachable (attempt $i/7) — likely Hostinger edge scrub; retrying in 8s"
+            sleep 8
           done
-          echo "::error::$HOST:$PORT never became reachable (~5 min) — sustained Hostinger edge scrub. Re-run for a fresh runner IP, or move the deploy to a self-hosted runner / Tailscale to drop the public-SSH hop."
+          echo "::error::$HOST:$PORT never became reachable (~2 min) — sustained Hostinger edge scrub. Re-run for a fresh runner IP, or move the deploy to a self-hosted runner / Tailscale to drop the public-SSH hop."
           exit 1
 
       # ---------------------------------------------------------------
