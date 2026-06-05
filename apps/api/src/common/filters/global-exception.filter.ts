@@ -2,14 +2,13 @@ import { ArgumentsHost, Catch, ExceptionFilter, HttpException, Logger } from '@n
 import { Request, Response } from 'express';
 import { ZodError } from 'zod';
 import { Prisma } from '@app/db';
+import type { ApiError, ApiErrorEnvelope } from '@app/shared';
 import { DomainError } from '../errors/domain.error';
 
-interface ErrorBody {
-  error: {
-    code: string;
-    message: string;
-    details?: unknown;
-  };
+/** A translated exception: the HTTP status plus the envelope's inner error object. */
+interface TranslatedError {
+  status: number;
+  error: ApiError;
 }
 
 @Catch()
@@ -21,32 +20,33 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     const res = ctx.getResponse<Response>();
     const req = ctx.getRequest<Request>();
 
-    const { status, body } = this.translate(exception);
+    const { status, error } = this.translate(exception);
 
     if (status >= 500) {
       this.logger.error(
-        `${req.method} ${req.originalUrl} -> ${status} ${body.error.code}`,
+        `${req.method} ${req.originalUrl} -> ${status} ${error.code}`,
         exception instanceof Error ? exception.stack : String(exception),
       );
     } else {
       this.logger.warn(
-        `${req.method} ${req.originalUrl} -> ${status} ${body.error.code}: ${body.error.message}`,
+        `${req.method} ${req.originalUrl} -> ${status} ${error.code}: ${error.message}`,
       );
     }
 
+    // Mirror the success envelope (ResponseEnvelopeInterceptor): same top-level
+    // `success` + `statusCode`, with the error under `error` instead of `data`.
+    const body: ApiErrorEnvelope = { success: false, statusCode: status, error };
     res.status(status).json(body);
   }
 
-  private translate(exception: unknown): { status: number; body: ErrorBody } {
+  private translate(exception: unknown): TranslatedError {
     if (exception instanceof DomainError) {
       return {
         status: exception.httpStatus,
-        body: {
-          error: {
-            code: exception.code,
-            message: exception.message,
-            details: exception.details,
-          },
+        error: {
+          code: exception.code,
+          message: exception.message,
+          details: exception.details,
         },
       };
     }
@@ -54,12 +54,10 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     if (exception instanceof ZodError) {
       return {
         status: 400,
-        body: {
-          error: {
-            code: 'VALIDATION_ERROR',
-            message: 'Request validation failed',
-            details: exception.issues,
-          },
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Request validation failed',
+          details: exception.issues,
         },
       };
     }
@@ -71,7 +69,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     if (exception instanceof Prisma.PrismaClientValidationError) {
       return {
         status: 400,
-        body: { error: { code: 'VALIDATION_ERROR', message: 'Invalid database query input' } },
+        error: { code: 'VALIDATION_ERROR', message: 'Invalid database query input' },
       };
     }
 
@@ -84,67 +82,55 @@ export class GlobalExceptionFilter implements ExceptionFilter {
           : ((response as { message?: string }).message ?? exception.message);
       return {
         status,
-        body: {
-          error: {
-            code: codeFromStatus(status),
-            message,
-            details:
-              typeof response === 'object' ? (response as Record<string, unknown>) : undefined,
-          },
+        error: {
+          code: codeFromStatus(status),
+          message,
+          details: typeof response === 'object' ? (response as Record<string, unknown>) : undefined,
         },
       };
     }
 
     return {
       status: 500,
-      body: {
-        error: {
-          code: 'INTERNAL_ERROR',
-          message: 'Internal server error',
-        },
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: 'Internal server error',
       },
     };
   }
 
-  private translatePrismaKnown(e: Prisma.PrismaClientKnownRequestError): {
-    status: number;
-    body: ErrorBody;
-  } {
+  private translatePrismaKnown(e: Prisma.PrismaClientKnownRequestError): TranslatedError {
     switch (e.code) {
       case 'P2002': // unique constraint violation
         return {
           status: 409,
-          body: {
-            error: {
-              code: 'CONFLICT',
-              message: 'A record with these values already exists',
-              details: { target: (e.meta as { target?: unknown } | undefined)?.target },
-            },
+          error: {
+            code: 'CONFLICT',
+            message: 'A record with these values already exists',
+            details: { target: (e.meta as { target?: unknown } | undefined)?.target },
           },
         };
       case 'P2025': // record required but not found
-        return { status: 404, body: { error: { code: 'NOT_FOUND', message: 'Record not found' } } };
+        return { status: 404, error: { code: 'NOT_FOUND', message: 'Record not found' } };
       case 'P2003': // foreign-key constraint violation
         return {
           status: 409,
-          body: {
-            error: {
-              code: 'CONFLICT',
-              message: 'Operation violates a reference constraint',
-              details: { field: (e.meta as { field_name?: unknown } | undefined)?.field_name },
-            },
+          error: {
+            code: 'CONFLICT',
+            message: 'Operation violates a reference constraint',
+            details: { field: (e.meta as { field_name?: unknown } | undefined)?.field_name },
           },
         };
       case 'P2034': // write conflict / deadlock (normally retried by runSerializable)
         return {
           status: 409,
-          body: { error: { code: 'WRITE_CONFLICT', message: 'Write conflict, please retry' } },
+          error: { code: 'WRITE_CONFLICT', message: 'Write conflict, please retry' },
         };
       default:
         // Unknown known-error: surface the Prisma code but not internals.
         return {
           status: 400,
-          body: { error: { code: `DB_${e.code}`, message: 'Database request error' } },
+          error: { code: `DB_${e.code}`, message: 'Database request error' },
         };
     }
   }

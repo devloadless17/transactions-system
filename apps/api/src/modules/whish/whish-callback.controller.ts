@@ -1,5 +1,6 @@
 import { Controller, Get, Query } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
+import { SkipResponseEnvelope } from '../../common/decorators/skip-response-envelope.decorator';
 import { WhishPaymentsService } from './whish-payments.service';
 
 /**
@@ -14,6 +15,9 @@ import { WhishPaymentsService } from './whish-payments.service';
  * an attacker from hammering the DB / burning Whish API quota by spraying
  * guessed ids, while staying well above any real Whish callback volume.
  */
+// Inbound ack FROM Whish: it only keys off HTTP 200, so keep the {received}
+// body raw rather than coupling the provider to our API envelope.
+@SkipResponseEnvelope()
 @Throttle({ default: { limit: 120, ttl: 60_000 } })
 @Controller('whish/callback')
 export class WhishCallbackController {

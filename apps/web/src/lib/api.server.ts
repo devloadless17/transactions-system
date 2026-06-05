@@ -1,6 +1,6 @@
 import 'server-only';
 import { cookies } from 'next/headers';
-import { ApiClientError, type ApiErrorBody } from './api';
+import { ApiClientError, unwrapEnvelope, type ApiErrorBody } from './api';
 
 // Server-side (Node) base URL for the API. Use 127.0.0.1, NOT localhost:
 // Node's fetch (undici) resolves `localhost` to IPv6 `::1` first on Windows,
@@ -49,5 +49,5 @@ export async function apiServer<T>(path: string, opts: RequestOpts = {}): Promis
   }
 
   if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
+  return unwrapEnvelope<T>(await res.json());
 }

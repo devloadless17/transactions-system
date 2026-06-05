@@ -9,6 +9,7 @@ import {
   ingestTransaction,
   loginOwnerApiContext,
   provisionCompanyOwner,
+  unwrap,
 } from './helpers';
 
 /**
@@ -59,13 +60,13 @@ async function post(
   const res = await api.post(path, { headers: { 'x-csrf-token': csrf }, data: body });
   const text = await res.text();
   if (!res.ok()) throw new Error(`POST ${path} -> ${res.status()} ${text}`);
-  return text ? JSON.parse(text) : null;
+  return text ? unwrap(JSON.parse(text)) : null;
 }
 
 async function expectWallet(api: APIRequestContext, available: number, reserved: number) {
   const res = await api.get('/v1/company/wallets');
   expect(res.ok()).toBeTruthy();
-  const w = (await res.json()).data.find((x: { currency: string }) => x.currency === 'USD');
+  const w = unwrap(await res.json()).data.find((x: { currency: string }) => x.currency === 'USD');
   expect(w, 'USD wallet exists').toBeTruthy();
   expect(money(w.availableBalance)).toBeCloseTo(available, 6);
   expect(money(w.reservedBalance)).toBeCloseTo(reserved, 6);
@@ -74,7 +75,7 @@ async function expectWallet(api: APIRequestContext, available: number, reserved:
 async function platformUsd(api: APIRequestContext) {
   const res = await api.get('/v1/admin/analytics/platform');
   expect(res.ok()).toBeTruthy();
-  const row = (await res.json()).byCurrency.find(
+  const row = unwrap(await res.json()).byCurrency.find(
     (c: { currency: string }) => c.currency.trim() === 'USD',
   ) ?? { volumeIn: '0', volumeOut: '0', feesEarned: '0' };
   return {
@@ -88,7 +89,7 @@ async function flowsSums(api: APIRequestContext, win: { from: string; to: string
   const p = new URLSearchParams({ currency: 'USD', from: win.from, to: win.to });
   const res = await api.get(`/v1/admin/analytics/flows?${p.toString()}`);
   expect(res.ok()).toBeTruthy();
-  const buckets = (await res.json()).buckets as Array<Record<string, string>>;
+  const buckets = unwrap(await res.json()).buckets as Array<Record<string, string>>;
   const sum = (k: 'in' | 'out' | 'fees') => buckets.reduce((a, b) => a + money(b[k]), 0);
   return { in: sum('in'), out: sum('out'), fees: sum('fees') };
 }
@@ -101,7 +102,7 @@ async function walletSummary(api: APIRequestContext, range?: { from: string; to:
   }
   const res = await api.get(`/v1/company/analytics/wallet-summary?${p.toString()}`);
   expect(res.ok()).toBeTruthy();
-  return res.json();
+  return unwrap(await res.json());
 }
 
 test.describe.serial('money flows end-to-end (API)', () => {

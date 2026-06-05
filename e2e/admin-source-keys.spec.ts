@@ -1,5 +1,5 @@
 import { test, expect, request as pwRequest } from '@playwright/test';
-import { API_BASE, ADMIN_EMAIL, ADMIN_PASSWORD, uniqueSlug } from './helpers';
+import { API_BASE, ADMIN_EMAIL, ADMIN_PASSWORD, uniqueSlug, unwrap } from './helpers';
 
 test.describe('admin: source API keys', () => {
   test("navigate from sources list to a source's API keys page", async ({ page }) => {
@@ -25,7 +25,7 @@ test.describe('admin: source API keys', () => {
 
     const sources = await api.get('/v1/admin/sources/all');
     expect(sources.ok()).toBeTruthy();
-    const sourceList = (await sources.json()).data as Array<{ id: string; code: string }>;
+    const sourceList = unwrap(await sources.json()).data as Array<{ id: string; code: string }>;
     const omt = sourceList.find((s) => s.code === 'omt');
     expect(omt, 'seeded omt source not found').toBeTruthy();
 
@@ -69,7 +69,7 @@ test.describe('admin: source API keys', () => {
       },
     });
     expect(createCo.ok()).toBeTruthy();
-    const targetId = (await createCo.json()).company.id as string;
+    const targetId = unwrap(await createCo.json()).company.id as string;
     expect(targetId).toBeTruthy();
 
     // A source may only mint into companies that have OPTED IN. Enable the
@@ -93,7 +93,7 @@ test.describe('admin: source API keys', () => {
       },
     });
     expect(ingest.status(), await ingest.text()).toBe(201);
-    const body = await ingest.json();
+    const body = unwrap(await ingest.json());
     expect(body.sourceCode).toBe('omt');
     expect(body.currency).toBe('USD');
     expect(body.amount).toBe('120');
@@ -116,7 +116,7 @@ test.describe('admin: source API keys', () => {
       headers: { Authorization: `Bearer ${plaintext}` },
     });
     expect(discover.status()).toBe(200);
-    const list = (await discover.json()).data as Array<{
+    const list = unwrap(await discover.json()).data as Array<{
       operatingId: string;
       slug: string;
       name: string;

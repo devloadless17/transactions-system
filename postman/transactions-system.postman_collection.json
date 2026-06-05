@@ -102,7 +102,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('201 Created', () => pm.expect([200, 201]).to.include(pm.response.code));",
-                  "const j = pm.response.json();",
+                  "const j = pm.response.json().data; // responses are enveloped: { success, statusCode, data }",
                   "pm.collectionVariables.set('companyId', j.company.id);",
                   "pm.collectionVariables.set('ownerEmail', j.owner.email);",
                   "pm.collectionVariables.set('ownerPassword', j.owner.temporaryPassword);",
@@ -171,7 +171,7 @@
                   "pm.test('200 OK', () => pm.response.to.have.status(200));",
                   "const c = pm.cookies.get('csrf-token');",
                   "if (c) pm.collectionVariables.set('csrfToken', c);",
-                  "const j = pm.response.json();",
+                  "const j = pm.response.json().data; // responses are enveloped: { success, statusCode, data }",
                   "console.log('Logged in as', j.email, '(mustChangePassword =', j.mustChangePassword, ')');"
                 ]
               }
@@ -209,7 +209,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('201 Created', () => pm.expect([200, 201]).to.include(pm.response.code));",
-                  "const j = pm.response.json();",
+                  "const j = pm.response.json().data; // responses are enveloped: { success, statusCode, data }",
                   "pm.collectionVariables.set('apiKey', j.plaintext);",
                   "console.log('Saved apiKey =', j.plaintext.slice(0, 24) + '…');"
                 ]
@@ -285,7 +285,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "const j = pm.response.json();",
+                  "const j = pm.response.json().data; // responses are enveloped: { success, statusCode, data }",
                   "const wanted = pm.collectionVariables.get('sourceCode') || 'omt';",
                   "const match = (j.data || []).find(s => s.code === wanted);",
                   "if (match) {",
@@ -319,7 +319,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('201 Created', () => pm.expect([200, 201]).to.include(pm.response.code));",
-                  "const j = pm.response.json();",
+                  "const j = pm.response.json().data; // responses are enveloped: { success, statusCode, data }",
                   "pm.collectionVariables.set('sourceApiKey', j.plaintext);",
                   "console.log('Saved sourceApiKey =', j.plaintext.slice(0, 24) + '…');"
                 ]
@@ -368,7 +368,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('200 OK', () => pm.response.to.have.status(200));",
-                  "const j = pm.response.json();",
+                  "const j = pm.response.json().data; // responses are enveloped: { success, statusCode, data }",
                   "pm.test('Returns an array of companies', () => pm.expect(j.data).to.be.an('array'));",
                   "if ((j.data || []).length > 0 && !pm.collectionVariables.get('companyId')) {",
                   "  pm.collectionVariables.set('companyId', j.data[0].operatingId);",
@@ -398,7 +398,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('201 Created', () => pm.expect([200, 201]).to.include(pm.response.code));",
-                  "const j = pm.response.json();",
+                  "const j = pm.response.json().data; // responses are enveloped: { success, statusCode, data }",
                   "pm.collectionVariables.set('transactionId', j.id);",
                   "pm.test('Fee is hidden from sources (no commissionAmount)', () => pm.expect(j).to.not.have.property('commissionAmount'));",
                   "pm.test('Net is hidden from sources (no netAmount)', () => pm.expect(j).to.not.have.property('netAmount'));"
@@ -582,7 +582,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('201 Created', () => pm.expect([200, 201]).to.include(pm.response.code));",
-                  "const j = pm.response.json();",
+                  "const j = pm.response.json().data; // responses are enveloped: { success, statusCode, data }",
                   "pm.collectionVariables.set('withdrawalId', j.id);",
                   "pm.test('Status is PENDING', () => pm.expect(j.status).to.equal('PENDING'));",
                   "pm.test('Payout method captured', () => pm.expect(j.payoutMethod).to.equal('CRYPTO'));"

@@ -4,6 +4,7 @@ import { crmEventPayloadSchema, type CrmEventPayload } from '@app/shared';
 import { ZodPipe } from '../../common/pipes/zod-validation.pipe';
 import { PrismaService } from '../../database/prisma.service';
 import { ForbiddenError } from '../../common/errors/domain.error';
+import { SkipResponseEnvelope } from '../../common/decorators/skip-response-envelope.decorator';
 import { CrmDemoInboxService } from './crm-demo-inbox.service';
 
 /**
@@ -16,6 +17,9 @@ import { CrmDemoInboxService } from './crm-demo-inbox.service';
  * UNAUTHENTICATED guard-wise (no JWT/CSRF) — it authenticates by the per-company
  * demo token in the path plus a timing-safe Bearer-key check.
  */
+// Mimics a real external CRM's inbox ack — our delivery code keys off the HTTP
+// status, so keep the {received} body raw and outside the API envelope.
+@SkipResponseEnvelope()
 @Controller('crm-demo')
 export class CrmDemoController {
   constructor(

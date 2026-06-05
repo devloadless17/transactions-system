@@ -45,6 +45,17 @@ Requests are rate-limited **per API key**:
 - **300 requests per rolling 60-second window** (≈ 5 requests/second, burst-friendly).
 - Exceeding the limit returns **429** with code `RATE_LIMITED`. Back off and retry.
 
+### Response envelope
+
+Every JSON response uses the **same envelope**, so you can branch on one field and read
+the status code straight from the body:
+
+- **Success:** `{ "success": true, "statusCode": <code>, "data": <payload> }` — your result
+  is always under `data`.
+- **Error:** `{ "success": false, "statusCode": <code>, "error": { "code", "message", "details" } }`.
+
+`statusCode` mirrors the HTTP status line. All the examples below show the full envelope.
+
 ---
 
 ## 2. API 1 — Get companies (discovery)
@@ -66,32 +77,39 @@ No query parameters and no request body.
 
 ```json
 {
-  "data": [
-    {
-      "operatingId": "3f8a1c20-9b2e-4d77-8a1f-7c2e5b0d4a11",
-      "slug": "acme-retail",
-      "name": "ACME Retail",
-      "defaultCurrency": "USD"
-    },
-    {
-      "operatingId": "b14d77e2-1f53-49c0-9e8a-2d6c0f3b9a44",
-      "slug": "globex-fuel",
-      "name": "Globex Fuel",
-      "defaultCurrency": "USD"
-    }
-  ]
+  "success": true,
+  "statusCode": 200,
+  "data": {
+    "data": [
+      {
+        "operatingId": "3f8a1c20-9b2e-4d77-8a1f-7c2e5b0d4a11",
+        "slug": "acme-retail",
+        "name": "ACME Retail",
+        "defaultCurrency": "USD"
+      },
+      {
+        "operatingId": "b14d77e2-1f53-49c0-9e8a-2d6c0f3b9a44",
+        "slug": "globex-fuel",
+        "name": "Globex Fuel",
+        "defaultCurrency": "USD"
+      }
+    ]
+  }
 }
 ```
 
+The envelope's `data` holds the list payload `{ "data": [...] }`, so the array of entities
+is at **`data.data`**.
+
 ### Field reference
 
-| Field                    | Type          | Description                                                                                         |
-| ------------------------ | ------------- | --------------------------------------------------------------------------------------------------- |
-| `data`                   | array         | List of available operating entities. May be empty if none are currently visible.                   |
-| `data[].operatingId`     | string (UUID) | **The value you must send as `operatingId` when submitting a transaction.** Stable — safe to cache. |
-| `data[].slug`            | string        | Human-friendly short identifier. For display only.                                                  |
-| `data[].name`            | string        | Entity display name. For display only.                                                              |
-| `data[].defaultCurrency` | string        | The entity's default settlement currency (currently `USD`).                                         |
+| Field                         | Type          | Description                                                                                         |
+| ----------------------------- | ------------- | --------------------------------------------------------------------------------------------------- |
+| `data.data`                   | array         | List of available operating entities. May be empty if none are currently visible.                   |
+| `data.data[].operatingId`     | string (UUID) | **The value you must send as `operatingId` when submitting a transaction.** Stable — safe to cache. |
+| `data.data[].slug`            | string        | Human-friendly short identifier. For display only.                                                  |
+| `data.data[].name`            | string        | Entity display name. For display only.                                                              |
+| `data.data[].defaultCurrency` | string        | The entity's default settlement currency (currently `USD`).                                         |
 
 > **Note:** Only entities that Rival Payments has marked active and visible appear
 > here. One that is hidden or inactive will not appear and cannot receive
@@ -160,22 +178,28 @@ Content-Type: application/json
 
 ```json
 {
-  "id": "a7c3e9f1-2b44-4d8e-9c10-5f6a7b8c9d0e",
-  "operatingId": "3f8a1c20-9b2e-4d77-8a1f-7c2e5b0d4a11",
-  "sourceId": "5d2b1a90-7e34-4c11-b8f2-1a9c3e7d6b50",
-  "sourceCode": "whish",
-  "externalTransactionId": "WISH-2026-000123456",
-  "amount": "150.00",
-  "currency": "USD",
-  "status": "COMPLETED",
-  "customer": "John Doe",
-  "tradingAccount": "0096170123456",
-  "phone": "0096170123456",
-  "note": "Top-up via Whish",
-  "processedAt": "2026-06-04T12:34:56.000Z",
-  "createdAt": "2026-06-04T12:34:56.000Z"
+  "success": true,
+  "statusCode": 201,
+  "data": {
+    "id": "a7c3e9f1-2b44-4d8e-9c10-5f6a7b8c9d0e",
+    "operatingId": "3f8a1c20-9b2e-4d77-8a1f-7c2e5b0d4a11",
+    "sourceId": "5d2b1a90-7e34-4c11-b8f2-1a9c3e7d6b50",
+    "sourceCode": "whish",
+    "externalTransactionId": "WISH-2026-000123456",
+    "amount": "150.00",
+    "currency": "USD",
+    "status": "COMPLETED",
+    "customer": "John Doe",
+    "tradingAccount": "0096170123456",
+    "phone": "0096170123456",
+    "note": "Top-up via Whish",
+    "processedAt": "2026-06-04T12:34:56.000Z",
+    "createdAt": "2026-06-04T12:34:56.000Z"
+  }
 }
 ```
+
+The transaction object is under **`data`** (fields below are relative to `data`).
 
 #### Response field reference
 
@@ -213,10 +237,12 @@ exact same request — you will not double-credit the entity.
 
 ## 4. Error handling
 
-All errors use a consistent JSON envelope:
+All errors use the same envelope as success responses, with the failure under `error`:
 
 ```json
 {
+  "success": false,
+  "statusCode": 400,
   "error": {
     "code": "VALIDATION_ERROR",
     "message": "Human-readable description",
@@ -226,6 +252,8 @@ All errors use a consistent JSON envelope:
 ```
 
 `details` is optional and, for validation errors, lists the specific fields that failed.
+You can detect failure by `success === false` (or the presence of `error`); `statusCode`
+echoes the HTTP status.
 
 ### Status codes
 

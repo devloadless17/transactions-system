@@ -39,3 +39,39 @@ export type PaginatedResponse<T> = {
   data: T[];
   meta: { page: number; pageSize: number; total: number; totalPages: number };
 };
+
+/**
+ * The platform-wide response envelope. EVERY JSON API response carries the same
+ * top-level shape so any caller (our web app, a source provider, a partner CRM)
+ * can branch on `success` and read `statusCode` straight from the body instead
+ * of only the HTTP status line.
+ *
+ *  - Success: `{ success: true, statusCode, data }` — the handler's payload
+ *    lives under `data` (for list endpoints that's `{ data: [...], meta }`, so
+ *    the array is at `data.data`).
+ *  - Error:   `{ success: false, statusCode, error: { code, message, details? } }`
+ *
+ * `success` is the discriminant: a success body never has `error`, an error
+ * body never has `data`. A handful of non-JSON / no-body endpoints are exempt
+ * (see @SkipResponseEnvelope on the API side): CSV exports, Prometheus
+ * `/metrics`, the health probe, 204 responses, and inbound provider acks.
+ */
+export type ApiError = {
+  code: string;
+  message: string;
+  details?: unknown;
+};
+
+export type ApiSuccessEnvelope<T> = {
+  success: true;
+  statusCode: number;
+  data: T;
+};
+
+export type ApiErrorEnvelope = {
+  success: false;
+  statusCode: number;
+  error: ApiError;
+};
+
+export type ApiEnvelope<T> = ApiSuccessEnvelope<T> | ApiErrorEnvelope;

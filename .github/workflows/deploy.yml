@@ -194,6 +194,11 @@ jobs:
           SEED_DATABASE: ${{ github.event.inputs.seed_database || 'false' }}
         run: |
           cp .env.prod.example .env.rendered
+          # Pin the stack to THIS commit's immutable image tag (built+pushed above)
+          # instead of the floating :latest. Two payoffs:
+          #   1. `up -d` always sees a changed image ref → reliably recreates api/web.
+          #   2. the tag IS the version, so rollback = redeploy the previous SHA.
+          sed -i "s|^IMAGE_TAG=latest|IMAGE_TAG=$GITHUB_SHA|" .env.rendered
           sed -i "s|__DOCKER_USERNAME__|$DOCKER_USERNAME|g" .env.rendered
           sed -i "s|__DOMAIN__|$DOMAIN|g" .env.rendered
           sed -i "s|__POSTGRES_PASSWORD__|$POSTGRES_PASSWORD|g" .env.rendered
@@ -225,7 +230,7 @@ jobs:
 
           echo "==> Copying files to $SSH_USER@$HOST:$DEPLOY_DIR"
           scp -i "$KEY" -P "$PORT" $COMMON \
-            docker-compose.prod.yml Caddyfile .env.rendered \
+            docker-compose.prod.yml Caddyfile rollback.sh .env.rendered \
             "$SSH_USER@$HOST:$DEPLOY_DIR/"
 
           echo "==> Activating .env + deploying"
@@ -236,18 +241,30 @@ jobs:
           cd "$DEPLOY_DIR"
           mv -f .env.rendered .env
           chmod 600 .env
+          chmod +x rollback.sh 2>/dev/null || true
+
+          # Tag of the release currently running (empty on the very first deploy).
+          # If the new release proves healthy this becomes the rollback target.
+          PREV_TAG="$(cat .deploy_current 2>/dev/null || true)"
+          NEW_TAG="$(grep -E '^IMAGE_TAG=' .env | cut -d= -f2)"
 
           echo "$DOCKER_SECRET" | docker login -u "$DOCKER_USERNAME" --password-stdin
 
           echo "==> Pulling images"
           docker compose -f docker-compose.prod.yml pull
 
+          # -T detaches stdin. WITHOUT it, `docker compose run` attaches to stdin and
+          # consumes the rest of THIS heredoc script (it's piped into `bash -s` over
+          # ssh), so everything below — including `up -d` — silently never ran. That
+          # made the deploy go green while the containers stayed on the old image.
           echo "==> Migrations / RLS rotation / seed"
-          docker compose -f docker-compose.prod.yml run --rm migrate
+          docker compose -f docker-compose.prod.yml run --rm -T migrate
 
+          # IMAGE_TAG is pinned to this commit's SHA, so only api/web (whose image ref
+          # changed) get recreated. postgres/redis/caddy keep running untouched — the
+          # data volumes are never recreated, so nothing in the DB is lost.
           echo "==> Starting stack"
           docker compose -f docker-compose.prod.yml up -d --remove-orphans
-          docker image prune -f
 
           echo "==> Waiting for API health"
           RETRIES=0; MAX=45
@@ -259,7 +276,28 @@ jobs:
           if [ "$RETRIES" -ge "$MAX" ]; then
             echo "API did not become healthy in time:"
             docker compose -f docker-compose.prod.yml logs --tail 80 api
+            echo "::error::New release is unhealthy. Old image kept — run ./rollback.sh on the server to revert."
             exit 1
           fi
+
+          # Healthy: commit the rollback pointer, then drop images we no longer need.
+          # We keep the new release + the previous one (for rollback) + the floating
+          # :latest, and remove everything older so disk doesn't grow unbounded.
+          echo "==> Healthy — recording rollback pointer + pruning stale images"
+          echo "$NEW_TAG" > .deploy_current
+          if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "$NEW_TAG" ]; then
+            echo "$PREV_TAG" > .deploy_previous
+          fi
+          KEEP=" $NEW_TAG $PREV_TAG latest "
+          for repo in "$DOCKER_USERNAME/transactions-api" "$DOCKER_USERNAME/transactions-web"; do
+            docker images "$repo" --format '{{.Tag}}' | sort -u | while read -r t; do
+              case "$KEEP" in
+                *" $t "*) : ;;                                   # keep current/previous/latest
+                *) docker rmi "$repo:$t" >/dev/null 2>&1 || true ;;  # in-use ones are skipped
+              esac
+            done
+          done
+          docker image prune -f >/dev/null 2>&1 || true
+
           docker compose -f docker-compose.prod.yml ps
           REMOTE

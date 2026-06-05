@@ -10,7 +10,7 @@ import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { apiFetch } from '@/lib/api.client';
-import { ApiClientError } from '@/lib/api';
+import { ApiClientError, unwrapEnvelope } from '@/lib/api';
 
 const API_BASE =
   (typeof window !== 'undefined' && process.env.NEXT_PUBLIC_API_BASE_URL) ||
@@ -32,6 +32,8 @@ curl -X POST ${base}/integrations/whish/payments \\
   -H "Authorization: Bearer $WHISH_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{"amount":"25.00","currency":"USD","invoice":"Order #4821"}'
+# → { "success": true, "statusCode": 201,
+#     "data": { "collectUrl": "https://...", "externalId": 3, "status": "PENDING" } }
 
 # 2) Poll status by reference (externalId)
 curl ${base}/integrations/whish/payments/3 \\
@@ -54,7 +56,7 @@ resp = requests.post(
     json={"amount": "25.00", "currency": "USD", "invoice": "Order #4821"},
 )
 resp.raise_for_status()
-data = resp.json()
+data = resp.json()["data"]              # responses are enveloped: { success, statusCode, data }
 collect_url = data["collectUrl"]        # send to your customer
 reference   = data["externalId"]        # store against your order
 print(collect_url, reference)
@@ -62,7 +64,7 @@ print(collect_url, reference)
 # 2) Poll status later
 status = requests.get(
     f"{BASE}/integrations/whish/payments/{reference}", headers=HEADERS
-).json()
+).json()["data"]
 print(status["status"])                 # PENDING | PAID | FAILED | EXPIRED`,
 
   node: `const BASE = "${base}";
@@ -76,12 +78,12 @@ const res = await fetch(\`\${BASE}/integrations/whish/payments\`, {
   body: JSON.stringify({ amount: "25.00", currency: "USD", invoice: "Order #4821" }),
 });
 if (!res.ok) throw new Error(\`HTTP \${res.status}\`);
-const data = await res.json();
+const { data } = await res.json();       // responses are enveloped: { success, statusCode, data }
 console.log(data.collectUrl, data.externalId);   // share collectUrl; store externalId
 
 // 2) Poll status
 const ref = data.externalId;
-const status = await (await fetch(
+const { data: status } = await (await fetch(
   \`\${BASE}/integrations/whish/payments/\${ref}\`, { headers: auth }
 )).json();
 console.log(status.status);`,
@@ -101,14 +103,16 @@ var resp = await http.PostAsJsonAsync("integrations/whish/payments", new {
     invoice  = "Order #4821"
 });
 resp.EnsureSuccessStatusCode();
-var data = await resp.Content.ReadFromJsonAsync<JsonElement>();
+// Responses are enveloped: { success, statusCode, data } — read fields off data.
+var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+var data = body.GetProperty("data");
 var collectUrl = data.GetProperty("collectUrl").GetString();   // share with customer
 var reference  = data.GetProperty("externalId").GetString();   // store against order
 Console.WriteLine($"{collectUrl} {reference}");
 
 // 2) Poll status
 var status = await http.GetFromJsonAsync<JsonElement>($"integrations/whish/payments/{reference}");
-Console.WriteLine(status.GetProperty("status").GetString());`,
+Console.WriteLine(status.GetProperty("data").GetProperty("status").GetString());`,
 
   java: `import java.net.URI;
 import java.net.http.*;
@@ -126,7 +130,8 @@ HttpRequest create = HttpRequest.newBuilder(URI.create(base + "/integrations/whi
     .build();
 HttpResponse<String> resp = client.send(create, HttpResponse.BodyHandlers.ofString());
 System.out.println(resp.statusCode());
-System.out.println(resp.body());            // contains collectUrl + externalId
+// enveloped: { "success": true, "statusCode": 201, "data": { collectUrl, externalId, status } }
+System.out.println(resp.body());
 
 // 2) Poll status (reference = externalId from the response above)
 HttpRequest status = HttpRequest.newBuilder(URI.create(base + "/integrations/whish/payments/3"))
@@ -374,8 +379,11 @@ function Tester() {
     try {
       const r = await fn();
       setResult(r);
-      const j = r.json as { externalId?: string } | null;
-      if (j?.externalId) setRef(j.externalId);
+      // Responses are enveloped ({ success, statusCode, data }); the payment
+      // payload (with externalId) lives under `data`. unwrapEnvelope returns the
+      // inner data on success and the body as-is on an error envelope.
+      const payload = unwrapEnvelope<{ externalId?: string }>(r.json);
+      if (payload?.externalId) setRef(payload.externalId);
     } catch (e) {
       setResult({ status: 0, json: { error: e instanceof Error ? e.message : 'network error' } });
     } finally {
@@ -499,7 +507,10 @@ function CodeExamples() {
         <CardTitle>Code examples</CardTitle>
         <CardDescription>
           Authentication is the same everywhere:{' '}
-          <code>Authorization: Bearer &lt;company key&gt;</code>. No cookies, no CSRF.
+          <code>Authorization: Bearer &lt;company key&gt;</code>. No cookies, no CSRF. Every
+          response is wrapped as <code>{'{ success, statusCode, data }'}</code> — read your payload
+          from <code>data</code> (errors come back as{' '}
+          <code>{'{ success: false, statusCode, error }'}</code>).
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
@@ -536,7 +547,11 @@ function CodeExamples() {
 
 function ReferenceCard() {
   const rows: [string, string, string][] = [
-    ['POST', '/integrations/whish/payments', 'Create a payment link → { collectUrl, externalId }'],
+    [
+      'POST',
+      '/integrations/whish/payments',
+      'Create a payment link → data: { collectUrl, externalId }',
+    ],
     ['GET', '/integrations/whish/payments/{ref}', 'Get a payment by reference (externalId)'],
     ['POST', '/integrations/whish/payments/{ref}/refresh', 'Force-reconcile status with Whish'],
   ];

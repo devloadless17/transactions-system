@@ -26,13 +26,22 @@ depending on who you are:
 | **Money amounts** | Always **decimal strings** (e.g. `"150.00"`), never floats |
 | **Currency**      | `USD` (only supported currency today)                      |
 
-All errors share one envelope:
+**Response envelope.** Every JSON response from an API endpoint you **call** (the Ingest
+API in Part A, and the company endpoints in Part B like `/company/crm/config`) uses one
+shape, so you read the status code from the body and branch on `success`:
 
 ```json
-{ "error": { "code": "VALIDATION_ERROR", "message": "…", "details": {} } }
+// success — your payload is always under "data"
+{ "success": true, "statusCode": 200, "data": { /* … */ } }
+
+// error — the failure is under "error"
+{ "success": false, "statusCode": 400, "error": { "code": "VALIDATION_ERROR", "message": "…", "details": {} } }
 ```
 
-A table of the codes you may see is in the [Appendix](#appendix--error-codes).
+`statusCode` mirrors the HTTP status. The Part A examples below show the full envelope. (The
+**Part B** CRM webhook body we POST to _your_ endpoint is a separate payload and is **not**
+wrapped in this envelope.) A table of the error codes you may see is in the
+[Appendix](#appendix--error-codes).
 
 ---
 
@@ -77,28 +86,35 @@ Authorization: Bearer <SOURCE_KEY>
 
 ```json
 {
-  "data": [
-    {
-      "operatingId": "3f8a1c20-9b2e-4d77-8a1f-7c2e5b0d4a11",
-      "slug": "acme-retail",
-      "name": "ACME Retail",
-      "defaultCurrency": "USD"
-    },
-    {
-      "operatingId": "b14d77e2-1f53-49c0-9e8a-2d6c0f3b9a44",
-      "slug": "globex-fuel",
-      "name": "Globex Fuel",
-      "defaultCurrency": "USD"
-    }
-  ]
+  "success": true,
+  "statusCode": 200,
+  "data": {
+    "data": [
+      {
+        "operatingId": "3f8a1c20-9b2e-4d77-8a1f-7c2e5b0d4a11",
+        "slug": "acme-retail",
+        "name": "ACME Retail",
+        "defaultCurrency": "USD"
+      },
+      {
+        "operatingId": "b14d77e2-1f53-49c0-9e8a-2d6c0f3b9a44",
+        "slug": "globex-fuel",
+        "name": "Globex Fuel",
+        "defaultCurrency": "USD"
+      }
+    ]
+  }
 }
 ```
 
-| Field                    | Type          | Description                                                                                    |
-| ------------------------ | ------------- | ---------------------------------------------------------------------------------------------- |
-| `data[].operatingId`     | string (UUID) | **The value you send as `operatingId` when submitting a transaction.** Stable — safe to cache. |
-| `data[].slug` / `name`   | string        | Human-friendly identifiers, for display only.                                                  |
-| `data[].defaultCurrency` | string        | The entity's default settlement currency (`USD`).                                              |
+The list payload `{ "data": [...] }` sits under the envelope's `data`, so the entities are
+at **`data.data`**.
+
+| Field                         | Type          | Description                                                                                    |
+| ----------------------------- | ------------- | ---------------------------------------------------------------------------------------------- |
+| `data.data[].operatingId`     | string (UUID) | **The value you send as `operatingId` when submitting a transaction.** Stable — safe to cache. |
+| `data.data[].slug` / `name`   | string        | Human-friendly identifiers, for display only.                                                  |
+| `data.data[].defaultCurrency` | string        | The entity's default settlement currency (`USD`).                                              |
 
 ## A.2 Submit a transaction — `POST /ingest/{sourceCode}/transactions`
 
@@ -134,24 +150,28 @@ the request is **403**.
 **`payload`** recognised keys (all optional): `customer` (payer), `tradingAccount`
 (recipient account), `phone`, `note`. Any other keys are preserved for audit.
 
-**Response — `201 Created`**
+**Response — `201 Created`** (transaction object under `data`)
 
 ```json
 {
-  "id": "a7c3e9f1-2b44-4d8e-9c10-5f6a7b8c9d0e",
-  "operatingId": "3f8a1c20-9b2e-4d77-8a1f-7c2e5b0d4a11",
-  "sourceId": "5d2b1a90-7e34-4c11-b8f2-1a9c3e7d6b50",
-  "sourceCode": "whish",
-  "externalTransactionId": "WISH-2026-000123456",
-  "amount": "150.00",
-  "currency": "USD",
-  "status": "COMPLETED",
-  "customer": "John Doe",
-  "tradingAccount": "0096170123456",
-  "phone": "0096170123456",
-  "note": "Top-up via Whish",
-  "processedAt": "2026-06-04T12:34:56.000Z",
-  "createdAt": "2026-06-04T12:34:56.000Z"
+  "success": true,
+  "statusCode": 201,
+  "data": {
+    "id": "a7c3e9f1-2b44-4d8e-9c10-5f6a7b8c9d0e",
+    "operatingId": "3f8a1c20-9b2e-4d77-8a1f-7c2e5b0d4a11",
+    "sourceId": "5d2b1a90-7e34-4c11-b8f2-1a9c3e7d6b50",
+    "sourceCode": "whish",
+    "externalTransactionId": "WISH-2026-000123456",
+    "amount": "150.00",
+    "currency": "USD",
+    "status": "COMPLETED",
+    "customer": "John Doe",
+    "tradingAccount": "0096170123456",
+    "phone": "0096170123456",
+    "note": "Top-up via Whish",
+    "processedAt": "2026-06-04T12:34:56.000Z",
+    "createdAt": "2026-06-04T12:34:56.000Z"
+  }
 }
 ```
 
@@ -206,7 +226,7 @@ Content-Type: application/json
 
 Saving **enables** delivery immediately. To check or stop:
 
-- `GET  /v1/company/crm/config` → `{ apiUrl, hasApiKey, enabled, demoUrl }` (the key
+- `GET  /v1/company/crm/config` → `data: { apiUrl, hasApiKey, enabled, demoUrl }` (the key
   itself is never returned).
 - `DELETE /v1/company/crm/config` → disables delivery and clears the URL/key.
 

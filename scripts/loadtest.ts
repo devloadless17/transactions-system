@@ -61,9 +61,21 @@ async function jsonFetch<T>(
   }
   return {
     status: res.status,
-    body: body as T,
+    body: unwrapEnvelope(body) as T,
     setCookies: res.headers.getSetCookie?.() ?? [],
   };
+}
+
+/**
+ * The API wraps successful JSON in `{ success, statusCode, data }`; return the
+ * inner `data` so call sites read payloads directly (error bodies / non-enveloped
+ * responses pass through untouched).
+ */
+function unwrapEnvelope(body: unknown): unknown {
+  if (body !== null && typeof body === 'object' && 'success' in body && 'data' in body) {
+    return (body as { data: unknown }).data;
+  }
+  return body;
 }
 
 function parseCookies(setCookies: string[]): { jar: string; csrf?: string } {

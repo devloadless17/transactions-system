@@ -63,6 +63,23 @@ export function uniqueSlug(prefix: string) {
 }
 
 /**
+ * Unwrap the API response envelope `{ success, statusCode, data }`. Returns the
+ * inner `data` on a success body, and the body untouched for an error body or
+ * the few endpoints kept outside the envelope. Mirrors the web client so specs
+ * read payloads the same way the app does.
+ *
+ * Note for list endpoints: the payload is itself `{ data: [...], meta }`, so the
+ * array is at `unwrap(body).data`.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function unwrap<T = any>(body: any): T {
+  if (body !== null && typeof body === 'object' && 'success' in body && 'data' in body) {
+    return body.data as T;
+  }
+  return body as T;
+}
+
+/**
  * Provision a company + owner directly through the API. Returns the
  * owner credentials so a Playwright page can then sign in as them.
  *
@@ -87,7 +104,7 @@ export async function provisionCompanyOwner(admin?: { api: APIRequestContext; cs
   if (!create.ok()) {
     throw new Error(`create company failed: ${create.status()} ${await create.text()}`);
   }
-  const body = await create.json();
+  const body = unwrap(await create.json());
   if (owned) await api.dispose();
   return {
     slug,
@@ -134,14 +151,15 @@ export async function createCommissionRule(
   });
   if (!res.ok())
     throw new Error(`create commission rule failed: ${res.status()} ${await res.text()}`);
-  return res.json();
+  return unwrap(await res.json());
 }
 
 /** Find the seeded source id by code (e.g. 'omt'). */
 export async function findSourceId(api: APIRequestContext, code: string): Promise<string> {
   const res = await api.get('/v1/admin/sources/all');
   if (!res.ok()) throw new Error(`sources/all failed: ${res.status()} ${await res.text()}`);
-  const list = (await res.json()).data as Array<{ id: string; code: string }>;
+  // Envelope unwraps to the list payload { data: [...] }; the array is its .data.
+  const list = unwrap<{ data: Array<{ id: string; code: string }> }>(await res.json()).data;
   const found = list.find((s) => s.code === code);
   if (!found) throw new Error(`seeded source '${code}' not found`);
   return found.id;
@@ -175,7 +193,7 @@ export async function createSourceKey(
     data: { name },
   });
   if (!res.ok()) throw new Error(`create source key failed: ${res.status()} ${await res.text()}`);
-  const body = await res.json();
+  const body = unwrap(await res.json());
   return (body.plaintext ?? body.apiKey) as string;
 }
 
@@ -194,7 +212,8 @@ export async function ingestTransaction(
       data: { operatingId: companyId, ...rest },
     });
     const text = await res.text();
-    return { status: res.status(), body: text ? JSON.parse(text) : null };
+    // unwrap returns the inner transaction on 201, or the error body on 4xx.
+    return { status: res.status(), body: text ? unwrap(JSON.parse(text)) : null };
   } finally {
     await ctx.dispose();
   }

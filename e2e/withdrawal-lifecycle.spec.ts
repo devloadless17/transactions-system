@@ -8,6 +8,7 @@ import {
   ingestTransaction,
   loginAs,
   provisionCompanyOwner,
+  unwrap,
 } from './helpers';
 
 // Money-OUT journey: ingest credits available → owner requests a withdrawal
@@ -66,7 +67,7 @@ test.describe('withdrawal lifecycle (request + approve through the UI)', () => {
     // Confirm available ~99 before withdrawing.
     const walletsBefore = await owner.get('/v1/company/wallets');
     expect(walletsBefore.ok()).toBeTruthy();
-    const usdBefore = (await walletsBefore.json()).data.find(
+    const usdBefore = unwrap(await walletsBefore.json()).data.find(
       (w: { currency: string }) => w.currency === 'USD',
     );
     expect(usdBefore, 'USD wallet should exist').toBeTruthy();
@@ -111,7 +112,7 @@ test.describe('withdrawal lifecycle (request + approve through the UI)', () => {
     // assertion and to locate the right admin row).
     const listRes = await owner.get('/v1/company/withdrawals?pageSize=50');
     expect(listRes.ok()).toBeTruthy();
-    const withdrawals = (await listRes.json()).data as Array<{
+    const withdrawals = unwrap(await listRes.json()).data as Array<{
       id: string;
       amount: string;
       status: string;
@@ -161,13 +162,13 @@ test.describe('withdrawal lifecycle (request + approve through the UI)', () => {
     // --- Assert (API): withdrawal COMPLETED + available dropped by 40 ---
     const finalWd = await api.get(`/v1/admin/withdrawals/${withdrawalId}`);
     expect(finalWd.ok()).toBeTruthy();
-    const finalWdBody = await finalWd.json();
+    const finalWdBody = unwrap(await finalWd.json());
     expect(finalWdBody.status).toBe('COMPLETED');
     expect(finalWdBody.externalReference, 'external reference recorded').toBeTruthy();
 
     const walletsAfter = await owner.get('/v1/company/wallets');
     expect(walletsAfter.ok()).toBeTruthy();
-    const usdAfter = (await walletsAfter.json()).data.find(
+    const usdAfter = unwrap(await walletsAfter.json()).data.find(
       (w: { currency: string }) => w.currency === 'USD',
     );
     // Started at 99, withdrew 40 (crypto has no extra fee in the seed rules) → 59.

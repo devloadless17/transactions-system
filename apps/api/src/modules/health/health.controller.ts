@@ -1,7 +1,11 @@
 import { Controller, Get, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import { PrismaService } from '../../database/prisma.service';
+import { SkipResponseEnvelope } from '../../common/decorators/skip-response-envelope.decorator';
 
+// Operational liveness/readiness probe: orchestrators and monitors read the raw
+// {status,db} body and it sets its own 503 — keep it outside the API envelope.
+@SkipResponseEnvelope()
 @Controller('health')
 export class HealthController {
   constructor(private readonly prisma: PrismaService) {}

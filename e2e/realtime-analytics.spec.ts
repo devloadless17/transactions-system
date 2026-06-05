@@ -6,6 +6,7 @@ import {
   ingestTransaction,
   loginAs,
   provisionCompanyOwner,
+  unwrap,
 } from './helpers';
 
 // Reproduces + guards the reported bug: the wallet updated live on a new
@@ -25,7 +26,7 @@ test.describe('realtime analytics — live dashboard updates', () => {
       page.on('response', async (r) => {
         if (r.url().includes('/analytics/overview')) {
           try {
-            const j = await r.json();
+            const j = unwrap(await r.json());
             fetches.push(`${r.status()} deposits=${j?.volume?.deposits?.completedTotal}`);
           } catch {
             fetches.push(`${r.status()} <non-json>`);
@@ -121,7 +122,7 @@ test.describe('realtime analytics — live dashboard updates', () => {
     page.on('response', async (r) => {
       if (r.url().includes('/admin/analytics/platform')) {
         try {
-          const j = await r.json();
+          const j = unwrap(await r.json());
           const usd = j?.byCurrency?.find((c: { currency: string }) => c.currency === 'USD');
           diag.push(`platform.USD.volumeIn=${usd?.volumeIn}`);
         } catch {

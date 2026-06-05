@@ -15,6 +15,20 @@ export type ApiErrorBody = {
   };
 };
 
+/**
+ * The API wraps every successful JSON response in `{ success, statusCode, data }`
+ * (see the server's ResponseEnvelopeInterceptor). Callers only care about the
+ * payload, so unwrap `data` here. A handful of endpoints are intentionally
+ * outside the envelope (health, CSV, 204s) — for those (or any already-unwrapped
+ * body) we pass the body through untouched.
+ */
+export function unwrapEnvelope<T>(body: unknown): T {
+  if (body !== null && typeof body === 'object' && 'success' in body && 'data' in body) {
+    return (body as { data: T }).data;
+  }
+  return body as T;
+}
+
 export class ApiClientError extends Error {
   readonly status: number;
   readonly code: string;

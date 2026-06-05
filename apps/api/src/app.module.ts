@@ -30,6 +30,7 @@ import { ReconciliationModule } from './modules/reconciliation/reconciliation.mo
 import { MaintenanceModule } from './modules/maintenance/maintenance.module';
 import { MetricsModule } from './modules/metrics/metrics.module';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
+import { ResponseEnvelopeInterceptor } from './common/interceptors/response-envelope.interceptor';
 import { AuditInterceptor } from './modules/audit/audit.interceptor';
 import { RedisThrottlerStorage } from './common/throttler/redis-throttler-storage';
 import type { Env } from './config/env.schema';
@@ -79,6 +80,9 @@ import type { Env } from './config/env.schema';
     MetricsModule,
   ],
   providers: [
+    // Registered FIRST so it is the outermost interceptor: its response-wrapping
+    // map() runs LAST, after Audit/Metrics/ingest-log have read the raw payload.
+    { provide: APP_INTERCEPTOR, useClass: ResponseEnvelopeInterceptor },
     { provide: APP_FILTER, useClass: GlobalExceptionFilter },
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_INTERCEPTOR, useClass: AuditInterceptor },

@@ -1,6 +1,6 @@
 'use client';
 import { toast } from 'sonner';
-import { ApiClientError, PUBLIC_API_BASE, type ApiErrorBody } from './api';
+import { ApiClientError, PUBLIC_API_BASE, unwrapEnvelope, type ApiErrorBody } from './api';
 
 const CSRF_COOKIE_NAME = 'csrf-token';
 const CSRF_HEADER_NAME = 'x-csrf-token';
@@ -133,5 +133,5 @@ async function requestWithAuthRetry<T>(
   }
 
   if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
+  return unwrapEnvelope<T>(await res.json());
 }

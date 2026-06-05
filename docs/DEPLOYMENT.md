@@ -118,16 +118,27 @@ seeding stays off).
 cd /root/transactions-system
 docker compose -f docker-compose.prod.yml ps
 docker compose -f docker-compose.prod.yml logs -f api
-# re-run migrations only:
-docker compose -f docker-compose.prod.yml run --rm migrate
+# re-run migrations only (-T so it doesn't eat piped stdin in scripts):
+docker compose -f docker-compose.prod.yml run --rm -T migrate
 ```
 
 ### Rollback
 
-Images are tagged per commit. To roll back, edit `IMAGE_TAG=latest` to the
-previous commit SHA in `/root/transactions-system/.env`, then:
+Each deploy pins `IMAGE_TAG` to its commit SHA and records the running release in
+`.deploy_current` / the prior one in `.deploy_previous`. To revert, run the
+shipped helper on the server:
 
 ```bash
-docker compose -f docker-compose.prod.yml pull && \
-docker compose -f docker-compose.prod.yml up -d
+cd ~/transactions-system
+./rollback.sh             # back to the last-known-good release
+./rollback.sh <git-sha>   # or a specific commit's image
 ```
+
+It recreates **only** api + web (`--no-deps`), so Postgres/Redis and their data
+volumes are never touched, and pins `.env` to the rolled-back tag so it sticks.
+Migrations are forward-only — `rollback.sh` reverts code, not schema; if a bad
+release ran a destructive migration, restore the DB from a backup.
+
+> Each deploy keeps the current + previous images on the server (older ones are
+> pruned), and never recreates the database container — the new image ref only
+> changes api/web, so the `postgres_data` volume is preserved untouched.

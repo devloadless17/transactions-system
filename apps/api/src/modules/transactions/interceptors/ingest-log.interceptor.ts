@@ -30,6 +30,10 @@ export class IngestLogInterceptor implements NestInterceptor {
 
     return next.handle().pipe(
       tap((response: unknown) => {
+        // The tap sees the RAW handler payload (this route-scoped interceptor runs
+        // innermost, before the global ResponseEnvelopeInterceptor wraps it), so
+        // extract the ids off the raw object — then store the envelope the client
+        // actually received so the log mirrors the wire response.
         const r = asRecord(response);
         this.logs.record({
           kind: 'INGEST',
@@ -40,7 +44,7 @@ export class IngestLogInterceptor implements NestInterceptor {
           statusCode: 201,
           success: true,
           request: body ?? null,
-          response: response ?? null,
+          response: { success: true, statusCode: 201, data: response ?? null },
         });
       }),
       catchError((err: unknown) => {
@@ -69,23 +73,29 @@ function str(v: unknown): string | null {
   return typeof v === 'string' ? v : null;
 }
 
-/** Mirror the GlobalExceptionFilter's shape so the logged response matches what the client got. */
+/**
+ * Mirror the GlobalExceptionFilter's error envelope so the logged response
+ * matches what the client got: `{ success: false, statusCode, error }`.
+ */
 function mapError(err: unknown): { statusCode: number; payload: unknown } {
+  const { statusCode, error } = translate(err);
+  return { statusCode, payload: { success: false, statusCode, error } };
+}
+
+function translate(err: unknown): { statusCode: number; error: unknown } {
   if (err instanceof DomainError) {
     return {
       statusCode: err.httpStatus,
-      payload: { error: { code: err.code, message: err.message, details: err.details } },
+      error: { code: err.code, message: err.message, details: err.details },
     };
   }
   if (err instanceof ZodError) {
     return {
       statusCode: 400,
-      payload: {
-        error: {
-          code: 'VALIDATION_ERROR',
-          message: 'Request validation failed',
-          details: err.issues,
-        },
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: 'Request validation failed',
+        details: err.issues,
       },
     };
   }
@@ -93,11 +103,8 @@ function mapError(err: unknown): { statusCode: number; payload: unknown } {
     const res = err.getResponse();
     return {
       statusCode: err.getStatus(),
-      payload: typeof res === 'string' ? { error: { message: res } } : res,
+      error: typeof res === 'string' ? { message: res } : res,
     };
   }
-  return {
-    statusCode: 500,
-    payload: { error: { code: 'INTERNAL_ERROR', message: 'Internal server error' } },
-  };
+  return { statusCode: 500, error: { code: 'INTERNAL_ERROR', message: 'Internal server error' } };
 }

@@ -26,6 +26,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Audited } from '../audit/audit.decorator';
 import type { AuthPrincipal } from '../../common/types/request.types';
+import { SkipResponseEnvelope } from '../../common/decorators/skip-response-envelope.decorator';
 import { TransactionsService } from './transactions.service';
 import { ForbiddenError } from '../../common/errors/domain.error';
 
@@ -43,6 +44,7 @@ export class TransactionsReadController {
 
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
   @Get('admin/transactions/export.csv')
+  @SkipResponseEnvelope()
   @Header('Content-Type', 'text/csv; charset=utf-8')
   async adminExport(
     @Query(new ZodPipe(listTransactionsQuerySchema)) query: ListTransactionsQuery,
@@ -89,6 +91,7 @@ export class TransactionsReadController {
 
   @Roles(UserRole.COMPANY_OWNER, UserRole.COMPANY_MANAGER, UserRole.COMPANY_VIEWER)
   @Get('company/transactions/export.csv')
+  @SkipResponseEnvelope()
   @Header('Content-Type', 'text/csv; charset=utf-8')
   async companyExport(
     @Query(new ZodPipe(listTransactionsQuerySchema)) query: ListTransactionsQuery,

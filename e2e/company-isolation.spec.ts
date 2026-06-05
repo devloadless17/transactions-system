@@ -7,6 +7,7 @@ import {
   ingestTransaction,
   loginOwnerApiContext,
   provisionCompanyOwner,
+  unwrap,
 } from './helpers';
 
 // Cross-company isolation through the whole stack (RLS). Company A ingests a
@@ -46,7 +47,10 @@ test.describe('company isolation (RLS end-to-end)', () => {
     // B's transaction list must NOT contain A's transaction.
     const bList = await bOwner.get('/v1/company/transactions?pageSize=100');
     expect(bList.ok()).toBeTruthy();
-    const bRows = (await bList.json()).data as Array<{ id: string; externalTransactionId: string }>;
+    const bRows = unwrap(await bList.json()).data as Array<{
+      id: string;
+      externalTransactionId: string;
+    }>;
     expect(bRows.some((t) => t.id === txnIdA)).toBe(false);
     expect(bRows.some((t) => t.externalTransactionId === extId)).toBe(false);
 
