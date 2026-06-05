@@ -54,4 +54,24 @@ export default [
       '@typescript-eslint/no-require-imports': 'off',
     },
   },
+  {
+    // ESM Node scripts (e.g. the docs Markdown->PDF renderer). They run under
+    // Node directly with import/export, so give them Node globals — without this
+    // `no-undef` flags process/console (the .cjs block above does the same).
+    files: ['**/*.mjs'],
+    languageOptions: {
+      sourceType: 'module',
+      globals: {
+        process: 'readonly',
+        console: 'readonly',
+        URL: 'readonly',
+        Buffer: 'readonly',
+        fetch: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        setInterval: 'readonly',
+        clearInterval: 'readonly',
+      },
+    },
+  },
 ];
