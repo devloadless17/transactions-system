@@ -100,6 +100,9 @@ services:
       WHISH_CALLBACK_BASE: ${WHISH_CALLBACK_BASE}
       WHISH_USER_AGENT: '${WHISH_USER_AGENT}'
       WHISH_ENABLED_CURRENCIES: ${WHISH_ENABLED_CURRENCIES:-USD}
+      # Must be forwarded too — without it the API never sees the sandbox opt-in
+      # and prod env-validation rejects a sandbox base URL / non-https website URL.
+      WHISH_ALLOW_SANDBOX: ${WHISH_ALLOW_SANDBOX:-false}
     healthcheck:
       # 127.0.0.1 (not localhost): the API binds IPv4; busybox wget would hit
       # IPv6 ::1 first and get connection-refused. Pin IPv4.
