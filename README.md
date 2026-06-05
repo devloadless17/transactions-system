@@ -130,4 +130,7 @@ We are the _outbound_ caller (the inverse of source-key ingest).
   (`whish.payment.paid`, `X-Whish-Signature: sha256=…`) so the CRM needn't poll.
 - **Surfaces** — company **Whish Pay** + **Developers** (live tester, multi-language
   examples, webhook config) pages; **admin → Whish Pay** (balance + all payments).
-  Hand-off guide: [`docs/whish-crm-integration.html`](docs/whish-crm-integration.html).
+
+**Partner integration docs:** see [`docs/`](docs/README.md) — the
+[Integration Guide](docs/rival-integration-guide.md) covers both the Ingest API (for
+sources) and the CRM webhooks (for companies).

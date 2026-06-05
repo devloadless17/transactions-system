@@ -1,7 +1,6 @@
-import { DevelopersView } from '@/features/company/developers-view';
+import { redirect } from 'next/navigation';
 
-export const dynamic = 'force-dynamic';
-
+// Developers moved into the unified Documentation hub.
 export default function DevelopersPage() {
-  return <DevelopersView />;
+  redirect('/app/documentation?tab=developers');
 }

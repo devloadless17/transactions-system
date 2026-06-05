@@ -23,6 +23,7 @@ import { WhishClient, WhishError } from './whish.client';
 import { WhishWebhookService } from './whish-webhook.service';
 import { RealtimeService } from '../realtime/realtime.service';
 import { CrmDispatchService } from '../crm/crm-dispatch.service';
+import { TransactionLogsService } from '../transaction-logs/transaction-logs.service';
 
 const WHISH_SOURCE_CODE = 'whish';
 // Stale-payment reconciliation window.
@@ -43,6 +44,7 @@ export class WhishPaymentsService {
     private readonly commissionsRepo: CommissionsRepository,
     private readonly realtime: RealtimeService,
     private readonly crm: CrmDispatchService,
+    private readonly txLogs: TransactionLogsService,
   ) {}
 
   /** Currencies live for Whish links (USD only by default). */
@@ -141,6 +143,23 @@ export class WhishPaymentsService {
         failureRedirectUrl: `${webBase}/pay/failure?ref=${externalId}`,
       });
 
+      // Super-admin log: what we asked Whish for, and what Whish returned.
+      this.txLogs.record({
+        kind: 'WHISH_LINK',
+        companyId,
+        sourceCode: WHISH_SOURCE_CODE,
+        reference: String(externalId),
+        statusCode: 200,
+        success: true,
+        request: {
+          amount: input.amount,
+          currency: input.currency,
+          invoice: input.invoice,
+          externalId,
+        },
+        response: { collectUrl },
+      });
+
       const updated = await this.prisma.runAsTenant(companyId, (tx) =>
         tx.whishPayment.update({ where: { id: created.id }, data: { collectUrl } }),
       );
@@ -160,6 +179,28 @@ export class WhishPaymentsService {
       });
       return mapWhishPayment(updated);
     } catch (err) {
+      // Super-admin log: what we asked Whish for, and what Whish returned on
+      // failure (the raw envelope is carried on WhishError.details.response).
+      const details = err instanceof WhishError ? err.details : undefined;
+      this.txLogs.record({
+        kind: 'WHISH_LINK',
+        companyId,
+        sourceCode: WHISH_SOURCE_CODE,
+        reference: String(externalId),
+        statusCode: typeof details?.httpStatus === 'number' ? details.httpStatus : 502,
+        success: false,
+        request: {
+          amount: input.amount,
+          currency: input.currency,
+          invoice: input.invoice,
+          externalId,
+        },
+        response: {
+          code: err instanceof WhishError ? err.code : 'WHISH_ERROR',
+          message: err instanceof Error ? err.message : 'unknown',
+          upstream: details?.response ?? details?.upstreamMessage ?? null,
+        },
+      });
       await this.prisma.runAsTenant(companyId, (tx) =>
         tx.whishPayment.update({
           where: { id: created.id },

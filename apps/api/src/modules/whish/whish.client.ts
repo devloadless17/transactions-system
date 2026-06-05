@@ -149,7 +149,14 @@ export class WhishClient {
       const message = isAuthFailure
         ? 'Whish rejected the request — the payment provider is not configured correctly (invalid or expired credentials). Please contact support.'
         : upstreamMessage;
-      throw new WhishError(message, { path, code, httpStatus: res.status, upstreamMessage });
+      throw new WhishError(message, {
+        path,
+        code,
+        httpStatus: res.status,
+        upstreamMessage,
+        // The raw Whish envelope, surfaced for the super-admin transaction log.
+        response: json,
+      });
     }
 
     return json.data as T;

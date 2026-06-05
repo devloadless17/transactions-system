@@ -95,4 +95,45 @@ describe('validateEnv', () => {
       }),
     ).toThrow(/WHISH_WEBSITE_URL/);
   });
+
+  it('rejects the Whish sandbox in production by default', () => {
+    expect(() =>
+      validateEnv({
+        ...prodOk,
+        WHISH_CHANNEL: '10200239',
+        WHISH_SECRET: 'whish-secret',
+        WHISH_BASE_URL: 'https://api.sandbox.whish.money/itel-service/api',
+        WHISH_CALLBACK_BASE: 'https://api.example.com/v1',
+        WHISH_WEBSITE_URL: 'rival.com',
+      }),
+    ).toThrow(/WHISH_BASE_URL/);
+  });
+
+  it('allows the Whish sandbox + bare website host when WHISH_ALLOW_SANDBOX=true', () => {
+    expect(() =>
+      validateEnv({
+        ...prodOk,
+        WHISH_ALLOW_SANDBOX: 'true',
+        WHISH_CHANNEL: '10200239',
+        WHISH_SECRET: 'whish-secret',
+        WHISH_BASE_URL: 'https://api.sandbox.whish.money/itel-service/api',
+        WHISH_CALLBACK_BASE: 'https://api.example.com/v1',
+        WHISH_WEBSITE_URL: 'rival.com',
+      }),
+    ).not.toThrow();
+  });
+
+  it('still rejects a localhost callback even with WHISH_ALLOW_SANDBOX=true', () => {
+    expect(() =>
+      validateEnv({
+        ...prodOk,
+        WHISH_ALLOW_SANDBOX: 'true',
+        WHISH_CHANNEL: '10200239',
+        WHISH_SECRET: 'whish-secret',
+        WHISH_BASE_URL: 'https://api.sandbox.whish.money/itel-service/api',
+        WHISH_CALLBACK_BASE: 'http://localhost:3001/v1',
+        WHISH_WEBSITE_URL: 'rival.com',
+      }),
+    ).toThrow(/WHISH_CALLBACK_BASE/);
+  });
 });

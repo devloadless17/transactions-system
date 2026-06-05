@@ -186,6 +186,11 @@ jobs:
           SEED_ADMIN_PASSWORD: ${{ secrets.SEED_ADMIN_PASSWORD }}
           WHISH_CHANNEL: ${{ secrets.WHISH_CHANNEL }}
           WHISH_SECRET: ${{ secrets.WHISH_SECRET }}
+          # Whish env/website default to LIVE when their secrets are unset; set the
+          # sandbox values + WHISH_ALLOW_SANDBOX=true to test the sandbox on prod.
+          WHISH_BASE_URL: ${{ secrets.WHISH_BASE_URL || 'https://api.whish.money/itel-service/api' }}
+          WHISH_WEBSITE_URL: ${{ secrets.WHISH_WEBSITE_URL || format('https://{0}', secrets.DOMAIN) }}
+          WHISH_ALLOW_SANDBOX: ${{ secrets.WHISH_ALLOW_SANDBOX || 'false' }}
           SEED_DATABASE: ${{ github.event.inputs.seed_database || 'false' }}
         run: |
           cp .env.prod.example .env.rendered
@@ -201,6 +206,9 @@ jobs:
           sed -i "s|__SEED_ADMIN_PASSWORD__|$SEED_ADMIN_PASSWORD|g" .env.rendered
           sed -i "s|__WHISH_CHANNEL__|$WHISH_CHANNEL|g" .env.rendered
           sed -i "s|__WHISH_SECRET__|$WHISH_SECRET|g" .env.rendered
+          sed -i "s|__WHISH_BASE_URL__|$WHISH_BASE_URL|g" .env.rendered
+          sed -i "s|__WHISH_WEBSITE_URL__|$WHISH_WEBSITE_URL|g" .env.rendered
+          sed -i "s|__WHISH_ALLOW_SANDBOX__|$WHISH_ALLOW_SANDBOX|g" .env.rendered
           sed -i "s|^SEED_DATABASE=false|SEED_DATABASE=$SEED_DATABASE|g" .env.rendered
 
       - name: Ship & deploy

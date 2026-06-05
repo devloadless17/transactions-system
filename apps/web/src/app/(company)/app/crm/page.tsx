@@ -1,7 +1,6 @@
-import { CrmView } from '@/features/company/crm-view';
+import { redirect } from 'next/navigation';
 
-export const dynamic = 'force-dynamic';
-
+// CRM moved into the unified Documentation hub.
 export default function CrmPage() {
-  return <CrmView />;
+  redirect('/app/documentation?tab=crm');
 }

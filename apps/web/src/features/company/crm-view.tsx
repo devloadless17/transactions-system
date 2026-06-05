@@ -196,7 +196,7 @@ x-crm-event: transaction.completed
     "netAmount": "24.50",
     "commissionAmount": "0.50",
     "customer": "John Doe",
-    "target": null,
+    "tradingAccount": null,
     "phone": "+961…",
     "note": "Order #1234",
     "occurredAt": "2026-06-04T12:00:00.000Z"

@@ -43,7 +43,7 @@ export const crmEventTransactionSchema = z.object({
   netAmount: z.string().nullable(),
   commissionAmount: z.string().nullable(),
   customer: z.string().nullable(),
-  target: z.string().nullable(),
+  tradingAccount: z.string().nullable(),
   phone: z.string().nullable(),
   note: z.string().nullable(),
   occurredAt: z.string(),

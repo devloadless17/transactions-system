@@ -9,6 +9,7 @@ import { CrmModule } from '../crm/crm.module';
 import { IngestController } from './ingest.controller';
 import { TransactionsReadController } from './transactions.controller';
 import { TransactionsService } from './transactions.service';
+import { IngestLogInterceptor } from './interceptors/ingest-log.interceptor';
 
 @Module({
   imports: [
@@ -21,7 +22,7 @@ import { TransactionsService } from './transactions.service';
     CrmModule,
   ],
   controllers: [IngestController, TransactionsReadController],
-  providers: [TransactionsService],
+  providers: [TransactionsService, IngestLogInterceptor],
   exports: [TransactionsService],
 })
 export class TransactionsModule {}

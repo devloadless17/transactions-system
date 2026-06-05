@@ -10,10 +10,8 @@ import {
   HandCoins,
   Users,
   BookOpen,
-  Code2,
   Link2,
-  Terminal,
-  Webhook,
+  FileText,
 } from 'lucide-react';
 import { DashboardSidebar } from '@/components/nav/dashboard-sidebar';
 import type { NavItem } from '@/components/nav/sidebar-nav';
@@ -27,9 +25,7 @@ export const companyNavItems: NavItem[] = [
   { href: '/app/payouts', label: 'Payouts', icon: HandCoins },
   { href: '/app/loads', label: 'Loads', icon: ArrowDownToLine },
   { href: '/app/whish', label: 'Whish Pay', icon: Link2 },
-  { href: '/app/crm', label: 'CRM', icon: Webhook },
-  { href: '/app/developers', label: 'Developers', icon: Terminal },
-  { href: '/app/api-docs', label: 'API Docs', icon: Code2 },
+  { href: '/app/documentation', label: 'Documentation', icon: FileText },
   { href: '/app/sources', label: 'Sources', icon: Boxes },
   { href: '/app/team', label: 'Team', icon: Users },
   { href: '/app/settings', label: 'Settings', icon: Settings },

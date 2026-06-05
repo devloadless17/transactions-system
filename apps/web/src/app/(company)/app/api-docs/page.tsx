@@ -1,7 +1,6 @@
-import { ApiDocsView } from '@/features/company/api-docs-view';
+import { redirect } from 'next/navigation';
 
-export const dynamic = 'force-dynamic';
-
+// API Docs moved into the unified Documentation hub.
 export default function Page() {
-  return <ApiDocsView />;
+  redirect('/app/documentation?tab=api');
 }

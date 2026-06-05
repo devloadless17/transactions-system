@@ -11,6 +11,7 @@ import {
   ClipboardList,
   ShieldCheck,
   Link2,
+  ScrollText,
   Settings,
 } from 'lucide-react';
 import type { UserRole } from '@app/shared';
@@ -28,6 +29,7 @@ export const adminNavItems: NavItem[] = [
   { href: '/admin/loads', label: 'Loads', icon: ArrowDownToLine },
   { href: '/admin/commissions', label: 'Commission Rules', icon: Percent },
   { href: '/admin/whish', label: 'Whish Pay', icon: Link2 },
+  { href: '/admin/transaction-logs', label: 'Transaction Logs', icon: ScrollText },
   { href: '/admin/audit', label: 'Audit Logs', icon: ClipboardList },
   { href: '/admin/users', label: 'Platform Admins', icon: ShieldCheck },
   { href: '/admin/settings', label: 'Settings', icon: Settings },

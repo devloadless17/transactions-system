@@ -64,6 +64,15 @@ export const envSchema = z
           .map((s) => s.trim().toUpperCase())
           .filter(Boolean),
       ),
+    // Escape hatch for testing the Whish *sandbox* against a production build:
+    // when "true", the prod guards stop rejecting the sandbox base URL and a
+    // non-https website URL (e.g. the sandbox's "rival.com"). Everything else
+    // (callback must be a public https host, no localhost) still applies. Leave
+    // false/unset for a live deploy.
+    WHISH_ALLOW_SANDBOX: z
+      .union([z.literal('true'), z.literal('false')])
+      .default('false')
+      .transform((v) => v === 'true'),
   })
   // Fail closed in production: the dev-friendly defaults above (insecure
   // cookies, the committed "change_me" secrets, http origins) must never reach
@@ -147,15 +156,24 @@ export const envSchema = z
           'must be a publicly reachable host in production, not localhost',
         );
       }
-      if (env.WHISH_BASE_URL.includes('sandbox')) {
-        fail('WHISH_BASE_URL', 'must not point at the Whish sandbox in production');
+      // WHISH_ALLOW_SANDBOX is the explicit opt-in for running the Whish sandbox
+      // against a prod build while testing — it relaxes ONLY the sandbox-base and
+      // website-https checks below; the callback must still be a public https host.
+      if (!env.WHISH_ALLOW_SANDBOX && env.WHISH_BASE_URL.includes('sandbox')) {
+        fail(
+          'WHISH_BASE_URL',
+          'must not point at the Whish sandbox in production (set WHISH_ALLOW_SANDBOX=true to test the sandbox on prod)',
+        );
       }
       // WHISH_WEBSITE_URL is an auth header Whish matches against the registered
       // domain — a stale localhost value makes every Whish call fail auth at
-      // runtime (and it is NOT otherwise validated).
+      // runtime (and it is NOT otherwise validated). The sandbox registers a bare
+      // host (e.g. "rival.com"), so we only require https when not in sandbox mode;
+      // localhost is always rejected.
+      const websiteIsLocal = /localhost|127\.0\.0\.1/.test(env.WHISH_WEBSITE_URL);
       if (
-        !env.WHISH_WEBSITE_URL.startsWith('https://') ||
-        /localhost|127\.0\.0\.1/.test(env.WHISH_WEBSITE_URL)
+        websiteIsLocal ||
+        (!env.WHISH_ALLOW_SANDBOX && !env.WHISH_WEBSITE_URL.startsWith('https://'))
       ) {
         fail(
           'WHISH_WEBSITE_URL',

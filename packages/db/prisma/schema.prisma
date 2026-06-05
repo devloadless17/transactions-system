@@ -595,3 +595,35 @@ model CrmDemoEvent {
   @@index([companyId, receivedAt])
   @@map("crm_demo_events")
 }
+
+// --------------------- Transaction logs (admin) ------------------
+// Request/response audit for the two transaction entry points, for the super
+// admin to inspect what came in and what we answered:
+//   WHISH_LINK — every Whish payment-link generation (the request we sent to
+//                Whish + Whish's response, success or failure).
+//   INGEST     — every source ingest call (the request body + the response we
+//                returned, including rejected/4xx attempts).
+// Admin-only: the RLS policy allows ONLY app.bypass_rls (i.e. runAsAdmin), so
+// no tenant can read these. `company_id` is denormalised (no FK) so a log row
+// stands on its own. Append-only in practice (we never update/delete a row).
+enum TransactionLogKind {
+  WHISH_LINK
+  INGEST
+}
+
+model TransactionLog {
+  id            String             @id @default(uuid()) @db.Uuid
+  kind          TransactionLogKind
+  companyId     String?            @map("company_id") @db.Uuid
+  sourceCode    String?            @map("source_code")
+  reference     String?
+  transactionId String?            @map("transaction_id") @db.Uuid
+  statusCode    Int                @map("status_code")
+  success       Boolean
+  request       Json?              @db.JsonB
+  response      Json?              @db.JsonB
+  createdAt     DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([kind, createdAt])
+  @@map("transaction_logs")
+}

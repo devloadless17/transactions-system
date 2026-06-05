@@ -1,4 +1,13 @@
-import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Req,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common';
 import { z } from 'zod';
 import {
   currencySchema,
@@ -12,6 +21,7 @@ import { ApiKeyRateLimitGuard } from '../api-keys/guards/api-key-rate-limit.guar
 import { ForbiddenError, ValidationError } from '../../common/errors/domain.error';
 import { PrismaService } from '../../database/prisma.service';
 import { TransactionsService } from './transactions.service';
+import { IngestLogInterceptor } from './interceptors/ingest-log.interceptor';
 import type { AuthenticatedRequest } from '../../common/types/request.types';
 
 // Source codes look like `omt`, `wish_money_code`, `bank_transfer`. Keep the
@@ -98,6 +108,7 @@ export class IngestController {
   ) {}
 
   @Post(':sourceCode/transactions')
+  @UseInterceptors(IngestLogInterceptor)
   async ingest(
     @Param('sourceCode') sourceCode: string,
     @Body(new ZodPipe(ingestSourceTransactionSchema)) body: IngestSourceTransactionInput,

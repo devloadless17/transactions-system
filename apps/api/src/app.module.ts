@@ -20,6 +20,7 @@ import { WithdrawalsModule } from './modules/withdrawals/withdrawals.module';
 import { PayoutsModule } from './modules/payouts/payouts.module';
 import { LoadsModule } from './modules/loads/loads.module';
 import { AuditModule } from './modules/audit/audit.module';
+import { TransactionLogsModule } from './modules/transaction-logs/transaction-logs.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { TeamModule } from './modules/team/team.module';
 import { AdminUsersModule } from './modules/admin-users/admin-users.module';
@@ -57,6 +58,7 @@ import type { Env } from './config/env.schema';
     HealthModule,
     AuthModule,
     AuditModule,
+    TransactionLogsModule,
     CompaniesModule,
     SourcesModule,
     CommissionsModule,

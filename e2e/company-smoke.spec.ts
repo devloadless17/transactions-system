@@ -9,7 +9,7 @@ const COMPANY_ROUTES: Array<{ path: string; heading: RegExp | string }> = [
   { path: '/app/wallets', heading: /wallets/i },
   { path: '/app/ledger', heading: /ledger/i },
   { path: '/app/withdrawals', heading: /withdrawals/i },
-  { path: '/app/api-docs', heading: /api integration|api docs|api reference/i },
+  { path: '/app/documentation', heading: /whish pay|crm integration|documentation/i },
   { path: '/app/sources', heading: /sources/i },
   { path: '/app/team', heading: /team|members/i },
   { path: '/app/settings', heading: /settings/i },
