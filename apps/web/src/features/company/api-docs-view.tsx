@@ -13,8 +13,8 @@ const DISCOVERY_CURL = `curl -X GET ${API_BASE}/ingest/companies \\
 
 const DISCOVERY_RESPONSE = `{
   "data": [
-    { "id": "uuid", "slug": "acme",   "name": "Acme Corp",  "defaultCurrency": "USD" },
-    { "id": "uuid", "slug": "globex", "name": "Globex",     "defaultCurrency": "EUR" }
+    { "operatingId": "uuid", "slug": "acme",   "name": "Acme Corp", "defaultCurrency": "USD" },
+    { "operatingId": "uuid", "slug": "globex", "name": "Globex",    "defaultCurrency": "USD" }
   ]
 }`;
 
@@ -22,17 +22,16 @@ const INGEST_CURL = `curl -X POST ${API_BASE}/ingest/omt/transactions \\
   -H "Authorization: Bearer tsk_<source-key>" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "companyId": "00000000-0000-0000-0000-000000000000",
+    "operatingId": "00000000-0000-0000-0000-000000000000",
     "externalTransactionId": "omt-id-12345",
     "amount": "200.00",
     "currency": "USD",
     "payload": {
       "customer": "Alice",
-      "target": "Bob",
+      "tradingAccount": "Bob",
       "phone": "+961-3-000000",
       "note": "monthly bill"
-    },
-    "idempotencyKey": "optional-uuid-or-stable-key"
+    }
   }'`;
 
 const COMPANY_READ_CURL = `# Company API keys (managed by an admin on your behalf) are READ-ONLY.
@@ -90,7 +89,7 @@ export function ApiDocsView() {
         <CardHeader>
           <CardTitle>2. Discover companies</CardTitle>
           <CardDescription>
-            Before posting a transaction you need the <code className="font-mono">companyId</code>{' '}
+            Before posting a transaction you need the <code className="font-mono">operatingId</code>{' '}
             of the company it belongs to. Hit this endpoint once at startup and cache the ids.
           </CardDescription>
         </CardHeader>
@@ -109,7 +108,7 @@ export function ApiDocsView() {
           <CardDescription>
             The source is named in the URL path (
             <code className="font-mono">/ingest/&lt;sourceCode&gt;/transactions</code>). The body
-            carries the destination <code className="font-mono">companyId</code> and the financial
+            carries the destination <code className="font-mono">operatingId</code> and the financial
             fields. Idempotent: the (source, externalTransactionId) pair acts as a natural dedup
             key, so retries are safe; you may also supply your own{' '}
             <code className="font-mono">idempotencyKey</code>.
@@ -129,8 +128,8 @@ export function ApiDocsView() {
                 <code className="font-mono">customer</code> — the <em>sender</em> / payer name
               </li>
               <li>
-                <code className="font-mono">target</code> — the <em>recipient</em> / beneficiary
-                name
+                <code className="font-mono">tradingAccount</code> — the <em>recipient</em> /
+                beneficiary account
               </li>
               <li>
                 <code className="font-mono">phone</code> — a contact phone number
@@ -148,23 +147,24 @@ export function ApiDocsView() {
         <CardHeader>
           <CardTitle>4. Response shape</CardTitle>
           <CardDescription>
-            On success you get the persisted transaction back. Commission is computed by the
-            resolver and the wallet is updated atomically.
+            On success you get the persisted transaction back and the wallet is updated atomically.
           </CardDescription>
         </CardHeader>
         <CardContent>
           <CodeBlock
             code={`{
   "id": "uuid",
-  "companyId": "uuid",
+  "operatingId": "uuid",
   "sourceId": "uuid",
   "sourceCode": "omt",
   "externalTransactionId": "your-id-12345",
   "amount": "200",
   "currency": "USD",
-  "commissionAmount": "5",
-  "netAmount": "195",
   "status": "COMPLETED",
+  "customer": "Alice",
+  "tradingAccount": "Bob",
+  "phone": "+961-3-000000",
+  "note": "monthly bill",
   "processedAt": "2026-05-26T11:24:19.659Z",
   "createdAt": "2026-05-26T11:24:19.660Z"
 }`}

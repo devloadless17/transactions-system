@@ -6,7 +6,7 @@ This document describes the two HTTP APIs Whish needs to push transactions into
 the Rival Payments system:
 
 1. **`GET /ingest/companies`** — discover which operating entities you can post transactions for.
-2. **`POST /ingest/{sourceCode}/transactions`** — submit a transaction for an operating entity.
+2. **`POST /ingest/whish/transactions`** — submit a transaction for an operating entity.
 
 The normal flow is: call **(1)** once on start-up (and refresh periodically) to learn
 the list of entities and their IDs, then call **(2)** for every transaction, using the
@@ -26,14 +26,13 @@ the list of entities and their IDs, then call **(2)** for every transaction, usi
 
 ### Authentication
 
-Every request must carry an API key in the `Authorization` header:
+Every request must carry your API key in the `Authorization` header. Your key is:
 
 ```
-Authorization: Bearer tsk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+Authorization: Bearer tsk_GXHNAMY9_6de89005dee6a2a1a7f5fb720468c0cf4194b6ba2804d51556f5d5e0ee63f9dd
 ```
 
-- Rival Payments will issue you a **source API key** out-of-band. It is tied to your
-  source identity (your `sourceCode`, e.g. `whish`).
+- This key identifies you as the `whish` source. All requests use it unchanged.
 - The key is secret — treat it like a password, send it only over HTTPS, and never
   embed it in client-side code or logs.
 - A missing or malformed header returns **401 Unauthorized**; an invalid or revoked
@@ -110,14 +109,13 @@ credited (net of any commission).
 ### Request
 
 ```
-POST /v1/ingest/{sourceCode}/transactions
+POST https://portal.rivalpayments.com/v1/ingest/whish/transactions
 Authorization: Bearer <API_KEY>
 Content-Type: application/json
 ```
 
-- `{sourceCode}` in the URL is **your** source code (e.g. `whish`). It **must match**
-  the source your API key is bound to, otherwise the request is rejected with
-  **403 Forbidden**. Rival Payments will tell you your exact `sourceCode`.
+- Use this exact URL — `whish` is your fixed source segment. Posting to any other
+  source path is rejected with **403 Forbidden**, since your API key is bound to `whish`.
 
 #### Request body
 
@@ -186,7 +184,7 @@ Content-Type: application/json
 | `id`                                             | string (UUID)             | Rival Payments' internal transaction ID.                       |
 | `operatingId`                                    | string (UUID)             | The operating entity credited.                                 |
 | `sourceId`                                       | string (UUID)             | The source (you) that submitted it.                            |
-| `sourceCode`                                     | string                    | Your source code, e.g. `whish`.                                |
+| `sourceCode`                                     | string                    | Always `whish` (your source).                                  |
 | `externalTransactionId`                          | string                    | Echo of the reference you sent.                                |
 | `amount`                                         | string (decimal)          | The amount you submitted.                                      |
 | `currency`                                       | string                    | Currency code.                                                 |
@@ -231,16 +229,16 @@ All errors use a consistent JSON envelope:
 
 ### Status codes
 
-| HTTP          | `code`                        | When                                                                                                                                                 |
-| ------------- | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `200` / `201` | —                             | Success (200 for GET companies, 201 for transaction created).                                                                                        |
-| `400`         | `VALIDATION_ERROR`            | Body failed validation (missing/invalid `operatingId`, bad `amount`, unsupported `currency`, etc.).                                                  |
-| `401`         | `UNAUTHORIZED`                | Missing, malformed, invalid, or revoked API key.                                                                                                     |
-| `403`         | `FORBIDDEN`                   | API key not bound to the `{sourceCode}` in the URL, the entity is hidden/not available to sources, or the endpoint was called with a non-source key. |
-| `400`         | `VALIDATION_ERROR`            | Target entity or source not found / inactive (returned as a validation error).                                                                       |
-| `409`         | `CONFLICT` / `WRITE_CONFLICT` | Constraint conflict (e.g. same `externalTransactionId` reused across companies) or a transient write conflict — safe to retry.                       |
-| `429`         | `RATE_LIMITED`                | Rate limit exceeded; back off and retry.                                                                                                             |
-| `500`         | `INTERNAL_ERROR`              | Unexpected server error. Retry with backoff; contact Rival Payments if persistent.                                                                   |
+| HTTP          | `code`                        | When                                                                                                                                          |
+| ------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `200` / `201` | —                             | Success (200 for GET companies, 201 for transaction created).                                                                                 |
+| `400`         | `VALIDATION_ERROR`            | Body failed validation (missing/invalid `operatingId`, bad `amount`, unsupported `currency`, etc.).                                           |
+| `401`         | `UNAUTHORIZED`                | Missing, malformed, invalid, or revoked API key.                                                                                              |
+| `403`         | `FORBIDDEN`                   | The URL used a source other than `whish`, the entity is hidden/not available to sources, or the request was made without your source API key. |
+| `400`         | `VALIDATION_ERROR`            | Target entity or source not found / inactive (returned as a validation error).                                                                |
+| `409`         | `CONFLICT` / `WRITE_CONFLICT` | Constraint conflict (e.g. same `externalTransactionId` reused across companies) or a transient write conflict — safe to retry.                |
+| `429`         | `RATE_LIMITED`                | Rate limit exceeded; back off and retry.                                                                                                      |
+| `500`         | `INTERNAL_ERROR`              | Unexpected server error. Retry with backoff; contact Rival Payments if persistent.                                                            |
 
 ### Recommended retry policy
 
@@ -257,7 +255,7 @@ All errors use a consistent JSON envelope:
 
 ```bash
 curl -sS https://portal.rivalpayments.com/v1/ingest/companies \
-  -H "Authorization: Bearer tsk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  -H "Authorization: Bearer tsk_GXHNAMY9_6de89005dee6a2a1a7f5fb720468c0cf4194b6ba2804d51556f5d5e0ee63f9dd"
 ```
 
 **Step 2 — submit a transaction** (using an `operatingId` from step 1)
@@ -265,7 +263,7 @@ curl -sS https://portal.rivalpayments.com/v1/ingest/companies \
 ```bash
 curl -sS -X POST \
   https://portal.rivalpayments.com/v1/ingest/whish/transactions \
-  -H "Authorization: Bearer tsk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" \
+  -H "Authorization: Bearer tsk_GXHNAMY9_6de89005dee6a2a1a7f5fb720468c0cf4194b6ba2804d51556f5d5e0ee63f9dd" \
   -H "Content-Type: application/json" \
   -d '{
     "operatingId": "3f8a1c20-9b2e-4d77-8a1f-7c2e5b0d4a11",
@@ -283,16 +281,16 @@ curl -sS -X POST \
 
 ---
 
-## 6. What Rival Payments will provide you
+## 6. Integration summary
 
-To complete the integration, Rival Payments will supply:
+Everything you need is already fixed:
 
-1. Your **source API key** (`tsk_…`).
-2. Your **`sourceCode`** to use in the transaction URL (e.g. `whish`).
-3. Confirmation of the **base URL** (`https://portal.rivalpayments.com/v1`).
+1. **API key:** `tsk_GXHNAMY9_6de89005dee6a2a1a7f5fb720468c0cf4194b6ba2804d51556f5d5e0ee63f9dd`
+2. **Transaction URL:** `https://portal.rivalpayments.com/v1/ingest/whish/transactions`
+3. **Discovery URL:** `https://portal.rivalpayments.com/v1/ingest/companies`
 
 The `operatingId` values are **not** provided manually — you obtain them yourself from
-`GET /ingest/companies`.
+the discovery endpoint above.
 
 ---
 

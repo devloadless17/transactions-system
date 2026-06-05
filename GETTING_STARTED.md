@@ -132,7 +132,7 @@ The api and web both depend on `@app/shared` and `@app/db`. When you change a sh
 - A request hits **Next.js** at :3000 → server components / API client call the **NestJS API** at :3001.
 - The API authenticates the request (JWT cookie + CSRF for the dashboard, Bearer API key for ingestion), then opens a Prisma transaction. For tenant-scoped queries it runs `SET LOCAL app.current_company_id = <uuid>` so Postgres RLS policies filter rows automatically.
 - Money operations write **balanced ledger entries** (debits == credits) before touching wallet balances. Ledger entries are append-only at the DB layer (a trigger rejects UPDATE/DELETE).
-- External providers (OMT, Wish, …) authenticate with a **source API key** and POST to `/v1/ingest/<sourceCode>/transactions`, identifying the target company by `companyId` in the body. Discovery: `GET /v1/ingest/companies`.
+- External providers (OMT, Wish, …) authenticate with a **source API key** and POST to `/v1/ingest/<sourceCode>/transactions`, identifying the target company by `operatingId` in the body. Discovery: `GET /v1/ingest/companies`.
 
 See [README.md](./README.md) for the architecture deep-dive.
 

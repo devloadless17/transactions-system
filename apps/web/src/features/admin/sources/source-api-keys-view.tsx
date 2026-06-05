@@ -126,8 +126,8 @@ export function SourceApiKeysView({ sourceId }: { sourceId: string }) {
           </h1>
           <p className="text-sm text-muted-foreground">
             Keys held by this source. The provider sends them on{' '}
-            <code className="text-xs">POST /v1/ingest/transactions</code> with a{' '}
-            <code className="text-xs">companyId</code> in the body.
+            <code className="text-xs">POST /v1/ingest/transactions</code> with an{' '}
+            <code className="text-xs">operatingId</code> in the body.
           </p>
         </div>
         <Button className="w-full sm:w-auto" onClick={() => setCreateOpen(true)}>
