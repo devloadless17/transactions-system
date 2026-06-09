@@ -64,8 +64,9 @@ export class PayoutsService {
 
   async request(
     companyId: string,
-    requestedById: string,
+    requestedById: string | null,
     input: CreatePayoutInput,
+    requestedByKeyId?: string | null,
   ): Promise<PayoutResponse> {
     const amount = Money.of(input.amount);
     if (!amount.round().isPositive())
@@ -107,6 +108,7 @@ export class PayoutsService {
           notes: input.notes ?? null,
           payoutMethod: input.payout.method,
           payoutDetails: input.payout as unknown as Prisma.InputJsonValue,
+          metadata: requestedByKeyId ? { apiKeyId: requestedByKeyId } : undefined,
         },
       });
 
@@ -342,7 +344,7 @@ function mapPayout(row: {
   payoutMethod: PayoutMethod;
   payoutDetails: unknown;
   externalReference: string | null;
-  requestedById: string;
+  requestedById: string | null;
   approvedById: string | null;
   notes: string | null;
   processedAt: Date | null;

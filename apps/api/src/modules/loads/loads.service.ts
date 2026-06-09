@@ -63,8 +63,9 @@ export class LoadsService {
 
   async request(
     companyId: string,
-    requestedById: string,
+    requestedById: string | null,
     input: CreateLoadInput,
+    requestedByKeyId?: string | null,
   ): Promise<LoadResponse> {
     const amount = Money.of(input.amount);
     if (!amount.round().isPositive())
@@ -94,6 +95,7 @@ export class LoadsService {
           notes: input.notes ?? null,
           payoutMethod: input.payout.method,
           payoutDetails: input.payout as unknown as Prisma.InputJsonValue,
+          metadata: requestedByKeyId ? { apiKeyId: requestedByKeyId } : undefined,
         },
       });
     });
@@ -302,7 +304,7 @@ function mapLoad(row: {
   payoutMethod: PayoutMethod;
   payoutDetails: unknown;
   externalReference: string | null;
-  requestedById: string;
+  requestedById: string | null;
   approvedById: string | null;
   notes: string | null;
   processedAt: Date | null;

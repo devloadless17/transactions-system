@@ -7,11 +7,24 @@ import { AdminCompanyApiKeysController } from './admin-company-api-keys.controll
 import { ApiKeyAuthGuard } from './guards/api-key-auth.guard';
 import { CompanyApiKeyAuthGuard } from './guards/company-api-key-auth.guard';
 import { ApiKeyRateLimitGuard } from './guards/api-key-rate-limit.guard';
+import { CompanyAccessGuard } from './guards/company-access.guard';
 
 @Module({
   imports: [AuthModule],
   controllers: [ApiKeysController, SourceApiKeysController, AdminCompanyApiKeysController],
-  providers: [ApiKeysService, ApiKeyAuthGuard, CompanyApiKeyAuthGuard, ApiKeyRateLimitGuard],
-  exports: [ApiKeysService, ApiKeyAuthGuard, CompanyApiKeyAuthGuard, ApiKeyRateLimitGuard],
+  providers: [
+    ApiKeysService,
+    ApiKeyAuthGuard,
+    CompanyApiKeyAuthGuard,
+    ApiKeyRateLimitGuard,
+    CompanyAccessGuard,
+  ],
+  exports: [
+    ApiKeysService,
+    ApiKeyAuthGuard,
+    CompanyApiKeyAuthGuard,
+    ApiKeyRateLimitGuard,
+    CompanyAccessGuard,
+  ],
 })
 export class ApiKeysModule {}

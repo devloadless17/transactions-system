@@ -1,7 +1,7 @@
 import { Controller, Get, Param, ParseUUIDPipe, Query, UseGuards } from '@nestjs/common';
 import { listLedgerEntriesQuerySchema, UserRole, type ListLedgerEntriesQuery } from '@app/shared';
 import { ZodPipe } from '../../common/pipes/zod-validation.pipe';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { CompanyAccessGuard } from '../api-keys/guards/company-access.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -9,7 +9,7 @@ import type { AuthPrincipal } from '../../common/types/request.types';
 import { ForbiddenError } from '../../common/errors/domain.error';
 import { LedgerService } from './ledger.service';
 
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(CompanyAccessGuard, RolesGuard)
 @Controller()
 export class LedgerController {
   constructor(private readonly ledger: LedgerService) {}

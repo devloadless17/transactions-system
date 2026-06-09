@@ -67,8 +67,9 @@ export class WithdrawalsService {
 
   async request(
     companyId: string,
-    requestedById: string,
+    requestedById: string | null,
     input: CreateWithdrawalInput,
+    requestedByKeyId?: string | null,
   ): Promise<WithdrawalResponse> {
     const amount = Money.of(input.amount);
     if (!amount.round().isPositive())
@@ -113,6 +114,7 @@ export class WithdrawalsService {
           notes: input.notes ?? null,
           payoutMethod: input.payout.method,
           payoutDetails: input.payout as unknown as Prisma.InputJsonValue,
+          metadata: requestedByKeyId ? { apiKeyId: requestedByKeyId } : undefined,
         },
       });
 
@@ -352,7 +354,7 @@ function mapWithdrawal(row: {
   payoutMethod: PayoutMethod;
   payoutDetails: unknown;
   externalReference: string | null;
-  requestedById: string;
+  requestedById: string | null;
   approvedById: string | null;
   notes: string | null;
   processedAt: Date | null;

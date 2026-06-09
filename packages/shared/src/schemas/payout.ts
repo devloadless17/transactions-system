@@ -43,7 +43,7 @@ export const payoutResponseSchema = z.object({
   payoutMethod: z.nativeEnum(PayoutMethod),
   payoutDetails: payoutDetailsSchema.nullable(),
   externalReference: z.string().nullable(),
-  requestedById: z.string().uuid(),
+  requestedById: z.string().uuid().nullable(),
   approvedById: z.string().uuid().nullable(),
   notes: z.string().nullable(),
   processedAt: z.string().nullable(),

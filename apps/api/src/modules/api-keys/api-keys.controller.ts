@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Param, ParseUUIDPipe, Post, UseGuards } from '@nestjs/common';
 import { createApiKeySchema, UserRole, type CreateApiKeyInput } from '@app/shared';
 import { ZodPipe } from '../../common/pipes/zod-validation.pipe';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { CompanyAccessGuard } from './guards/company-access.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CsrfGuard } from '../auth/guards/csrf.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -17,7 +17,7 @@ import { ForbiddenError } from '../../common/errors/domain.error';
  * keys self-serve. Source-provider ingest keys are managed separately by the
  * super admin under /v1/admin/sources/:sourceId/api-keys.
  */
-@UseGuards(JwtAuthGuard, RolesGuard, CsrfGuard)
+@UseGuards(CompanyAccessGuard, RolesGuard, CsrfGuard)
 @Roles(UserRole.COMPANY_OWNER, UserRole.COMPANY_MANAGER)
 @Controller('company/api-keys')
 export class ApiKeysController {

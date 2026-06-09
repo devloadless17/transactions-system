@@ -405,8 +405,8 @@ model Withdrawal {
   payoutMethod      PayoutMethod     @map("payout_method")
   payoutDetails     Json?            @map("payout_details") @db.JsonB
   externalReference String?          @map("external_reference")
-  requestedById     String           @map("requested_by_id") @db.Uuid
-  requestedBy       User             @relation("WithdrawalRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
+  requestedById     String?          @map("requested_by_id") @db.Uuid
+  requestedBy       User?            @relation("WithdrawalRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
   approvedById      String?          @map("approved_by_id") @db.Uuid
   approvedBy        User?            @relation("WithdrawalApprovedBy", fields: [approvedById], references: [id], onDelete: Restrict)
   cancelledById     String?          @map("cancelled_by_id") @db.Uuid
@@ -437,8 +437,8 @@ model Payout {
   payoutMethod      PayoutMethod     @map("payout_method")
   payoutDetails     Json?            @map("payout_details") @db.JsonB
   externalReference String?          @map("external_reference")
-  requestedById     String           @map("requested_by_id") @db.Uuid
-  requestedBy       User             @relation("PayoutRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
+  requestedById     String?          @map("requested_by_id") @db.Uuid
+  requestedBy       User?            @relation("PayoutRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
   approvedById      String?          @map("approved_by_id") @db.Uuid
   approvedBy        User?            @relation("PayoutApprovedBy", fields: [approvedById], references: [id], onDelete: Restrict)
   cancelledById     String?          @map("cancelled_by_id") @db.Uuid
@@ -469,8 +469,8 @@ model Load {
   payoutMethod      PayoutMethod     @map("payout_method")
   payoutDetails     Json?            @map("payout_details") @db.JsonB
   externalReference String?          @map("external_reference")
-  requestedById     String           @map("requested_by_id") @db.Uuid
-  requestedBy       User             @relation("LoadRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
+  requestedById     String?          @map("requested_by_id") @db.Uuid
+  requestedBy       User?            @relation("LoadRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
   approvedById      String?          @map("approved_by_id") @db.Uuid
   approvedBy        User?            @relation("LoadApprovedBy", fields: [approvedById], references: [id], onDelete: Restrict)
   cancelledById     String?          @map("cancelled_by_id") @db.Uuid

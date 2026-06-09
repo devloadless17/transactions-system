@@ -4,6 +4,7 @@ import { Reflector } from '@nestjs/core';
 import { ForbiddenError } from '../../../common/errors/domain.error';
 import { CSRF_COOKIE_NAME, CSRF_HEADER_NAME } from '../auth.constants';
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
+import type { AuthenticatedRequest } from '../../../common/types/request.types';
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
@@ -25,6 +26,11 @@ export class CsrfGuard implements CanActivate {
     const req = ctx.switchToHttp().getRequest<Request & { cookies?: Record<string, string> }>();
 
     if (!MUTATING_METHODS.has(req.method)) return true;
+
+    // API-key-authenticated requests are not susceptible to CSRF — the key is
+    // in the Authorization header, never in a cookie, so cross-origin pages
+    // cannot silently attach it. Skip the double-submit check entirely.
+    if ((req as AuthenticatedRequest).apiKeyAuth) return true;
 
     const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
       ctx.getHandler(),

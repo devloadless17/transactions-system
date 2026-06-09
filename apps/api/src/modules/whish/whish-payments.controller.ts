@@ -16,7 +16,7 @@ import {
   type ListWhishPaymentsQuery,
 } from '@app/shared';
 import { ZodPipe } from '../../common/pipes/zod-validation.pipe';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { CompanyAccessGuard } from '../api-keys/guards/company-access.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CsrfGuard } from '../auth/guards/csrf.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -31,7 +31,7 @@ import { WhishPaymentsService } from './whish-payments.service';
  * returned collectUrl with its customer, and the payment settles into the
  * company's wallet once Whish confirms it (see the public callback controller).
  */
-@UseGuards(JwtAuthGuard, RolesGuard, CsrfGuard)
+@UseGuards(CompanyAccessGuard, RolesGuard, CsrfGuard)
 @Controller('company/whish/payments')
 export class WhishPaymentsController {
   constructor(private readonly payments: WhishPaymentsService) {}

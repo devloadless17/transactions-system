@@ -1,7 +1,7 @@
 import { Body, Controller, Delete, Get, Post, Put, UseGuards } from '@nestjs/common';
 import { setCrmConfigSchema, UserRole, type SetCrmConfigInput } from '@app/shared';
 import { ZodPipe } from '../../common/pipes/zod-validation.pipe';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { CompanyAccessGuard } from '../api-keys/guards/company-access.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CsrfGuard } from '../auth/guards/csrf.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -18,7 +18,7 @@ import { CrmDemoInboxService } from './crm-demo-inbox.service';
  * transaction's status to it. They can also enable a built-in demo CRM and
  * watch events land in a live preview inbox.
  */
-@UseGuards(JwtAuthGuard, RolesGuard, CsrfGuard)
+@UseGuards(CompanyAccessGuard, RolesGuard, CsrfGuard)
 @Controller('company/crm')
 export class CrmController {
   constructor(

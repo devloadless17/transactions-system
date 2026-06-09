@@ -1,6 +1,6 @@
 import { Controller, Get, Param, ParseUUIDPipe, UseGuards } from '@nestjs/common';
 import { UserRole } from '@app/shared';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { CompanyAccessGuard } from '../api-keys/guards/company-access.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -8,7 +8,7 @@ import type { AuthPrincipal } from '../../common/types/request.types';
 import { WalletsService } from './wallets.service';
 import { ForbiddenError } from '../../common/errors/domain.error';
 
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(CompanyAccessGuard, RolesGuard)
 @Controller()
 export class WalletsController {
   constructor(private readonly wallets: WalletsService) {}

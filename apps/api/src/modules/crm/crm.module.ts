@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
+import { ApiKeysModule } from '../api-keys/api-keys.module';
 import { CrmConfigService } from './crm-config.service';
 import { CrmDispatchService } from './crm-dispatch.service';
 import { CrmDeliveryService } from './crm-delivery.service';
@@ -13,7 +14,7 @@ import { CrmDemoController } from './crm-demo.controller';
  * `CrmDispatchService` is the entry point the transactions + whish modules call.
  */
 @Module({
-  imports: [AuthModule],
+  imports: [AuthModule, ApiKeysModule],
   controllers: [CrmController, CrmDemoController],
   providers: [CrmConfigService, CrmDispatchService, CrmDeliveryService, CrmDemoInboxService],
   exports: [CrmDispatchService],

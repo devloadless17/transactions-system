@@ -22,7 +22,7 @@ import {
   type RejectWithdrawalInput,
 } from '@app/shared';
 import { ZodPipe } from '../../common/pipes/zod-validation.pipe';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { CompanyAccessGuard } from '../api-keys/guards/company-access.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CsrfGuard } from '../auth/guards/csrf.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -32,7 +32,7 @@ import type { AuthPrincipal } from '../../common/types/request.types';
 import { ForbiddenError } from '../../common/errors/domain.error';
 import { WithdrawalsService } from './withdrawals.service';
 
-@UseGuards(JwtAuthGuard, RolesGuard, CsrfGuard)
+@UseGuards(CompanyAccessGuard, RolesGuard, CsrfGuard)
 @Controller()
 export class WithdrawalsController {
   constructor(private readonly withdrawals: WithdrawalsService) {}
@@ -47,7 +47,12 @@ export class WithdrawalsController {
     @CurrentUser() user: AuthPrincipal,
   ) {
     if (!user.companyId) throw new ForbiddenError('No company in session');
-    return this.withdrawals.request(user.companyId, user.userId, body);
+    return this.withdrawals.request(
+      user.companyId,
+      user.apiKeyAuth ? null : user.userId,
+      body,
+      user.apiKeyAuth ? user.userId : null,
+    );
   }
 
   @Roles(UserRole.COMPANY_OWNER, UserRole.COMPANY_MANAGER, UserRole.COMPANY_VIEWER)

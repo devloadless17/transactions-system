@@ -1,7 +1,7 @@
 import { Body, Controller, Delete, Get, Post, Put, UseGuards } from '@nestjs/common';
 import { setWhishWebhookSchema, UserRole, type SetWhishWebhookInput } from '@app/shared';
 import { ZodPipe } from '../../common/pipes/zod-validation.pipe';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { CompanyAccessGuard } from '../api-keys/guards/company-access.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CsrfGuard } from '../auth/guards/csrf.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -16,7 +16,7 @@ import { WhishWebhookService } from './whish-webhook.service';
  * this at their CRM so they get pushed `whish.payment.paid` events (signed with
  * a secret) instead of polling.
  */
-@UseGuards(JwtAuthGuard, RolesGuard, CsrfGuard)
+@UseGuards(CompanyAccessGuard, RolesGuard, CsrfGuard)
 @Controller('company/whish/webhook')
 export class WhishWebhookController {
   constructor(private readonly webhooks: WhishWebhookService) {}

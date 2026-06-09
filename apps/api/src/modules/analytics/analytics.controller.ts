@@ -8,7 +8,7 @@ import {
   type WalletSummaryQuery,
 } from '@app/shared';
 import { ZodPipe } from '../../common/pipes/zod-validation.pipe';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { CompanyAccessGuard } from '../api-keys/guards/company-access.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -19,7 +19,7 @@ import { AnalyticsService } from './analytics.service';
 // Dashboards auto-refresh these endpoints. They're cookie-authed and
 // Redis-cached, so they bypass the public-API IP throttler.
 @SkipThrottle()
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(CompanyAccessGuard, RolesGuard)
 @Controller()
 export class AnalyticsController {
   constructor(private readonly analytics: AnalyticsService) {}

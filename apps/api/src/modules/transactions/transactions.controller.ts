@@ -19,7 +19,7 @@ import {
   type ReverseTransactionInput,
 } from '@app/shared';
 import { ZodPipe } from '../../common/pipes/zod-validation.pipe';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { CompanyAccessGuard } from '../api-keys/guards/company-access.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CsrfGuard } from '../auth/guards/csrf.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -30,7 +30,7 @@ import { SkipResponseEnvelope } from '../../common/decorators/skip-response-enve
 import { TransactionsService } from './transactions.service';
 import { ForbiddenError } from '../../common/errors/domain.error';
 
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(CompanyAccessGuard, RolesGuard)
 @Controller()
 export class TransactionsReadController {
   constructor(private readonly transactions: TransactionsService) {}

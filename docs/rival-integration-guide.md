@@ -353,6 +353,185 @@ and lifecycle for your company's transactions.
 
 ---
 
+---
+
+---
+
+# Part C — Company API Access (for companies, programmatic)
+
+Use this if you are a **company** on the platform and want to access or manage your data
+**from your own backend** — without a user session or a browser. Every `company/*`
+endpoint accepts a company API key in place of a session cookie.
+
+## C.0 Authentication
+
+Every request carries your **company API key** as a Bearer token:
+
+```
+Authorization: Bearer tsk_<prefix>_<secret>
+```
+
+- The key identifies your **company**. No cookies, no CSRF token needed.
+- Generate a key in the dashboard under **Settings → API Keys**, or via
+  `POST /v1/company/api-keys` (requires a dashboard session for the first key).
+- Keep the key secret — it carries the same access as a `COMPANY_OWNER` session.
+- **Rate limit:** 300 requests / rolling 60 s per key.
+
+## C.1 Complete endpoint reference
+
+All `company/*` endpoints accept `Authorization: Bearer tsk_...`. The table below lists
+every available route.
+
+### Wallets
+
+| Method | Path                  | Description                                                   |
+| ------ | --------------------- | ------------------------------------------------------------- |
+| `GET`  | `/v1/company/wallets` | List wallet balances (`available` + `reserved`) per currency. |
+
+### Transactions
+
+| Method | Path                                  | Description                                                                                   |
+| ------ | ------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `GET`  | `/v1/company/transactions`            | List transactions (paginated). Query: `pageSize`, `page`, `status`, `currency`, `from`, `to`. |
+| `GET`  | `/v1/company/transactions/:id`        | Get a single transaction.                                                                     |
+| `GET`  | `/v1/company/transactions/:id/detail` | Full transaction + ledger entries.                                                            |
+| `GET`  | `/v1/company/transactions/export.csv` | Download all transactions as CSV.                                                             |
+
+### Ledger
+
+| Method | Path                 | Description                                                             |
+| ------ | -------------------- | ----------------------------------------------------------------------- |
+| `GET`  | `/v1/company/ledger` | Append-only double-entry ledger. Query: `currency`, `pageSize`, `page`. |
+
+### Analytics
+
+| Method | Path                                   | Description                                                                     |
+| ------ | -------------------------------------- | ------------------------------------------------------------------------------- |
+| `GET`  | `/v1/company/analytics/overview`       | Volume in/out, fees, and reconciliation cards. Query: `currency`, `from`, `to`. |
+| `GET`  | `/v1/company/analytics/wallet-summary` | Available + reserved totals. Query: `currency`.                                 |
+
+### Withdrawals
+
+| Method | Path                                 | Description                                           |
+| ------ | ------------------------------------ | ----------------------------------------------------- |
+| `GET`  | `/v1/company/withdrawals`            | List withdrawals.                                     |
+| `POST` | `/v1/company/withdrawals`            | Request a withdrawal (see C.2 for body).              |
+| `POST` | `/v1/company/withdrawals/:id/cancel` | Cancel a pending withdrawal. Body: `{ "notes": "…" }` |
+
+### Payouts
+
+| Method | Path                             | Description                                       |
+| ------ | -------------------------------- | ------------------------------------------------- |
+| `GET`  | `/v1/company/payouts`            | List payouts.                                     |
+| `POST` | `/v1/company/payouts`            | Request a payout (same body shape as withdrawal). |
+| `POST` | `/v1/company/payouts/:id/cancel` | Cancel a pending payout. Body: `{ "notes": "…" }` |
+
+### Loads
+
+| Method | Path                           | Description                                     |
+| ------ | ------------------------------ | ----------------------------------------------- |
+| `GET`  | `/v1/company/loads`            | List loads.                                     |
+| `POST` | `/v1/company/loads`            | Request a load (same body shape as withdrawal). |
+| `POST` | `/v1/company/loads/:id/cancel` | Cancel a pending load. Body: `{ "notes": "…" }` |
+
+### CRM webhook config
+
+| Method   | Path                          | Description                                                                  |
+| -------- | ----------------------------- | ---------------------------------------------------------------------------- |
+| `GET`    | `/v1/company/crm/config`      | Read current webhook URL + whether a key is set (secret never returned).     |
+| `PUT`    | `/v1/company/crm/config`      | Save webhook URL + API key. Body: `{ "apiUrl": "https://…", "apiKey": "…" }` |
+| `DELETE` | `/v1/company/crm/config`      | Disable delivery and clear config.                                           |
+| `POST`   | `/v1/company/crm/demo/enable` | Enable the built-in demo inbox.                                              |
+| `GET`    | `/v1/company/crm/demo/inbox`  | Read the demo inbox (last N delivered events).                               |
+
+### API key management
+
+| Method | Path                              | Description                                                                                       |
+| ------ | --------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `GET`  | `/v1/company/api-keys`            | List keys (prefixes only — secrets never returned).                                               |
+| `POST` | `/v1/company/api-keys`            | Create a new key. Body: `{ "name": "…" }`. The `plaintext` secret is returned **once** — save it. |
+| `POST` | `/v1/company/api-keys/:id/revoke` | Permanently revoke a key.                                                                         |
+| `POST` | `/v1/company/api-keys/:id/rotate` | Mint a replacement key and revoke the old one atomically. New `plaintext` returned once.          |
+
+### Team
+
+| Method   | Path                   | Description                                                                                  |
+| -------- | ---------------------- | -------------------------------------------------------------------------------------------- |
+| `GET`    | `/v1/company/team`     | List all team members.                                                                       |
+| `POST`   | `/v1/company/team`     | Invite a new member. Body: `{ "email": "…", "role": "COMPANY_MANAGER" \| "COMPANY_VIEWER" }` |
+| `PATCH`  | `/v1/company/team/:id` | Update a member's role.                                                                      |
+| `DELETE` | `/v1/company/team/:id` | Remove a member from the company.                                                            |
+
+## C.2 Withdrawal / payout / load body
+
+All three flows share the same request body shape:
+
+```json
+{
+  "amount": "100.00",
+  "currency": "USD",
+  "notes": "optional free-text",
+  "payout": {
+    "method": "CASH | WISH | CRYPTO",
+    "…method-specific fields…"
+  }
+}
+```
+
+The `payout.method` accepts **`CASH`**, **`WISH`**, or **`CRYPTO`**:
+
+| `method` | Required fields                   | Optional fields                  |
+| -------- | --------------------------------- | -------------------------------- |
+| `CASH`   | `recipientName`, `recipientPhone` | `pickupLocation`, `instructions` |
+| `WISH`   | `recipientName`, `recipientPhone` | `instructions`                   |
+| `CRYPTO` | `network`, `walletAddress`        | `memo`, `instructions`           |
+
+**Example — CASH withdrawal:**
+
+```
+POST /v1/company/withdrawals
+Authorization: Bearer tsk_<prefix>_<secret>
+Content-Type: application/json
+```
+
+```json
+{
+  "amount": "100.00",
+  "currency": "USD",
+  "notes": "Weekly settlement",
+  "payout": {
+    "method": "CASH",
+    "recipientName": "ACME Ltd",
+    "recipientPhone": "+961-3-000-000"
+  }
+}
+```
+
+**Response — `201 Created`**
+
+```json
+{
+  "success": true,
+  "statusCode": 201,
+  "data": {
+    "id": "d4f2a1c0-...",
+    "status": "PENDING",
+    "amount": "100.00",
+    "currency": "USD",
+    "payoutMethod": "CASH",
+    "createdAt": "2026-06-09T10:00:00.000Z"
+  }
+}
+```
+
+Withdrawal/payout/load requests land in **`PENDING`** status and require admin approval
+before funds move. Use the cancel endpoint (`POST …/:id/cancel`) while still `PENDING` if
+needed.
+
+---
+
+---
+
 ## Appendix — Error codes
 
 | HTTP  | `code`             | When                                                                            |

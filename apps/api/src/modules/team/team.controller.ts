@@ -17,7 +17,7 @@ import {
   type UpdateTeamMemberInput,
 } from '@app/shared';
 import { ZodPipe } from '../../common/pipes/zod-validation.pipe';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { CompanyAccessGuard } from '../api-keys/guards/company-access.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CsrfGuard } from '../auth/guards/csrf.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -27,7 +27,7 @@ import type { AuthPrincipal } from '../../common/types/request.types';
 import { ForbiddenError } from '../../common/errors/domain.error';
 import { TeamService } from './team.service';
 
-@UseGuards(JwtAuthGuard, RolesGuard, CsrfGuard)
+@UseGuards(CompanyAccessGuard, RolesGuard, CsrfGuard)
 @Controller('company/team')
 export class TeamController {
   constructor(private readonly team: TeamService) {}

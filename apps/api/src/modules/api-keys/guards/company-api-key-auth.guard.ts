@@ -42,6 +42,7 @@ export class CompanyApiKeyAuthGuard implements CanActivate {
       role: UserRole.COMPANY_OWNER, // surrogate — integration paths don't consult role
       companyId: result.companyId,
       sourceId: null,
+      apiKeyAuth: true,
     };
     (req as AuthenticatedRequest).principal = principal;
     return true;
