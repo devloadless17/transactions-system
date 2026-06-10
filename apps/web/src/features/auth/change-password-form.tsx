@@ -3,13 +3,32 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
+import { z } from 'zod';
 import { toast } from 'sonner';
-import { changePasswordSchema, type ChangePasswordInput } from '@app/shared';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { PasswordInput } from '@/components/ui/password-input';
 import { Label } from '@/components/ui/label';
 import { apiFetch } from '@/lib/api.client';
 import { ApiClientError } from '@/lib/api';
+
+// Client-side UX schema (the server's changePasswordSchema is the authority).
+// Adds the confirm field + match check so a mistyped new password is caught
+// before it locks the user out.
+const formSchema = z
+  .object({
+    currentPassword: z.string().min(1, 'Required'),
+    newPassword: z.string().min(6, 'must be at least 6 characters').max(128),
+    confirmPassword: z.string().min(1, 'Required'),
+  })
+  .refine((d) => d.newPassword === d.confirmPassword, {
+    message: 'Passwords do not match',
+    path: ['confirmPassword'],
+  })
+  .refine((d) => d.currentPassword !== d.newPassword, {
+    message: 'New password must differ from current',
+    path: ['newPassword'],
+  });
+type FormValues = z.infer<typeof formSchema>;
 
 export function ChangePasswordForm({ forced = false }: { forced?: boolean }) {
   const router = useRouter();
@@ -18,15 +37,18 @@ export function ChangePasswordForm({ forced = false }: { forced?: boolean }) {
     register,
     handleSubmit,
     formState: { errors },
-  } = useForm<ChangePasswordInput>({
-    resolver: zodResolver(changePasswordSchema),
-    defaultValues: { currentPassword: '', newPassword: '' },
+  } = useForm<FormValues>({
+    resolver: zodResolver(formSchema),
+    defaultValues: { currentPassword: '', newPassword: '', confirmPassword: '' },
   });
 
-  const onSubmit = handleSubmit(async (values) => {
+  const onSubmit = handleSubmit(async ({ currentPassword, newPassword }) => {
     setSubmitting(true);
     try {
-      await apiFetch<void>('/auth/change-password', { method: 'POST', body: values });
+      await apiFetch<void>('/auth/change-password', {
+        method: 'POST',
+        body: { currentPassword, newPassword },
+      });
       toast.success('Password changed — please sign in again');
       // Backend clears the access cookie; route to login.
       router.push('/login');
@@ -44,9 +66,8 @@ export function ChangePasswordForm({ forced = false }: { forced?: boolean }) {
         <Label htmlFor="currentPassword">
           {forced ? 'Temporary password' : 'Current password'}
         </Label>
-        <Input
+        <PasswordInput
           id="currentPassword"
-          type="password"
           autoComplete="current-password"
           {...register('currentPassword')}
         />
@@ -56,16 +77,22 @@ export function ChangePasswordForm({ forced = false }: { forced?: boolean }) {
       </div>
       <div className="space-y-2">
         <Label htmlFor="newPassword">New password</Label>
-        <Input
-          id="newPassword"
-          type="password"
-          autoComplete="new-password"
-          {...register('newPassword')}
-        />
+        <PasswordInput id="newPassword" autoComplete="new-password" {...register('newPassword')} />
         {errors.newPassword && (
           <p className="text-sm text-destructive">{errors.newPassword.message}</p>
         )}
         <p className="text-xs text-muted-foreground">At least 6 characters.</p>
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="confirmPassword">Confirm new password</Label>
+        <PasswordInput
+          id="confirmPassword"
+          autoComplete="new-password"
+          {...register('confirmPassword')}
+        />
+        {errors.confirmPassword && (
+          <p className="text-sm text-destructive">{errors.confirmPassword.message}</p>
+        )}
       </div>
       <Button type="submit" className="w-full" disabled={submitting}>
         {submitting ? 'Saving…' : 'Save and sign in again'}

@@ -35,6 +35,7 @@ test.describe.serial('company portal: smoke', () => {
 
     await page.locator('#currentPassword').fill(tempPassword);
     await page.locator('#newPassword').fill(newPassword);
+    await page.locator('#confirmPassword').fill(newPassword);
     await page.getByRole('button', { name: /save and sign in again/i }).click();
 
     // Server clears cookies; client pushes to /login.

@@ -49,6 +49,35 @@ export class TeamService {
     return result;
   }
 
+  /**
+   * Admin recovery: issue a fresh one-time temporary password for a company user
+   * who is locked out (lost/forgotten credential). Forces a change on next login
+   * and revokes every active session so the old credential is dead. The plaintext
+   * is returned ONCE for the admin to hand to the user out-of-band.
+   */
+  async resetPassword(companyId: string, id: string): Promise<InviteTeamMemberResponse> {
+    const result = await this.prisma.runAsAdmin(async (tx) => {
+      const member = await tx.user.findUnique({ where: { id } });
+      if (!member || member.companyId !== companyId) throw new NotFoundError('TeamMember', id);
+
+      const tempPassword = generateTempPassword();
+      const passwordHash = await argon2.hash(tempPassword, { type: argon2.argon2id });
+
+      const updated = await tx.user.update({
+        where: { id },
+        data: { passwordHash, mustChangePassword: true },
+      });
+      // The old credential is gone — revoke every active session so it can't be used.
+      await tx.refreshToken.updateMany({
+        where: { userId: id, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+      return { member: mapMember(updated), temporaryPassword: tempPassword };
+    });
+    this.realtime.company(companyId, ['team']);
+    return result;
+  }
+
   async list(companyId: string): Promise<TeamMemberResponse[]> {
     const rows = await this.prisma.runAsScoped(companyId, (tx) =>
       tx.user.findMany({ where: { companyId }, orderBy: { createdAt: 'asc' } }),

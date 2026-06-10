@@ -35,6 +35,7 @@ const prettyRole = (r: string) => r.replace('COMPANY_', '');
 export function CompanyUsersCard({ companyId }: { companyId: string }) {
   const qc = useQueryClient();
   const [addOpen, setAddOpen] = useState(false);
+  const [resetTarget, setResetTarget] = useState<TeamMemberResponse | null>(null);
   const queryKey = ['admin', 'company', companyId, 'users'] as const;
 
   const listQ = useQuery({
@@ -91,24 +92,30 @@ export function CompanyUsersCard({ companyId }: { companyId: string }) {
       key: 'actions',
       header: '',
       align: 'right',
-      cell: (m) =>
-        m.status === 'ACTIVE' ? (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => updateMu.mutate({ id: m.id, status: UserStatus.DISABLED })}
-          >
-            Disable
+      cell: (m) => (
+        <div className="flex items-center justify-end gap-1">
+          <Button variant="ghost" size="sm" onClick={() => setResetTarget(m)}>
+            Reset password
           </Button>
-        ) : (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => updateMu.mutate({ id: m.id, status: UserStatus.ACTIVE })}
-          >
-            Reactivate
-          </Button>
-        ),
+          {m.status === 'ACTIVE' ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => updateMu.mutate({ id: m.id, status: UserStatus.DISABLED })}
+            >
+              Disable
+            </Button>
+          ) : (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => updateMu.mutate({ id: m.id, status: UserStatus.ACTIVE })}
+            >
+              Reactivate
+            </Button>
+          )}
+        </div>
+      ),
     },
   ];
 
@@ -143,7 +150,94 @@ export function CompanyUsersCard({ companyId }: { companyId: string }) {
         onOpenChange={setAddOpen}
         onAdded={() => qc.invalidateQueries({ queryKey })}
       />
+
+      <ResetPasswordDialog
+        companyId={companyId}
+        target={resetTarget}
+        onClose={() => setResetTarget(null)}
+      />
     </Card>
+  );
+}
+
+function ResetPasswordDialog({
+  companyId,
+  target,
+  onClose,
+}: {
+  companyId: string;
+  target: TeamMemberResponse | null;
+  onClose: () => void;
+}) {
+  const [result, setResult] = useState<InviteTeamMemberResponse | null>(null);
+
+  const mu = useMutation({
+    mutationFn: () =>
+      apiFetch<InviteTeamMemberResponse>(
+        `/admin/companies/${companyId}/users/${target!.id}/reset-password`,
+        { method: 'POST' },
+      ),
+    onSuccess: (res) => setResult(res),
+    onError: (err) => toast.error(err instanceof ApiClientError ? err.message : 'Failed'),
+  });
+
+  function handleOpenChange(v: boolean) {
+    if (!v) {
+      setResult(null);
+      onClose();
+    }
+  }
+
+  return (
+    <Dialog open={!!target} onOpenChange={handleOpenChange}>
+      <DialogContent>
+        {result ? (
+          <>
+            <DialogHeader>
+              <DialogTitle>Temporary password</DialogTitle>
+              <DialogDescription>
+                Share this one-time password with {result.member.email}. It is shown only once and
+                must be changed on their next login.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="rounded-md border bg-muted/30 p-3 font-mono text-xs break-all">
+              {result.temporaryPassword}
+            </div>
+            <DialogFooter>
+              <Button
+                onClick={() => {
+                  navigator.clipboard?.writeText(result.temporaryPassword);
+                  toast.success('Copied');
+                }}
+              >
+                Copy
+              </Button>
+              <Button variant="outline" onClick={() => handleOpenChange(false)}>
+                Done
+              </Button>
+            </DialogFooter>
+          </>
+        ) : (
+          <>
+            <DialogHeader>
+              <DialogTitle>Reset password?</DialogTitle>
+              <DialogDescription>
+                {target?.email} will get a new one-time temporary password and be signed out of all
+                sessions. They must set a new password on their next login.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => handleOpenChange(false)}>
+                Cancel
+              </Button>
+              <Button onClick={() => mu.mutate()} disabled={mu.isPending}>
+                {mu.isPending ? 'Resetting…' : 'Reset password'}
+              </Button>
+            </DialogFooter>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
   );
 }
 

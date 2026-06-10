@@ -44,6 +44,7 @@ test.describe('realtime analytics — live dashboard updates', () => {
       await loginAs(page, ownerEmail, tempPassword, '/change-password');
       await page.locator('#currentPassword').fill(tempPassword);
       await page.locator('#newPassword').fill(newPassword);
+      await page.locator('#confirmPassword').fill(newPassword);
       await page.getByRole('button', { name: /save and sign in again/i }).click();
       await page.waitForURL(/\/login/, { timeout: 15_000 });
       await loginAs(page, ownerEmail, newPassword, '/app');

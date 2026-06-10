@@ -81,6 +81,21 @@ export class AdminCompanyUsersController {
     return this.team.update(companyId, id, actor.userId, body);
   }
 
+  @Post(':id/reset-password')
+  @Audited({
+    action: 'team.password_reset',
+    entityType: 'user',
+    idFrom: 'params.id',
+    companyIdFrom: 'params.companyId',
+  })
+  async resetPassword(
+    @Param('companyId', new ParseUUIDPipe()) companyId: string,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ) {
+    await this.assertCompanyExists(companyId);
+    return this.team.resetPassword(companyId, id);
+  }
+
   @Delete(':id')
   @Audited({
     action: 'team.member_removed',
