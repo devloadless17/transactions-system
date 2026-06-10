@@ -34,14 +34,98 @@ const INGEST_CURL = `curl -X POST ${API_BASE}/ingest/omt/transactions \\
     }
   }'`;
 
-const COMPANY_READ_CURL = `# Company API keys (managed by an admin on your behalf) are READ-ONLY.
-# Use them for dashboards, exports, and internal integrations.
+const COMPANY_AUTH_CURL = `Authorization: Bearer tsk_<prefix>_<secret>`;
 
-curl ${API_BASE}/company/transactions \\
+const WALLETS_CURL = `curl ${API_BASE}/company/wallets \\
   -H "Authorization: Bearer tsk_<company-key>"
 
-curl ${API_BASE}/company/wallets \\
-  -H "Authorization: Bearer tsk_<company-key>"`;
+# Response
+{
+  "success": true,
+  "data": [
+    { "currency": "USD", "available": "1250.00", "reserved": "200.00" },
+    { "currency": "LBP", "available": "45000000", "reserved": "0" }
+  ]
+}`;
+
+const WITHDRAWAL_CASH_CURL = `curl -X POST ${API_BASE}/company/withdrawals \\
+  -H "Authorization: Bearer tsk_<company-key>" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "amount": "500.00",
+    "currency": "USD",
+    "notes": "Weekly settlement",
+    "payout": {
+      "method": "CASH",
+      "recipientName": "Acme Ltd",
+      "recipientPhone": "+961-3-000-000"
+    }
+  }'`;
+
+const WITHDRAWAL_WISH_CURL = `curl -X POST ${API_BASE}/company/withdrawals \\
+  -H "Authorization: Bearer tsk_<company-key>" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "amount": "200.00",
+    "currency": "USD",
+    "payout": {
+      "method": "WISH",
+      "recipientName": "John Doe",
+      "recipientPhone": "+961-70-000-000"
+    }
+  }'`;
+
+const WITHDRAWAL_CRYPTO_CURL = `curl -X POST ${API_BASE}/company/withdrawals \\
+  -H "Authorization: Bearer tsk_<company-key>" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "amount": "100.00",
+    "currency": "USD",
+    "payout": {
+      "method": "CRYPTO",
+      "network": "TRC20",
+      "walletAddress": "TXyz...abc"
+    }
+  }'`;
+
+const WITHDRAWAL_RESPONSE = `{
+  "success": true,
+  "statusCode": 201,
+  "data": {
+    "id": "d4f2a1c0-...",
+    "status": "PENDING",
+    "amount": "500.00",
+    "currency": "USD",
+    "payoutMethod": "CASH",
+    "createdAt": "2026-06-10T10:00:00.000Z"
+  }
+}`;
+
+const CANCEL_CURL = `curl -X POST ${API_BASE}/company/withdrawals/<id>/cancel \\
+  -H "Authorization: Bearer tsk_<company-key>" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "notes": "No longer needed" }'`;
+
+const WHISH_PAYMENT_CURL = `curl -X POST ${API_BASE}/company/whish/payments \\
+  -H "Authorization: Bearer tsk_<company-key>" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "amount": "50.00",
+    "currency": "USD",
+    "externalId": "order-9912",
+    "description": "Payment for order #9912"
+  }'
+
+# Response — share collectUrl with your customer
+{
+  "data": {
+    "id": "e3b1c2d0-...",
+    "status": "PENDING",
+    "collectUrl": "https://whish.money/collect/...",
+    "amount": "50.00",
+    "currency": "USD"
+  }
+}`;
 
 export function ApiDocsView() {
   return (
@@ -49,9 +133,10 @@ export function ApiDocsView() {
       <div>
         <h1 className="text-2xl font-semibold">API integration</h1>
         <p className="text-sm text-muted-foreground">
-          Two distinct integration paths share this API. External providers (OMT, Wish, banks…) use{' '}
+          Two distinct integration paths share this API. External providers (OMT, Whish, banks…) use{' '}
           <strong>source API keys</strong> to ingest transactions. Your company uses a{' '}
-          <strong>company API key</strong> for read-only programmatic access to your own data.
+          <strong>company API key</strong> for full programmatic access to all your company data and
+          operations — no browser session required.
         </p>
       </div>
 
@@ -59,13 +144,15 @@ export function ApiDocsView() {
         <p className="font-medium">Quick reference</p>
         <ul className="mt-1 space-y-1 text-muted-foreground">
           <li>
-            <strong>Source key</strong> (Wish, OMT, …): can <code>POST</code> transactions on behalf
-            of any company and can <code>GET /ingest/companies</code> for discovery. Issued by the
-            platform admin.
+            <strong>Source key</strong> (Whish, OMT, …): can <code>POST</code> transactions on
+            behalf of any company and can <code>GET /ingest/companies</code> for discovery. Issued
+            by the platform admin.
           </li>
           <li>
-            <strong>Company key</strong> (your company): read-only. Cannot ingest. Use it to fetch
-            your transactions, wallets, ledger, withdrawals, etc. programmatically.
+            <strong>Company key</strong> (your company): full access to your company — read
+            transactions, wallets, ledger, analytics; request withdrawals, payouts, loads; manage
+            Whish payments and webhooks; manage team and API keys. Cannot ingest transactions (that
+            is a source-key operation).
           </li>
         </ul>
       </div>
@@ -76,7 +163,7 @@ export function ApiDocsView() {
         <CardHeader>
           <CardTitle>1. Authentication</CardTitle>
           <CardDescription>
-            Source keys are issued by the platform admin, one per source (OMT, Wish, …). Send the
+            Source keys are issued by the platform admin, one per source (OMT, Whish, …). Send the
             key as a Bearer token. The URL identifies the source; the key proves it.
           </CardDescription>
         </CardHeader>
@@ -211,18 +298,191 @@ export function ApiDocsView() {
 
       <h2 className="border-b pb-2 pt-4 text-lg font-semibold">For your company</h2>
 
+      {/* ── Authentication ── */}
       <Card>
         <CardHeader>
-          <CardTitle>Read-only programmatic access</CardTitle>
+          <CardTitle>Authentication</CardTitle>
           <CardDescription>
-            If you need to fetch your own transactions, wallets, or ledger entries from a script or
-            internal tool, ask your platform admin to issue a company API key for you. These keys
-            are strictly <strong>read-only</strong> — they cannot ingest transactions (use a source
-            key for that).
+            Add your company API key as a Bearer token on every request. No cookies, no CSRF header
+            needed. Generate a key under <strong>Settings → API Keys</strong> in the dashboard.
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <CodeBlock code={COMPANY_READ_CURL} />
+          <CodeBlock code={COMPANY_AUTH_CURL} />
+        </CardContent>
+      </Card>
+
+      {/* ── Wallets ── */}
+      <Card>
+        <CardHeader>
+          <CardTitle>1. Check your balances</CardTitle>
+          <CardDescription>
+            Returns <code className="font-mono">available</code> (spendable) and{' '}
+            <code className="font-mono">reserved</code> (held for pending outflows) per currency.
+            Check this before requesting a withdrawal to avoid an insufficient-funds error.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <CodeBlock code={WALLETS_CURL} />
+        </CardContent>
+      </Card>
+
+      {/* ── Withdrawals / Payouts / Loads ── */}
+      <Card>
+        <CardHeader>
+          <CardTitle>2. Request a withdrawal, payout, or load</CardTitle>
+          <CardDescription>
+            All three flows share the same body shape. The only difference is the path:{' '}
+            <code className="font-mono">/company/withdrawals</code>,{' '}
+            <code className="font-mono">/company/payouts</code>, or{' '}
+            <code className="font-mono">/company/loads</code>. Requests land in{' '}
+            <strong>PENDING</strong> status and require platform admin approval before funds move.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {/* Payout method reference */}
+          <div className="rounded-md border bg-muted/30 p-3">
+            <p className="mb-2 text-xs font-medium">Payout method — choose one</p>
+            <div className="space-y-1 text-xs">
+              <MethodRow
+                method="CASH"
+                required="recipientName, recipientPhone"
+                optional="pickupLocation, instructions"
+              />
+              <MethodRow
+                method="WISH"
+                required="recipientName, recipientPhone"
+                optional="instructions"
+              />
+              <MethodRow
+                method="CRYPTO"
+                required="network, walletAddress"
+                optional="memo, instructions"
+              />
+            </div>
+          </div>
+
+          <div>
+            <p className="mb-1 text-xs font-medium uppercase text-muted-foreground">CASH example</p>
+            <CodeBlock code={WITHDRAWAL_CASH_CURL} />
+          </div>
+          <div>
+            <p className="mb-1 text-xs font-medium uppercase text-muted-foreground">WISH example</p>
+            <CodeBlock code={WITHDRAWAL_WISH_CURL} />
+          </div>
+          <div>
+            <p className="mb-1 text-xs font-medium uppercase text-muted-foreground">
+              CRYPTO example
+            </p>
+            <CodeBlock code={WITHDRAWAL_CRYPTO_CURL} />
+          </div>
+          <div>
+            <p className="mb-1 text-xs font-medium uppercase text-muted-foreground">
+              Response (201 Created)
+            </p>
+            <CodeBlock code={WITHDRAWAL_RESPONSE} />
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* ── Status lifecycle ── */}
+      <Card>
+        <CardHeader>
+          <CardTitle>3. Status lifecycle</CardTitle>
+          <CardDescription>
+            Every withdrawal, payout, and load moves through these statuses.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-1 text-sm">
+            <StatusRow status="PENDING" desc="Submitted — awaiting platform admin review." />
+            <StatusRow
+              status="APPROVED"
+              desc="Admin approved — funds are being processed externally."
+            />
+            <StatusRow status="COMPLETED" desc="Funds delivered. Ledger entry finalised." />
+            <StatusRow
+              status="REJECTED"
+              desc="Admin rejected the request. Reserved funds released."
+            />
+            <StatusRow
+              status="CANCELLED"
+              desc="You cancelled it (only possible while PENDING). Reserved funds released."
+            />
+          </div>
+          <p className="mt-3 text-xs text-muted-foreground">
+            Cancel while still PENDING:{' '}
+            <code className="font-mono">POST /company/withdrawals/:id/cancel</code> (same path for
+            payouts and loads).
+          </p>
+          <div className="mt-3">
+            <CodeBlock code={CANCEL_CURL} />
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* ── Whish payment links ── */}
+      <Card>
+        <CardHeader>
+          <CardTitle>4. Collect via Whish Pay</CardTitle>
+          <CardDescription>
+            Generate a hosted payment link, share the <code className="font-mono">collectUrl</code>{' '}
+            with your customer, and the amount settles into your wallet automatically once paid.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <CodeBlock code={WHISH_PAYMENT_CURL} />
+        </CardContent>
+      </Card>
+
+      {/* ── All other endpoints ── */}
+      <Card>
+        <CardHeader>
+          <CardTitle>All endpoints at a glance</CardTitle>
+          <CardDescription>
+            Every <code className="font-mono">company/*</code> route accepts your API key. All paths
+            are prefixed with <code className="font-mono">/v1</code>.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-1 text-sm">
+            <EndpointGroup label="Wallets" endpoints="GET /company/wallets" />
+            <EndpointGroup
+              label="Transactions"
+              endpoints="GET /company/transactions · /:id · /:id/detail · /export.csv"
+            />
+            <EndpointGroup label="Ledger" endpoints="GET /company/ledger" />
+            <EndpointGroup
+              label="Analytics"
+              endpoints="GET /company/analytics/overview · /wallet-summary"
+            />
+            <EndpointGroup
+              label="Withdrawals"
+              endpoints="GET · POST /company/withdrawals · POST /:id/cancel"
+            />
+            <EndpointGroup
+              label="Payouts"
+              endpoints="GET · POST /company/payouts · POST /:id/cancel"
+            />
+            <EndpointGroup label="Loads" endpoints="GET · POST /company/loads · POST /:id/cancel" />
+            <EndpointGroup
+              label="Whish Pay"
+              endpoints="GET · POST /company/whish/payments · GET /:id · POST /:id/refresh-status"
+            />
+            <EndpointGroup
+              label="Whish webhook"
+              endpoints="GET · PUT · DELETE /company/whish/webhook · POST /rotate-secret"
+            />
+            <EndpointGroup label="CRM" endpoints="GET · PUT · DELETE /company/crm/config" />
+            <EndpointGroup
+              label="API keys"
+              endpoints="GET · POST /company/api-keys · POST /:id/rotate · /:id/revoke"
+            />
+            <EndpointGroup
+              label="Team"
+              endpoints="GET · POST /company/team · PATCH · DELETE /:id"
+            />
+          </div>
         </CardContent>
       </Card>
 
@@ -264,6 +524,48 @@ function ErrorRow({ code, status, desc }: { code: string; status: number; desc: 
       <code className="col-span-3 font-mono text-xs">{code}</code>
       <span className="col-span-1 text-xs text-muted-foreground">{status}</span>
       <span className="col-span-8 text-xs">{desc}</span>
+    </div>
+  );
+}
+
+function EndpointGroup({ label, endpoints }: { label: string; endpoints: string }) {
+  return (
+    <div className="grid grid-cols-12 gap-2 border-b py-2 last:border-0">
+      <span className="col-span-3 text-xs font-medium">{label}</span>
+      <span className="col-span-9 font-mono text-xs text-muted-foreground">{endpoints}</span>
+    </div>
+  );
+}
+
+function MethodRow({
+  method,
+  required,
+  optional,
+}: {
+  method: string;
+  required: string;
+  optional: string;
+}) {
+  return (
+    <div className="grid grid-cols-12 gap-2 border-b py-1.5 last:border-0">
+      <code className="col-span-2 font-mono font-semibold">{method}</code>
+      <span className="col-span-5 text-muted-foreground">
+        <span className="text-foreground">required: </span>
+        {required}
+      </span>
+      <span className="col-span-5 text-muted-foreground">
+        <span className="text-foreground">optional: </span>
+        {optional}
+      </span>
+    </div>
+  );
+}
+
+function StatusRow({ status, desc }: { status: string; desc: string }) {
+  return (
+    <div className="grid grid-cols-12 gap-2 border-b py-2 last:border-0">
+      <code className="col-span-3 font-mono text-xs font-semibold">{status}</code>
+      <span className="col-span-9 text-xs text-muted-foreground">{desc}</span>
     </div>
   );
 }

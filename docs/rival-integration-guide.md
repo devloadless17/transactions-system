@@ -379,7 +379,7 @@ Authorization: Bearer tsk_<prefix>_<secret>
 
 ## C.1 Complete endpoint reference
 
-All `company/*` endpoints accept `Authorization: Bearer tsk_...`. The table below lists
+All `company/*` endpoints accept `Authorization: Bearer tsk_...`. The tables below list
 every available route.
 
 ### Wallets
@@ -461,6 +461,73 @@ every available route.
 | `POST`   | `/v1/company/team`     | Invite a new member. Body: `{ "email": "…", "role": "COMPANY_MANAGER" \| "COMPANY_VIEWER" }` |
 | `PATCH`  | `/v1/company/team/:id` | Update a member's role.                                                                      |
 | `DELETE` | `/v1/company/team/:id` | Remove a member from the company.                                                            |
+
+### Whish Pay — payment links
+
+Create a hosted Whish payment link, share the `collectUrl` with your customer, and the
+funds settle into your wallet once Whish confirms the payment (the platform calls back
+automatically).
+
+| Method | Path                                            | Description                                                                       |
+| ------ | ----------------------------------------------- | --------------------------------------------------------------------------------- |
+| `GET`  | `/v1/company/whish/payments`                    | List Whish payment requests. Query: `pageSize`, `page`, `status`, `from`, `to`.   |
+| `GET`  | `/v1/company/whish/payments/:id`                | Get a single Whish payment (includes `collectUrl` and current status).            |
+| `POST` | `/v1/company/whish/payments`                    | Create a new payment link (see example below). Returns `collectUrl` to share.     |
+| `POST` | `/v1/company/whish/payments/:id/refresh-status` | Force a status check against Whish for a payment that hasn't received a callback. |
+
+**Create payment — example:**
+
+```
+POST /v1/company/whish/payments
+Authorization: Bearer tsk_<prefix>_<secret>
+Content-Type: application/json
+```
+
+```json
+{
+  "amount": "50.00",
+  "currency": "USD",
+  "externalId": "order-9912",
+  "description": "Payment for order #9912"
+}
+```
+
+**Response — `201 Created`** (excerpt):
+
+```json
+{
+  "success": true,
+  "statusCode": 201,
+  "data": {
+    "id": "e3b1c2d0-...",
+    "status": "PENDING",
+    "collectUrl": "https://whish.money/collect/...",
+    "amount": "50.00",
+    "currency": "USD",
+    "externalId": "order-9912"
+  }
+}
+```
+
+Share the `collectUrl` with your customer. Once paid, the amount settles into your wallet
+and a `whish.payment.paid` event is delivered to your CRM webhook (see Part B).
+
+### Whish Pay — outbound webhook
+
+Configure an outbound webhook so your backend gets pushed `whish.payment.paid` events
+instead of polling. The webhook is signed with a secret (HMAC-SHA256) so you can verify
+the payload is genuine.
+
+| Method   | Path                                      | Description                                                                        |
+| -------- | ----------------------------------------- | ---------------------------------------------------------------------------------- |
+| `GET`    | `/v1/company/whish/webhook`               | Read current webhook URL (secret is never returned).                               |
+| `PUT`    | `/v1/company/whish/webhook`               | Set or update the webhook URL. Body: `{ "url": "https://your-backend/hook" }`.     |
+| `POST`   | `/v1/company/whish/webhook/rotate-secret` | Generate a new signing secret (invalidates the old one). New secret returned once. |
+| `DELETE` | `/v1/company/whish/webhook`               | Remove the webhook configuration entirely.                                         |
+
+> **Note:** This webhook is distinct from the CRM webhook in Part B. The Whish webhook
+> delivers payment events directly to your custom URL; the CRM webhook (Part B) delivers
+> the same events to a connected CRM (HubSpot, Salesforce, etc.).
 
 ## C.2 Withdrawal / payout / load body
 
