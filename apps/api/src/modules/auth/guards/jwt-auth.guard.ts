@@ -4,7 +4,7 @@ import { JwtService } from '@nestjs/jwt';
 import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
 import type { Env } from '../../../config/env.schema';
-import { UnauthorizedError } from '../../../common/errors/domain.error';
+import { ForbiddenError, UnauthorizedError } from '../../../common/errors/domain.error';
 import type { AuthenticatedRequest, AuthPrincipal } from '../../../common/types/request.types';
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
 import { ACCESS_COOKIE_NAME } from '../auth.constants';
@@ -50,7 +50,7 @@ export class JwtAuthGuard implements CanActivate {
     const user = await this.prisma.runAsAdmin((tx) =>
       tx.user.findUnique({
         where: { id: payload.sub },
-        select: { status: true, role: true, companyId: true },
+        select: { status: true, role: true, companyId: true, mustChangePassword: true },
       }),
     );
     if (!user || user.status !== 'ACTIVE') {
@@ -58,6 +58,13 @@ export class JwtAuthGuard implements CanActivate {
     }
     if (user.role !== payload.role) {
       throw new UnauthorizedError('Session is stale (role changed); please sign in again');
+    }
+    // Enforce forced password rotation server-side, not just in the web client:
+    // a user provisioned with a temp password (mustChangePassword=true) may only
+    // reach the auth self-service routes until they rotate it. Without this, the
+    // admin-issued temp credential is a fully-privileged, long-lived API key.
+    if (user.mustChangePassword && !isPasswordChangePending(req.path)) {
+      throw new ForbiddenError('Password change required before using the API');
     }
 
     const principal: AuthPrincipal = {
@@ -81,4 +88,12 @@ export class JwtAuthGuard implements CanActivate {
     if (auth && auth.startsWith('Bearer ')) return auth.slice('Bearer '.length);
     return null;
   }
+}
+
+// Routes a user with a pending forced password change may still reach (to read
+// their session, rotate the password, or sign out). `endsWith` tolerates the
+// global route prefix. Everything else is blocked until the flag clears.
+const PASSWORD_CHANGE_ALLOWLIST = ['/auth/me', '/auth/change-password', '/auth/logout'];
+function isPasswordChangePending(path: string): boolean {
+  return PASSWORD_CHANGE_ALLOWLIST.some((p) => path === p || path.endsWith(p));
 }

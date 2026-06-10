@@ -43,8 +43,12 @@ const WALLETS_CURL = `curl ${API_BASE}/company/wallets \\
 {
   "success": true,
   "data": [
-    { "currency": "USD", "available": "1250.00", "reserved": "200.00" },
-    { "currency": "LBP", "available": "45000000", "reserved": "0" }
+    {
+      "currency": "USD",
+      "availableBalance": "1250.00",
+      "pendingBalance": "0",
+      "reservedBalance": "200.00"
+    }
   ]
 }`;
 
@@ -112,11 +116,10 @@ const WHISH_PAYMENT_CURL = `curl -X POST ${API_BASE}/company/whish/payments \\
   -d '{
     "amount": "50.00",
     "currency": "USD",
-    "externalId": "order-9912",
-    "description": "Payment for order #9912"
+    "invoice": "Order #9912"
   }'
 
-# Response — share collectUrl with your customer
+# Response — share collectUrl with your customer (externalId is server-assigned)
 {
   "data": {
     "id": "e3b1c2d0-...",
@@ -317,9 +320,10 @@ export function ApiDocsView() {
         <CardHeader>
           <CardTitle>1. Check your balances</CardTitle>
           <CardDescription>
-            Returns <code className="font-mono">available</code> (spendable) and{' '}
-            <code className="font-mono">reserved</code> (held for pending outflows) per currency.
-            Check this before requesting a withdrawal to avoid an insufficient-funds error.
+            Returns <code className="font-mono">availableBalance</code> (spendable) and{' '}
+            <code className="font-mono">reservedBalance</code> (held for pending outflows) per
+            currency. Check this before requesting a withdrawal to avoid an insufficient-funds
+            error.
           </CardDescription>
         </CardHeader>
         <CardContent>

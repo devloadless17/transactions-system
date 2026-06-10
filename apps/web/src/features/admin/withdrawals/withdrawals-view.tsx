@@ -176,6 +176,7 @@ export function AdminWithdrawalsView({ config }: { config: AdminProcessConfig })
             columns={columns}
             rows={listQ.data?.data}
             isLoading={listQ.isLoading}
+            error={listQ.error}
             rowKey={(w) => w.id}
             onRowClick={(w) => setReview({ withdrawal: w, action: 'approve' })}
             empty={<div className="py-8 text-center text-muted-foreground">Nothing to review.</div>}

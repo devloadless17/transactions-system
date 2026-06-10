@@ -265,9 +265,9 @@ export class AuthService {
   }
 }
 
-// Hash refresh tokens with a keyed HMAC. The full JWT is the secret —
-// we keep it out of the DB and store a deterministic short hash that
-// we can index.
+// Store an unkeyed SHA-256 lookup hash of the refresh token, never the token
+// itself. The token is a high-entropy signed JWT, so an unkeyed digest is an
+// adequate one-way, deterministic index that we can look up and revoke by.
 function hashRefreshToken(token: string): string {
   return crypto.createHash('sha256').update(token).digest('hex');
 }

@@ -4,15 +4,19 @@ import { InsufficientBalanceError } from '../../common/errors/domain.error';
 import type { LedgerEntryInput } from './ledger.service';
 
 /**
- * Shared ledger/wallet helpers for the money-OUT flows (withdrawals + payouts),
- * which have an identical lifecycle: available → reserved on request, reserved
- * → external (+ realized fee) on approval, reserved → available on reject/cancel.
- * Loads are money-IN and deliberately do NOT use these. Extracted so the
- * reserve/release/settle rules live in one place instead of being copy-pasted
- * into both services.
+ * Shared ledger/wallet helpers for the money flows. The fee split — `reservedTotal`
+ * (the gross amount that moves) and `netOfFee` (the recipient's net) — is the
+ * single definition reused by money-OUT (withdrawals/payouts reserve+settle) AND
+ * money-IN (transaction ingest + load approval debit), so the ON_TOP/DEDUCTED
+ * arithmetic can't drift between flows.
+ *
+ * The reserve/release/settle ENTRY builders below are money-OUT only: withdrawals
+ * and payouts share an identical lifecycle — available → reserved on request,
+ * reserved → external (+ realized fee) on approval, reserved → available on
+ * reject/cancel — and loads (money-IN) build their own entries directly.
  */
 
-/** Reserved total for a row = amount, or amount + fee when the fee is ON_TOP. */
+/** Gross amount that moves for a row = amount, or amount + fee when the fee is ON_TOP. */
 export function reservedTotal(amount: Money, fee: Money, feeApplication: FeeApplication): Money {
   return feeApplication === 'ON_TOP' ? amount.add(fee) : amount;
 }

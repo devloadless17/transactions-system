@@ -7,7 +7,6 @@ const base: Record<string, string> = {
   DATABASE_URL: 'postgresql://u:p@localhost:5432/db',
   JWT_ACCESS_SECRET: 'a'.repeat(40),
   JWT_REFRESH_SECRET: 'b'.repeat(40),
-  CSRF_SECRET: 'c'.repeat(40),
 };
 
 // A production env that satisfies every hardening rule.
@@ -22,7 +21,6 @@ const prodOk: Record<string, string> = {
   METRICS_TOKEN: 'a-strong-metrics-token',
   JWT_ACCESS_SECRET: 'A'.repeat(40),
   JWT_REFRESH_SECRET: 'B'.repeat(40),
-  CSRF_SECRET: 'C'.repeat(40),
 };
 
 describe('validateEnv', () => {

@@ -15,6 +15,7 @@ import { PrismaService } from '../../database/prisma.service';
 import { CommissionResolverService } from '../commissions/commission-resolver.service';
 import { CommissionsRepository } from '../commissions/commissions.repository';
 import { LedgerService } from '../ledger/ledger.service';
+import { netOfFee, reservedTotal } from '../ledger/flow-ledger';
 import { WalletsService } from '../wallets/wallets.service';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { RealtimeService } from '../realtime/realtime.service';
@@ -680,10 +681,11 @@ export function ingestSplit(
   fee: Money,
   feeApplication: FeeApplication,
 ): { externalDebit: Money; availableCredit: Money } {
-  const isOnTop = feeApplication === 'ON_TOP';
+  // Delegate to the canonical split so the ON_TOP/DEDUCTED arithmetic can't drift
+  // between ingest, loads, and the money-out flows.
   return {
-    externalDebit: isOnTop ? amount.add(fee) : amount,
-    availableCredit: isOnTop ? amount : amount.sub(fee),
+    externalDebit: reservedTotal(amount, fee, feeApplication),
+    availableCredit: netOfFee(amount, fee, feeApplication),
   };
 }
 

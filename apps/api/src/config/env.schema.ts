@@ -25,7 +25,6 @@ export const envSchema = z
       .union([z.literal('true'), z.literal('false')])
       .default('false')
       .transform((v) => v === 'true'),
-    CSRF_SECRET: z.string().min(32),
 
     WEB_ORIGIN: z.string().url().default('http://localhost:3000'),
     ALLOWED_ORIGINS: z.string().default('http://localhost:3000'),
@@ -130,16 +129,13 @@ export const envSchema = z
 
     const looksLikeDevSecret = (s: string) =>
       /change[_-]?me|dev[_-]?(access|refresh|secret)/i.test(s);
-    for (const key of ['JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET', 'CSRF_SECRET'] as const) {
+    for (const key of ['JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET'] as const) {
       if (looksLikeDevSecret(env[key])) {
         fail(key, 'must not use a dev/default secret in production');
       }
     }
     if (env.JWT_ACCESS_SECRET === env.JWT_REFRESH_SECRET) {
       fail('JWT_REFRESH_SECRET', 'must differ from JWT_ACCESS_SECRET');
-    }
-    if (env.CSRF_SECRET === env.JWT_ACCESS_SECRET || env.CSRF_SECRET === env.JWT_REFRESH_SECRET) {
-      fail('CSRF_SECRET', 'must differ from the JWT secrets');
     }
 
     // When Whish is wired up (channel/secret set), the dev defaults — the sandbox

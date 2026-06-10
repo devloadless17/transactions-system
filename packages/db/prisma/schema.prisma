@@ -333,6 +333,11 @@ model Transaction {
   @@unique([companyId, idempotencyKey])
   @@index([companyId, createdAt])
   @@index([companyId, status])
+  // Trigram GIN index backing the admin `externalTransactionId contains …` search.
+  // A btree can't serve an unanchored substring LIKE. Declared here (not just in raw
+  // SQL) so `prisma migrate dev` tracks it and never drift-drops it again. Requires
+  // the pg_trgm extension, created in the migration that adds this index.
+  @@index([externalTransactionId(ops: raw("gin_trgm_ops"))], type: Gin, map: "transactions_external_id_trgm_idx")
   @@map("transactions")
 }
 
@@ -377,6 +382,9 @@ model LedgerEntry {
   createdAt     DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
 
   @@index([companyId, currency, createdAt])
+  // Powers the windowed reconciliation sweep (groupBy where createdAt > since),
+  // which runs cross-tenant and so can't use the company-leading composite above.
+  @@index([createdAt])
   @@index([transactionId])
   @@index([withdrawalId])
   @@index([payoutId])
@@ -625,5 +633,8 @@ model TransactionLog {
   createdAt     DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
 
   @@index([kind, createdAt])
+  // The default admin Logs view passes no `kind`, so the composite above can't
+  // serve its `order by createdAt desc`. This standalone index does.
+  @@index([createdAt])
   @@map("transaction_logs")
 }

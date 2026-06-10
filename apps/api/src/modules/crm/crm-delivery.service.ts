@@ -4,7 +4,7 @@ import type { WebhookDelivery } from '@app/db';
 import type { CrmEventPayload } from '@app/shared';
 import { PrismaService } from '../../database/prisma.service';
 import type { Env } from '../../config/env.schema';
-import { assertSafeWebhookUrl } from '../../common/net/ssrf';
+import { assertSafeWebhookUrl, safeFetch } from '../../common/net/ssrf';
 import { CrmDemoInboxService } from './crm-demo-inbox.service';
 
 // Hard cap per attempt so a slow/hostile CRM can't tie up the worker.
@@ -101,7 +101,9 @@ export class CrmDeliveryService implements OnApplicationBootstrap, OnModuleDestr
     if (company?.crmApiKey) headers.authorization = `Bearer ${company.crmApiKey}`;
 
     try {
-      const res = await fetch(row.targetUrl, {
+      // safeFetch re-validates and pins the connection to the validated IP, so a
+      // rebind to an internal address between the check above and connect is moot.
+      const res = await safeFetch(row.targetUrl, {
         method: 'POST',
         headers,
         body,
@@ -201,7 +203,7 @@ export class CrmDeliveryService implements OnApplicationBootstrap, OnModuleDestr
   }
 }
 
-async function safeText(res: Response): Promise<string> {
+async function safeText(res: { text(): Promise<string> }): Promise<string> {
   try {
     return await res.text();
   } catch {

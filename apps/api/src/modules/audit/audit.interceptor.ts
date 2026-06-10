@@ -35,6 +35,13 @@ export class AuditInterceptor implements NestInterceptor {
     const ip = req.ip ?? null;
     const userAgent = (req.headers['user-agent'] as string | undefined) ?? null;
 
+    // For COMPANY API-key auth the principal is synthetic: principal.userId is the
+    // api_keys.id, which is NOT a users.id. Writing it to audit_logs.actor_id (FK ->
+    // users) raises a 23503 that the best-effort .catch() would silently swallow,
+    // dropping the audit trail for exactly the programmatic money ops that need it.
+    // Mirror the money-op controllers: actorId null, key id preserved in metadata.
+    const apiKeyId = principal?.apiKeyAuth ? principal.userId : null;
+
     const write = (result: unknown, outcome: 'success' | 'error', err?: unknown) => {
       const entityId = pickPath(result, req, meta.idFrom) ?? null;
       const companyId = pickPath(result, req, meta.companyIdFrom) ?? principal?.companyId ?? null;
@@ -43,6 +50,7 @@ export class AuditInterceptor implements NestInterceptor {
         path: req.originalUrl,
         outcome,
       };
+      if (apiKeyId) metadata.apiKeyId = apiKeyId;
       if (outcome === 'error') {
         metadata.error = err instanceof Error ? err.message : String(err);
         const status = (err as { status?: number } | undefined)?.status;
@@ -50,7 +58,7 @@ export class AuditInterceptor implements NestInterceptor {
       }
       this.audit
         .record({
-          actorId: principal?.userId ?? null,
+          actorId: apiKeyId ? null : (principal?.userId ?? null),
           companyId,
           action: meta.action,
           entityType: meta.entityType,

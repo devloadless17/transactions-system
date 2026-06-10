@@ -4,7 +4,8 @@ import type { WhishPayment } from '@app/db';
 import type { WhishWebhookConfig } from '@app/shared';
 import { PrismaService } from '../../database/prisma.service';
 import { RealtimeService } from '../realtime/realtime.service';
-import { assertSafeWebhookUrl } from '../../common/net/ssrf';
+import { assertSafeWebhookUrl, safeFetch } from '../../common/net/ssrf';
+import { ValidationError } from '../../common/errors/domain.error';
 
 // Hard cap on outbound webhook attempts so a slow/hostile endpoint can't tie up
 // the settlement path.
@@ -34,18 +35,6 @@ export class WhishWebhookService {
       }),
     );
     if (!company?.webhookUrl) return;
-
-    // Re-validate at send time (defends against a URL that was re-pointed at an
-    // internal address after it was configured). Best-effort delivery: on a
-    // disallowed/unsafe URL we log and skip rather than throw.
-    try {
-      await assertSafeWebhookUrl(company.webhookUrl);
-    } catch (err) {
-      this.logger.warn(
-        `Skipping webhook for payment ${payment.externalId}: unsafe URL ${company.webhookUrl} (${(err as Error).message})`,
-      );
-      return;
-    }
 
     const body = JSON.stringify({
       event: 'whish.payment.paid',
@@ -78,7 +67,10 @@ export class WhishWebhookService {
 
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
-        const res = await fetch(company.webhookUrl, {
+        // safeFetch re-validates the URL and pins the connection to the validated
+        // IP at send time, so a URL re-pointed at an internal address (DNS
+        // rebinding) can't be reached.
+        const res = await safeFetch(company.webhookUrl, {
           method: 'POST',
           headers,
           body,
@@ -95,6 +87,13 @@ export class WhishWebhookService {
           `Webhook ${company.webhookUrl} responded HTTP ${res.status} (attempt ${attempt})`,
         );
       } catch (err) {
+        // A disallowed/unsafe URL won't become safe on retry — skip immediately.
+        if (err instanceof ValidationError) {
+          this.logger.warn(
+            `Skipping webhook for payment ${payment.externalId}: unsafe URL ${company.webhookUrl} (${err.message})`,
+          );
+          return;
+        }
         this.logger.warn(
           `Webhook delivery to ${company.webhookUrl} failed (attempt ${attempt}): ${(err as Error).message}`,
         );

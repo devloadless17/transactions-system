@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { currencySchema } from './common';
 
 // ---------------- shared range ----------------
 export const adminAnalyticsRangeSchema = z.object({
@@ -32,7 +33,9 @@ export type PlatformAnalyticsResponse = z.infer<typeof platformAnalyticsResponse
 
 // ---------------- flows: daily in vs out per currency ----------------
 export const flowsRangeSchema = adminAnalyticsRangeSchema.extend({
-  currency: z.string().length(3),
+  // Use the supported-currency enum (like every other money path) so an
+  // unsupported code returns a clean 400 instead of an empty chart.
+  currency: currencySchema,
 });
 export type FlowsRange = z.infer<typeof flowsRangeSchema>;
 

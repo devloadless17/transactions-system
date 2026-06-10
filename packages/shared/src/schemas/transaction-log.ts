@@ -40,7 +40,7 @@ export const listTransactionLogsQuerySchema = z.object({
   // Query strings are text: the service maps "true"/"false" → boolean. (Kept as
   // a plain enum, not a transform, so ZodPipe's input===output typing holds.)
   success: z.enum(['true', 'false']).optional(),
-  // Fuzzy match on `reference`.
-  search: z.string().trim().optional(),
+  // Fuzzy match on `reference`. Bounded like every other string filter.
+  search: z.string().trim().max(200).optional(),
 });
 export type ListTransactionLogsQuery = z.infer<typeof listTransactionLogsQuerySchema>;
