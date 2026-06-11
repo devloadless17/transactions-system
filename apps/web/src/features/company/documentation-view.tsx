@@ -1,18 +1,21 @@
 'use client';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { cn } from '@/lib/cn';
+import { GettingStartedView } from './getting-started-view';
+import { WhishPayDocsView } from './whish-pay-docs-view';
+import { CompanyApiView } from './company-api-view';
 import { CrmView } from './crm-view';
-import { DevelopersView } from './developers-view';
-import { ApiDocsView } from './api-docs-view';
-import { WhishDocsView } from './whish-docs-view';
+import { SourcesApiView } from './sources-api-view';
 
-// One "Documentation" hub with tabs. Each tab is the existing view,
-// unchanged — only the active one mounts.
+// One "Documentation" hub. Each tab is a self-contained developer topic, in the
+// order you'd meet them: set up, collect, manage, receive events, ingest. Only
+// the active tab mounts.
 const TABS = [
-  { id: 'whish', label: 'Whish Pay', Component: WhishDocsView },
+  { id: 'start', label: 'Getting started', Component: GettingStartedView },
+  { id: 'whish', label: 'Whish Pay', Component: WhishPayDocsView },
+  { id: 'company', label: 'Company API', Component: CompanyApiView },
   { id: 'crm', label: 'CRM', Component: CrmView },
-  { id: 'developers', label: 'Developers', Component: DevelopersView },
-  { id: 'api', label: 'API Docs', Component: ApiDocsView },
+  { id: 'sources', label: 'Sources API', Component: SourcesApiView },
 ] as const;
 
 type TabId = (typeof TABS)[number]['id'];
@@ -32,7 +35,7 @@ export function DocumentationView() {
 
   return (
     <div className="space-y-6">
-      <div role="tablist" className="flex gap-1 border-b">
+      <div role="tablist" className="flex flex-wrap gap-1 border-b">
         {TABS.map((t) => (
           <button
             key={t.id}

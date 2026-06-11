@@ -16,6 +16,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { CodeBlock } from '@/components/ui/code-block';
 import { apiFetch } from '@/lib/api.client';
 import { ApiClientError } from '@/lib/api';
 
@@ -202,21 +203,47 @@ x-crm-event: transaction.completed
     "occurredAt": "2026-06-04T12:00:00.000Z"
   }
 }`;
+  const events: [string, string][] = [
+    ['transaction.pending', 'A transaction was created and is awaiting settlement.'],
+    ['transaction.completed', 'It settled — funds credited.'],
+    ['transaction.failed', 'The transaction did not go through.'],
+    ['transaction.expired', 'A pending collection lapsed unpaid.'],
+    ['transaction.reversed', 'A settled transaction was reversed.'],
+  ];
   return (
     <Card>
       <CardHeader>
         <CardTitle>What we send</CardTitle>
         <CardDescription>
-          Each event carries the full transaction and a stable{' '}
+          Each event is a POST carrying the full transaction and a stable{' '}
           <span className="font-mono">reference</span>. Upsert by reference so one record moves
-          PENDING → COMPLETED (and FAILED / EXPIRED / REVERSED). Respond 2xx to acknowledge; we
-          retry with backoff otherwise.
+          PENDING → COMPLETED in place. We send your saved key as{' '}
+          <span className="font-mono">Authorization: Bearer &lt;key&gt;</span> and name the event in
+          the <span className="font-mono">x-crm-event</span> header.
         </CardDescription>
       </CardHeader>
-      <CardContent>
-        <pre className="overflow-x-auto rounded-md border bg-muted/30 p-3 text-xs leading-relaxed">
-          {example}
-        </pre>
+      <CardContent className="space-y-4">
+        <CodeBlock code={example} />
+        <div>
+          <p className="mb-1 text-xs font-medium uppercase text-muted-foreground">Events</p>
+          <div className="space-y-1">
+            {events.map(([e, d]) => (
+              <div
+                key={e}
+                className="grid grid-cols-12 gap-2 border-b py-1.5 text-xs last:border-0"
+              >
+                <code className="col-span-4 font-mono">{e}</code>
+                <span className="col-span-8 text-muted-foreground">{d}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+          <p className="mb-1 font-medium text-foreground">Delivery &amp; retries</p>
+          Respond <strong>2xx</strong> to acknowledge. We attempt delivery up to 6 times — one
+          immediate, then 5 retries with backoff. Only transient failures (timeouts, 429, and 5xx)
+          are retried; a 4xx is treated as permanent and stops further attempts.
+        </div>
       </CardContent>
     </Card>
   );

@@ -9,6 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { CodeBlock } from '@/components/ui/code-block';
 import { apiFetch } from '@/lib/api.client';
 import { ApiClientError, unwrapEnvelope } from '@/lib/api';
 
@@ -33,7 +34,7 @@ curl -X POST ${base}/integrations/whish/payments \\
   -H "Content-Type: application/json" \\
   -d '{"amount":"25.00","currency":"USD","invoice":"Order #4821"}'
 # → { "success": true, "statusCode": 201,
-#     "data": { "collectUrl": "https://...", "externalId": 3, "status": "PENDING" } }
+#     "data": { "collectUrl": "https://...", "externalId": "3", "status": "PENDING" } }
 
 # 2) Poll status by reference (externalId)
 curl ${base}/integrations/whish/payments/3 \\
@@ -164,153 +165,38 @@ async function callIntegration(
   return { status: res.status, json };
 }
 
-export function DevelopersView() {
+export function WhishPayDocsView() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold">Developer tools</h1>
+        <h1 className="text-2xl font-semibold">Whish Pay</h1>
         <p className="text-sm text-muted-foreground">
-          Integrate Whish Pay into your CRM. Generate a payment link from your own backend, share it
-          with your customer, and the payment settles into your wallet automatically.
+          Collect payments with a hosted link. Create a link from your backend, share the{' '}
+          <code className="font-mono">collectUrl</code> with your customer, and the money settles
+          into your wallet automatically once they pay — net of commission, with no card details
+          ever touching your system.
         </p>
       </div>
 
-      <ProcessCard />
+      <p className="rounded-md border-l-4 border-primary bg-primary/5 p-3 text-xs text-muted-foreground">
+        <strong className="text-foreground">Prefer no code?</strong> You can create and track links
+        by hand in the{' '}
+        <Link href="/app/whish" className="text-primary hover:underline">
+          Whish Pay
+        </Link>{' '}
+        page. This tab is for integrating it into your own backend.
+      </p>
+
+      <HowItWorks />
       <Tester />
-      <WebhookCard />
       <CodeExamples />
-      <ReferenceCard />
+      <WebhookCard />
+      <Reference />
     </div>
   );
 }
 
-function WebhookCard() {
-  const qc = useQueryClient();
-  const [url, setUrl] = useState('');
-  const [revealed, setRevealed] = useState<string | null>(null);
-  const queryKey = ['company', 'whish', 'webhook'] as const;
-
-  const cfgQ = useQuery({
-    queryKey,
-    queryFn: () => apiFetch<WhishWebhookConfig>('/company/whish/webhook'),
-  });
-
-  const onResult = (c: WhishWebhookConfig) => {
-    if (c.secret) setRevealed(c.secret);
-    qc.invalidateQueries({ queryKey });
-  };
-  const err = (e: unknown) => toast.error(e instanceof ApiClientError ? e.message : 'Failed');
-
-  const saveMu = useMutation({
-    mutationFn: (u: string) =>
-      apiFetch<WhishWebhookConfig>('/company/whish/webhook', { method: 'PUT', body: { url: u } }),
-    onSuccess: (c) => {
-      toast.success('Webhook saved');
-      setUrl('');
-      onResult(c);
-    },
-    onError: err,
-  });
-  const rotateMu = useMutation({
-    mutationFn: () =>
-      apiFetch<WhishWebhookConfig>('/company/whish/webhook/rotate-secret', { method: 'POST' }),
-    onSuccess: (c) => {
-      toast.success('Secret rotated');
-      onResult(c);
-    },
-    onError: err,
-  });
-  const clearMu = useMutation({
-    mutationFn: () => apiFetch<WhishWebhookConfig>('/company/whish/webhook', { method: 'DELETE' }),
-    onSuccess: () => {
-      toast.success('Webhook disabled');
-      setRevealed(null);
-      qc.invalidateQueries({ queryKey });
-    },
-    onError: err,
-  });
-
-  const cfg = cfgQ.data;
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Webhook (push, instead of polling)</CardTitle>
-        <CardDescription>
-          We POST a signed <code>whish.payment.paid</code> event to your URL when a payment settles.
-          Verify the <code>X-Whish-Signature: sha256=&lt;hmac&gt;</code> header using your secret.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="flex flex-wrap items-center gap-2 text-sm">
-          <span className="text-muted-foreground">Current:</span>
-          {cfg?.url ? (
-            <>
-              <code className="font-mono text-xs break-all">{cfg.url}</code>
-              <Badge variant="success">active</Badge>
-            </>
-          ) : (
-            <span className="text-muted-foreground">not configured</span>
-          )}
-        </div>
-
-        <div className="flex flex-wrap items-end gap-2">
-          <div className="w-full flex-1 space-y-2 sm:min-w-[260px]">
-            <Label htmlFor="whurl">Webhook URL</Label>
-            <Input
-              id="whurl"
-              placeholder="https://crm.example.com/hooks/whish"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-            />
-          </div>
-          <Button disabled={saveMu.isPending || !url} onClick={() => saveMu.mutate(url)}>
-            {cfg?.url ? 'Update' : 'Save'}
-          </Button>
-          {cfg?.url && (
-            <>
-              <Button
-                variant="outline"
-                disabled={rotateMu.isPending}
-                onClick={() => rotateMu.mutate()}
-              >
-                Rotate secret
-              </Button>
-              <Button variant="ghost" disabled={clearMu.isPending} onClick={() => clearMu.mutate()}>
-                Disable
-              </Button>
-            </>
-          )}
-        </div>
-
-        {revealed && (
-          <div className="space-y-1">
-            <p className="text-xs text-muted-foreground">
-              Signing secret — copy it now, it&apos;s shown only once:
-            </p>
-            <div className="flex items-center gap-2">
-              <code className="flex-1 rounded-md border bg-muted/30 p-2 font-mono text-xs break-all">
-                {revealed}
-              </code>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => {
-                  navigator.clipboard?.writeText(revealed);
-                  toast.success('Copied');
-                }}
-              >
-                Copy
-              </Button>
-            </div>
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-function ProcessCard() {
+function HowItWorks() {
   const steps = [
     ['Create a key', 'Mint a company API key in Settings → API keys. The secret is shown once.'],
     ['Generate a link', 'POST /integrations/whish/payments with amount + currency + invoice.'],
@@ -327,7 +213,7 @@ function ProcessCard() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Integration process</CardTitle>
+        <CardTitle>How it works</CardTitle>
         <CardDescription>Five steps, end to end.</CardDescription>
       </CardHeader>
       <CardContent>
@@ -394,10 +280,10 @@ function Tester() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Live tester</CardTitle>
+        <CardTitle>Try it live</CardTitle>
         <CardDescription>
           Run a real request against this API with your key — straight from the browser. Nothing is
-          stored here; the key stays in this page.
+          stored here; the key stays on this page.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -506,11 +392,9 @@ function CodeExamples() {
       <CardHeader>
         <CardTitle>Code examples</CardTitle>
         <CardDescription>
-          Authentication is the same everywhere:{' '}
-          <code>Authorization: Bearer &lt;company key&gt;</code>. No cookies, no CSRF. Every
-          response is wrapped as <code>{'{ success, statusCode, data }'}</code> — read your payload
-          from <code>data</code> (errors come back as{' '}
-          <code>{'{ success: false, statusCode, error }'}</code>).
+          The same three calls — create, poll, refresh — in your language of choice. Auth is always{' '}
+          <code>Authorization: Bearer &lt;company key&gt;</code>; read your payload from{' '}
+          <code>data</code>.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
@@ -526,26 +410,140 @@ function CodeExamples() {
             </Button>
           ))}
         </div>
-        <div className="group relative rounded-md border bg-muted/30">
-          <pre className="overflow-x-auto p-3 font-mono text-xs">{code}</pre>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="absolute right-2 top-2 opacity-0 group-hover:opacity-100"
-            onClick={() => {
-              navigator.clipboard?.writeText(code);
-              toast.success('Copied');
-            }}
-          >
-            Copy
-          </Button>
-        </div>
+        <CodeBlock code={code} />
       </CardContent>
     </Card>
   );
 }
 
-function ReferenceCard() {
+function WebhookCard() {
+  const qc = useQueryClient();
+  const [url, setUrl] = useState('');
+  const [revealed, setRevealed] = useState<string | null>(null);
+  const queryKey = ['company', 'whish', 'webhook'] as const;
+
+  const cfgQ = useQuery({
+    queryKey,
+    queryFn: () => apiFetch<WhishWebhookConfig>('/company/whish/webhook'),
+  });
+
+  const onResult = (c: WhishWebhookConfig) => {
+    if (c.secret) setRevealed(c.secret);
+    qc.invalidateQueries({ queryKey });
+  };
+  const err = (e: unknown) => toast.error(e instanceof ApiClientError ? e.message : 'Failed');
+
+  const saveMu = useMutation({
+    mutationFn: (u: string) =>
+      apiFetch<WhishWebhookConfig>('/company/whish/webhook', { method: 'PUT', body: { url: u } }),
+    onSuccess: (c) => {
+      toast.success('Webhook saved');
+      setUrl('');
+      onResult(c);
+    },
+    onError: err,
+  });
+  const rotateMu = useMutation({
+    mutationFn: () =>
+      apiFetch<WhishWebhookConfig>('/company/whish/webhook/rotate-secret', { method: 'POST' }),
+    onSuccess: (c) => {
+      toast.success('Secret rotated');
+      onResult(c);
+    },
+    onError: err,
+  });
+  const clearMu = useMutation({
+    mutationFn: () => apiFetch<WhishWebhookConfig>('/company/whish/webhook', { method: 'DELETE' }),
+    onSuccess: () => {
+      toast.success('Webhook disabled');
+      setRevealed(null);
+      qc.invalidateQueries({ queryKey });
+    },
+    onError: err,
+  });
+
+  const cfg = cfgQ.data;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Webhook — get notified instead of polling</CardTitle>
+        <CardDescription>
+          We POST a signed <code>whish.payment.paid</code> event to your URL the moment a payment
+          settles. Verify the <code>X-Whish-Signature: sha256=&lt;hmac&gt;</code> header with your
+          secret, then mark the order paid.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <span className="text-muted-foreground">Current:</span>
+          {cfg?.url ? (
+            <>
+              <code className="font-mono text-xs break-all">{cfg.url}</code>
+              <Badge variant="success">active</Badge>
+            </>
+          ) : (
+            <span className="text-muted-foreground">not configured</span>
+          )}
+        </div>
+
+        <div className="flex flex-wrap items-end gap-2">
+          <div className="w-full flex-1 space-y-2 sm:min-w-[260px]">
+            <Label htmlFor="whurl">Webhook URL</Label>
+            <Input
+              id="whurl"
+              placeholder="https://crm.example.com/hooks/whish"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+            />
+          </div>
+          <Button disabled={saveMu.isPending || !url} onClick={() => saveMu.mutate(url)}>
+            {cfg?.url ? 'Update' : 'Save'}
+          </Button>
+          {cfg?.url && (
+            <>
+              <Button
+                variant="outline"
+                disabled={rotateMu.isPending}
+                onClick={() => rotateMu.mutate()}
+              >
+                Rotate secret
+              </Button>
+              <Button variant="ghost" disabled={clearMu.isPending} onClick={() => clearMu.mutate()}>
+                Disable
+              </Button>
+            </>
+          )}
+        </div>
+
+        {revealed && (
+          <div className="space-y-1">
+            <p className="text-xs text-muted-foreground">
+              Signing secret — copy it now, it&apos;s shown only once:
+            </p>
+            <div className="flex items-center gap-2">
+              <code className="flex-1 rounded-md border bg-muted/30 p-2 font-mono text-xs break-all">
+                {revealed}
+              </code>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  navigator.clipboard?.writeText(revealed);
+                  toast.success('Copied');
+                }}
+              >
+                Copy
+              </Button>
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function Reference() {
   const rows: [string, string, string][] = [
     [
       'POST',
@@ -554,6 +552,12 @@ function ReferenceCard() {
     ],
     ['GET', '/integrations/whish/payments/{ref}', 'Get a payment by reference (externalId)'],
     ['POST', '/integrations/whish/payments/{ref}/refresh', 'Force-reconcile status with Whish'],
+  ];
+  const statuses: [string, string][] = [
+    ['PENDING', 'Link created — waiting for the customer to pay.'],
+    ['PAID', 'Paid and settled into your wallet (a transaction is created).'],
+    ['FAILED', 'The payment attempt did not go through.'],
+    ['EXPIRED', 'The link went unpaid and lapsed — generate a new one.'],
   ];
   const errs: [string, number, string][] = [
     ['UNAUTHORIZED', 401, 'Missing / invalid / revoked API key'],
@@ -564,34 +568,56 @@ function ReferenceCard() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Endpoint &amp; error reference</CardTitle>
+        <CardTitle>Reference</CardTitle>
         <CardDescription>
           All endpoints require a company key. <code>{'{ref}'}</code> is the numeric{' '}
-          <code>externalId</code>.
+          <code>externalId</code> returned when you create the link. Payments are in USD.
         </CardDescription>
       </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="space-y-1">
-          {rows.map(([m, p, d]) => (
-            <div key={p} className="grid grid-cols-12 gap-2 border-b py-2 text-xs last:border-0">
-              <span className="col-span-2 font-mono font-semibold">{m}</span>
-              <code className="col-span-5 font-mono">{p}</code>
-              <span className="col-span-5 text-muted-foreground">{d}</span>
-            </div>
-          ))}
+      <CardContent className="space-y-5">
+        <div>
+          <p className="mb-1 text-xs font-medium uppercase text-muted-foreground">Endpoints</p>
+          <div className="space-y-1">
+            {rows.map(([m, p, d]) => (
+              <div key={p} className="grid grid-cols-12 gap-2 border-b py-2 text-xs last:border-0">
+                <span className="col-span-2 font-mono font-semibold">{m}</span>
+                <code className="col-span-5 font-mono">{p}</code>
+                <span className="col-span-5 text-muted-foreground">{d}</span>
+              </div>
+            ))}
+          </div>
         </div>
-        <div className="space-y-1">
-          {errs.map(([c, s, d]) => (
-            <div key={c} className="grid grid-cols-12 gap-2 border-b py-2 text-xs last:border-0">
-              <code className="col-span-3 font-mono">{c}</code>
-              <span className="col-span-1 text-muted-foreground">{s}</span>
-              <span className="col-span-8">{d}</span>
-            </div>
-          ))}
+
+        <div>
+          <p className="mb-1 text-xs font-medium uppercase text-muted-foreground">
+            Payment statuses
+          </p>
+          <div className="space-y-1">
+            {statuses.map(([s, d]) => (
+              <div key={s} className="grid grid-cols-12 gap-2 border-b py-2 text-xs last:border-0">
+                <code className="col-span-3 font-mono font-semibold">{s}</code>
+                <span className="col-span-9 text-muted-foreground">{d}</span>
+              </div>
+            ))}
+          </div>
         </div>
+
+        <div>
+          <p className="mb-1 text-xs font-medium uppercase text-muted-foreground">Errors</p>
+          <div className="space-y-1">
+            {errs.map(([c, s, d]) => (
+              <div key={c} className="grid grid-cols-12 gap-2 border-b py-2 text-xs last:border-0">
+                <code className="col-span-3 font-mono">{c}</code>
+                <span className="col-span-1 text-muted-foreground">{s}</span>
+                <span className="col-span-8">{d}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
         <div className="rounded-md border-l-4 border-primary bg-primary/5 p-3 text-xs text-muted-foreground">
           <strong className="text-foreground">Sandbox:</strong> pay with phone{' '}
-          <code>96170902894</code> / OTP <code>111111</code> for success. The{' '}
+          <code>96170902894</code> / OTP <code>111111</code> for a success. The{' '}
           <code>externalId</code> is your reference and makes settlement idempotent — a duplicate
           callback never double-credits.
         </div>
