@@ -184,7 +184,6 @@ export class AnalyticsService {
         where,
         _sum: { amount: true, netAmount: true, commissionAmount: true },
         _count: { _all: true },
-        _avg: { amount: true },
       });
 
       const dailyRows = await tx.$queryRawUnsafe<
@@ -254,7 +253,16 @@ export class AnalyticsService {
             .toString(),
           totalFees: Money.of((agg._sum.commissionAmount ?? 0).toString()).toString(),
           transactionCount: agg._count._all,
-          averageAmount: Money.of((agg._avg.amount ?? 0).toString()).toString(),
+          // Average = volume ÷ count (the volume shown on this same card), not
+          // avg(amount): for an ON_TOP fee `amount` is the net, so avg(amount)
+          // wouldn't tie out with the net+fee volume beside it.
+          averageAmount:
+            agg._count._all > 0
+              ? Money.of((agg._sum.netAmount ?? 0).toString())
+                  .add(Money.of((agg._sum.commissionAmount ?? 0).toString()))
+                  .div(agg._count._all)
+                  .toString()
+              : '0',
           currency: p.currency,
         },
         daily: { currency: p.currency, buckets },
@@ -285,7 +293,6 @@ export class AnalyticsService {
           },
           _sum: { amount: true, netAmount: true, commissionAmount: true },
           _count: { _all: true },
-          _avg: { amount: true },
         });
 
         // Volume = net + fee (the money that moved). Equals `amount` for a
@@ -315,7 +322,11 @@ export class AnalyticsService {
         );
         const totalFees = Money.of(feeRow[0]?.fees ?? '0').toString();
         const transactionCount = agg._count._all;
-        const averageAmount = Money.of((agg._avg.amount ?? 0).toString()).toString();
+        // Average ties to the volume on the same card (volume ÷ count), not
+        // avg(amount): for an ON_TOP fee `amount` is the net, so avg(amount)
+        // would disagree with the net+fee volume headline.
+        const averageAmount =
+          transactionCount > 0 ? Money.of(totalVolume).div(transactionCount).toString() : '0';
 
         // Volume broken out by operation type: deposits (source ingestion),
         // withdrawals, loads, payouts. Each splits settled (COMPLETED) money

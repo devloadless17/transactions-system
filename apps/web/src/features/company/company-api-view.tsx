@@ -24,9 +24,10 @@ const WALLETS_CURL = `curl ${API_BASE}/company/wallets \\
   ]
 }`;
 
-const TRANSACTIONS_CURL = `curl "${API_BASE}/company/transactions?limit=20" \\
+const TRANSACTIONS_CURL = `curl "${API_BASE}/company/transactions?page=1&pageSize=20" \\
   -H "Authorization: Bearer tsk_<company-key>"
-# The list array is at data.data; add ?cursor=... to page.`;
+# The list array is at data.data, with paging info at meta.
+# Page with ?page=N&pageSize=M (pageSize max 100).`;
 
 const WITHDRAWAL_CASH_CURL = `curl -X POST ${API_BASE}/company/withdrawals \\
   -H "Authorization: Bearer tsk_<company-key>" \\

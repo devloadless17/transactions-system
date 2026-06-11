@@ -294,9 +294,7 @@ function CreatePaymentDialog({
           <>
             <DialogHeader>
               <DialogTitle>New payment link</DialogTitle>
-              <DialogDescription>
-                Payments are in USD. The customer pays on Whish&apos;s hosted page.
-              </DialogDescription>
+              <DialogDescription>The customer pays on Whish&apos;s hosted page.</DialogDescription>
             </DialogHeader>
             <form onSubmit={handleSubmit((values) => mu.mutate(values))} className="space-y-4">
               <div className="space-y-2">

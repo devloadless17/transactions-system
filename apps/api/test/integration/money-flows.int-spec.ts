@@ -127,6 +127,34 @@ describe('withdrawal', () => {
   });
 });
 
+describe('concurrency', () => {
+  it('two simultaneous withdrawals cannot overspend the same wallet (no double-spend)', async () => {
+    const { companyId, userId } = await createCompany(h);
+    const sourceId = await createEnabledSource(h, companyId);
+    await addTransactionFee(h, companyId, '10'); // 10%
+    // Ingest 100 → net 90 available.
+    await h.transactions.ingest({ kind: 'source', sourceId }, ingestInput(companyId, '100'));
+
+    // Fire two withdrawals of 60 at the exact same time: together 120 > 90, so
+    // only one can be funded. This is the crown-jewel invariant — SERIALIZABLE
+    // isolation + the wallet version-CAS must let exactly one reserve the money;
+    // the other is refused, never double-spent.
+    const results = await Promise.allSettled([
+      h.withdrawals.request(companyId, userId, cashWithdrawalInput('60')),
+      h.withdrawals.request(companyId, userId, cashWithdrawalInput('60')),
+    ]);
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((r) => r.status === 'rejected')).toHaveLength(1);
+
+    // Wallet reflects exactly one reservation: never negative, books still balance.
+    const snap = await snapshot(h, companyId);
+    expect(snap.balanced).toBe(true);
+    expect(eq(snap.wallet!.available, '30')).toBe(true); // 90 − 60, not −30
+    expect(eq(snap.wallet!.reserved, '60')).toBe(true);
+    expect(eq(snap.wallet!.reserved, snap.reservedLedger)).toBe(true);
+  });
+});
+
 describe('reversal', () => {
   it('books the uncovered clawback as a RECEIVABLE when funds were withdrawn', async () => {
     const { companyId, userId } = await createCompany(h);

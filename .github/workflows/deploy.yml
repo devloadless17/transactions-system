@@ -40,7 +40,7 @@ jobs:
   # Runs on EVERY event (PR + push). PRs stop here.
   # ---------------------------------------------------------------
   typecheck:
-    name: Typecheck & Lint
+    name: Typecheck, Lint & Test
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -59,6 +59,12 @@ jobs:
       - run: pnpm packages:build
       - run: pnpm typecheck
       - run: pnpm lint
+      # Gate every PR + deploy on the unit suite (infra-free, ~1.4s): catches
+      # logic regressions — wrong fee split, broken idempotency, off-by-one in
+      # reserved math — that still type-check and would otherwise ship to prod.
+      # (The DB-backed integration suite stays opt-in; it needs a Postgres + RLS
+      # role, so it isn't wired into this gate yet.)
+      - run: pnpm test
 
   # ---------------------------------------------------------------
   # Build + push the api and web images IN PARALLEL — one matrix leg each, on

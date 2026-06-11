@@ -60,7 +60,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
    */
   async runAsTenant<T>(companyId: string, fn: (tx: PrismaClient) => Promise<T>): Promise<T> {
     return this.$transaction(async (tx) => {
-      await tx.$executeRawUnsafe(`SET LOCAL app.current_company_id = '${escapeUuid(companyId)}'`);
+      await setTenantContext(tx, companyId);
       // Cast keeps the closure free of the broader $transaction client interface.
       return fn(tx as unknown as PrismaClient);
     });
@@ -118,9 +118,8 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     companyId: string,
     fn: (tx: PrismaClient) => Promise<T>,
   ): Promise<T> {
-    const safeId = escapeUuid(companyId);
     return this.runSerializableRaw(async (tx) => {
-      await tx.$executeRawUnsafe(`SET LOCAL app.current_company_id = '${safeId}'`);
+      await setTenantContext(tx, companyId);
       return fn(tx);
     });
   }
@@ -149,9 +148,24 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   }
 }
 
-// gen_random_uuid() returns a normal UUID; we still defensively check
-// that the value is a valid UUID before interpolating it into the SET
-// LOCAL statement (which doesn't support parameter binding).
+/**
+ * Set the tenant RLS context for the current transaction. Uses
+ * `set_config(name, value, is_local=true)` — the function form of `SET LOCAL`
+ * — via a PARAMETERIZED query, so the company id is a bound value that is never
+ * string-interpolated into SQL. `escapeUuid` is kept as belt-and-suspenders
+ * validation (a non-UUID can't even reach the DB), so the tenant boundary now
+ * rests on parameter binding rather than on a regex guarding interpolation.
+ */
+async function setTenantContext(
+  tx: { $queryRaw: PrismaClient['$queryRaw'] },
+  companyId: string,
+): Promise<void> {
+  const safeId = escapeUuid(companyId);
+  await tx.$queryRaw`SELECT set_config('app.current_company_id', ${safeId}, true)`;
+}
+
+// gen_random_uuid() returns a normal UUID; we still defensively validate the
+// value is a well-formed UUID before it is bound into the tenant-context query.
 function escapeUuid(id: string): string {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
     throw new Error('Invalid UUID passed to tenant context');
