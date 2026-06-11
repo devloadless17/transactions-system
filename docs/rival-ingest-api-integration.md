@@ -257,16 +257,17 @@ echoes the HTTP status.
 
 ### Status codes
 
-| HTTP          | `code`                        | When                                                                                                                                          |
-| ------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `200` / `201` | —                             | Success (200 for GET companies, 201 for transaction created).                                                                                 |
-| `400`         | `VALIDATION_ERROR`            | Body failed validation (missing/invalid `operatingId`, bad `amount`, unsupported `currency`, etc.).                                           |
-| `401`         | `UNAUTHORIZED`                | Missing, malformed, invalid, or revoked API key.                                                                                              |
-| `403`         | `FORBIDDEN`                   | The URL used a source other than `whish`, the entity is hidden/not available to sources, or the request was made without your source API key. |
-| `400`         | `VALIDATION_ERROR`            | Target entity or source not found / inactive (returned as a validation error).                                                                |
-| `409`         | `CONFLICT` / `WRITE_CONFLICT` | Constraint conflict (e.g. same `externalTransactionId` reused across companies) or a transient write conflict — safe to retry.                |
-| `429`         | `RATE_LIMITED`                | Rate limit exceeded; back off and retry.                                                                                                      |
-| `500`         | `INTERNAL_ERROR`              | Unexpected server error. Retry with backoff; contact Rival Payments if persistent.                                                            |
+| HTTP          | `code`                        | When                                                                                                                                              |
+| ------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `200` / `201` | —                             | Success (200 for GET companies, 201 for transaction created).                                                                                     |
+| `400`         | `VALIDATION_ERROR`            | Body failed validation (missing/invalid `operatingId`, bad `amount`, unsupported `currency`, etc.).                                               |
+| `401`         | `UNAUTHORIZED`                | Missing, malformed, invalid, or revoked API key.                                                                                                  |
+| `403`         | `FORBIDDEN`                   | The URL used a source other than `whish`, the entity is hidden/not available to sources, or the request was made without your source API key.     |
+| `400`         | `VALIDATION_ERROR`            | Target entity or source not found / inactive (returned as a validation error).                                                                    |
+| `409`         | `CONFLICT` / `WRITE_CONFLICT` | Constraint conflict (e.g. same `externalTransactionId` reused across companies) or a transient write conflict — safe to retry.                    |
+| `422`         | `NO_COMMISSION_RULE`          | No commission rule matches this (company, source, amount), so the platform can't price the transaction. Not retryable until a rule is configured. |
+| `429`         | `RATE_LIMITED`                | Rate limit exceeded; back off and retry.                                                                                                          |
+| `500`         | `INTERNAL_ERROR`              | Unexpected server error. Retry with backoff; contact Rival Payments if persistent.                                                                |
 
 ### Recommended retry policy
 

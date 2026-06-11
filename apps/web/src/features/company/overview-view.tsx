@@ -10,7 +10,7 @@ import {
 } from '@app/shared';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { apiFetch } from '@/lib/api.client';
-import { formatNumber } from '@/lib/format';
+import { formatMoney, formatNumber } from '@/lib/format';
 import { useOverview } from '@/features/analytics/use-overview';
 import { KpiCard } from '@/features/analytics/kpi-card';
 import { VolumeChart } from '@/features/analytics/volume-chart.lazy';
@@ -68,14 +68,16 @@ export function OverviewView() {
   const receivable = sum?.receivable ?? '0';
   const hasReceivable = Number(receivable) > 0;
 
+  // Balances/reconciliation figures use full-precision formatMoney (never rounds
+  // up) so a displayed amount can never exceed the real 8dp wallet value.
   const money = (s: string | undefined) =>
-    s !== undefined ? `${formatNumber(s)} ${currency}` : '—';
+    s !== undefined ? `${formatMoney(s)} ${currency}` : '—';
   // Outflows: shown with a leading minus so the right-hand column reads as a
   // literal subtraction (Net deposit + Net load − Withdrawals − Payouts = wallet).
   const outMoney = (s: string | undefined) => {
     if (s === undefined) return '—';
     const sign = Number(s) > 0 ? '− ' : '';
-    return `${sign}${formatNumber(s)} ${currency}`;
+    return `${sign}${formatMoney(s)} ${currency}`;
   };
 
   return (
@@ -105,11 +107,24 @@ export function OverviewView() {
       <Card className="border-primary/30">
         <CardHeader className="pb-2">
           <CardDescription>Wallet balance</CardDescription>
-          <CardTitle className="font-mono text-3xl sm:text-4xl">{money(available)}</CardTitle>
+          <CardTitle className="font-mono text-3xl sm:text-4xl">
+            {/* Distinguish a load FAILURE from a genuine zero balance: never render a
+                fake "0 USD" when the query errored — that misreports the single most
+                trust-sensitive number on the page. */}
+            {walletsQ.isError ? (
+              <span className="text-base font-normal text-destructive">
+                Couldn&apos;t load balance — retrying…
+              </span>
+            ) : !walletsQ.data ? (
+              <span className="text-base font-normal text-muted-foreground">Loading…</span>
+            ) : (
+              money(available)
+            )}
+          </CardTitle>
         </CardHeader>
-        {Number(reserved) > 0 && (
+        {!walletsQ.isError && Number(reserved) > 0 && (
           <CardContent className="pt-0 text-xs text-muted-foreground">
-            {formatNumber(reserved)} {currency} reserved for in-flight withdrawals / payouts
+            {formatMoney(reserved)} {currency} reserved for in-flight withdrawals / payouts
           </CardContent>
         )}
       </Card>

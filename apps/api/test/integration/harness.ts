@@ -28,10 +28,16 @@ import { TransactionsService } from '../../src/modules/transactions/transactions
 import { WithdrawalsService } from '../../src/modules/withdrawals/withdrawals.service';
 import { PayoutsService } from '../../src/modules/payouts/payouts.service';
 import { LoadsService } from '../../src/modules/loads/loads.service';
+import { WhishPaymentsService } from '../../src/modules/whish/whish-payments.service';
 import type { CacheService } from '../../src/modules/cache/cache.service';
 import type { AnalyticsService } from '../../src/modules/analytics/analytics.service';
 import type { RealtimeService } from '../../src/modules/realtime/realtime.service';
 import type { CrmDispatchService } from '../../src/modules/crm/crm-dispatch.service';
+import type { WhishClient, WhishCollectStatus } from '../../src/modules/whish/whish.client';
+import type { WhishWebhookService } from '../../src/modules/whish/whish-webhook.service';
+import type { TransactionLogsService } from '../../src/modules/transaction-logs/transaction-logs.service';
+import type { ConfigService } from '@nestjs/config';
+import type { Env } from '../../src/config/env.schema';
 
 export interface Harness {
   prisma: PrismaService;
@@ -41,6 +47,27 @@ export interface Harness {
   loads: LoadsService;
   ledger: LedgerService;
   wallets: WalletsService;
+  whish: WhishPaymentsService;
+  /** Controllable stand-in for the external Whish API — set `.status` per test. */
+  whishClient: FakeWhishClient;
+}
+
+/**
+ * Controllable fake of the external Whish HTTP client. The reconcile path only
+ * calls `isConfigured()` + `getStatus()`, so tests drive settlement by setting
+ * `.status` ('success' | 'failed' | 'pending') before invoking the service —
+ * no real network, no Whish account.
+ */
+export class FakeWhishClient {
+  configured = true;
+  status: WhishCollectStatus = 'success';
+  payerPhoneNumber: string | null = '+96170000000';
+  isConfigured(): boolean {
+    return this.configured;
+  }
+  getStatus(): Promise<{ collectStatus: WhishCollectStatus; payerPhoneNumber: string | null }> {
+    return Promise.resolve({ collectStatus: this.status, payerPhoneNumber: this.payerPhoneNumber });
+  }
 }
 
 // Pass-through cache: always recompute (no Redis). Keeps fee resolution real.
@@ -67,6 +94,15 @@ const fakeCrm = {
   emitWhish: () => undefined,
 } as unknown as CrmDispatchService;
 
+// Whish settlement side-effects not under test here (webhook delivery, tx logs),
+// plus a minimal config the service reads. The reconcile path never touches
+// these on the asserted branches; they exist only to satisfy construction.
+const fakeWhishWebhooks = { deliverPaid: async () => undefined } as unknown as WhishWebhookService;
+const fakeTxLogs = { record: () => undefined } as unknown as TransactionLogsService;
+const fakeWhishConfig = {
+  get: (key: string) => (key === 'WHISH_ENABLED_CURRENCIES' ? ['USD'] : undefined),
+} as unknown as ConfigService<Env, true>;
+
 export function buildHarness(): Harness {
   // Guardrail: never let the integration suite touch a non-test database.
   if (!process.env.DATABASE_URL?.includes('_test')) {
@@ -76,7 +112,7 @@ export function buildHarness(): Harness {
   }
 
   const prisma = new PrismaService();
-  const ledger = new LedgerService(prisma);
+  const ledger = new LedgerService(prisma, fakeCache);
   const wallets = new WalletsService(prisma);
   const resolver = new CommissionResolverService();
   const repo = new CommissionsRepository(fakeCache);
@@ -105,7 +141,21 @@ export function buildHarness(): Harness {
   const payouts = new PayoutsService(prisma, ledger, wallets, fakeAnalytics, fakeRealtime, fees);
   const loads = new LoadsService(prisma, ledger, wallets, fakeAnalytics, fakeRealtime, fees);
 
-  return { prisma, transactions, withdrawals, payouts, loads, ledger, wallets };
+  const whishClient = new FakeWhishClient();
+  const whish = new WhishPaymentsService(
+    prisma,
+    whishClient as unknown as WhishClient,
+    fakeWhishConfig,
+    transactions,
+    fakeWhishWebhooks,
+    resolver,
+    repo,
+    fakeRealtime,
+    fakeCrm,
+    fakeTxLogs,
+  );
+
+  return { prisma, transactions, withdrawals, payouts, loads, ledger, wallets, whish, whishClient };
 }
 
 // ---- unique-id helpers (tests isolate by company, so ids must not collide) ----

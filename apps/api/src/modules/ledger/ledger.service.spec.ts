@@ -38,11 +38,11 @@ const writeWithMock = async (svc: LedgerService, entries: LedgerEntryInput[]) =>
 };
 
 describe('LedgerService.writeEntries', () => {
-  // The service has a private constructor argument (PrismaService) used for
-  // listByCompany — not exercised by writeEntries. We can instantiate with
-  // an undefined/cast prisma service.
+  // The service's constructor args (PrismaService, CacheService) are only used
+  // by listByCompany/exportCsv — not exercised by writeEntries. We can
+  // instantiate with undefined/cast services.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const svc = new LedgerService(undefined as any);
+  const svc = new LedgerService(undefined as any, undefined as any);
 
   it('writes a balanced 2-leg entry (USD)', async () => {
     const entries: LedgerEntryInput[] = [

@@ -11,6 +11,10 @@ export const listLedgerEntriesQuerySchema = z.object({
   withdrawalId: z.string().uuid().optional(),
   payoutId: z.string().uuid().optional(),
   loadId: z.string().uuid().optional(),
+  // Inclusive ISO date-range bounds on createdAt, for period reconciliation and
+  // the CSV export — same shape as the transactions list filter.
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
 });
 export type ListLedgerEntriesQuery = z.infer<typeof listLedgerEntriesQuerySchema>;
 

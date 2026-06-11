@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import crypto from 'node:crypto';
 import {
   Money,
+  WHISH_CURRENCIES,
   type CreateWhishPaymentInput,
   type ListWhishPaymentsQuery,
   type PaginatedResponse,
@@ -47,9 +48,15 @@ export class WhishPaymentsService {
     private readonly txLogs: TransactionLogsService,
   ) {}
 
-  /** Currencies live for Whish links (USD only by default). */
+  /**
+   * Currencies live for Whish links (USD only by default). Intersected with
+   * WHISH_CURRENCIES — the set `createWhishPaymentSchema` actually accepts — so a
+   * misconfigured env can never advertise a currency in the UI/clientConfig that
+   * every create call would then reject at validation.
+   */
   enabledCurrencies(): string[] {
-    return this.config.get('WHISH_ENABLED_CURRENCIES', { infer: true });
+    const configured = this.config.get('WHISH_ENABLED_CURRENCIES', { infer: true });
+    return configured.filter((c) => (WHISH_CURRENCIES as readonly string[]).includes(c));
   }
 
   clientConfig(): WhishClientConfig {
@@ -370,8 +377,35 @@ export class WhishPaymentsService {
       return mapWhishPayment(current);
     }
 
-    // success → write a ledger Transaction via the existing ingest pipeline
-    // (commission + ledger + wallet credit), then mark PAID.
+    // success → the customer paid. Before crediting, re-check the CURRENT row
+    // status: the `payment` snapshot can be stale (this method is reached from a
+    // manual refresh and the stale-reconcile job), and we must NEVER book money
+    // against a link that already reached a terminal state. If it's already PAID a
+    // concurrent winner settled it — return. If it's EXPIRED/FAILED the customer
+    // paid AFTER the link died ("paid after expiry"): silently crediting would
+    // leave real money against a record that says it never collected and orphan
+    // the ledger transaction, so flag it for an operator and do NOT auto-credit.
+    const before = await this.prisma.runAsAdmin((tx) =>
+      tx.whishPayment.findUniqueOrThrow({ where: { id: payment.id } }),
+    );
+    if (before.status === WhishPaymentStatus.PAID) return mapWhishPayment(before);
+    if (before.status !== WhishPaymentStatus.PENDING) {
+      this.logger.error(
+        `Whish payment ${payment.externalId} is SUCCESS at Whish but local row is ${before.status} ` +
+          `(company ${payment.companyId}) — paid after expiry; flagging for operator, NOT auto-crediting.`,
+      );
+      const flagged = await this.prisma.runAsAdmin((tx) =>
+        tx.whishPayment.update({
+          where: { id: payment.id },
+          data: { metadata: { needsAttention: true, paidAfterExpiry: true } },
+        }),
+      );
+      this.realtime.company(payment.companyId, ['whish']);
+      return mapWhishPayment(flagged);
+    }
+
+    // Still PENDING → settle. Write a ledger Transaction via the existing ingest
+    // pipeline (commission + ledger + wallet credit), then mark PAID.
     const source = await this.resolveWhishSource();
     let txn: { id: string };
     try {
@@ -452,6 +486,32 @@ export class WhishPaymentsService {
     const updated = await this.prisma.runAsAdmin((tx) =>
       tx.whishPayment.findUniqueOrThrow({ where: { id: payment.id } }),
     );
+    // Recover the narrow race the PENDING pre-check can't close: the row passed the
+    // pre-check as PENDING but a concurrent expire flipped it out of PENDING while
+    // `ingest` was in flight, so this settle matched 0 rows. We already booked a
+    // real transaction, so don't orphan it — link it, mark PAID (it WAS paid), and
+    // flag paid-after-expiry for an operator. (count===0 with status already PAID is
+    // the benign concurrent-winner case — they booked the same txn — so skip it.)
+    if (settled.count === 0 && updated.status !== WhishPaymentStatus.PAID) {
+      this.logger.error(
+        `Whish payment ${payment.externalId} booked transaction ${txn.id} but row was ${updated.status} at settle ` +
+          `(company ${payment.companyId}) — recovering: linking transaction + flagging paid-after-expiry.`,
+      );
+      const recovered = await this.prisma.runAsAdmin((tx) =>
+        tx.whishPayment.update({
+          where: { id: payment.id },
+          data: {
+            status: WhishPaymentStatus.PAID,
+            transactionId: txn.id,
+            payerPhoneNumber,
+            paidAt: new Date(),
+            metadata: { needsAttention: true, paidAfterExpiry: true },
+          },
+        }),
+      );
+      this.realtime.company(payment.companyId, ['whish']);
+      return mapWhishPayment(recovered);
+    }
     if (settled.count === 1) {
       this.logger.log(
         `Whish payment ${payment.externalId} PAID → transaction ${txn.id} (company ${payment.companyId})`,
@@ -486,7 +546,17 @@ export class WhishPaymentsService {
     const youngerThan = new Date(now - RECONCILE_MIN_AGE_MS);
     const rows = await this.prisma.runAsAdmin((tx) =>
       tx.whishPayment.findMany({
-        where: { status: WhishPaymentStatus.PENDING, createdAt: { lt: youngerThan } },
+        where: {
+          status: WhishPaymentStatus.PENDING,
+          createdAt: { lt: youngerThan },
+          // Exclude paid-but-unsettled / paid-after-expiry rows: they are kept
+          // PENDING deliberately and need an OPERATOR (re-add a commission rule),
+          // not re-polling. Left in, they are the oldest rows and would
+          // permanently occupy all 50 slots, starving newer PENDING payments whose
+          // callback was genuinely missed. Operators act on them via the admin
+          // "needs attention" filter instead.
+          NOT: { metadata: { path: ['needsAttention'], equals: true } },
+        },
         orderBy: { createdAt: 'asc' },
         take: 50,
       }),

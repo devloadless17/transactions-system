@@ -375,7 +375,10 @@ Authorization: Bearer tsk_<prefix>_<secret>
 - Generate a key in the dashboard under **Settings → API Keys**, or via
   `POST /v1/company/api-keys` (requires a dashboard session for the first key).
 - Keep the key secret — it carries the same access as a `COMPANY_OWNER` session.
-- **Rate limit:** 300 requests / rolling 60 s per key.
+- **Rate limit:** company endpoints are subject to the platform's default limit
+  (currently **100 requests / rolling 60 s, per IP**). If you need a higher dedicated
+  per-key limit for programmatic use, contact us. _(The Ingest API in Part A has its own
+  higher **300 / 60 s per-key** limit.)_
 
 ## C.1 Complete endpoint reference
 
@@ -399,9 +402,10 @@ every available route.
 
 ### Ledger
 
-| Method | Path                 | Description                                                             |
-| ------ | -------------------- | ----------------------------------------------------------------------- |
-| `GET`  | `/v1/company/ledger` | Append-only double-entry ledger. Query: `currency`, `pageSize`, `page`. |
+| Method | Path                            | Description                                                                                             |
+| ------ | ------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `GET`  | `/v1/company/ledger`            | Append-only double-entry ledger. Query: `currency`, `accountType`, `from`, `to`, `pageSize`, `page`.    |
+| `GET`  | `/v1/company/ledger/export.csv` | Download ledger entries as CSV (same filters as the list). Walked in keyset chunks, capped at 50k rows. |
 
 ### Analytics
 
@@ -468,12 +472,12 @@ Create a hosted Whish payment link, share the `collectUrl` with your customer, a
 funds settle into your wallet once Whish confirms the payment (the platform calls back
 automatically).
 
-| Method | Path                                            | Description                                                                       |
-| ------ | ----------------------------------------------- | --------------------------------------------------------------------------------- |
-| `GET`  | `/v1/company/whish/payments`                    | List Whish payment requests. Query: `pageSize`, `page`, `status`, `from`, `to`.   |
-| `GET`  | `/v1/company/whish/payments/:id`                | Get a single Whish payment (includes `collectUrl` and current status).            |
-| `POST` | `/v1/company/whish/payments`                    | Create a new payment link (see example below). Returns `collectUrl` to share.     |
-| `POST` | `/v1/company/whish/payments/:id/refresh-status` | Force a status check against Whish for a payment that hasn't received a callback. |
+| Method | Path                                            | Description                                                                         |
+| ------ | ----------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `GET`  | `/v1/company/whish/payments`                    | List Whish payment requests. Query: `pageSize`, `page`, `status`, `needsAttention`. |
+| `GET`  | `/v1/company/whish/payments/:id`                | Get a single Whish payment (includes `collectUrl` and current status).              |
+| `POST` | `/v1/company/whish/payments`                    | Create a new payment link (see example below). Returns `collectUrl` to share.       |
+| `POST` | `/v1/company/whish/payments/:id/refresh-status` | Force a status check against Whish for a payment that hasn't received a callback.   |
 
 **Create payment — example:**
 
@@ -487,12 +491,18 @@ Content-Type: application/json
 {
   "amount": "50.00",
   "currency": "USD",
-  "externalId": "order-9912",
-  "description": "Payment for order #9912"
+  "invoice": "Order #9912"
 }
 ```
 
-**Response — `201 Created`** (excerpt):
+| Field            | Type             | Required | Rules                                                                                                         |
+| ---------------- | ---------------- | -------- | ------------------------------------------------------------------------------------------------------------- |
+| `amount`         | string (decimal) | **Yes**  | Positive decimal string.                                                                                      |
+| `currency`       | string           | **Yes**  | `USD` (only supported currency today).                                                                        |
+| `invoice`        | string           | **Yes**  | Your own reference for this payment (1–200 chars); shown on it.                                               |
+| `idempotencyKey` | string           | No       | 8–120 chars. A retried create with the same key returns the same payment instead of minting a duplicate link. |
+
+**Response — `201 Created`** (excerpt). `externalId` is a server-minted numeric id (returned as a string), **not** a value you send:
 
 ```json
 {
@@ -500,11 +510,16 @@ Content-Type: application/json
   "statusCode": 201,
   "data": {
     "id": "e3b1c2d0-...",
+    "externalId": "100237",
     "status": "PENDING",
-    "collectUrl": "https://whish.money/collect/...",
     "amount": "50.00",
     "currency": "USD",
-    "externalId": "order-9912"
+    "invoice": "Order #9912",
+    "collectUrl": "https://whish.money/collect/...",
+    "transactionId": null,
+    "needsAttention": false,
+    "createdAt": "2026-06-11T10:00:00.000Z",
+    "paidAt": null
   }
 }
 ```
@@ -601,14 +616,15 @@ needed.
 
 ## Appendix — Error codes
 
-| HTTP  | `code`             | When                                                                            |
-| ----- | ------------------ | ------------------------------------------------------------------------------- |
-| `400` | `VALIDATION_ERROR` | Request body/params failed validation.                                          |
-| `401` | `UNAUTHORIZED`     | Missing/invalid/revoked credential.                                             |
-| `403` | `FORBIDDEN`        | Key not bound to the URL's source, entity not available, or wrong key type.     |
-| `409` | `CONFLICT`         | Duplicate `externalTransactionId` across entities, or a write conflict (retry). |
-| `429` | `RATE_LIMITED`     | Per-key throttle exceeded (Ingest API).                                         |
-| `5xx` | `INTERNAL_ERROR`   | Unexpected server error — retry with backoff.                                   |
+| HTTP  | `code`               | When                                                                                       |
+| ----- | -------------------- | ------------------------------------------------------------------------------------------ |
+| `400` | `VALIDATION_ERROR`   | Request body/params failed validation.                                                     |
+| `401` | `UNAUTHORIZED`       | Missing/invalid/revoked credential.                                                        |
+| `403` | `FORBIDDEN`          | Key not bound to the URL's source, entity not available, or wrong key type.                |
+| `409` | `CONFLICT`           | Duplicate `externalTransactionId` across entities, or a write conflict (retry).            |
+| `422` | `NO_COMMISSION_RULE` | No commission rule matches the (company, source, amount) on ingest, so it can't be priced. |
+| `429` | `RATE_LIMITED`       | Per-key throttle exceeded (Ingest API).                                                    |
+| `5xx` | `INTERNAL_ERROR`     | Unexpected server error — retry with backoff.                                              |
 
 ## Appendix — Glossary
 

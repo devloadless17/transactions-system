@@ -11,17 +11,20 @@ const API_BASE =
 const WALLETS_CURL = `curl ${API_BASE}/company/wallets \\
   -H "Authorization: Bearer tsk_<company-key>"
 
-# Response
+# Response — the wallets array is at data.data (the envelope wraps the list body)
 {
   "success": true,
-  "data": [
-    {
-      "currency": "USD",
-      "availableBalance": "1250.00",
-      "pendingBalance": "0",
-      "reservedBalance": "200.00"
-    }
-  ]
+  "statusCode": 200,
+  "data": {
+    "data": [
+      {
+        "currency": "USD",
+        "availableBalance": "1250.00",
+        "pendingBalance": "0",
+        "reservedBalance": "200.00"
+      }
+    ]
+  }
 }`;
 
 const TRANSACTIONS_CURL = `curl "${API_BASE}/company/transactions?page=1&pageSize=20" \\
@@ -241,7 +244,7 @@ export function CompanyApiView() {
               label="Transactions"
               endpoints="GET /company/transactions · /:id · /:id/detail · /export.csv"
             />
-            <EndpointGroup label="Ledger" endpoints="GET /company/ledger" />
+            <EndpointGroup label="Ledger" endpoints="GET /company/ledger · /export.csv" />
             <EndpointGroup
               label="Analytics"
               endpoints="GET /company/analytics/overview · /wallet-summary"

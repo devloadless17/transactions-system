@@ -92,6 +92,14 @@ export function RealtimeBridge() {
     // `txn_access` cookie on the handshake; reconnection is on by default.
     const socket = io(origin + REALTIME_NAMESPACE, { withCredentials: true });
 
+    // Cleared on unmount so a refresh-then-reconnect already in flight can't
+    // reopen this socket after the effect has torn it down (fast unmount/remount).
+    let active = true;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    // Bounded backoff for forced (auth) disconnects — see the disconnect handler.
+    let authReconnects = 0;
+    const MAX_AUTH_RECONNECTS = 5;
+
     socket.on('connect', () => {
       // The socket only delivers events received WHILE connected. Anything that
       // happened before/while connecting — a transaction landing in the
@@ -101,27 +109,30 @@ export function RealtimeBridge() {
       // The page's initial data was just loaded, so this costs at most one
       // redundant refetch; guaranteeing "never miss a live update" is worth it
       // and is what keeps the dashboard correct even right after a refresh.
+      authReconnects = 0; // a real connection resets the auth-reconnect backoff
       void qc.invalidateQueries();
     });
 
-    // Cleared on unmount so a refresh-then-reconnect already in flight can't
-    // reopen this socket after the effect has torn it down (fast unmount/remount).
-    let active = true;
-    let retry: ReturnType<typeof setTimeout> | undefined;
     socket.on('disconnect', (reason) => {
       // socket.io auto-reconnects on transport drops, but NOT when the server
-      // forcibly disconnects us — our gateway does this when the handshake
-      // cookie is missing/expired (the access token is only 15 min). Blindly
-      // reconnecting would just re-send the same dead cookie forever, so first
-      // rotate the access token via the refresh cookie, THEN reconnect with it.
-      // On success the `connect` handler above catches up anything missed.
-      if (reason === 'io server disconnect') {
-        retry = setTimeout(() => {
-          void refreshSession().finally(() => {
-            if (active) socket.connect();
-          });
-        }, 1500);
-      }
+      // forcibly disconnects us — our gateway does this when the handshake cookie
+      // is missing/expired (the access token is only 15 min). Rotate the token via
+      // the refresh cookie, THEN reconnect — but ONLY if the refresh actually
+      // SUCCEEDED. If it didn't (refresh token also expired/revoked, or backend
+      // down), reconnecting would re-send the same dead cookie, the gateway would
+      // drop us again, and this timer would re-arm every 1.5s forever. So stop
+      // after MAX attempts and back off exponentially; the app's session-expiry
+      // flow (triggered by the next authenticated request) takes over from there.
+      if (reason !== 'io server disconnect') return;
+      if (authReconnects >= MAX_AUTH_RECONNECTS) return;
+      const delay = 1500 * 2 ** authReconnects; // 1.5s → 3s → 6s → 12s → 24s
+      authReconnects += 1;
+      retry = setTimeout(() => {
+        void refreshSession().then((ok) => {
+          if (active && ok) socket.connect();
+          // refresh failed → leave the socket closed; do not re-send a dead cookie.
+        });
+      }, delay);
     });
 
     socket.on(REALTIME_EVENT, (payload: RealtimeInvalidate) => {

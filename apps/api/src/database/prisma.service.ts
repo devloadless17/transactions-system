@@ -47,6 +47,43 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   async onModuleInit() {
     await this.$connect();
     this.logger.log('Prisma connected');
+    await this.assertRlsEnforced();
+  }
+
+  /**
+   * Defense-in-depth: the entire tenant-isolation model assumes the runtime DB
+   * role is SUBJECT to row-level security. Postgres skips RLS entirely for
+   * superusers and roles with the BYPASSRLS attribute — so a deploy mistakenly
+   * connecting as such a role would turn every RLS policy into a silent no-op,
+   * letting tenants read each other's rows with no error anywhere. The boot
+   * guard in env.schema validates the connection STRING (no dev password); this
+   * asserts the actual ROLE the database hands us can't bypass RLS. Fail hard in
+   * production; warn loudly elsewhere (dev/test may legitimately use a superuser).
+   */
+  private async assertRlsEnforced(): Promise<void> {
+    const isProd = process.env.NODE_ENV === 'production';
+    try {
+      const rows = await this.$queryRaw<
+        Array<{ role: string; rolsuper: boolean; rolbypassrls: boolean }>
+      >`SELECT current_user AS role, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user`;
+      const role = rows[0];
+      if (!role || role.rolsuper || role.rolbypassrls) {
+        const name = role?.role ?? 'unknown';
+        const msg =
+          `runtime DB role "${name}" can BYPASS row-level security ` +
+          `(superuser/BYPASSRLS) — RLS tenant isolation is NOT enforced`;
+        if (isProd) {
+          throw new Error(
+            `FATAL: ${msg}. Connect the app as a non-superuser role that is subject to RLS.`,
+          );
+        }
+        this.logger.warn(`${msg}. Allowed outside production, but never deploy this way.`);
+      }
+    } catch (err) {
+      // A genuine misconfig must not be swallowed in production.
+      if (isProd) throw err;
+      this.logger.warn(`could not verify RLS-role enforcement: ${(err as Error).message}`);
+    }
   }
 
   async onModuleDestroy() {

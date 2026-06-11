@@ -9,6 +9,18 @@ import {
 } from '@app/shared';
 import type { Prisma, PrismaClient } from '@app/db';
 import { PrismaService } from '../../database/prisma.service';
+import { CacheService } from '../cache/cache.service';
+
+// The per-(company,filter) ledger COUNT is cached briefly so paging reuses it and
+// a high-volume tenant's COUNT(*) over the (largest) ledger table doesn't re-run
+// on every page load. The total can lag by up to this window; the rows are always
+// live. Mirrors the transactions list — deliberately NOT invalidated on write.
+const LIST_COUNT_CACHE_TTL_SEC = 30;
+
+// CSV export walks rows in keyset chunks (no single huge query), up to a cap that
+// keeps the in-memory CSV string bounded. Mirrors the transactions export.
+const CSV_EXPORT_CHUNK = 1000;
+const MAX_EXPORT_ROWS = 50_000;
 
 /**
  * One side of a ledger transaction. We always write entries in
@@ -41,7 +53,10 @@ export interface LedgerEntryInput {
  */
 @Injectable()
 export class LedgerService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cache: CacheService,
+  ) {}
 
   /**
    * Write a balanced set of entries inside the given Prisma transaction.
@@ -132,20 +147,38 @@ export class LedgerService {
    * pure read; suitable for reconciliation, audits, and the wallet detail
    * page on the company dashboard.
    */
+  /** Translate a ledger list query into a Prisma where-clause (shared by list + export). */
+  private buildWhere(
+    companyId: string,
+    query: ListLedgerEntriesQuery,
+  ): Prisma.LedgerEntryWhereInput {
+    const where: Prisma.LedgerEntryWhereInput = { companyId };
+    if (query.currency) where.currency = query.currency;
+    if (query.accountType) where.accountType = query.accountType;
+    if (query.transactionId) where.transactionId = query.transactionId;
+    if (query.withdrawalId) where.withdrawalId = query.withdrawalId;
+    if (query.payoutId) where.payoutId = query.payoutId;
+    if (query.loadId) where.loadId = query.loadId;
+    if (query.from || query.to) {
+      where.createdAt = {};
+      if (query.from) where.createdAt.gte = new Date(query.from);
+      if (query.to) where.createdAt.lte = new Date(query.to);
+    }
+    return where;
+  }
+
   async listByCompany(
     companyId: string,
     query: ListLedgerEntriesQuery,
   ): Promise<PaginatedResponse<LedgerEntryResponse>> {
     return this.prisma.runAsScoped(companyId, async (tx) => {
-      const where: Prisma.LedgerEntryWhereInput = { companyId };
-      if (query.currency) where.currency = query.currency;
-      if (query.accountType) where.accountType = query.accountType;
-      if (query.transactionId) where.transactionId = query.transactionId;
-      if (query.withdrawalId) where.withdrawalId = query.withdrawalId;
-      if (query.payoutId) where.payoutId = query.payoutId;
-      if (query.loadId) where.loadId = query.loadId;
+      const where = this.buildWhere(companyId, query);
 
       const skip = (query.page - 1) * query.pageSize;
+      const countKey =
+        `list-count:ledger:${companyId}:${query.currency ?? ''}:${query.accountType ?? ''}` +
+        `:${query.transactionId ?? ''}:${query.withdrawalId ?? ''}:${query.payoutId ?? ''}` +
+        `:${query.loadId ?? ''}:${query.from ?? ''}:${query.to ?? ''}`;
       const [rows, total] = await Promise.all([
         tx.ledgerEntry.findMany({
           where,
@@ -167,7 +200,7 @@ export class LedgerService {
           skip,
           take: query.pageSize,
         }),
-        tx.ledgerEntry.count({ where }),
+        this.cache.wrap(countKey, LIST_COUNT_CACHE_TTL_SEC, () => tx.ledgerEntry.count({ where })),
       ]);
 
       return {
@@ -193,5 +226,73 @@ export class LedgerService {
         },
       };
     });
+  }
+
+  /**
+   * Export up to MAX_EXPORT_ROWS (50k) ledger entries matching the filters as a
+   * CSV string, walked in keyset chunks so we never materialize the whole result
+   * set in one query. Mirrors the transactions export; companies use this to
+   * reconcile a period against their wallets offline.
+   */
+  async exportCsv(companyId: string, query: ListLedgerEntriesQuery): Promise<string> {
+    const header = [
+      'id',
+      'created_at',
+      'account_type',
+      'direction',
+      'amount',
+      'currency',
+      'transaction_id',
+      'withdrawal_id',
+      'payout_id',
+      'load_id',
+    ];
+    const lines = [header.join(',')];
+
+    await this.prisma.runAsScoped(companyId, async (tx) => {
+      const where = this.buildWhere(companyId, query);
+
+      // Keyset over (createdAt desc, id desc): each chunk fetches the rows strictly
+      // "after" the previous chunk's last row. Bounded by MAX_EXPORT_ROWS.
+      let cursor: { createdAt: Date; id: string } | null = null;
+      while (lines.length <= MAX_EXPORT_ROWS) {
+        const pageWhere: Prisma.LedgerEntryWhereInput = cursor
+          ? {
+              ...where,
+              OR: [
+                { createdAt: { lt: cursor.createdAt } },
+                { createdAt: cursor.createdAt, id: { lt: cursor.id } },
+              ],
+            }
+          : where;
+        const page = await tx.ledgerEntry.findMany({
+          where: pageWhere,
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+          take: CSV_EXPORT_CHUNK,
+        });
+        if (page.length === 0) break;
+        for (const r of page) {
+          lines.push(
+            [
+              r.id,
+              r.createdAt.toISOString(),
+              r.accountType,
+              r.direction,
+              r.amount.toString(),
+              r.currency.trim(),
+              r.transactionId ?? '',
+              r.withdrawalId ?? '',
+              r.payoutId ?? '',
+              r.loadId ?? '',
+            ].join(','),
+          );
+        }
+        if (page.length < CSV_EXPORT_CHUNK) break;
+        const last = page[page.length - 1]!;
+        cursor = { createdAt: last.createdAt, id: last.id };
+      }
+    });
+
+    return lines.join('\n');
   }
 }

@@ -429,6 +429,9 @@ model Withdrawal {
 
   @@index([companyId, status])
   @@index([companyId, createdAt])
+  // Admin cross-company list orders by created_at desc with no company filter,
+  // which (company_id, created_at) can't serve (mirrors transaction_logs_created_at_idx).
+  @@index([createdAt])
   @@map("withdrawals")
 }
 
@@ -461,6 +464,8 @@ model Payout {
 
   @@index([companyId, status])
   @@index([companyId, createdAt])
+  // Admin cross-company list orders by created_at desc with no company filter.
+  @@index([createdAt])
   @@map("payouts")
 }
 
@@ -493,6 +498,8 @@ model Load {
 
   @@index([companyId, status])
   @@index([companyId, createdAt])
+  // Admin cross-company list orders by created_at desc with no company filter.
+  @@index([createdAt])
   @@map("loads")
 }
 
@@ -552,6 +559,8 @@ model WhishPayment {
   @@unique([companyId, idempotencyKey])
   @@index([companyId, status])
   @@index([companyId, createdAt])
+  // Admin cross-company Whish list orders by created_at desc, unfiltered.
+  @@index([createdAt])
   @@map("whish_payments")
 }
 

@@ -266,7 +266,11 @@ export function AdminOverview() {
           </div>
         </CardHeader>
         <CardContent>
-          {flowsQ.data ? (
+          {flowsQ.isError ? (
+            <div className="flex h-80 w-full items-center justify-center text-sm text-destructive">
+              Couldn&apos;t load flows — retrying…
+            </div>
+          ) : flowsQ.data ? (
             <FlowsChart buckets={flowsQ.data.buckets} currency={flowsCurrency} />
           ) : (
             <div className="h-80 w-full animate-pulse rounded bg-muted" />
