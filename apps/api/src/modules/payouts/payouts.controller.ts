@@ -74,7 +74,9 @@ export class PayoutsController {
     @CurrentUser() user: AuthPrincipal,
   ) {
     if (!user.companyId) throw new ForbiddenError('No company in session');
-    return this.payouts.cancel(id, user.companyId, user.userId, body);
+    // API-key callers carry the keyId as userId (not a real users row); mirror
+    // `request` and store null for cancelledById so the FK isn't violated.
+    return this.payouts.cancel(id, user.companyId, user.apiKeyAuth ? null : user.userId, body);
   }
 
   // ---------------- Admin endpoints ----------------

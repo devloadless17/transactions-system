@@ -209,7 +209,7 @@ export class PayoutsService {
   async cancel(
     id: string,
     companyId: string,
-    cancelledById: string,
+    cancelledById: string | null,
     input: CancelRequestInput,
   ): Promise<PayoutResponse> {
     return this.release(id, input.notes, { cancelledById, status: 'CANCELLED', companyId });
@@ -222,7 +222,7 @@ export class PayoutsService {
     opts: {
       status: WithdrawalStatus;
       approvedById?: string;
-      cancelledById?: string;
+      cancelledById?: string | null;
       companyId?: string;
     },
   ): Promise<PayoutResponse> {

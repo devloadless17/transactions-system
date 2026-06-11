@@ -1,238 +1,99 @@
-'use client';
-import { useState, type ReactNode } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
-import { toast } from 'sonner';
-import type { WhishClientConfig, WhishWebhookConfig } from '@app/shared';
-import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { CodeBlock } from '@/components/ui/code-block';
-import { apiFetch } from '@/lib/api.client';
-import { ApiClientError, unwrapEnvelope } from '@/lib/api';
 
 const API_BASE =
-  (typeof window !== 'undefined' && process.env.NEXT_PUBLIC_API_BASE_URL) ||
-  'http://localhost:3001/v1';
+  typeof window !== 'undefined'
+    ? (process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:3001/v1')
+    : 'http://localhost:3001/v1';
 
-type Lang = 'curl' | 'python' | 'node' | 'dotnet' | 'java';
-const LANGS: { id: Lang; label: string }[] = [
-  { id: 'curl', label: 'cURL' },
-  { id: 'python', label: 'Python' },
-  { id: 'node', label: 'Node.js' },
-  { id: 'dotnet', label: '.NET (C#)' },
-  { id: 'java', label: 'Java' },
-];
-
-// ---- Code snippets (templated with the live API base) ----
-const snippets = (base: string): Record<Lang, string> => ({
-  curl: `# 1) Create a payment link
-curl -X POST ${base}/integrations/whish/payments \\
-  -H "Authorization: Bearer $WHISH_KEY" \\
+const CREATE_CURL = `curl -X POST ${API_BASE}/integrations/whish/payments \\
+  -H "Authorization: Bearer tsk_<company-key>" \\
   -H "Content-Type: application/json" \\
-  -d '{"amount":"25.00","currency":"USD","invoice":"Order #4821"}'
-# → { "success": true, "statusCode": 201,
-#     "data": { "collectUrl": "https://...", "externalId": "3", "status": "PENDING" } }
+  -d '{
+    "amount": "25.00",
+    "currency": "USD",
+    "invoice": "Order #4821"
+  }'`;
 
-# 2) Poll status by reference (externalId)
-curl ${base}/integrations/whish/payments/3 \\
-  -H "Authorization: Bearer $WHISH_KEY"
-
-# 3) Force a status refresh (missed callback)
-curl -X POST ${base}/integrations/whish/payments/3/refresh \\
-  -H "Authorization: Bearer $WHISH_KEY"`,
-
-  python: `import os, requests
-
-BASE = "${base}"
-KEY  = os.environ["WHISH_KEY"]          # tsk_XXXXXXXX_your_secret
-HEADERS = {"Authorization": f"Bearer {KEY}"}
-
-# 1) Create a payment link
-resp = requests.post(
-    f"{BASE}/integrations/whish/payments",
-    headers=HEADERS,
-    json={"amount": "25.00", "currency": "USD", "invoice": "Order #4821"},
-)
-resp.raise_for_status()
-data = resp.json()["data"]              # responses are enveloped: { success, statusCode, data }
-collect_url = data["collectUrl"]        # send to your customer
-reference   = data["externalId"]        # store against your order
-print(collect_url, reference)
-
-# 2) Poll status later
-status = requests.get(
-    f"{BASE}/integrations/whish/payments/{reference}", headers=HEADERS
-).json()["data"]
-print(status["status"])                 # PENDING | PAID | FAILED | EXPIRED`,
-
-  node: `const BASE = "${base}";
-const KEY  = process.env.WHISH_KEY;      // tsk_XXXXXXXX_your_secret
-const auth = { Authorization: \`Bearer \${KEY}\`, "Content-Type": "application/json" };
-
-// 1) Create a payment link
-const res = await fetch(\`\${BASE}/integrations/whish/payments\`, {
-  method: "POST",
-  headers: auth,
-  body: JSON.stringify({ amount: "25.00", currency: "USD", invoice: "Order #4821" }),
-});
-if (!res.ok) throw new Error(\`HTTP \${res.status}\`);
-const { data } = await res.json();       // responses are enveloped: { success, statusCode, data }
-console.log(data.collectUrl, data.externalId);   // share collectUrl; store externalId
-
-// 2) Poll status
-const ref = data.externalId;
-const { data: status } = await (await fetch(
-  \`\${BASE}/integrations/whish/payments/\${ref}\`, { headers: auth }
-)).json();
-console.log(status.status);`,
-
-  dotnet: `using System.Net.Http.Headers;
-using System.Net.Http.Json;
-using System.Text.Json;
-
-var http = new HttpClient { BaseAddress = new Uri("${base}/") };
-http.DefaultRequestHeaders.Authorization =
-    new AuthenticationHeaderValue("Bearer", Environment.GetEnvironmentVariable("WHISH_KEY"));
-
-// 1) Create a payment link
-var resp = await http.PostAsJsonAsync("integrations/whish/payments", new {
-    amount   = "25.00",
-    currency = "USD",
-    invoice  = "Order #4821"
-});
-resp.EnsureSuccessStatusCode();
-// Responses are enveloped: { success, statusCode, data } — read fields off data.
-var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
-var data = body.GetProperty("data");
-var collectUrl = data.GetProperty("collectUrl").GetString();   // share with customer
-var reference  = data.GetProperty("externalId").GetString();   // store against order
-Console.WriteLine($"{collectUrl} {reference}");
-
-// 2) Poll status
-var status = await http.GetFromJsonAsync<JsonElement>($"integrations/whish/payments/{reference}");
-Console.WriteLine(status.GetProperty("data").GetProperty("status").GetString());`,
-
-  java: `import java.net.URI;
-import java.net.http.*;
-
-var client = HttpClient.newHttpClient();
-String base = "${base}";
-String key  = System.getenv("WHISH_KEY");   // tsk_XXXXXXXX_your_secret
-
-// 1) Create a payment link
-String body = "{\\"amount\\":\\"25.00\\",\\"currency\\":\\"USD\\",\\"invoice\\":\\"Order #4821\\"}";
-HttpRequest create = HttpRequest.newBuilder(URI.create(base + "/integrations/whish/payments"))
-    .header("Authorization", "Bearer " + key)
-    .header("Content-Type", "application/json")
-    .POST(HttpRequest.BodyPublishers.ofString(body))
-    .build();
-HttpResponse<String> resp = client.send(create, HttpResponse.BodyHandlers.ofString());
-System.out.println(resp.statusCode());
-// enveloped: { "success": true, "statusCode": 201, "data": { collectUrl, externalId, status } }
-System.out.println(resp.body());
-
-// 2) Poll status (reference = externalId from the response above)
-HttpRequest status = HttpRequest.newBuilder(URI.create(base + "/integrations/whish/payments/3"))
-    .header("Authorization", "Bearer " + key)
-    .GET().build();
-System.out.println(client.send(status, HttpResponse.BodyHandlers.ofString()).body());`,
-});
-
-async function callIntegration(
-  key: string,
-  path: string,
-  method: 'GET' | 'POST',
-  body?: unknown,
-): Promise<{ status: number; json: unknown }> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    method,
-    headers: {
-      Authorization: `Bearer ${key.trim()}`,
-      ...(body ? { 'Content-Type': 'application/json' } : {}),
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const text = await res.text();
-  let json: unknown;
-  try {
-    json = text ? JSON.parse(text) : null;
-  } catch {
-    json = text;
+const CREATE_RESPONSE = `{
+  "success": true,
+  "statusCode": 201,
+  "data": {
+    "externalId": "1781018591",
+    "status": "PENDING",
+    "amount": "25.00",
+    "currency": "USD",
+    "invoice": "Order #4821",
+    "collectUrl": "https://whish.money/collect/7kEo2a7",
+    "transactionId": null,
+    "paidAt": null,
+    "createdAt": "2026-06-04T12:00:00.000Z"
   }
-  return { status: res.status, json };
-}
+}`;
 
+const STATUS_CURL = `curl ${API_BASE}/integrations/whish/payments/1781018591 \\
+  -H "Authorization: Bearer tsk_<company-key>"
+# Same shape as create. Watch \`status\` (and \`transactionId\` once PAID).`;
+
+/**
+ * Whish Pay — what it is, how it flows, and how to create links from your
+ * backend. Day-to-day use is the no-code /app/whish page; the API section is for
+ * companies that mint links from their own server. Every status change is pushed
+ * to the CRM, so there is nothing to poll.
+ */
 export function WhishPayDocsView() {
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-semibold">Whish Pay</h1>
         <p className="text-sm text-muted-foreground">
-          Collect payments with a hosted link. Create a link from your backend, share the{' '}
-          <code className="font-mono">collectUrl</code> with your customer, and the money settles
-          into your wallet automatically once they pay — net of commission, with no card details
-          ever touching your system.
+          Collect payments with a hosted link — by hand on the{' '}
+          <Link href="/app/whish" className="text-primary hover:underline">
+            Whish Pay
+          </Link>{' '}
+          page, or from your own backend via the API below. Share the link with your customer and
+          the money settles into your wallet automatically once they pay — net of commission, with
+          no card details ever touching your system.
         </p>
       </div>
 
-      <p className="rounded-md border-l-4 border-primary bg-primary/5 p-3 text-xs text-muted-foreground">
-        <strong className="text-foreground">Prefer no code?</strong> You can create and track links
-        by hand in the{' '}
-        <Link href="/app/whish" className="text-primary hover:underline">
-          Whish Pay
-        </Link>{' '}
-        page. This tab is for integrating it into your own backend.
-      </p>
-
       <HowItWorks />
-      <Tester />
-      <CodeExamples />
-      <WebhookCard />
-      <Reference />
+      <ApiSection />
+
+      <p className="rounded-md border-l-4 border-primary bg-primary/5 p-3 text-xs text-muted-foreground">
+        <strong className="text-foreground">No need to poll:</strong> every payment — pending, paid,
+        failed, or expired — is pushed to your CRM automatically (see the{' '}
+        <Link href="/app/documentation?tab=crm" className="text-primary hover:underline">
+          CRM
+        </Link>{' '}
+        tab). The status endpoint below is just for reconciliation or if you do not use a CRM.
+      </p>
     </div>
   );
 }
 
 function HowItWorks() {
-  const steps: [string, ReactNode][] = [
-    ['Create a key', 'Mint a company API key in Settings → API keys. The secret is shown once.'],
+  const steps: [string, string][] = [
     [
-      'Generate a link',
-      <>
-        POST{' '}
-        <code className="font-mono font-semibold text-foreground">
-          /integrations/whish/payments
-        </code>{' '}
-        with amount + currency + invoice.
-      </>,
+      'Create a link',
+      'On the Whish Pay page (or via the API below), enter the amount and an invoice label.',
+    ],
+    ['Share it', 'Send the generated link to your customer — they pay on the secure Whish page.'],
+    [
+      'It settles automatically',
+      'Once paid, we verify with Whish, apply your commission, and credit your wallet with the net.',
     ],
     [
-      'Share collectUrl',
-      'Send the returned collectUrl to your customer; store externalId on your order.',
-    ],
-    [
-      'Settle automatically',
-      'On payment, we verify with Whish, apply commission, and credit your wallet.',
-    ],
-    [
-      'Know the result',
-      <>
-        Poll GET{' '}
-        <code className="font-mono font-semibold text-foreground">
-          {'/integrations/whish/payments/{ref}'}
-        </code>{' '}
-        until status is PAID/FAILED.
-      </>,
+      'Stay in sync',
+      'The transaction is pushed to your CRM at every step (pending, then paid / failed / expired), so your records update on their own.',
     ],
   ];
   return (
     <Card>
       <CardHeader>
         <CardTitle>How it works</CardTitle>
-        <CardDescription>Five steps, end to end.</CardDescription>
+        <CardDescription>Four steps, end to end.</CardDescription>
       </CardHeader>
       <CardContent>
         <ol className="space-y-3">
@@ -248,372 +109,59 @@ function HowItWorks() {
             </li>
           ))}
         </ol>
-        <p className="mt-4 text-xs text-muted-foreground">
-          Need a key?{' '}
-          <Link href="/app/settings" className="text-primary hover:underline">
-            Create one in Settings → API keys
-          </Link>
-          .
-        </p>
       </CardContent>
     </Card>
   );
 }
 
-function Tester() {
-  const [key, setKey] = useState('');
-  const [amount, setAmount] = useState('25.00');
-  const [currency, setCurrency] = useState<string>('USD');
-  const [invoice, setInvoice] = useState('Order #4821');
-  const cfgQ = useQuery({
-    queryKey: ['company', 'whish', 'config'],
-    queryFn: () => apiFetch<WhishClientConfig>('/company/whish/config'),
-  });
-  const currencies = cfgQ.data?.enabledCurrencies ?? ['USD'];
-  const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<{ status: number; json: unknown } | null>(null);
-  const [ref, setRef] = useState<string | null>(null);
-
-  async function run(fn: () => Promise<{ status: number; json: unknown }>) {
-    if (!key.trim()) {
-      toast.error('Paste an API key first');
-      return;
-    }
-    setBusy(true);
-    try {
-      const r = await fn();
-      setResult(r);
-      // Responses are enveloped ({ success, statusCode, data }); the payment
-      // payload (with externalId) lives under `data`. unwrapEnvelope returns the
-      // inner data on success and the body as-is on an error envelope.
-      const payload = unwrapEnvelope<{ externalId?: string }>(r.json);
-      if (payload?.externalId) setRef(payload.externalId);
-    } catch (e) {
-      setResult({ status: 0, json: { error: e instanceof Error ? e.message : 'network error' } });
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Try it live</CardTitle>
-        <CardDescription>
-          Run a real request against this API with your key — straight from the browser. Nothing is
-          stored here; the key stays on this page.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="space-y-2">
-          <Label htmlFor="key">Company API key</Label>
-          <Input
-            id="key"
-            placeholder="tsk_XXXXXXXX_your_secret"
-            value={key}
-            onChange={(e) => setKey(e.target.value)}
-            className="font-mono text-xs"
-          />
-        </div>
-        <div className="grid gap-3 sm:grid-cols-3">
-          <div className="space-y-2">
-            <Label htmlFor="amt">Amount</Label>
-            <Input id="amt" value={amount} onChange={(e) => setAmount(e.target.value)} />
-          </div>
-          <div className="space-y-2">
-            <Label>Currency</Label>
-            <div className="flex gap-2">
-              {currencies.map((c) => (
-                <Button
-                  key={c}
-                  type="button"
-                  size="sm"
-                  variant={c === currency ? 'default' : 'outline'}
-                  onClick={() => setCurrency(c)}
-                >
-                  {c}
-                </Button>
-              ))}
-            </div>
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="inv">Invoice</Label>
-            <Input id="inv" value={invoice} onChange={(e) => setInvoice(e.target.value)} />
-          </div>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button
-            disabled={busy}
-            onClick={() =>
-              run(() =>
-                callIntegration(key, '/integrations/whish/payments', 'POST', {
-                  amount,
-                  currency,
-                  invoice,
-                }),
-              )
-            }
-          >
-            {busy ? 'Running…' : 'POST create payment'}
-          </Button>
-          <Button
-            variant="outline"
-            disabled={busy || !ref}
-            onClick={() =>
-              run(() => callIntegration(key, `/integrations/whish/payments/${ref}`, 'GET'))
-            }
-          >
-            GET status{ref ? ` (#${ref})` : ''}
-          </Button>
-          <Button
-            variant="outline"
-            disabled={busy || !ref}
-            onClick={() =>
-              run(() => callIntegration(key, `/integrations/whish/payments/${ref}/refresh`, 'POST'))
-            }
-          >
-            POST refresh
-          </Button>
-        </div>
-
-        {result && (
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-muted-foreground">Response</span>
-              <Badge
-                variant={result.status >= 200 && result.status < 300 ? 'success' : 'destructive'}
-              >
-                HTTP {result.status || 'ERR'}
-              </Badge>
-            </div>
-            <pre className="overflow-x-auto rounded-md border bg-muted/30 p-3 font-mono text-xs">
-              {JSON.stringify(result.json, null, 2)}
-            </pre>
-            {result.status === 400 && JSON.stringify(result.json).includes('not configured') && (
-              <p className="text-xs text-amber-600">
-                Auth + routing work — this only means the platform&apos;s Whish credentials
-                aren&apos;t set yet. A real key returns a <code>collectUrl</code>.
-              </p>
-            )}
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-function CodeExamples() {
-  const [lang, setLang] = useState<Lang>('curl');
-  const code = snippets(API_BASE)[lang];
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Code examples</CardTitle>
-        <CardDescription>
-          The same three calls — create, poll, refresh — in your language of choice. Auth is always{' '}
-          <code>Authorization: Bearer &lt;company key&gt;</code>; read your payload from{' '}
-          <code>data</code>.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="flex flex-wrap gap-1">
-          {LANGS.map((l) => (
-            <Button
-              key={l.id}
-              size="sm"
-              variant={l.id === lang ? 'default' : 'ghost'}
-              onClick={() => setLang(l.id)}
-            >
-              {l.label}
-            </Button>
-          ))}
-        </div>
-        <CodeBlock code={code} />
-      </CardContent>
-    </Card>
-  );
-}
-
-function WebhookCard() {
-  const qc = useQueryClient();
-  const [url, setUrl] = useState('');
-  const [revealed, setRevealed] = useState<string | null>(null);
-  const queryKey = ['company', 'whish', 'webhook'] as const;
-
-  const cfgQ = useQuery({
-    queryKey,
-    queryFn: () => apiFetch<WhishWebhookConfig>('/company/whish/webhook'),
-  });
-
-  const onResult = (c: WhishWebhookConfig) => {
-    if (c.secret) setRevealed(c.secret);
-    qc.invalidateQueries({ queryKey });
-  };
-  const err = (e: unknown) => toast.error(e instanceof ApiClientError ? e.message : 'Failed');
-
-  const saveMu = useMutation({
-    mutationFn: (u: string) =>
-      apiFetch<WhishWebhookConfig>('/company/whish/webhook', { method: 'PUT', body: { url: u } }),
-    onSuccess: (c) => {
-      toast.success('Webhook saved');
-      setUrl('');
-      onResult(c);
-    },
-    onError: err,
-  });
-  const rotateMu = useMutation({
-    mutationFn: () =>
-      apiFetch<WhishWebhookConfig>('/company/whish/webhook/rotate-secret', { method: 'POST' }),
-    onSuccess: (c) => {
-      toast.success('Secret rotated');
-      onResult(c);
-    },
-    onError: err,
-  });
-  const clearMu = useMutation({
-    mutationFn: () => apiFetch<WhishWebhookConfig>('/company/whish/webhook', { method: 'DELETE' }),
-    onSuccess: () => {
-      toast.success('Webhook disabled');
-      setRevealed(null);
-      qc.invalidateQueries({ queryKey });
-    },
-    onError: err,
-  });
-
-  const cfg = cfgQ.data;
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Webhook — get notified instead of polling</CardTitle>
-        <CardDescription>
-          We POST a signed <code>whish.payment.paid</code> event to your URL the moment a payment
-          settles. Verify the <code>X-Whish-Signature: sha256=&lt;hmac&gt;</code> header with your
-          secret, then mark the order paid.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="flex flex-wrap items-center gap-2 text-sm">
-          <span className="text-muted-foreground">Current:</span>
-          {cfg?.url ? (
-            <>
-              <code className="font-mono text-xs break-all">{cfg.url}</code>
-              <Badge variant="success">active</Badge>
-            </>
-          ) : (
-            <span className="text-muted-foreground">not configured</span>
-          )}
-        </div>
-
-        <div className="flex flex-wrap items-end gap-2">
-          <div className="w-full flex-1 space-y-2 sm:min-w-[260px]">
-            <Label htmlFor="whurl">Webhook URL</Label>
-            <Input
-              id="whurl"
-              placeholder="https://crm.example.com/hooks/whish"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-            />
-          </div>
-          <Button disabled={saveMu.isPending || !url} onClick={() => saveMu.mutate(url)}>
-            {cfg?.url ? 'Update' : 'Save'}
-          </Button>
-          {cfg?.url && (
-            <>
-              <Button
-                variant="outline"
-                disabled={rotateMu.isPending}
-                onClick={() => rotateMu.mutate()}
-              >
-                Rotate secret
-              </Button>
-              <Button variant="ghost" disabled={clearMu.isPending} onClick={() => clearMu.mutate()}>
-                Disable
-              </Button>
-            </>
-          )}
-        </div>
-
-        {revealed && (
-          <div className="space-y-1">
-            <p className="text-xs text-muted-foreground">
-              Signing secret — copy it now, it&apos;s shown only once:
-            </p>
-            <div className="flex items-center gap-2">
-              <code className="flex-1 rounded-md border bg-muted/30 p-2 font-mono text-xs break-all">
-                {revealed}
-              </code>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => {
-                  navigator.clipboard?.writeText(revealed);
-                  toast.success('Copied');
-                }}
-              >
-                Copy
-              </Button>
-            </div>
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-function Reference() {
-  const rows: [string, string, string][] = [
+function ApiSection() {
+  const fields: [string, string][] = [
     [
-      'POST',
-      '/integrations/whish/payments',
-      'Create a payment link → data: { collectUrl, externalId }',
+      'amount',
+      'Decimal string, e.g. "25.00". A commission rule (set by your platform admin) must cover this amount, otherwise you get 422 NO_COMMISSION_RULE.',
     ],
-    ['GET', '/integrations/whish/payments/{ref}', 'Get a payment by reference (externalId)'],
-    ['POST', '/integrations/whish/payments/{ref}/refresh', 'Force-reconcile status with Whish'],
+    ['currency', 'Currency code. Whish is USD only.'],
+    ['invoice', 'Your own order/reference label (1–200 chars). Shown back on the payment.'],
+    [
+      'idempotencyKey',
+      'Optional (8–120 chars). A retried create with the same key returns the original link instead of minting a duplicate — safe to retry on a network error.',
+    ],
   ];
   const statuses: [string, string][] = [
-    ['PENDING', 'Link created — waiting for the customer to pay.'],
-    ['PAID', 'Paid and settled into your wallet (a transaction is created).'],
-    ['FAILED', 'The payment attempt did not go through.'],
-    ['EXPIRED', 'The link went unpaid and lapsed — generate a new one.'],
-  ];
-  const errs: [string, number, string][] = [
-    ['UNAUTHORIZED', 401, 'Missing / invalid / revoked API key'],
-    ['VALIDATION_ERROR', 400, 'Bad amount / currency / invoice, or bad reference'],
-    ['NOT_FOUND', 404, 'Reference not found for your company'],
-    ['WHISH_ERROR', 502, 'Whish unreachable or rejected the request'],
+    ['PENDING', 'Link created, waiting for the customer to pay.'],
+    ['PAID', 'Customer paid — settled into your wallet (net of commission); transactionId is set.'],
+    ['FAILED', 'The payment did not go through.'],
+    ['EXPIRED', 'The link lapsed unpaid.'],
   ];
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Reference</CardTitle>
+        <CardTitle>Create links from your backend (API)</CardTitle>
         <CardDescription>
-          All endpoints require a company key. <code>{'{ref}'}</code> is the numeric{' '}
-          <code>externalId</code> returned when you create the link. Payments are in USD.
+          Authenticate with your company key (see{' '}
+          <Link href="/app/documentation" className="text-primary hover:underline">
+            Getting started
+          </Link>
+          ). These are server-to-server endpoints — Bearer key, no cookies, no CSRF.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
         <div>
-          <p className="mb-1 text-xs font-medium uppercase text-muted-foreground">Endpoints</p>
-          <div className="space-y-1">
-            {rows.map(([m, p, d]) => (
-              <div key={p} className="grid grid-cols-12 gap-2 border-b py-2 text-xs last:border-0">
-                <span className="col-span-2 font-mono font-semibold">{m}</span>
-                <code className="col-span-5 font-mono">{p}</code>
-                <span className="col-span-5 text-muted-foreground">{d}</span>
-              </div>
-            ))}
-          </div>
+          <p className="mb-1 text-xs font-medium uppercase text-muted-foreground">
+            1. Create a payment link
+          </p>
+          <CodeBlock code={CREATE_CURL} />
         </div>
 
         <div>
-          <p className="mb-1 text-xs font-medium uppercase text-muted-foreground">
-            Payment statuses
-          </p>
+          <p className="mb-1 text-xs font-medium uppercase text-muted-foreground">Request fields</p>
           <div className="space-y-1">
-            {statuses.map(([s, d]) => (
-              <div key={s} className="grid grid-cols-12 gap-2 border-b py-2 text-xs last:border-0">
-                <code className="col-span-3 font-mono font-semibold">{s}</code>
+            {fields.map(([f, d]) => (
+              <div
+                key={f}
+                className="grid grid-cols-12 gap-2 border-b py-1.5 text-xs last:border-0"
+              >
+                <code className="col-span-3 font-mono">{f}</code>
                 <span className="col-span-9 text-muted-foreground">{d}</span>
               </div>
             ))}
@@ -621,23 +169,42 @@ function Reference() {
         </div>
 
         <div>
-          <p className="mb-1 text-xs font-medium uppercase text-muted-foreground">Errors</p>
+          <p className="mb-1 text-xs font-medium uppercase text-muted-foreground">Response</p>
+          <CodeBlock code={CREATE_RESPONSE} />
+          <p className="mt-2 text-xs text-muted-foreground">
+            Send <code className="font-mono">collectUrl</code> to your customer and store{' '}
+            <code className="font-mono">externalId</code> on your order — it is the reference you
+            use to look the payment up and the same id every CRM event carries.
+          </p>
+        </div>
+
+        <div>
+          <p className="mb-1 text-xs font-medium uppercase text-muted-foreground">
+            2. Check a payment&apos;s status
+          </p>
+          <CodeBlock code={STATUS_CURL} />
+          <p className="mt-2 text-xs text-muted-foreground">
+            Force a fresh pull from Whish (e.g. after a missed callback) with{' '}
+            <code className="font-mono">
+              POST /integrations/whish/payments/&#123;externalId&#125;/refresh
+            </code>
+            .
+          </p>
+        </div>
+
+        <div>
+          <p className="mb-1 text-xs font-medium uppercase text-muted-foreground">Statuses</p>
           <div className="space-y-1">
-            {errs.map(([c, s, d]) => (
-              <div key={c} className="grid grid-cols-12 gap-2 border-b py-2 text-xs last:border-0">
-                <code className="col-span-3 font-mono">{c}</code>
-                <span className="col-span-1 text-muted-foreground">{s}</span>
-                <span className="col-span-8">{d}</span>
+            {statuses.map(([s, d]) => (
+              <div
+                key={s}
+                className="grid grid-cols-12 gap-2 border-b py-1.5 text-xs last:border-0"
+              >
+                <code className="col-span-3 font-mono">{s}</code>
+                <span className="col-span-9 text-muted-foreground">{d}</span>
               </div>
             ))}
           </div>
-        </div>
-
-        <div className="rounded-md border-l-4 border-primary bg-primary/5 p-3 text-xs text-muted-foreground">
-          <strong className="text-foreground">Sandbox:</strong> pay with phone{' '}
-          <code>96170902894</code> / OTP <code>111111</code> for a success. The{' '}
-          <code>externalId</code> is your reference and makes settlement idempotent — a duplicate
-          callback never double-credits.
         </div>
       </CardContent>
     </Card>

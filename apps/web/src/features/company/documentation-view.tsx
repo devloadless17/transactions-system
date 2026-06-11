@@ -5,17 +5,16 @@ import { GettingStartedView } from './getting-started-view';
 import { WhishPayDocsView } from './whish-pay-docs-view';
 import { CompanyApiView } from './company-api-view';
 import { CrmView } from './crm-view';
-import { SourcesApiView } from './sources-api-view';
 
 // One "Documentation" hub. Each tab is a self-contained developer topic, in the
-// order you'd meet them: set up, collect, manage, receive events, ingest. Only
-// the active tab mounts.
+// order you'd meet them: set up, collect, manage, receive events. Only the
+// active tab mounts. (The Sources API is documentation for source *providers*,
+// not companies, so it isn't surfaced here in the company portal.)
 const TABS = [
   { id: 'start', label: 'Getting started', Component: GettingStartedView },
   { id: 'whish', label: 'Whish Pay', Component: WhishPayDocsView },
   { id: 'company', label: 'Company API', Component: CompanyApiView },
   { id: 'crm', label: 'CRM', Component: CrmView },
-  { id: 'sources', label: 'Sources API', Component: SourcesApiView },
 ] as const;
 
 type TabId = (typeof TABS)[number]['id'];

@@ -80,12 +80,7 @@ export function GettingStartedView() {
             <KeyType
               name="Company key"
               who="You — the company"
-              desc="Full access to your own company: wallets, transactions, withdrawals, payouts, loads, Whish Pay, CRM, team, and keys. This is the key you'll use for everything in the Whish Pay and Company API tabs."
-            />
-            <KeyType
-              name="Source key"
-              who="External providers"
-              desc="Lets a provider (OMT, Whish, a bank…) push transactions into the platform. Issued by the platform admin, one per source. Covered in the Sources API tab."
+              desc="Full access to your own company: wallets, transactions, withdrawals, payouts, loads, Whish Pay, CRM, team, and keys. This is the key you'll use for every call in the Company API tab."
             />
           </div>
           <p className="text-xs text-muted-foreground">

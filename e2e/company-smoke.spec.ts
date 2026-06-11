@@ -9,7 +9,9 @@ const COMPANY_ROUTES: Array<{ path: string; heading: RegExp | string }> = [
   { path: '/app/wallets', heading: /wallets/i },
   { path: '/app/ledger', heading: /ledger/i },
   { path: '/app/withdrawals', heading: /withdrawals/i },
-  { path: '/app/documentation', heading: /whish pay|crm integration|documentation/i },
+  // The docs hub opens on the "Getting started" tab by default; the other tabs
+  // (Whish Pay / Company API / CRM / Sources API) each render their own h1 too.
+  { path: '/app/documentation', heading: /getting started|whish pay|company api|crm|sources api/i },
   { path: '/app/sources', heading: /sources/i },
   { path: '/app/team', heading: /team|members/i },
   { path: '/app/settings', heading: /settings/i },

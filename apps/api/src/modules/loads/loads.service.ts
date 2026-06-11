@@ -187,7 +187,7 @@ export class LoadsService {
   async cancel(
     id: string,
     companyId: string,
-    cancelledById: string,
+    cancelledById: string | null,
     input: CancelRequestInput,
   ): Promise<LoadResponse> {
     return this.close(id, input.notes, { cancelledById, status: 'CANCELLED', companyId });
@@ -199,7 +199,7 @@ export class LoadsService {
     opts: {
       status: WithdrawalStatus;
       approvedById?: string;
-      cancelledById?: string;
+      cancelledById?: string | null;
       companyId?: string;
     },
   ): Promise<LoadResponse> {

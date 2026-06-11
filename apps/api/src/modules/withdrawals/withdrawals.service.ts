@@ -218,7 +218,7 @@ export class WithdrawalsService {
   async cancel(
     id: string,
     companyId: string,
-    cancelledById: string,
+    cancelledById: string | null,
     input: CancelRequestInput,
   ): Promise<WithdrawalResponse> {
     return this.release(id, input.notes, { cancelledById, status: 'CANCELLED', companyId });
@@ -231,7 +231,7 @@ export class WithdrawalsService {
     opts: {
       status: WithdrawalStatus;
       approvedById?: string;
-      cancelledById?: string;
+      cancelledById?: string | null;
       companyId?: string;
     },
   ): Promise<WithdrawalResponse> {

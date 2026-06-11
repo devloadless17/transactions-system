@@ -125,6 +125,25 @@ describe('withdrawal', () => {
     expect(eq(snap.wallet!.reserved, '0')).toBe(true);
     expect(snap.balanced).toBe(true);
   });
+
+  it('cancel works with a null actor (API-key caller) — no user-FK violation, funds released', async () => {
+    // A company API key has no real users row; the controller passes null for the
+    // requester/canceller. Cancelling must not write a non-user id into the
+    // cancelled_by FK — this guards the bug where the key id leaked into it.
+    const { companyId } = await createCompany(h);
+    const sourceId = await createEnabledSource(h, companyId);
+    await addTransactionFee(h, companyId, '10');
+    await h.transactions.ingest({ kind: 'source', sourceId }, ingestInput(companyId, '100'));
+
+    const w = await h.withdrawals.request(companyId, null, cashWithdrawalInput('40'));
+    const cancelled = await h.withdrawals.cancel(w.id, companyId, null, { notes: 'via api key' });
+    expect(cancelled.status).toBe('CANCELLED');
+
+    const snap = await snapshot(h, companyId);
+    expect(snap.balanced).toBe(true);
+    expect(eq(snap.wallet!.available, '90')).toBe(true); // the reserved 40 was released
+    expect(eq(snap.wallet!.reserved, '0')).toBe(true);
+  });
 });
 
 describe('concurrency', () => {
