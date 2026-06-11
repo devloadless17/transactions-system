@@ -97,10 +97,13 @@ export function SourcesApiView() {
           <CardTitle>3. Send a transaction</CardTitle>
           <CardDescription>
             The source is named in the URL path (
-            <code className="font-mono">/ingest/&lt;sourceCode&gt;/transactions</code>); the body
-            carries the destination <code className="font-mono">operatingId</code> and the financial
-            fields. The <code className="font-mono">(source, externalTransactionId)</code> pair is a
-            natural dedup key, so retries are safe — you can also supply your own{' '}
+            <code className="font-mono font-semibold text-foreground">
+              /ingest/&lt;sourceCode&gt;/transactions
+            </code>
+            ); the body carries the destination <code className="font-mono">operatingId</code> and
+            the financial fields. The{' '}
+            <code className="font-mono">(source, externalTransactionId)</code> pair is a natural
+            dedup key, so retries are safe — you can also supply your own{' '}
             <code className="font-mono">idempotencyKey</code>.
           </CardDescription>
         </CardHeader>

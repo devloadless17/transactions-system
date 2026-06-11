@@ -13,7 +13,7 @@ import { apiFetch } from '@/lib/api.client';
 import { formatNumber } from '@/lib/format';
 import { useOverview } from '@/features/analytics/use-overview';
 import { KpiCard } from '@/features/analytics/kpi-card';
-import { VolumeChart } from '@/features/analytics/volume-chart';
+import { VolumeChart } from '@/features/analytics/volume-chart.lazy';
 import {
   DateRangeControls,
   DEFAULT_RANGE,

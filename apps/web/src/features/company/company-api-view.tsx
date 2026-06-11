@@ -122,10 +122,11 @@ export function CompanyApiView() {
           <CardTitle>2. Request a withdrawal, payout, or load</CardTitle>
           <CardDescription>
             All three share the same body — only the path differs:{' '}
-            <code className="font-mono">/company/withdrawals</code>,{' '}
-            <code className="font-mono">/company/payouts</code>, or{' '}
-            <code className="font-mono">/company/loads</code>. Requests land in{' '}
-            <strong>PENDING</strong> and need platform-admin approval before any funds move.
+            <code className="font-mono font-semibold text-foreground">/company/withdrawals</code>,{' '}
+            <code className="font-mono font-semibold text-foreground">/company/payouts</code>, or{' '}
+            <code className="font-mono font-semibold text-foreground">/company/loads</code>.
+            Requests land in <strong>PENDING</strong> and need platform-admin approval before any
+            funds move.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -199,8 +200,10 @@ export function CompanyApiView() {
           </div>
           <p className="mt-3 text-xs text-muted-foreground">
             Cancel while still PENDING:{' '}
-            <code className="font-mono">POST /company/withdrawals/:id/cancel</code> (same path shape
-            for payouts and loads).
+            <code className="font-mono font-semibold text-foreground">
+              POST /company/withdrawals/:id/cancel
+            </code>{' '}
+            (same path shape for payouts and loads).
           </p>
           <div className="mt-3">
             <CodeBlock code={CANCEL_CURL} />
@@ -226,8 +229,8 @@ export function CompanyApiView() {
         <CardHeader>
           <CardTitle>All endpoints at a glance</CardTitle>
           <CardDescription>
-            Every <code className="font-mono">company/*</code> route accepts your company key. Whish
-            Pay and CRM have their own tabs.
+            Every <code className="font-mono font-semibold text-foreground">company/*</code> route
+            accepts your company key. Whish Pay and CRM have their own tabs.
           </CardDescription>
         </CardHeader>
         <CardContent>

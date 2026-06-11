@@ -567,7 +567,7 @@ export class TransactionsService {
         `list-count:txn:${args.companyId ?? args.query.companyId ?? 'all'}` +
         `:${args.query.status ?? ''}:${args.query.sourceId ?? ''}:${args.query.currency ?? ''}` +
         `:${args.query.from ?? ''}:${args.query.to ?? ''}:${args.query.search ?? ''}`;
-      const [rows, total, sources] = await Promise.all([
+      const [rows, total] = await Promise.all([
         tx.transaction.findMany({
           where,
           // createdAt alone isn't a total order; add id so rows with the same
@@ -575,15 +575,15 @@ export class TransactionsService {
           orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
           skip,
           take: args.query.pageSize,
+          // Join the source code for just this page's rows (indexed FK). Cheaper
+          // and more scalable than loading the whole sources table per request.
           include: { source: { select: { code: true } } },
         }),
         this.cache.wrap(countKey, LIST_COUNT_CACHE_TTL_SEC, () => tx.transaction.count({ where })),
-        tx.source.findMany({ select: { id: true, code: true } }),
       ]);
-      const codeBySource = new Map(sources.map((s) => [s.id, s.code]));
 
       return {
-        data: rows.map((r) => mapTxRow(r, codeBySource.get(r.sourceId) ?? '')),
+        data: rows.map((r) => mapTxRow(r, r.source.code)),
         meta: {
           page: args.query.page,
           pageSize: args.query.pageSize,

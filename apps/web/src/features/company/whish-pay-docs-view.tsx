@@ -1,5 +1,5 @@
 'use client';
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
 import { toast } from 'sonner';
@@ -197,9 +197,18 @@ export function WhishPayDocsView() {
 }
 
 function HowItWorks() {
-  const steps = [
+  const steps: [string, ReactNode][] = [
     ['Create a key', 'Mint a company API key in Settings → API keys. The secret is shown once.'],
-    ['Generate a link', 'POST /integrations/whish/payments with amount + currency + invoice.'],
+    [
+      'Generate a link',
+      <>
+        POST{' '}
+        <code className="font-mono font-semibold text-foreground">
+          /integrations/whish/payments
+        </code>{' '}
+        with amount + currency + invoice.
+      </>,
+    ],
     [
       'Share collectUrl',
       'Send the returned collectUrl to your customer; store externalId on your order.',
@@ -208,7 +217,16 @@ function HowItWorks() {
       'Settle automatically',
       'On payment, we verify with Whish, apply commission, and credit your wallet.',
     ],
-    ['Know the result', 'Poll GET /integrations/whish/payments/{ref} until status is PAID/FAILED.'],
+    [
+      'Know the result',
+      <>
+        Poll GET{' '}
+        <code className="font-mono font-semibold text-foreground">
+          {'/integrations/whish/payments/{ref}'}
+        </code>{' '}
+        until status is PAID/FAILED.
+      </>,
+    ],
   ];
   return (
     <Card>

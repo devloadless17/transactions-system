@@ -57,7 +57,8 @@ export function GettingStartedView() {
           <CardTitle>Base URL</CardTitle>
           <CardDescription>
             Every endpoint lives under this base. All paths in these docs are written relative to it
-            and are prefixed with <code className="font-mono">/v1</code>.
+            and are prefixed with{' '}
+            <code className="font-mono font-semibold text-foreground">/v1</code>.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -122,8 +123,9 @@ export function GettingStartedView() {
               </li>
               <li>
                 <strong className="text-foreground">Two exceptions</strong> return raw bodies (no
-                envelope): CSV exports (<code className="font-mono">/export.csv</code>) and the
-                health check.
+                envelope): CSV exports (
+                <code className="font-mono font-semibold text-foreground">/export.csv</code>) and
+                the health check.
               </li>
             </ul>
           </div>

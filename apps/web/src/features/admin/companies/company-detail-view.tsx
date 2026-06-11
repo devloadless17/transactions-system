@@ -22,7 +22,7 @@ import { apiFetch } from '@/lib/api.client';
 import { ApiClientError } from '@/lib/api';
 import { formatNumber as fmt, trimAmount } from '@/lib/format';
 import { KpiCard } from '@/features/analytics/kpi-card';
-import { VolumeChart } from '@/features/analytics/volume-chart';
+import { VolumeChart } from '@/features/analytics/volume-chart.lazy';
 import {
   DateRangeControls,
   DEFAULT_RANGE,

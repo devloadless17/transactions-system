@@ -14,7 +14,7 @@ import { DataTable, type Column } from '@/components/ui/data-table';
 import { apiFetch } from '@/lib/api.client';
 import { formatNumber as fmt } from '@/lib/format';
 import { KpiCard } from '@/features/analytics/kpi-card';
-import { VolumeChart } from '@/features/analytics/volume-chart';
+import { VolumeChart } from '@/features/analytics/volume-chart.lazy';
 import {
   DateRangeControls,
   DEFAULT_RANGE,

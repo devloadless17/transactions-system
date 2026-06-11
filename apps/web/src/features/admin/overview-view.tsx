@@ -11,7 +11,7 @@ import { DataTable, type Column } from '@/components/ui/data-table';
 import { apiFetch } from '@/lib/api.client';
 import { formatNumber as fmt } from '@/lib/format';
 import { KpiCard } from '@/features/analytics/kpi-card';
-import { FlowsChart } from '@/features/analytics/flows-chart';
+import { FlowsChart } from '@/features/analytics/flows-chart.lazy';
 import { useOverview } from '@/features/analytics/use-overview';
 import {
   DateRangeControls,
