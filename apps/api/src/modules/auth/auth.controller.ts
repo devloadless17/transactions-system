@@ -128,7 +128,8 @@ export class AuthController {
       httpOnly: false,
       secure: this.config.get('COOKIE_SECURE', { infer: true }),
       sameSite: 'lax',
-      domain: this.config.get('COOKIE_DOMAIN', { infer: true }),
+      // Empty ⇒ host-only cookie (no Domain attribute). See setAuthCookies.
+      domain: this.config.get('COOKIE_DOMAIN', { infer: true }) || undefined,
       path: '/',
       maxAge: 24 * 3600 * 1000,
     });
@@ -145,7 +146,11 @@ export class AuthController {
     },
   ): void {
     const secure = this.config.get('COOKIE_SECURE', { infer: true });
-    const domain = this.config.get('COOKIE_DOMAIN', { infer: true });
+    // Empty COOKIE_DOMAIN ⇒ host-only cookie (Express omits the Domain
+    // attribute when it's undefined). Host-only is correct for our same-origin
+    // setup and, critically, stops a prod cookie (Domain=parent) from bleeding
+    // into a staging SUBDOMAIN and shadowing staging's own token.
+    const domain = this.config.get('COOKIE_DOMAIN', { infer: true }) || undefined;
     const common = {
       httpOnly: true,
       secure,
@@ -171,7 +176,11 @@ export class AuthController {
   }
 
   private clearAuthCookies(res: Response): void {
-    const domain = this.config.get('COOKIE_DOMAIN', { infer: true });
+    // Empty COOKIE_DOMAIN ⇒ host-only cookie (Express omits the Domain
+    // attribute when it's undefined). Host-only is correct for our same-origin
+    // setup and, critically, stops a prod cookie (Domain=parent) from bleeding
+    // into a staging SUBDOMAIN and shadowing staging's own token.
+    const domain = this.config.get('COOKIE_DOMAIN', { infer: true }) || undefined;
     res.clearCookie(ACCESS_COOKIE_NAME, { domain, path: '/' });
     res.clearCookie(REFRESH_COOKIE_NAME, { domain, path: '/' });
     res.clearCookie(CSRF_COOKIE_NAME, { domain, path: '/' });

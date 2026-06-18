@@ -82,11 +82,35 @@ confirm a Whish payment link mints against the sandbox.
 
 ---
 
-## Updating staging to a new build
+## Continuous deployment (branch flow)
+
+Two branches, two stacks, same server:
+
+| Push to…  | Workflow                               | Deploys                                | Whish   |
+| --------- | -------------------------------------- | -------------------------------------- | ------- |
+| `main`    | `.github/workflows/deploy.yml`         | prod (`docker-compose.prod.yml`)       | LIVE    |
+| `staging` | `.github/workflows/deploy-staging.yml` | staging (`docker-compose.staging.yml`) | SANDBOX |
+
+- Each workflow builds **its own branch's code**, so staging tests exactly what
+  you'll later merge to `main`.
+- Images are tagged per stack — prod: `:latest` / `:<sha>`; staging: `:staging` /
+  `:staging-<sha>` — so they never collide in the shared Docker Hub repo.
+- The staging workflow needs **no extra GitHub secrets** (just the SSH + Docker
+  ones prod already uses). Staging's app secrets stay in `.env.staging` on the
+  server; CI only ships code and re-points the stack at the new image tag.
+
+Typical flow: do the work on `staging` → push → it deploys to the sandbox site →
+verify → open a PR `staging → main` → merge → prod deploys.
+
+> First-time `staging` branch: `git switch -c staging && git push -u origin staging`.
+> `.env.staging` must already exist on the server (see One-time setup above) or
+> the staging deploy fails fast with a clear message.
+
+## Updating staging manually (without a push)
 
 ```bash
 SC="docker compose -p staging --env-file .env.staging -f docker-compose.staging.yml"
-# Optionally pin .env.staging IMAGE_TAG to a specific commit SHA first.
+# Optionally pin .env.staging IMAGE_TAG to a specific image tag first.
 $SC pull
 $SC run --rm migrate-staging     # only if there are new migrations
 $SC up -d --remove-orphans

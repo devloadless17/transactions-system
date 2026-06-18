@@ -20,6 +20,11 @@ export const envSchema = z
       .positive()
       .default(7 * 24 * 3600),
 
+    // Leave EMPTY for host-only auth cookies (no Domain attribute) — the
+    // recommended setup for our same-origin web+API. Host-only keeps each
+    // host's cookies to itself, so a prod cookie can't bleed into a staging
+    // subdomain. Only set an explicit domain if you deliberately need cookies
+    // shared across subdomains (we don't).
     COOKIE_DOMAIN: z.string().default('localhost'),
     COOKIE_SECURE: z
       .union([z.literal('true'), z.literal('false')])
