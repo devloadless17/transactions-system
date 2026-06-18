@@ -25,7 +25,7 @@ import {
 } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { apiFetch } from '@/lib/api.client';
-import { ApiClientError } from '@/lib/api';
+import { ApiClientError, publicApiBase } from '@/lib/api';
 import { trimAmount } from '@/lib/format';
 import { useDebouncedValue } from '@/lib/use-debounced-value';
 import { EmptyState } from '@/components/empty-state';
@@ -216,7 +216,7 @@ export function TransactionsView({
     exportParams.delete('pageSize');
     const path =
       scope === 'admin' ? '/admin/transactions/export.csv' : '/company/transactions/export.csv';
-    const base = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:3001/v1';
+    const base = publicApiBase();
     setExporting(true);
     try {
       // Fetch with credentials, then download the blob. A failed request returns

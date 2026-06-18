@@ -8,7 +8,7 @@ import {
   type RealtimeInvalidate,
   type RealtimeTopic,
 } from '@app/shared';
-import { PUBLIC_API_BASE } from './api';
+import { publicApiBase } from './api';
 import { refreshSession } from './api.client';
 
 /**
@@ -66,7 +66,7 @@ const TOPIC_KEYS: Record<RealtimeTopic, KeysFor> = {
 /** Origin of the API (strip the `/v1` path) so we can reach the socket server. */
 function socketOrigin(): string | null {
   try {
-    return new URL(PUBLIC_API_BASE).origin;
+    return new URL(publicApiBase()).origin;
   } catch {
     return null;
   }

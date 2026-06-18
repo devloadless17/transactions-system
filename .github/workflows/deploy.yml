@@ -99,17 +99,19 @@ jobs:
           password: ${{ secrets.DOCKER_SECRET }}
 
       # Tags: latest + commit SHA (the SHA tag is what the deploy pins to, for
-      # rollbacks). secrets.* can't be read in `strategy.matrix`, so the web's
-      # NEXT_PUBLIC_API_BASE_URL build-arg (inlined into the browser bundle at
-      # BUILD time, same-origin https://DOMAIN/v1) is computed here in the step,
-      # conditionally — the api image takes no build args.
+      # rollbacks). The web image is built with an EMPTY NEXT_PUBLIC_API_BASE_URL
+      # on purpose: the browser then resolves the API base same-origin at runtime
+      # (window.location.origin + /v1, see apps/web/src/lib/api.ts:publicApiBase).
+      # That makes the image domain-agnostic — the SAME image serves prod AND a
+      # staging instance on a different subdomain with no rebuild. The api image
+      # takes no build args.
       - name: Build & push ${{ matrix.app }} image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ${{ matrix.dockerfile }}
           push: true
-          build-args: ${{ matrix.app == 'web' && format('NEXT_PUBLIC_API_BASE_URL=https://{0}/v1', secrets.DOMAIN) || '' }}
+          build-args: ${{ matrix.app == 'web' && 'NEXT_PUBLIC_API_BASE_URL=' || '' }}
           tags: |
             ${{ secrets.DOCKER_USERNAME }}/transactions-${{ matrix.app }}:latest
             ${{ secrets.DOCKER_USERNAME }}/transactions-${{ matrix.app }}:${{ github.sha }}
@@ -258,7 +260,7 @@ jobs:
 
           echo "==> Copying files to $SSH_USER@$HOST:$DEPLOY_DIR"
           scp -i "$KEY" -P "$PORT" $COMMON \
-            docker-compose.prod.yml Caddyfile rollback.sh .env.rendered \
+            docker-compose.prod.yml docker-compose.staging.yml Caddyfile rollback.sh .env.rendered \
             "$SSH_USER@$HOST:$DEPLOY_DIR/"
 
           echo "==> Activating .env + deploying"

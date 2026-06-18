@@ -15,9 +15,11 @@ RUN pnpm install --frozen-lockfile --filter @app/web... --filter @app/shared...
 COPY packages/shared packages/shared
 COPY apps/web apps/web
 
-# The browser-facing API base is inlined into the client bundle at BUILD time
-# (Next.js NEXT_PUBLIC_*), so it cannot be changed by a runtime env var. Pass a
-# build arg for any non-localhost deployment (e.g. an HTTPS gateway origin).
+# Browser-facing API base. Deployed environments serve web + API same-origin, so
+# the prod/staging build passes this EMPTY and the client resolves the base from
+# its own origin at runtime (see apps/web/src/lib/api.ts:publicApiBase) — which is
+# what makes the image domain-agnostic. The localhost default below is only for a
+# LOCAL docker build, where web (:3000) and API (:3001) are on different origins.
 ARG NEXT_PUBLIC_API_BASE_URL=http://localhost:3001/v1
 ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL
 

@@ -23,3 +23,24 @@
 		reverse_proxy web:3000
 	}
 }
+
+# ---------------------------------------------------------------------------
+# OPTIONAL staging instance — same app, isolated DB/Redis, Whish SANDBOX.
+# Served by THIS Caddy over the shared `edge` network to the staging containers
+# (docker-compose.staging.yml: api-staging / web-staging). If the staging stack
+# isn't running, this block simply 502s; it never affects the prod site above.
+# Caddy auto-provisions a separate TLS cert once a DNS A record for this host
+# points at the server. Change the hostname here if you use a different one.
+# ---------------------------------------------------------------------------
+staging.portal.rivalpayments.com {
+	encode zstd gzip
+
+	@api path /v1/* /socket.io/*
+	handle @api {
+		reverse_proxy api-staging:3001
+	}
+
+	handle {
+		reverse_proxy web-staging:3000
+	}
+}

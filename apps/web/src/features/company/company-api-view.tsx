@@ -2,11 +2,9 @@
 import Link from 'next/link';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { CodeBlock } from '@/components/ui/code-block';
+import { publicApiBase } from '@/lib/api';
 
-const API_BASE =
-  typeof window !== 'undefined'
-    ? (process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:3001/v1')
-    : 'http://localhost:3001/v1';
+const API_BASE = typeof window !== 'undefined' ? publicApiBase() : 'http://localhost:3001/v1';
 
 const WALLETS_CURL = `curl ${API_BASE}/company/wallets \\
   -H "Authorization: Bearer tsk_<company-key>"

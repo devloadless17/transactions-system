@@ -20,6 +20,7 @@ import {
   type RangePreset,
 } from '@/components/ui/date-range-picker';
 import { apiFetch } from '@/lib/api.client';
+import { publicApiBase } from '@/lib/api';
 import { trimAmount } from '@/lib/format';
 
 const PAGE_SIZE = 50;
@@ -82,7 +83,7 @@ export function LedgerView() {
     const exportParams = new URLSearchParams(params);
     exportParams.delete('page');
     exportParams.delete('pageSize');
-    const base = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:3001/v1';
+    const base = publicApiBase();
     setExporting(true);
     try {
       // A failed request returns an error body, not a CSV, so check `ok` before

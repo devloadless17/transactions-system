@@ -1,6 +1,6 @@
 'use client';
 import { toast } from 'sonner';
-import { ApiClientError, PUBLIC_API_BASE, unwrapEnvelope, type ApiErrorBody } from './api';
+import { ApiClientError, publicApiBase, unwrapEnvelope, type ApiErrorBody } from './api';
 
 const CSRF_COOKIE_NAME = 'csrf-token';
 const CSRF_HEADER_NAME = 'x-csrf-token';
@@ -44,7 +44,7 @@ export function refreshSession(): Promise<boolean> {
   if (refreshInFlight) return refreshInFlight;
   refreshInFlight = (async () => {
     try {
-      const res = await fetch(`${PUBLIC_API_BASE}/auth/refresh`, {
+      const res = await fetch(`${publicApiBase()}/auth/refresh`, {
         method: 'POST',
         credentials: 'include',
       });
@@ -104,13 +104,13 @@ async function requestWithAuthRetry<T>(
     let csrf = readCookie(CSRF_COOKIE_NAME);
     if (!csrf) {
       // Fetch a CSRF token if we don't have one (first mutation after refresh).
-      const r = await fetch(`${PUBLIC_API_BASE}/auth/csrf`, { credentials: 'include' });
+      const r = await fetch(`${publicApiBase()}/auth/csrf`, { credentials: 'include' });
       if (r.ok) csrf = readCookie(CSRF_COOKIE_NAME);
     }
     if (csrf) headers[CSRF_HEADER_NAME] = csrf;
   }
 
-  const res = await fetch(`${PUBLIC_API_BASE}${path}`, {
+  const res = await fetch(`${publicApiBase()}${path}`, {
     method,
     credentials: 'include',
     headers,

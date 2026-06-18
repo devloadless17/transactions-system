@@ -5,7 +5,42 @@
  * env-only URLs) doesn't leak into the client bundle.
  */
 
-export const PUBLIC_API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:3001/v1';
+/**
+ * Browser-facing API base URL.
+ *
+ * Web and API are SAME-ORIGIN in every deployed environment (Caddy serves
+ * `/v1/*` on the same domain as the web app), so the browser just calls its own
+ * origin + `/v1`. Computing this at RUNTIME — instead of baking an absolute URL
+ * into the bundle — makes the built web image domain-agnostic: the exact same
+ * prod image serves a staging instance on a different subdomain with no rebuild.
+ *
+ * Precedence:
+ *   1. An explicit build-time `NEXT_PUBLIC_API_BASE_URL` wins. Local dev runs the
+ *      web (:3000) and API (:3001) on DIFFERENT origins, so `.env` sets this to
+ *      `http://localhost:3001/v1` and same-origin must NOT kick in.
+ *   2. Otherwise (prod/staging images are built with the var empty) → same-origin.
+ *   3. Server-side/no-window fallback (SSR first paint of docs snippets only;
+ *      real browser calls never hit this) → localhost default.
+ */
+export function publicApiBase(): string {
+  const fromEnv = process.env.NEXT_PUBLIC_API_BASE_URL;
+  if (typeof window !== 'undefined') {
+    const origin = window.location.origin;
+    // In EVERY deployed environment the web app and API share an origin, so the
+    // page's own origin is authoritative — we ignore any baked URL here. This is
+    // what makes one image portable across prod/staging, and it also means a
+    // mis-baked build value can never make prod call the wrong API.
+    const localPage =
+      origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1');
+    if (!localPage) return `${origin}/v1`;
+    // Local dev serves the web (:3000) and API (:3001) on DIFFERENT origins, so
+    // honor the explicit cross-origin value from `.env` here.
+    return fromEnv || `${origin}/v1`;
+  }
+  // Server-side (SSR first paint of doc snippets only; real browser calls never
+  // reach this) — fall back to the build-time value, else localhost.
+  return fromEnv || 'http://localhost:3001/v1';
+}
 
 export type ApiErrorBody = {
   error: {

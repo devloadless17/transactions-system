@@ -1,0 +1,152 @@
+# ============================================================================
+# OPTIONAL staging stack — runs ALONGSIDE the live prod stack on the same host.
+#
+# It REUSES the exact same published images as prod (the web image is built
+# domain-agnostic / same-origin, so no separate build is needed) but with:
+#   • its own Postgres + Redis + volumes (zero shared data with prod),
+#   • its own secrets and the Whish SANDBOX credentials,
+#   • a different public hostname (staging.portal.rivalpayments.com),
+#   • NO published host ports — the prod Caddy reaches it over the shared `edge`
+#     network and terminates TLS, exactly like it does for prod.
+#
+# Run it as a SEPARATE compose project so volumes/networks never collide with
+# prod, and point it at the staging env file:
+#
+#   docker network create edge            # once; shared with prod's Caddy
+#   docker compose -p staging --env-file .env.staging -f docker-compose.staging.yml pull
+#   docker compose -p staging --env-file .env.staging -f docker-compose.staging.yml \
+#     run --rm migrate-staging            # migrate / rotate RLS / seed
+#   docker compose -p staging --env-file .env.staging -f docker-compose.staging.yml \
+#     up -d --remove-orphans
+#
+# All service names carry a `-staging` suffix so their network aliases on `edge`
+# never clash with the prod `api` / `web` aliases the prod Caddy also resolves.
+# ============================================================================
+
+# Hard-pin the compose project name so staging's volumes/networks are always
+# `staging_*` and can NEVER be mistaken for the prod project (whose name derives
+# from the deploy directory). This makes `--remove-orphans` etc. safe to run.
+name: staging
+
+services:
+  postgres-staging:
+    image: postgres:16-alpine
+    container_name: txn_postgres_staging
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data_staging:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis-staging:
+    image: redis:7-alpine
+    container_name: txn_redis_staging
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes']
+    volumes:
+      - redis_data_staging:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One-shot: apply migrations, rotate the RLS role password, optionally seed.
+  # Profile-gated so `up` never starts it — run it explicitly before `up`.
+  migrate-staging:
+    profiles: ['migrate']
+    image: ${DOCKER_USERNAME}/transactions-api:${IMAGE_TAG:-latest}
+    container_name: txn_migrate_staging
+    restart: 'no'
+    depends_on:
+      postgres-staging:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_MIGRATIONS_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres-staging:5432/${POSTGRES_DB}?schema=public
+      POSTGRES_USER_RLS: ${POSTGRES_USER_RLS:-txn_app_rls}
+      POSTGRES_PASSWORD_RLS: ${POSTGRES_PASSWORD_RLS}
+      SEED_DATABASE: ${SEED_DATABASE:-false}
+      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD}
+    command: ['sh', '/repo/packages/db/deploy.sh']
+
+  api-staging:
+    image: ${DOCKER_USERNAME}/transactions-api:${IMAGE_TAG:-latest}
+    container_name: txn_api_staging
+    restart: unless-stopped
+    depends_on:
+      postgres-staging:
+        condition: service_healthy
+      redis-staging:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      API_PORT: 3001
+      API_HOST: 0.0.0.0
+      API_GLOBAL_PREFIX: v1
+      DATABASE_URL: postgresql://${POSTGRES_USER_RLS:-txn_app_rls}:${POSTGRES_PASSWORD_RLS}@postgres-staging:5432/${POSTGRES_DB}?schema=public
+      REDIS_URL: redis://redis-staging:6379
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      CSRF_SECRET: ${CSRF_SECRET}
+      COOKIE_DOMAIN: ${COOKIE_DOMAIN}
+      COOKIE_SECURE: 'true'
+      WEB_ORIGIN: ${WEB_ORIGIN}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+      API_PUBLIC_URL: ${API_PUBLIC_URL}
+      METRICS_TOKEN: ${METRICS_TOKEN}
+      # Whish SANDBOX for staging. WHISH_ALLOW_SANDBOX=true lets the prod build
+      # accept the sandbox base + (non-https) sandbox website URL.
+      WHISH_BASE_URL: ${WHISH_BASE_URL}
+      WHISH_CHANNEL: ${WHISH_CHANNEL:-}
+      WHISH_SECRET: ${WHISH_SECRET:-}
+      WHISH_WEBSITE_URL: ${WHISH_WEBSITE_URL}
+      WHISH_CALLBACK_BASE: ${WHISH_CALLBACK_BASE}
+      WHISH_USER_AGENT: '${WHISH_USER_AGENT}'
+      WHISH_ENABLED_CURRENCIES: ${WHISH_ENABLED_CURRENCIES:-USD}
+      WHISH_ALLOW_SANDBOX: ${WHISH_ALLOW_SANDBOX:-true}
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:3001/v1/health || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    networks:
+      - default
+      - edge
+
+  web-staging:
+    image: ${DOCKER_USERNAME}/transactions-web:${IMAGE_TAG:-latest}
+    container_name: txn_web_staging
+    restart: unless-stopped
+    depends_on:
+      api-staging:
+        condition: service_started
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      # SSR → staging API over the internal staging network. The browser resolves
+      # the API same-origin (https://staging.../v1) at runtime, so no build-time URL.
+      API_INTERNAL_BASE_URL: http://api-staging:3001/v1
+    networks:
+      - default
+      - edge
+
+volumes:
+  postgres_data_staging:
+  redis_data_staging:
+
+networks:
+  # Internal staging-only network (its postgres/redis/api/web talk here).
+  default:
+  # Shared bridge to the prod Caddy. External + pre-created (`docker network
+  # create edge`); the prod stack attaches its Caddy to the same network.
+  edge:
+    external: true

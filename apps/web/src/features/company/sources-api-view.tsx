@@ -1,11 +1,9 @@
 'use client';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { CodeBlock } from '@/components/ui/code-block';
+import { publicApiBase } from '@/lib/api';
 
-const API_BASE =
-  typeof window !== 'undefined'
-    ? (process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:3001/v1')
-    : 'http://localhost:3001/v1';
+const API_BASE = typeof window !== 'undefined' ? publicApiBase() : 'http://localhost:3001/v1';
 
 const DISCOVERY_CURL = `curl -X GET ${API_BASE}/ingest/companies \\
   -H "Authorization: Bearer tsk_<source-key>"`;

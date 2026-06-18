@@ -143,9 +143,26 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+    # `default` keeps Caddy reaching the prod api/web; `edge` is a shared external
+    # network so this same Caddy can also reverse-proxy the OPTIONAL staging stack
+    # (docker-compose.staging.yml) which attaches its api/web to `edge` too. The
+    # staging route in the Caddyfile just 502s when staging isn't running — prod
+    # is unaffected. `edge` must exist before deploy: `docker network create edge`.
+    networks:
+      - default
+      - edge
 
 volumes:
   postgres_data:
   redis_data:
   caddy_data:
   caddy_config:
+
+networks:
+  # Compose's implicit per-project network (prod postgres/redis/api/web live here).
+  default:
+  # Shared, externally-created bridge that links the prod Caddy to the staging
+  # stack. External so neither stack owns its lifecycle — a prod `down` never
+  # removes it, and staging can attach independently.
+  edge:
+    external: true
