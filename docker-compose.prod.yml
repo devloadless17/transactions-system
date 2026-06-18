@@ -121,8 +121,12 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3000
-      # SSR → API over the internal network. The browser uses the build-time
-      # NEXT_PUBLIC_API_BASE_URL baked into the image (https://DOMAIN/v1).
+      # Bind Next.js standalone to all interfaces (it otherwise binds $HOSTNAME =
+      # the container ID, i.e. a single network IP). Harmless on prod's single
+      # network; keeps web reachable if it ever joins a second network.
+      HOSTNAME: '0.0.0.0'
+      # SSR → API over the internal network. The browser resolves the API
+      # same-origin at runtime (apps/web/src/lib/api.ts:publicApiBase).
       API_INTERNAL_BASE_URL: http://api:3001/v1
 
   caddy:

@@ -132,6 +132,12 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3000
+      # Next.js standalone binds to $HOSTNAME, which Docker defaults to the
+      # container ID — resolving to only ONE of this container's network IPs. Since
+      # web-staging is on TWO networks (staging_default + edge), that leaves the
+      # edge IP unbound and Caddy's dial gets "connection refused". Bind all
+      # interfaces so Caddy can reach it over `edge`.
+      HOSTNAME: '0.0.0.0'
       # SSR → staging API over the internal staging network. The browser resolves
       # the API same-origin (https://staging.../v1) at runtime, so no build-time URL.
       API_INTERNAL_BASE_URL: http://api-staging:3001/v1
