@@ -28,7 +28,8 @@ export interface ResolvableRule {
   operationType: FeeOperationType;
   feeApplication: FeeApplication;
   minAmount: string;
-  maxAmount: string;
+  // null = open-ended top tier ("and above"); treated as +infinity in matching.
+  maxAmount: string | null;
   commissionType: CommissionType;
   commissionValue: string;
   priority: number;
@@ -117,8 +118,11 @@ export class CommissionResolverService {
       if (r.companyId !== null && r.companyId !== companyId) return false;
       if (r.sourceId !== null && r.sourceId !== sourceId) return false;
       const min = Money.of(r.minAmount);
-      const max = Money.of(r.maxAmount);
-      return amount.gte(min) && amount.lte(max);
+      if (!amount.gte(min)) return false;
+      // maxAmount === null is an open-ended top tier ("and above"): no upper
+      // bound, so any amount >= min is in range.
+      if (r.maxAmount === null) return true;
+      return amount.lte(Money.of(r.maxAmount));
     });
 
     if (candidates.length === 0) return null;

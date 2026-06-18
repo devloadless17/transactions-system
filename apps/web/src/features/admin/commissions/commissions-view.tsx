@@ -2,201 +2,72 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import type {
-  CommissionRuleResponse,
-  CompanyResponse,
-  PaginatedResponse,
-  SourceResponse,
-} from '@app/shared';
+import { Building2, Layers, Pencil, Trash2 } from 'lucide-react';
+import type { CommissionRuleGroupResponse, CompanyResponse, PaginatedResponse } from '@app/shared';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { DataTable, type Column } from '@/components/ui/data-table';
+import { Switch } from '@/components/ui/switch';
 import { Pagination } from '@/components/ui/pagination';
 import { apiFetch } from '@/lib/api.client';
 import { ApiClientError } from '@/lib/api';
-import { CreateCommissionRuleDialog } from './create-commission-rule-dialog';
-import { EditCommissionRuleDialog } from './edit-commission-rule-dialog';
+import { CommissionRuleDialog } from './commission-rule-dialog';
+
+const PAGE_SIZE = 20;
 
 export function CommissionsView({ canDelete = false }: { canDelete?: boolean }) {
   const qc = useQueryClient();
   const [createOpen, setCreateOpen] = useState(false);
-  const [editing, setEditing] = useState<CommissionRuleResponse | null>(null);
+  const [editing, setEditing] = useState<CommissionRuleGroupResponse | null>(null);
   const [page, setPage] = useState(1);
-  const PAGE_SIZE = 50;
 
-  const deleteMu = useMutation({
-    mutationFn: (id: string) =>
-      apiFetch<CommissionRuleResponse>(`/admin/commission-rules/${id}`, {
-        method: 'DELETE',
-      }),
-    onSuccess: () => {
-      toast.success('Rule deleted');
-      qc.invalidateQueries({ queryKey: ['admin', 'commission-rules'] });
-    },
-    onError: (err) => toast.error(err instanceof ApiClientError ? err.message : 'Failed'),
-  });
-
-  const deactivateMu = useMutation({
-    mutationFn: (id: string) =>
-      apiFetch<CommissionRuleResponse>(`/admin/commission-rules/${id}/deactivate`, {
-        method: 'POST',
-      }),
-    onSuccess: () => {
-      toast.success('Rule deactivated');
-      qc.invalidateQueries({ queryKey: ['admin', 'commission-rules'] });
-    },
-    onError: (err) => toast.error(err instanceof ApiClientError ? err.message : 'Failed'),
-  });
-
-  const reactivateMu = useMutation({
-    mutationFn: (id: string) =>
-      apiFetch<CommissionRuleResponse>(`/admin/commission-rules/${id}`, {
-        method: 'PATCH',
-        body: { active: true },
-      }),
-    onSuccess: () => {
-      toast.success('Rule reactivated');
-      qc.invalidateQueries({ queryKey: ['admin', 'commission-rules'] });
-    },
-    onError: (err) => toast.error(err instanceof ApiClientError ? err.message : 'Failed'),
-  });
+  const invalidate = () => qc.invalidateQueries({ queryKey: ['admin', 'commission-rules'] });
 
   const rulesQ = useQuery({
     queryKey: ['admin', 'commission-rules', { page }],
     queryFn: () =>
-      apiFetch<PaginatedResponse<CommissionRuleResponse>>(
+      apiFetch<PaginatedResponse<CommissionRuleGroupResponse>>(
         `/admin/commission-rules?page=${page}&pageSize=${PAGE_SIZE}`,
       ),
-  });
-  const sourcesQ = useQuery({
-    queryKey: ['admin', 'sources', 'all'],
-    queryFn: () => apiFetch<{ data: SourceResponse[] }>('/admin/sources/all'),
   });
   const companiesQ = useQuery({
     queryKey: ['admin', 'companies', 'all'],
     queryFn: () => apiFetch<PaginatedResponse<CompanyResponse>>('/admin/companies?pageSize=100'),
   });
+  const companies = companiesQ.data?.data ?? [];
+  const companyNameById = new Map(companies.map((c) => [c.id, c.name]));
 
-  const companyNameById = new Map(companiesQ.data?.data.map((c) => [c.id, c.name]) ?? []);
-  const sourceCodeById = new Map(sourcesQ.data?.data.map((s) => [s.id, s.code]) ?? []);
+  const setActiveMu = useMutation({
+    mutationFn: ({ groupId, active }: { groupId: string; active: boolean }) =>
+      apiFetch(`/admin/commission-rules/${groupId}/${active ? 'activate' : 'deactivate'}`, {
+        method: 'POST',
+      }),
+    onSuccess: (_d, v) => {
+      toast.success(v.active ? 'Rule enabled' : 'Rule disabled');
+      invalidate();
+    },
+    onError: (err) => toast.error(err instanceof ApiClientError ? err.message : 'Failed'),
+  });
 
-  const columns: Column<CommissionRuleResponse>[] = [
-    {
-      key: 'scope',
-      header: 'Scope',
-      cell: (r) => (
-        <div className="space-y-1">
-          <div className="text-sm">
-            company:{' '}
-            {r.companyId ? (
-              <span className="font-medium">{companyNameById.get(r.companyId) ?? r.companyId}</span>
-            ) : (
-              <span className="text-muted-foreground">global</span>
-            )}
-          </div>
-          <div className="text-xs text-muted-foreground">
-            source: {r.sourceId ? (sourceCodeById.get(r.sourceId) ?? r.sourceId) : 'global'}
-          </div>
-        </div>
-      ),
+  const deleteMu = useMutation({
+    mutationFn: (groupId: string) =>
+      apiFetch(`/admin/commission-rules/${groupId}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      toast.success('Rule deleted');
+      invalidate();
     },
-    {
-      key: 'operation',
-      header: 'Operation',
-      cell: (r) => (
-        <div className="space-y-0.5">
-          <div className="text-sm">
-            {r.operationType.charAt(0) + r.operationType.slice(1).toLowerCase()}
-          </div>
-          {r.operationType !== 'TRANSACTION' && (
-            <div className="text-xs text-muted-foreground">
-              {r.feeApplication === 'ON_TOP' ? 'on top' : 'deducted'}
-            </div>
-          )}
-        </div>
-      ),
-    },
-    {
-      key: 'range',
-      header: 'Range',
-      className: 'font-mono text-xs',
-      cell: (r) => `${trimDecimal(r.minAmount)} – ${trimDecimal(r.maxAmount)}`,
-    },
-    { key: 'type', header: 'Type', cell: (r) => r.commissionType },
-    {
-      key: 'value',
-      header: 'Value',
-      className: 'font-mono text-xs',
-      cell: (r) =>
-        r.commissionType === 'PERCENTAGE'
-          ? `${trimDecimal(r.commissionValue)}%`
-          : trimDecimal(r.commissionValue),
-    },
-    { key: 'priority', header: 'Priority', cell: (r) => r.priority },
-    {
-      key: 'active',
-      header: 'Active',
-      cell: (r) => (
-        <Badge variant={r.active ? 'success' : 'secondary'}>{r.active ? 'on' : 'off'}</Badge>
-      ),
-    },
-    {
-      key: 'actions',
-      header: '',
-      align: 'right',
-      cell: (r) => (
-        <div className="flex justify-end gap-1">
-          <Button variant="ghost" size="sm" onClick={() => setEditing(r)}>
-            Edit
-          </Button>
-          {r.active ? (
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={deactivateMu.isPending}
-              onClick={() => deactivateMu.mutate(r.id)}
-            >
-              Disable
-            </Button>
-          ) : (
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={reactivateMu.isPending}
-              onClick={() => reactivateMu.mutate(r.id)}
-            >
-              Reactivate
-            </Button>
-          )}
-          {canDelete && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="text-destructive hover:text-destructive"
-              disabled={deleteMu.isPending}
-              onClick={() => {
-                if (confirm(deleteWarning(r, rulesQ.data?.data ?? []))) {
-                  deleteMu.mutate(r.id);
-                }
-              }}
-            >
-              Delete
-            </Button>
-          )}
-        </div>
-      ),
-    },
-  ];
+    onError: (err) => toast.error(err instanceof ApiClientError ? err.message : 'Failed'),
+  });
+
+  const groups = rulesQ.data?.data ?? [];
 
   return (
-    <div className="space-y-6">
+    <div className="mx-auto max-w-4xl space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-semibold">Commission Rules</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">Commission Rules</h1>
           <p className="text-sm text-muted-foreground">
-            Rules are matched by specificity (company+source &gt; company &gt; source &gt; global),
-            then by priority. First match wins.
+            Each rule applies fee tiers to chosen companies and operations. The most specific
+            company wins, then the highest priority.
           </p>
         </div>
         <Button className="w-full sm:w-auto" onClick={() => setCreateOpen(true)}>
@@ -204,19 +75,51 @@ export function CommissionsView({ canDelete = false }: { canDelete?: boolean }) 
         </Button>
       </div>
 
-      <Card>
-        <CardContent className="p-0">
-          <DataTable<CommissionRuleResponse>
-            columns={columns}
-            rows={rulesQ.data?.data}
-            isLoading={rulesQ.isLoading}
-            error={rulesQ.error}
-            rowKey={(r) => r.id}
-          />
-        </CardContent>
-      </Card>
+      {rulesQ.isLoading ? (
+        <SkeletonState />
+      ) : rulesQ.error ? (
+        <Card>
+          <CardContent className="p-10 text-center text-sm text-destructive">
+            Failed to load rules.
+          </CardContent>
+        </Card>
+      ) : groups.length === 0 ? (
+        <Card>
+          <CardContent className="flex flex-col items-center gap-3 p-12 text-center">
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
+              <Layers className="h-5 w-5 text-muted-foreground" />
+            </div>
+            <p className="text-sm font-medium">No commission rules yet</p>
+            <p className="max-w-xs text-sm text-muted-foreground">
+              Create one rule and apply it to many companies and operations at once.
+            </p>
+            <Button className="mt-1" onClick={() => setCreateOpen(true)}>
+              New rule
+            </Button>
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="space-y-3">
+          {groups.map((g) => (
+            <RuleCard
+              key={g.groupId}
+              group={g}
+              companyNameById={companyNameById}
+              canDelete={canDelete}
+              busy={setActiveMu.isPending || deleteMu.isPending}
+              onEdit={() => setEditing(g)}
+              onToggleActive={() => setActiveMu.mutate({ groupId: g.groupId, active: !g.active })}
+              onDelete={() => {
+                if (confirm('Delete this rule permanently? This cannot be undone.')) {
+                  deleteMu.mutate(g.groupId);
+                }
+              }}
+            />
+          ))}
+        </div>
+      )}
 
-      {rulesQ.data && (
+      {rulesQ.data && rulesQ.data.meta.totalPages > 1 && (
         <Pagination
           page={rulesQ.data.meta.page}
           totalPages={rulesQ.data.meta.totalPages}
@@ -225,22 +128,20 @@ export function CommissionsView({ canDelete = false }: { canDelete?: boolean }) 
         />
       )}
 
-      <CreateCommissionRuleDialog
+      <CommissionRuleDialog
         open={createOpen}
         onOpenChange={setCreateOpen}
-        sources={sourcesQ.data?.data ?? []}
-        companies={companiesQ.data?.data ?? []}
-        onCreated={() => {
+        companies={companies}
+        onSaved={() => {
           setCreateOpen(false);
           void rulesQ.refetch();
         }}
       />
-
-      <EditCommissionRuleDialog
-        rule={editing}
-        sources={sourcesQ.data?.data ?? []}
-        companies={companiesQ.data?.data ?? []}
-        onClose={() => setEditing(null)}
+      <CommissionRuleDialog
+        open={editing !== null}
+        onOpenChange={(o) => !o && setEditing(null)}
+        companies={companies}
+        group={editing}
         onSaved={() => {
           setEditing(null);
           void rulesQ.refetch();
@@ -250,53 +151,160 @@ export function CommissionsView({ canDelete = false }: { canDelete?: boolean }) 
   );
 }
 
-function trimDecimal(s: string): string {
-  if (!s.includes('.')) return s;
-  return s.replace(/\.?0+$/, '');
+function RuleCard({
+  group,
+  companyNameById,
+  canDelete,
+  busy,
+  onEdit,
+  onToggleActive,
+  onDelete,
+}: {
+  group: CommissionRuleGroupResponse;
+  companyNameById: Map<string, string>;
+  canDelete: boolean;
+  busy: boolean;
+  onEdit: () => void;
+  onToggleActive: () => void;
+  onDelete: () => void;
+}) {
+  const companies = companySummary(group, companyNameById);
+  const title = group.name?.trim() || companies;
+  // Avoid repeating the company summary in the subtitle when it's already the title.
+  const metaParts = [
+    ...(group.name?.trim() ? [companies] : []),
+    group.operationTypes.map(titleCase).join(', '),
+    group.feeApplication === 'ON_TOP' ? 'fee on top' : 'fee deducted',
+    `priority ${group.priority}`,
+  ];
+
+  return (
+    <Card className={`overflow-hidden transition-colors ${group.active ? '' : 'bg-muted/30'}`}>
+      <CardContent className="p-0">
+        {/* Header */}
+        <div className="flex items-start justify-between gap-4 p-4">
+          <div className="min-w-0 space-y-1">
+            <div className="flex items-center gap-2">
+              <span
+                className={`h-2 w-2 shrink-0 rounded-full ${group.active ? 'bg-emerald-500' : 'bg-muted-foreground/40'}`}
+              />
+              <h3 className="truncate text-base font-semibold leading-tight">{title}</h3>
+            </div>
+            <p className="flex items-center gap-1.5 truncate pl-4 text-xs text-muted-foreground">
+              <Building2 className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">{metaParts.join('  ·  ')}</span>
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            <Switch
+              checked={group.active}
+              disabled={busy}
+              onCheckedChange={onToggleActive}
+              aria-label={group.active ? 'Disable rule' : 'Enable rule'}
+            />
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              aria-label="Edit rule"
+              onClick={onEdit}
+            >
+              <Pencil className="h-4 w-4" />
+            </Button>
+            {canDelete && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                aria-label="Delete rule"
+                disabled={busy}
+                onClick={onDelete}
+              >
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            )}
+          </div>
+        </div>
+
+        {/* Tier ladder */}
+        <div className="border-t bg-muted/20">
+          <table className="w-full">
+            <tbody className="divide-y divide-border/60">
+              {group.tiers.map((t, i) => {
+                const next = group.tiers[i + 1];
+                return (
+                  <tr key={i}>
+                    <td className="px-4 py-2 text-sm text-muted-foreground">
+                      {rangeLabel(t, next?.minAmount ?? null, group.tiers.length)}
+                    </td>
+                    <td className="px-4 py-2 text-right text-sm font-medium tabular-nums">
+                      {feeLabel(t.commissionType, t.commissionValue)}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function SkeletonState() {
+  return (
+    <div className="space-y-3">
+      {[0, 1, 2].map((i) => (
+        <Card key={i}>
+          <CardContent className="space-y-3 p-4">
+            <div className="h-4 w-44 animate-pulse rounded bg-muted" />
+            <div className="h-3 w-64 animate-pulse rounded bg-muted" />
+            <div className="h-8 w-full animate-pulse rounded bg-muted" />
+          </CardContent>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+function companySummary(group: CommissionRuleGroupResponse, nameById: Map<string, string>): string {
+  if (group.companyIds === null) return 'All companies';
+  const names = group.companyIds.map((id) => nameById.get(id) ?? '…');
+  if (names.length <= 2) return names.join(', ');
+  return `${names.slice(0, 2).join(', ')} +${names.length - 2}`;
+}
+
+function titleCase(op: string): string {
+  return op.charAt(0) + op.slice(1).toLowerCase();
+}
+
+/** Plain, grouped decimal — turns decimal.js scientific (e.g. "1e-8") into readable text. */
+function fmtAmount(s: string): string {
+  const n = Number(s);
+  if (!Number.isFinite(n)) return s;
+  return new Intl.NumberFormat('en-US', { maximumFractionDigits: 8 }).format(n);
 }
 
 /**
- * True when another active TRANSACTION rule of equal-or-broader scope (same or
- * global company/source) fully covers this rule's amount range — i.e. pricing
- * would still resolve a rule for everything this one matched. A sufficient
- * safety check: if true, deleting this rule cannot leave a transaction unpriced.
- * (Coverage by a *union* of narrower rules isn't detected, so we under-claim
- * safety rather than over-claim it.)
+ * Threshold ranges: each tier runs from its min up to the next tier's start;
+ * the top tier (null max) is open-ended.
  */
-function hasBroaderFallback(
-  target: CommissionRuleResponse,
-  rules: CommissionRuleResponse[],
-): boolean {
-  return rules.some(
-    (r) =>
-      r.id !== target.id &&
-      r.active &&
-      r.operationType === 'TRANSACTION' &&
-      (r.companyId === null || r.companyId === target.companyId) &&
-      (r.sourceId === null || r.sourceId === target.sourceId) &&
-      Number(r.minAmount) <= Number(target.minAmount) &&
-      Number(r.maxAmount) >= Number(target.maxAmount),
-  );
+function rangeLabel(
+  tier: CommissionRuleGroupResponse['tiers'][number],
+  nextMin: string | null,
+  count: number,
+): string {
+  const min = tier.minAmount;
+  const zeroMin = Number(min) === 0;
+  if (tier.maxAmount === null) {
+    if (count === 1 && zeroMin) return 'Any amount';
+    return `${fmtAmount(min)} and above`;
+  }
+  const high = nextMin ?? tier.maxAmount;
+  if (zeroMin) return `Up to ${fmtAmount(high)}`;
+  return `${fmtAmount(min)} – ${fmtAmount(high)}`;
 }
 
-/** Tailor the delete confirmation to the rule's actual blast radius. */
-function deleteWarning(rule: CommissionRuleResponse, rules: CommissionRuleResponse[]): string {
-  const tail = '\n\nDelete this rule permanently? This cannot be undone.';
-  if (rule.operationType === 'TRANSACTION') {
-    if (!hasBroaderFallback(rule, rules)) {
-      return (
-        'Warning: no other active rule covers this scope and amount range. ' +
-        'Deleting it may cause matching transactions to be REJECTED with a pricing error. ' +
-        'Consider disabling it instead.' +
-        tail
-      );
-    }
-    return 'Another active rule still covers this range, so pricing falls back to it.' + tail;
-  }
-  const op = rule.operationType.toLowerCase();
-  return (
-    `Deleting this ${op} fee rule means matching ${op}s will be charged no fee ` +
-    `until another rule applies.` +
-    tail
-  );
+function feeLabel(type: string, value: string): string {
+  return type === 'PERCENTAGE' ? `${fmtAmount(value)}%` : `$${fmtAmount(value)}`;
 }

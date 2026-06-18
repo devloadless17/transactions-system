@@ -60,6 +60,21 @@ describe('CommissionResolverService', () => {
       expect(r.netAmount.toString()).toBe('49');
     });
 
+    it('matches an open-ended top tier (maxAmount = null) for any large amount', () => {
+      const openEnded: ResolvableRule = {
+        ...rule({ minAmount: '500', commissionType: 'PERCENTAGE', commissionValue: '2.5' }),
+        maxAmount: null,
+      };
+      const r = svc.resolve({
+        companyId: company,
+        sourceId: source,
+        operationType: 'TRANSACTION',
+        amount: Money.of('1000000000000'), // a trillion — no upper bound
+        rules: [openEnded],
+      });
+      expect(r.commissionAmount.toString()).toBe('25000000000');
+    });
+
     it('matches the second bracket (fixed 5$)', () => {
       const r = svc.resolve({
         companyId: company,
@@ -136,6 +151,22 @@ describe('CommissionResolverService', () => {
       });
       expect(r.rule.id).toBe('b');
       expect(r.commissionAmount.toString()).toBe('40');
+    });
+
+    it('a specific-company rule beats a global rule even with LOWER priority', () => {
+      // Specificity dominates priority: a company-scoped rule always wins over an
+      // "all companies" (global) rule for that company, regardless of priority.
+      const global = rule({ commissionValue: '10', id: 'g', priority: 1000 });
+      const companyOnly = rule({ companyId: company, commissionValue: '20', id: 'c', priority: 1 });
+      const r = svc.resolve({
+        companyId: company,
+        sourceId: source,
+        operationType: 'TRANSACTION',
+        amount: Money.of('50'),
+        rules: [global, companyOnly],
+      });
+      expect(r.rule.id).toBe('c');
+      expect(r.commissionAmount.toString()).toBe('20');
     });
 
     it('falls back to source-only when company-specific is absent', () => {

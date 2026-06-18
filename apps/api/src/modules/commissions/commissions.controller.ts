@@ -12,13 +12,13 @@ import {
   UsePipes,
 } from '@nestjs/common';
 import {
-  createCommissionRuleSchema,
+  createCommissionRuleGroupSchema,
   listCommissionRulesQuerySchema,
-  updateCommissionRuleSchema,
+  updateCommissionRuleGroupSchema,
   UserRole,
-  type CreateCommissionRuleInput,
+  type CreateCommissionRuleGroupInput,
   type ListCommissionRulesQuery,
-  type UpdateCommissionRuleInput,
+  type UpdateCommissionRuleGroupInput,
 } from '@app/shared';
 import { ZodPipe } from '../../common/pipes/zod-validation.pipe';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -28,6 +28,9 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { Audited } from '../audit/audit.decorator';
 import { CommissionsService } from './commissions.service';
 
+// A "rule" here is a GROUP: one tier ladder applied to a set of companies and a
+// set of operations. The service expands/regroups it into the underlying
+// commission_rules rows (one per company × operation × tier) sharing a groupId.
 @UseGuards(JwtAuthGuard, RolesGuard, CsrfGuard)
 @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR)
 @Controller('admin/commission-rules')
@@ -35,14 +38,14 @@ export class CommissionsController {
   constructor(private readonly commissions: CommissionsService) {}
 
   @Post()
-  @UsePipes(new ZodPipe(createCommissionRuleSchema))
+  @UsePipes(new ZodPipe(createCommissionRuleGroupSchema))
   @Audited({
     action: 'commission_rule.created',
     entityType: 'commission_rule',
-    idFrom: 'result.id',
+    idFrom: 'result.groupId',
   })
-  async create(@Body() body: CreateCommissionRuleInput) {
-    return this.commissions.create(body);
+  async create(@Body() body: CreateCommissionRuleGroupInput) {
+    return this.commissions.createGroup(body);
   }
 
   @Get()
@@ -50,40 +53,49 @@ export class CommissionsController {
     return this.commissions.list(query);
   }
 
-  @Patch(':id')
+  @Patch(':groupId')
   @Audited({
     action: 'commission_rule.updated',
     entityType: 'commission_rule',
-    idFrom: 'params.id',
+    idFrom: 'params.groupId',
   })
   async update(
-    @Param('id', new ParseUUIDPipe()) id: string,
-    @Body(new ZodPipe(updateCommissionRuleSchema)) body: UpdateCommissionRuleInput,
+    @Param('groupId', new ParseUUIDPipe()) groupId: string,
+    @Body(new ZodPipe(updateCommissionRuleGroupSchema)) body: UpdateCommissionRuleGroupInput,
   ) {
-    return this.commissions.update(id, body);
+    return this.commissions.updateGroup(groupId, body);
   }
 
-  @Post(':id/deactivate')
+  @Post(':groupId/deactivate')
   @Audited({
     action: 'commission_rule.deactivated',
     entityType: 'commission_rule',
-    idFrom: 'params.id',
+    idFrom: 'params.groupId',
   })
-  async deactivate(@Param('id', new ParseUUIDPipe()) id: string) {
-    return this.commissions.deactivate(id);
+  async deactivate(@Param('groupId', new ParseUUIDPipe()) groupId: string) {
+    return this.commissions.setGroupActive(groupId, false);
   }
 
-  // Hard delete is destructive (the rule is gone, not just disabled), so it is
-  // narrowed to SUPER_ADMIN — overriding the controller-wide role set. Operators
-  // can still disable a rule via the deactivate endpoint above.
-  @Delete(':id')
+  @Post(':groupId/activate')
+  @Audited({
+    action: 'commission_rule.activated',
+    entityType: 'commission_rule',
+    idFrom: 'params.groupId',
+  })
+  async activate(@Param('groupId', new ParseUUIDPipe()) groupId: string) {
+    return this.commissions.setGroupActive(groupId, true);
+  }
+
+  // Hard delete is destructive (the whole rule is gone, not just disabled), so it
+  // is narrowed to SUPER_ADMIN — overriding the controller-wide role set.
+  @Delete(':groupId')
   @Roles(UserRole.SUPER_ADMIN)
   @Audited({
     action: 'commission_rule.deleted',
     entityType: 'commission_rule',
-    idFrom: 'params.id',
+    idFrom: 'params.groupId',
   })
-  async remove(@Param('id', new ParseUUIDPipe()) id: string) {
-    return this.commissions.remove(id);
+  async remove(@Param('groupId', new ParseUUIDPipe()) groupId: string) {
+    return this.commissions.removeGroup(groupId);
   }
 }

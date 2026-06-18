@@ -50,7 +50,7 @@ export class CommissionsRepository {
         operationType: r.operationType,
         feeApplication: r.feeApplication,
         minAmount: r.minAmount.toString(),
-        maxAmount: r.maxAmount.toString(),
+        maxAmount: r.maxAmount === null ? null : r.maxAmount.toString(),
         commissionType: r.commissionType,
         commissionValue: r.commissionValue.toString(),
         priority: r.priority,

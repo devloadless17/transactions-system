@@ -87,9 +87,14 @@ async function main() {
     where: { companyId: null, sourceId: null },
   });
   if (existingGlobal === 0) {
+    // All three tiers belong to ONE logical rule (all companies, default
+    // operations), so they share a groupId — this is exactly what the new admin
+    // UI creates and regroups by.
+    const groupId = crypto.randomUUID();
     for (const r of sampleRules) {
       await prisma.commissionRule.create({
         data: {
+          groupId,
           companyId: null,
           sourceId: null,
           minAmount: r.minAmount,

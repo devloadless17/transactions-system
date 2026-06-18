@@ -33,9 +33,11 @@ export function publicApiBase(): string {
     const localPage =
       origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1');
     if (!localPage) return `${origin}/v1`;
-    // Local dev serves the web (:3000) and API (:3001) on DIFFERENT origins, so
-    // honor the explicit cross-origin value from `.env` here.
-    return fromEnv || `${origin}/v1`;
+    // Local dev serves the web (:3000) and API (:3001) on DIFFERENT origins.
+    // `next dev` does NOT load the monorepo-root .env, so NEXT_PUBLIC_API_BASE_URL
+    // is usually empty here — fall back to the API's dev port, NOT same-origin
+    // (same-origin would POST to the Next server on :3000 and 404).
+    return fromEnv || 'http://localhost:3001/v1';
   }
   // Server-side (SSR first paint of doc snippets only; real browser calls never
   // reach this) — fall back to the build-time value, else localhost.

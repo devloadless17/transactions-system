@@ -1,17 +1,36 @@
+import { randomUUID } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
-import { Money, commissionValueWithinBounds } from '@app/shared';
+import { Money } from '@app/shared';
 import type {
-  CommissionRuleResponse,
-  CreateCommissionRuleInput,
+  CommissionRuleGroupResponse,
+  CreateCommissionRuleGroupInput,
   ListCommissionRulesQuery,
   PaginatedResponse,
-  UpdateCommissionRuleInput,
+  UpdateCommissionRuleGroupInput,
 } from '@app/shared';
-import type { Prisma } from '@app/db';
+import type { Prisma, PrismaClient } from '@app/db';
 import { PrismaService } from '../../database/prisma.service';
 import { RealtimeService } from '../realtime/realtime.service';
 import { NotFoundError, ValidationError } from '../../common/errors/domain.error';
 import { CommissionsRepository } from './commissions.repository';
+
+// A row as stored — the shape we regroup into a CommissionRuleGroupResponse.
+type RuleRow = {
+  id: string;
+  groupId: string | null;
+  name: string | null;
+  companyId: string | null;
+  sourceId: string | null;
+  operationType: CommissionRuleGroupResponse['operationTypes'][number];
+  feeApplication: CommissionRuleGroupResponse['feeApplication'];
+  minAmount: { toString(): string };
+  maxAmount: { toString(): string } | null;
+  commissionType: CommissionRuleGroupResponse['tiers'][number]['commissionType'];
+  commissionValue: { toString(): string };
+  priority: number;
+  active: boolean;
+  createdAt: Date;
+};
 
 @Injectable()
 export class CommissionsService {
@@ -21,54 +40,49 @@ export class CommissionsService {
     private readonly realtime: RealtimeService,
   ) {}
 
-  async create(input: CreateCommissionRuleInput): Promise<CommissionRuleResponse> {
-    const row = await this.prisma.runAsAdmin(async (tx) => {
-      if (input.companyId) {
-        const co = await tx.company.findUnique({ where: { id: input.companyId } });
-        if (!co) throw new ValidationError('companyId does not exist');
-      }
-      if (input.sourceId) {
-        const src = await tx.source.findUnique({ where: { id: input.sourceId } });
-        if (!src) throw new ValidationError('sourceId does not exist');
-      }
-      return tx.commissionRule.create({
-        data: {
-          companyId: input.companyId ?? null,
-          sourceId: input.sourceId ?? null,
-          operationType: input.operationType,
-          feeApplication: input.feeApplication,
-          minAmount: input.minAmount,
-          maxAmount: input.maxAmount,
-          commissionType: input.commissionType,
-          commissionValue: input.commissionValue,
-          priority: input.priority,
-          active: input.active,
-        },
-      });
+  /**
+   * Create one logical rule: the same tier ladder applied to a set of companies
+   * (null/empty = all companies) and a set of operations. Expands to one row per
+   * company × operation × tier, all sharing a fresh groupId.
+   */
+  async createGroup(input: CreateCommissionRuleGroupInput): Promise<CommissionRuleGroupResponse> {
+    const groupId = randomUUID();
+    const rows = await this.prisma.runAsAdmin(async (tx) => {
+      await assertCompaniesExist(tx, input.companyIds);
+      await tx.commissionRule.createMany({ data: expand(groupId, input) });
+      return tx.commissionRule.findMany({ where: { groupId } });
     });
-    await this.repo.invalidate();
-    this.realtime.admin(['commissions']);
-    return mapRule(row);
+    await this.afterMutation();
+    return groupRowsToResponse(groupId, rows as RuleRow[]);
   }
 
-  async list(query: ListCommissionRulesQuery): Promise<PaginatedResponse<CommissionRuleResponse>> {
+  async list(
+    query: ListCommissionRulesQuery,
+  ): Promise<PaginatedResponse<CommissionRuleGroupResponse>> {
     return this.prisma.runAsAdmin(async (tx) => {
-      const where: Prisma.CommissionRuleWhereInput = {};
-      if (query.companyId !== undefined) where.companyId = query.companyId;
-      if (query.sourceId !== undefined) where.sourceId = query.sourceId;
-      if (query.operationType !== undefined) where.operationType = query.operationType;
+      // Commission rules are small in number (tens of groups → low hundreds of
+      // rows); load and regroup in memory, then paginate by group.
+      const rows = (await tx.commissionRule.findMany({
+        orderBy: [{ createdAt: 'asc' }],
+        take: 5000,
+      })) as RuleRow[];
+
+      const byGroup = new Map<string, RuleRow[]>();
+      for (const r of rows) {
+        const gid = r.groupId ?? r.id;
+        const bucket = byGroup.get(gid);
+        if (bucket) bucket.push(r);
+        else byGroup.set(gid, [r]);
+      }
+
+      const groups = [...byGroup.entries()].map(([gid, rs]) => groupRowsToResponse(gid, rs));
+      // Highest priority first, then newest first — the order admins expect.
+      groups.sort((a, b) => b.priority - a.priority || b.createdAt.localeCompare(a.createdAt));
+
+      const total = groups.length;
       const skip = (query.page - 1) * query.pageSize;
-      const [rows, total] = await Promise.all([
-        tx.commissionRule.findMany({
-          where,
-          orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }],
-          skip,
-          take: query.pageSize,
-        }),
-        tx.commissionRule.count({ where }),
-      ]);
       return {
-        data: rows.map(mapRule),
+        data: groups.slice(skip, skip + query.pageSize),
         meta: {
           page: query.page,
           pageSize: query.pageSize,
@@ -79,104 +93,132 @@ export class CommissionsService {
     });
   }
 
-  async update(id: string, input: UpdateCommissionRuleInput): Promise<CommissionRuleResponse> {
-    const row = await this.prisma.runAsAdmin(async (tx) => {
-      const existing = await tx.commissionRule.findUnique({ where: { id } });
-      if (!existing) throw new NotFoundError('CommissionRule', id);
-      if (input.companyId) {
-        const co = await tx.company.findUnique({ where: { id: input.companyId } });
-        if (!co) throw new ValidationError('companyId does not exist');
-      }
-      if (input.sourceId) {
-        const src = await tx.source.findUnique({ where: { id: input.sourceId } });
-        if (!src) throw new ValidationError('sourceId does not exist');
-      }
-      const minA = input.minAmount ?? existing.minAmount.toString();
-      const maxA = input.maxAmount ?? existing.maxAmount.toString();
-      // Decimal compare (never JS float): Number() collapses high-precision
-      // 20,8 values, matching the create() guard + the schema's stated invariant.
-      if (Money.of(minA).gt(Money.of(maxA))) {
-        throw new ValidationError('minAmount must be <= maxAmount');
-      }
-      // Validate the EFFECTIVE post-merge rule, not just the patch. The create
-      // schema's Zod refine only fires when BOTH commissionType and commissionValue
-      // are present, so a partial PATCH (e.g. only commissionValue, or only flipping
-      // the type to PERCENTAGE) could otherwise store a PERCENTAGE rule > 100% — an
-      // unbounded ON_TOP overcharge. Re-check against the merged values here.
-      // (Also backstopped by a DB CHECK; see migration 0023.)
-      const effectiveType = input.commissionType ?? existing.commissionType;
-      const effectiveValue = input.commissionValue ?? existing.commissionValue.toString();
-      if (!commissionValueWithinBounds(effectiveType, effectiveValue)) {
-        throw new ValidationError('PERCENTAGE commissionValue must be between 0 and 100');
-      }
-      return tx.commissionRule.update({
-        where: { id },
-        data: {
-          // companyId/sourceId are nullable scope: undefined = leave as-is,
-          // null = make global. `?? undefined` would lose an explicit null, so
-          // distinguish "absent" from "explicit null" by checking for undefined.
-          companyId: input.companyId !== undefined ? input.companyId : undefined,
-          sourceId: input.sourceId !== undefined ? input.sourceId : undefined,
-          operationType: input.operationType ?? undefined,
-          feeApplication: input.feeApplication ?? undefined,
-          minAmount: input.minAmount ?? undefined,
-          maxAmount: input.maxAmount ?? undefined,
-          commissionType: input.commissionType ?? undefined,
-          commissionValue: input.commissionValue ?? undefined,
-          priority: input.priority ?? undefined,
-          active: input.active ?? undefined,
-        },
-      });
+  /** Replace a group's whole spec: delete its rows and re-expand under the same id. */
+  async updateGroup(
+    groupId: string,
+    input: UpdateCommissionRuleGroupInput,
+  ): Promise<CommissionRuleGroupResponse> {
+    const rows = await this.prisma.runAsAdmin(async (tx) => {
+      const existing = await tx.commissionRule.count({ where: { groupId } });
+      if (existing === 0) throw new NotFoundError('CommissionRuleGroup', groupId);
+      await assertCompaniesExist(tx, input.companyIds);
+      await tx.commissionRule.deleteMany({ where: { groupId } });
+      await tx.commissionRule.createMany({ data: expand(groupId, input) });
+      return tx.commissionRule.findMany({ where: { groupId } });
     });
-    await this.repo.invalidate();
-    this.realtime.admin(['commissions']);
-    return mapRule(row);
+    await this.afterMutation();
+    return groupRowsToResponse(groupId, rows as RuleRow[]);
   }
 
-  async deactivate(id: string): Promise<CommissionRuleResponse> {
-    return this.update(id, { active: false });
+  async setGroupActive(groupId: string, active: boolean): Promise<CommissionRuleGroupResponse> {
+    const rows = await this.prisma.runAsAdmin(async (tx) => {
+      const existing = await tx.commissionRule.count({ where: { groupId } });
+      if (existing === 0) throw new NotFoundError('CommissionRuleGroup', groupId);
+      await tx.commissionRule.updateMany({ where: { groupId }, data: { active } });
+      return tx.commissionRule.findMany({ where: { groupId } });
+    });
+    await this.afterMutation();
+    return groupRowsToResponse(groupId, rows as RuleRow[]);
   }
 
-  async remove(id: string): Promise<CommissionRuleResponse> {
-    const row = await this.prisma.runAsAdmin(async (tx) => {
-      const existing = await tx.commissionRule.findUnique({ where: { id } });
-      if (!existing) throw new NotFoundError('CommissionRule', id);
-      return tx.commissionRule.delete({ where: { id } });
+  async removeGroup(groupId: string): Promise<{ groupId: string; deleted: number }> {
+    const deleted = await this.prisma.runAsAdmin(async (tx) => {
+      const res = await tx.commissionRule.deleteMany({ where: { groupId } });
+      if (res.count === 0) throw new NotFoundError('CommissionRuleGroup', groupId);
+      return res.count;
     });
+    await this.afterMutation();
+    return { groupId, deleted };
+  }
+
+  private async afterMutation(): Promise<void> {
     await this.repo.invalidate();
     this.realtime.admin(['commissions']);
-    return mapRule(row);
   }
 }
 
-function mapRule(row: {
-  id: string;
-  companyId: string | null;
-  sourceId: string | null;
-  operationType: CommissionRuleResponse['operationType'];
-  feeApplication: CommissionRuleResponse['feeApplication'];
-  minAmount: { toString(): string };
-  maxAmount: { toString(): string };
-  commissionType: CommissionRuleResponse['commissionType'];
-  commissionValue: { toString(): string };
-  priority: number;
-  active: boolean;
-  createdAt: Date;
-  updatedAt: Date;
-}): CommissionRuleResponse {
+/** All-or-nothing existence check for a targeted company set (skip for "all"). */
+async function assertCompaniesExist(tx: PrismaClient, companyIds: string[] | null): Promise<void> {
+  if (!companyIds || companyIds.length === 0) return;
+  const unique = [...new Set(companyIds)];
+  const found = await tx.company.findMany({ where: { id: { in: unique } }, select: { id: true } });
+  if (found.length !== unique.length) {
+    throw new ValidationError('one or more companyIds do not exist');
+  }
+}
+
+/** Expand a group spec into the per-(company × operation × tier) rows. */
+function expand(
+  groupId: string,
+  input: CreateCommissionRuleGroupInput,
+): Prisma.CommissionRuleCreateManyInput[] {
+  // null/empty companyIds → a single global row (companyId null) per op/tier.
+  const companies: (string | null)[] =
+    input.companyIds && input.companyIds.length > 0 ? input.companyIds : [null];
+  const rows: Prisma.CommissionRuleCreateManyInput[] = [];
+  for (const companyId of companies) {
+    for (const operationType of input.operationTypes) {
+      for (const tier of input.tiers) {
+        rows.push({
+          groupId,
+          name: input.name ?? null,
+          companyId,
+          sourceId: null,
+          operationType,
+          feeApplication: input.feeApplication,
+          minAmount: tier.minAmount,
+          maxAmount: tier.maxAmount,
+          commissionType: tier.commissionType,
+          commissionValue: tier.commissionValue,
+          priority: input.priority,
+          active: input.active,
+        });
+      }
+    }
+  }
+  return rows;
+}
+
+/** Regroup the rows of one groupId back into the grouped response shape. */
+function groupRowsToResponse(groupId: string, rows: RuleRow[]): CommissionRuleGroupResponse {
+  const first = rows[0]!;
+  const hasGlobal = rows.some((r) => r.companyId === null);
+  const companyIds = hasGlobal ? null : [...new Set(rows.map((r) => r.companyId as string))];
+  const operationTypes = [...new Set(rows.map((r) => r.operationType))];
+
+  // Distinct tiers (they repeat across company × operation), sorted ascending by
+  // min; an open-ended (null max) tier sorts last.
+  const tierMap = new Map<string, RuleRow>();
+  for (const r of rows) {
+    const max = r.maxAmount === null ? '∞' : r.maxAmount.toString();
+    const key = `${r.minAmount.toString()}|${max}|${r.commissionType}|${r.commissionValue.toString()}`;
+    if (!tierMap.has(key)) tierMap.set(key, r);
+  }
+  const tiers = [...tierMap.values()]
+    .sort((a, b) =>
+      Money.of(a.minAmount.toString()).gt(Money.of(b.minAmount.toString())) ? 1 : -1,
+    )
+    .map((r) => ({
+      minAmount: r.minAmount.toString(),
+      maxAmount: r.maxAmount === null ? null : r.maxAmount.toString(),
+      commissionType: r.commissionType,
+      commissionValue: r.commissionValue.toString(),
+    }));
+
+  const createdAt = rows.reduce(
+    (min, r) => (r.createdAt < min ? r.createdAt : min),
+    first.createdAt,
+  );
+
   return {
-    id: row.id,
-    companyId: row.companyId,
-    sourceId: row.sourceId,
-    operationType: row.operationType,
-    feeApplication: row.feeApplication,
-    minAmount: row.minAmount.toString(),
-    maxAmount: row.maxAmount.toString(),
-    commissionType: row.commissionType,
-    commissionValue: row.commissionValue.toString(),
-    priority: row.priority,
-    active: row.active,
-    createdAt: row.createdAt.toISOString(),
-    updatedAt: row.updatedAt.toISOString(),
+    groupId,
+    name: first.name ?? null,
+    companyIds,
+    operationTypes,
+    feeApplication: first.feeApplication,
+    priority: first.priority,
+    active: rows.every((r) => r.active),
+    tiers,
+    createdAt: createdAt.toISOString(),
   };
 }

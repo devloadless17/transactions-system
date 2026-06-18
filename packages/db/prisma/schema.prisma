@@ -287,6 +287,14 @@ model ApiKey {
 
 model CommissionRule {
   id              String           @id @default(uuid()) @db.Uuid
+  // A single UI "rule" (a set of companies × operations × amount tiers) is stored
+  // as MANY of these rows sharing one groupId, so the hot-path resolver/index stay
+  // unchanged. Nullable for legacy/seed rows; backfilled to `id` (each its own
+  // group) by migration 20260618120000.
+  groupId         String?          @map("group_id") @db.Uuid
+  // Optional admin-facing label for the whole rule (shared across the group's
+  // rows), e.g. "Standard fees" or "VIP partners". Display only.
+  name            String?
   companyId       String?          @map("company_id") @db.Uuid
   company         Company?         @relation(fields: [companyId], references: [id], onDelete: Cascade)
   sourceId        String?          @map("source_id") @db.Uuid
@@ -294,7 +302,9 @@ model CommissionRule {
   operationType   FeeOperationType @default(TRANSACTION) @map("operation_type")
   feeApplication  FeeApplication   @default(DEDUCTED) @map("fee_application")
   minAmount       Decimal          @map("min_amount") @db.Decimal(20, 8)
-  maxAmount       Decimal          @map("max_amount") @db.Decimal(20, 8)
+  // NULL = "and above" — an open-ended top tier with no upper bound. The resolver
+  // treats a null max as +infinity (amount always within range from above).
+  maxAmount       Decimal?         @map("max_amount") @db.Decimal(20, 8)
   commissionType  CommissionType   @map("commission_type")
   commissionValue Decimal          @map("commission_value") @db.Decimal(20, 8)
   priority        Int              @default(0)
@@ -303,6 +313,7 @@ model CommissionRule {
   updatedAt       DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@index([companyId, sourceId, operationType, active, priority])
+  @@index([groupId])
   @@map("commission_rules")
 }
 
