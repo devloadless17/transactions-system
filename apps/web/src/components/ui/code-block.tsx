@@ -14,7 +14,7 @@ export function CodeBlock({ code, className }: { code: string; className?: strin
       <Button
         variant="ghost"
         size="sm"
-        className="absolute right-2 top-2 opacity-0 transition-opacity group-hover:opacity-100"
+        className="absolute right-2 top-2 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100"
         onClick={() => {
           navigator.clipboard?.writeText(code);
           toast.success('Copied');

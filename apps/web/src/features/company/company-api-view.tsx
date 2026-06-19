@@ -187,10 +187,9 @@ export function CompanyApiView() {
           <div className="space-y-1 text-sm">
             <StatusRow status="PENDING" desc="Submitted — awaiting platform-admin review." />
             <StatusRow
-              status="APPROVED"
-              desc="Admin approved — funds are being processed externally."
+              status="COMPLETED"
+              desc="Admin approved and funds delivered — approval settles in one step. Ledger entry finalised."
             />
-            <StatusRow status="COMPLETED" desc="Funds delivered. Ledger entry finalised." />
             <StatusRow
               status="REJECTED"
               desc="Admin rejected the request. Reserved funds released."

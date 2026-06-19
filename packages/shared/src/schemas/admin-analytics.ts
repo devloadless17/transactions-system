@@ -1,11 +1,14 @@
 import { z } from 'zod';
-import { currencySchema } from './common';
+import { assertSaneDateRange, currencySchema } from './common';
 
 // ---------------- shared range ----------------
-export const adminAnalyticsRangeSchema = z.object({
+// Plain shape kept separate so derived schemas (flows) can reuse the fields;
+// `.superRefine` returns a ZodEffects which is not `.extend`-able.
+const dateRangeShape = {
   from: z.string().datetime().optional(),
   to: z.string().datetime().optional(),
-});
+};
+export const adminAnalyticsRangeSchema = z.object(dateRangeShape).superRefine(assertSaneDateRange);
 export type AdminAnalyticsRange = z.infer<typeof adminAnalyticsRangeSchema>;
 
 // ---------------- platform multi-currency ----------------
@@ -32,11 +35,14 @@ export const platformAnalyticsResponseSchema = z.object({
 export type PlatformAnalyticsResponse = z.infer<typeof platformAnalyticsResponseSchema>;
 
 // ---------------- flows: daily in vs out per currency ----------------
-export const flowsRangeSchema = adminAnalyticsRangeSchema.extend({
-  // Use the supported-currency enum (like every other money path) so an
-  // unsupported code returns a clean 400 instead of an empty chart.
-  currency: currencySchema,
-});
+export const flowsRangeSchema = z
+  .object({
+    ...dateRangeShape,
+    // Use the supported-currency enum (like every other money path) so an
+    // unsupported code returns a clean 400 instead of an empty chart.
+    currency: currencySchema,
+  })
+  .superRefine(assertSaneDateRange);
 export type FlowsRange = z.infer<typeof flowsRangeSchema>;
 
 export const flowsBucketSchema = z.object({
@@ -56,7 +62,7 @@ export type FlowsResponse = z.infer<typeof flowsResponseSchema>;
 
 // ---------------- operations queue ----------------
 export const opsItemSchema = z.object({
-  kind: z.enum(['withdrawal_pending', 'transaction_reversed']),
+  kind: z.enum(['withdrawal_pending', 'payout_pending', 'load_pending', 'transaction_reversed']),
   id: z.string().uuid(),
   companyId: z.string().uuid(),
   companyName: z.string(),
@@ -69,6 +75,11 @@ export type OpsItem = z.infer<typeof opsItemSchema>;
 
 export const operationsResponseSchema = z.object({
   pendingWithdrawalsCount: z.number().int(),
+  // Pending payouts and loads also reserve funds / await an operator. Counted
+  // separately so the dashboard can show a combined "pending actions" total and
+  // never reads "all clear" while payouts/loads sit in PENDING.
+  pendingPayoutsCount: z.number().int(),
+  pendingLoadsCount: z.number().int(),
   pendingWithdrawalsValue: z.record(z.string()), // { currency: amount } map
   recentReversalsCount: z.number().int(),
   items: z.array(opsItemSchema),

@@ -325,6 +325,12 @@ export function WithdrawalsView({ config }: { config: ProcessConfig }) {
             disabled={cancelMu.isPending}
             onClick={(e) => {
               e.stopPropagation();
+              if (
+                !window.confirm(
+                  'Cancel this request? Reserved funds return to your available balance.',
+                )
+              )
+                return;
               cancelMu.mutate(w.id);
             }}
           >

@@ -26,10 +26,17 @@ const BACKOFFICE_HREFS: ReadonlyArray<string> = [
   '/admin/settings',
 ];
 
+// Sections only SUPER_ADMIN may reach. Platform Admins management is
+// SUPER_ADMIN-only at the API (`@Roles(SUPER_ADMIN)` on AdminUsersController), so
+// ADMIN_OPERATOR must not even see the link — otherwise they land on a fully
+// interactive page where every request 403s.
+const SUPER_ADMIN_ONLY_HREFS: ReadonlyArray<string> = ['/admin/users'];
+
 /** Whether `role` may see/open the given admin sidebar section (exact href). */
 export function canSeeAdminSection(role: UserRole, href: string): boolean {
+  if (SUPER_ADMIN_ONLY_HREFS.includes(href)) return role === UserRole.SUPER_ADMIN;
   if (role === UserRole.BACKOFFICE) return BACKOFFICE_HREFS.includes(href);
-  return true; // SUPER_ADMIN / ADMIN_OPERATOR: unchanged, see everything
+  return true; // SUPER_ADMIN / ADMIN_OPERATOR: everything else
 }
 
 /** Where a freshly-authenticated admin of this role should land. */

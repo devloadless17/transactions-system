@@ -96,6 +96,9 @@ export function RealtimeBridge() {
     // reopen this socket after the effect has torn it down (fast unmount/remount).
     let active = true;
     let retry: ReturnType<typeof setTimeout> | undefined;
+    // Fires a few seconds after a connect; resets the auth-reconnect backoff only
+    // if the connection actually SURVIVED that long (cleared on disconnect).
+    let stableTimer: ReturnType<typeof setTimeout> | undefined;
     // Bounded backoff for forced (auth) disconnects — see the disconnect handler.
     let authReconnects = 0;
     const MAX_AUTH_RECONNECTS = 5;
@@ -109,7 +112,14 @@ export function RealtimeBridge() {
       // The page's initial data was just loaded, so this costs at most one
       // redundant refetch; guaranteeing "never miss a live update" is worth it
       // and is what keeps the dashboard correct even right after a refresh.
-      authReconnects = 0; // a real connection resets the auth-reconnect backoff
+      // Reset the auth-reconnect backoff only once the connection has SURVIVED a
+      // few seconds. A connect immediately followed by a forced 'io server
+      // disconnect' (expired cookie) must not reset it, or we'd hot-loop
+      // reconnect+refresh every ~1.5s instead of backing off.
+      if (stableTimer) clearTimeout(stableTimer);
+      stableTimer = setTimeout(() => {
+        authReconnects = 0;
+      }, 3000);
       void qc.invalidateQueries();
     });
 
@@ -123,6 +133,12 @@ export function RealtimeBridge() {
       // drop us again, and this timer would re-arm every 1.5s forever. So stop
       // after MAX attempts and back off exponentially; the app's session-expiry
       // flow (triggered by the next authenticated request) takes over from there.
+      // The connection didn't survive — cancel the pending "stable" reset so the
+      // backoff keeps growing across repeated auth failures.
+      if (stableTimer) {
+        clearTimeout(stableTimer);
+        stableTimer = undefined;
+      }
       if (reason !== 'io server disconnect') return;
       if (authReconnects >= MAX_AUTH_RECONNECTS) return;
       const delay = 1500 * 2 ** authReconnects; // 1.5s → 3s → 6s → 12s → 24s
@@ -149,6 +165,7 @@ export function RealtimeBridge() {
     return () => {
       active = false;
       if (retry) clearTimeout(retry);
+      if (stableTimer) clearTimeout(stableTimer);
       socket.off();
       socket.disconnect();
     };

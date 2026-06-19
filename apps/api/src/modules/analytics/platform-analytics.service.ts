@@ -313,6 +313,28 @@ export class PlatformAnalyticsService {
           include: { company: { select: { name: true } } },
         });
 
+        // Pending payouts and loads also await an operator (payouts reserve funds
+        // the moment they're requested), so the headline count and action queue
+        // must include them — otherwise the dashboard reads "all clear" while real
+        // money sits in PENDING on the separate Payouts/Loads pages.
+        const [pendingPayouts, pendingLoads, pendingPayoutsCount, pendingLoadsCount] =
+          await Promise.all([
+            tx.payout.findMany({
+              where: { status: 'PENDING' },
+              orderBy: { createdAt: 'asc' },
+              take: PENDING_OPS_LIMIT,
+              include: { company: { select: { name: true } } },
+            }),
+            tx.load.findMany({
+              where: { status: 'PENDING' },
+              orderBy: { createdAt: 'asc' },
+              take: PENDING_OPS_LIMIT,
+              include: { company: { select: { name: true } } },
+            }),
+            tx.payout.count({ where: { status: 'PENDING' } }),
+            tx.load.count({ where: { status: 'PENDING' } }),
+          ]);
+
         const items: OpsItem[] = [];
 
         for (const w of pendingWithdrawals) {
@@ -329,6 +351,33 @@ export class PlatformAnalyticsService {
             amount: total,
             currency: w.currency.trim(),
             createdAt: w.createdAt.toISOString(),
+          });
+        }
+        for (const p of pendingPayouts) {
+          const total = Money.of(p.netAmount.toString())
+            .add(Money.of(p.feeAmount.toString()))
+            .toString();
+          items.push({
+            kind: 'payout_pending',
+            id: p.id,
+            companyId: p.companyId,
+            companyName: p.company?.name ?? p.companyId.slice(0, 8),
+            summary: `Payout of ${total} ${p.currency.trim()} awaiting approval`,
+            amount: total,
+            currency: p.currency.trim(),
+            createdAt: p.createdAt.toISOString(),
+          });
+        }
+        for (const l of pendingLoads) {
+          items.push({
+            kind: 'load_pending',
+            id: l.id,
+            companyId: l.companyId,
+            companyName: l.company?.name ?? l.companyId.slice(0, 8),
+            summary: `Load of ${l.amount.toString()} ${l.currency.trim()} awaiting approval`,
+            amount: l.amount.toString(),
+            currency: l.currency.trim(),
+            createdAt: l.createdAt.toISOString(),
           });
         }
         for (const r of recentReversals) {
@@ -358,6 +407,8 @@ export class PlatformAnalyticsService {
 
         return {
           pendingWithdrawalsCount,
+          pendingPayoutsCount,
+          pendingLoadsCount,
           pendingWithdrawalsValue,
           recentReversalsCount: recentReversals.length,
           items,

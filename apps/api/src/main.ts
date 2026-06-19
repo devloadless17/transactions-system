@@ -59,6 +59,21 @@ async function bootstrap() {
     );
   });
 
+  // An uncaught SYNCHRONOUS throw leaves the process in an undefined state — for a
+  // money API, continuing to serve from there is more dangerous than restarting.
+  // Log loudly, then close gracefully (Prisma/Redis disconnect, timers cleared)
+  // and exit non-zero so the orchestrator's restart policy brings up a clean
+  // instance. A hard timeout guards against a hung shutdown.
+  process.on('uncaughtException', (err) => {
+    logger.error(`Uncaught exception — shutting down: ${err.stack ?? err.message}`);
+    const force = setTimeout(() => process.exit(1), 5000);
+    force.unref();
+    void app
+      .close()
+      .catch(() => undefined)
+      .finally(() => process.exit(1));
+  });
+
   app.set('trust proxy', 1);
   // Tighter helmet config. CSP stays off for /docs (Swagger UI) which we
   // mount before this would matter; turn it on for everything else.

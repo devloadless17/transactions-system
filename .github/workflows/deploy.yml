@@ -224,6 +224,10 @@ jobs:
           SEED_DATABASE: ${{ github.event.inputs.seed_database || 'false' }}
         run: |
           cp .env.prod.example .env.rendered
+          # Escape sed replacement metacharacters (\ & and the | delimiter) so a
+          # free-form secret (operator-chosen admin password, provider-issued Whish
+          # secret) that contains one can't corrupt the rendered .env.
+          esc() { printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'; }
           # Pin the stack to THIS commit's immutable image tag (built+pushed above)
           # instead of the floating :latest. Two payoffs:
           #   1. `up -d` always sees a changed image ref → reliably recreates api/web.
@@ -238,9 +242,9 @@ jobs:
           sed -i "s|__CSRF_SECRET__|$CSRF_SECRET|g" .env.rendered
           sed -i "s|__METRICS_TOKEN__|$METRICS_TOKEN|g" .env.rendered
           sed -i "s|__SEED_ADMIN_EMAIL__|$SEED_ADMIN_EMAIL|g" .env.rendered
-          sed -i "s|__SEED_ADMIN_PASSWORD__|$SEED_ADMIN_PASSWORD|g" .env.rendered
+          sed -i "s|__SEED_ADMIN_PASSWORD__|$(esc "$SEED_ADMIN_PASSWORD")|g" .env.rendered
           sed -i "s|__WHISH_CHANNEL__|$WHISH_CHANNEL|g" .env.rendered
-          sed -i "s|__WHISH_SECRET__|$WHISH_SECRET|g" .env.rendered
+          sed -i "s|__WHISH_SECRET__|$(esc "$WHISH_SECRET")|g" .env.rendered
           sed -i "s|__WHISH_BASE_URL__|$WHISH_BASE_URL|g" .env.rendered
           sed -i "s|__WHISH_WEBSITE_URL__|$WHISH_WEBSITE_URL|g" .env.rendered
           sed -i "s|__WHISH_ALLOW_SANDBOX__|$WHISH_ALLOW_SANDBOX|g" .env.rendered

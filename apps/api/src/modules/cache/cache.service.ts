@@ -1,7 +1,12 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import IORedis, { type Redis } from 'ioredis';
+import { randomUUID } from 'node:crypto';
 import type { Env } from '../../config/env.schema';
+
+// Returned by tryLock when Redis is unavailable: the caller still proceeds
+// (fail-open), and unlock treats it as a no-op. Never collides with a real token.
+const LOCK_DEGRADED = 'degraded';
 
 /**
  * Thin Redis-backed cache. Keys are namespaced via constructor args.
@@ -111,6 +116,44 @@ export class CacheService implements OnModuleDestroy {
     const fresh = await fn();
     await this.set(genKey, fresh, ttlSeconds);
     return fresh;
+  }
+
+  /**
+   * Best-effort distributed lock (SET key token NX PX ttl). Returns a unique
+   * token if acquired, else null. FAILS OPEN: if Redis is unavailable it returns
+   * a sentinel token so the caller still runs — single-instance behavior is never
+   * worse than today (the caller's own in-process guard still applies). The token
+   * MUST be passed back to `unlock` so a slow job can't release a lock that
+   * another instance has since acquired. Used to stop multiple API replicas from
+   * running the same background sweep at once.
+   */
+  async tryLock(key: string, ttlMs: number): Promise<string | null> {
+    if (!this.healthy) return LOCK_DEGRADED;
+    try {
+      const token = randomUUID();
+      const res = await this.redis.set(`lock:${key}`, token, 'PX', ttlMs, 'NX');
+      return res === 'OK' ? token : null;
+    } catch (e) {
+      this.logger.warn(`cache tryLock failed for ${key}: ${(e as Error).message}`);
+      return LOCK_DEGRADED; // fail open
+    }
+  }
+
+  /** Release a lock ONLY if this caller still holds it (token match), so we never
+   * delete a lock another instance acquired after ours expired. No-op for the
+   * fail-open sentinel. */
+  async unlock(key: string, token: string): Promise<void> {
+    if (!this.healthy || token === LOCK_DEGRADED) return;
+    try {
+      await this.redis.eval(
+        "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+        1,
+        `lock:${key}`,
+        token,
+      );
+    } catch {
+      // The lock will fall off on its own via the PX TTL; nothing to do.
+    }
   }
 }
 

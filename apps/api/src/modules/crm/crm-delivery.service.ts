@@ -5,6 +5,7 @@ import type { CrmEventPayload } from '@app/shared';
 import { PrismaService } from '../../database/prisma.service';
 import type { Env } from '../../config/env.schema';
 import { assertSafeWebhookUrl, safeFetch } from '../../common/net/ssrf';
+import { CacheService } from '../cache/cache.service';
 import { CrmDemoInboxService } from './crm-demo-inbox.service';
 
 // Hard cap per attempt so a slow/hostile CRM can't tie up the worker.
@@ -16,6 +17,12 @@ const MAX_ATTEMPTS = RETRY_BACKOFF_MS.length + 1; // 6: one immediate + 5 retrie
 // How often the retry sweep runs, and how many due rows it claims per tick.
 const JOB_INTERVAL_MS = 20_000;
 const JOB_BATCH = 50;
+// The cross-instance sweep lock must outlive the WORST-CASE sweep, not one tick:
+// the batch runs sequentially and each delivery can block up to DELIVERY_TIMEOUT_MS,
+// so a full slow batch is ~JOB_BATCH * DELIVERY_TIMEOUT_MS. If the lock lapsed
+// mid-sweep a second replica would re-claim the unprocessed rows and double-POST
+// them. (On a crash the lock still self-heals after this TTL.)
+const SWEEP_LOCK_TTL_MS = JOB_BATCH * DELIVERY_TIMEOUT_MS + 30_000;
 // Truncate the stored CRM response so a chatty endpoint can't bloat a row.
 const MAX_RESPONSE_BODY = 2000;
 
@@ -37,6 +44,7 @@ export class CrmDeliveryService implements OnApplicationBootstrap, OnModuleDestr
     private readonly prisma: PrismaService,
     private readonly config: ConfigService<Env, true>,
     private readonly demoInbox: CrmDemoInboxService,
+    private readonly cache: CacheService,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -181,6 +189,16 @@ export class CrmDeliveryService implements OnApplicationBootstrap, OnModuleDestr
   private async sweep(): Promise<void> {
     if (this.running) return;
     this.running = true;
+    // Cross-instance guard: if another API replica is already sweeping, skip this
+    // tick so two replicas don't double-POST the same due deliveries. Fails open
+    // when Redis is down — no worse than today's single-instance behavior, where
+    // the in-process `running` flag already prevents overlap. (TTL > one tick so
+    // the lock auto-clears if a sweep is killed mid-run.)
+    const lock = await this.cache.tryLock('crm-delivery-sweep', SWEEP_LOCK_TTL_MS);
+    if (!lock) {
+      this.running = false;
+      return;
+    }
     try {
       const now = new Date();
       const due = await this.prisma.runAsAdmin((tx) =>
@@ -198,6 +216,7 @@ export class CrmDeliveryService implements OnApplicationBootstrap, OnModuleDestr
     } catch (err) {
       this.logger.warn(`CRM delivery sweep failed: ${(err as Error).message}`);
     } finally {
+      await this.cache.unlock('crm-delivery-sweep', lock);
       this.running = false;
     }
   }

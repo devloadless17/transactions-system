@@ -8,6 +8,7 @@ import {
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { z } from 'zod';
 import {
   currencySchema,
@@ -99,6 +100,11 @@ function toSourceTransaction(r: TransactionResponse) {
  * Authorization Bearer key MUST be bound to that same source. URL/key
  * mismatches are rejected with 403.
  */
+// Opt out of the global per-IP ThrottlerGuard (RATE_LIMIT_MAX, default 100/60s):
+// ingest is rate-limited per API KEY by ApiKeyRateLimitGuard (300/60s). A single
+// high-volume provider egresses from one IP, so the global IP limiter would cap
+// real money traffic below the per-key budget and silently 429 legitimate bursts.
+@SkipThrottle()
 @UseGuards(ApiKeyAuthGuard, ApiKeyRateLimitGuard)
 @Controller('ingest')
 export class IngestController {

@@ -220,9 +220,16 @@ function ReviewDialog({
   const [notes, setNotes] = useState('');
   const [externalReference, setExternalReference] = useState('');
 
-  // Reset form whenever the targeted row/action changes so we don't
-  // carry stale text from a previous one.
+  // Reset the form whenever the targeted row/action changes so a previous
+  // settlement's external reference / notes can NEVER carry into a different
+  // approval — that would attach the wrong off-platform proof-of-payment to a
+  // payout/withdrawal/load and corrupt the reconciliation trail. (The earlier
+  // `key` on the confirm button only reset the button, not this form state.)
   const lastId = review?.withdrawal.id + '-' + review?.action;
+  useEffect(() => {
+    setNotes('');
+    setExternalReference('');
+  }, [lastId]);
 
   const mu = useMutation({
     mutationFn: () => {

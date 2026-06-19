@@ -28,6 +28,13 @@ const fakeConfig = {
   true
 >;
 
+// Pass-through cache: the delivery sweep's distributed lock always "acquires"
+// (single-process test) and unlock is a no-op.
+const fakeCache = {
+  tryLock: async () => 'test-lock',
+  unlock: async () => undefined,
+} as unknown as import('../../src/modules/cache/cache.service').CacheService;
+
 let h: Harness;
 let prisma: PrismaService;
 let config: CrmConfigService;
@@ -40,7 +47,7 @@ beforeAll(async () => {
   prisma = h.prisma;
   await prisma.$connect();
   demoInbox = new CrmDemoInboxService(prisma, fakeRealtime);
-  delivery = new CrmDeliveryService(prisma, fakeConfig, demoInbox);
+  delivery = new CrmDeliveryService(prisma, fakeConfig, demoInbox, fakeCache);
   dispatch = new CrmDispatchService(prisma, delivery);
   config = new CrmConfigService(prisma, fakeConfig, fakeRealtime);
 });

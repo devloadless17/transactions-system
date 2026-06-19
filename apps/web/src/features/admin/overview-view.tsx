@@ -174,8 +174,20 @@ export function AdminOverview() {
         />
         <KpiCard
           label="Pending actions"
-          value={opsQ.data ? String(opsQ.data.pendingWithdrawalsCount) : '—'}
-          hint={`${opsQ.data?.pendingWithdrawalsCount ?? 0} withdrawals`}
+          value={
+            opsQ.data
+              ? String(
+                  opsQ.data.pendingWithdrawalsCount +
+                    opsQ.data.pendingPayoutsCount +
+                    opsQ.data.pendingLoadsCount,
+                )
+              : '—'
+          }
+          hint={
+            opsQ.data
+              ? `${opsQ.data.pendingWithdrawalsCount} withdrawals · ${opsQ.data.pendingPayoutsCount} payouts · ${opsQ.data.pendingLoadsCount} loads`
+              : 'awaiting approval'
+          }
         />
       </div>
 
@@ -192,6 +204,7 @@ export function AdminOverview() {
             columns={currencyColumns}
             rows={platformQ.data?.byCurrency}
             isLoading={platformQ.isLoading}
+            error={platformQ.error}
             rowKey={(c) => c.currency}
             empty={
               <div className="py-8 text-center text-muted-foreground">
@@ -232,6 +245,7 @@ export function AdminOverview() {
             columns={sourceColumns}
             rows={overviewQ.data?.topSources}
             isLoading={overviewQ.isLoading}
+            error={overviewQ.error}
             rowKey={(s) => s.sourceId}
             empty={
               <div className="py-6 text-center text-muted-foreground">
@@ -271,7 +285,7 @@ export function AdminOverview() {
               Couldn&apos;t load flows — retrying…
             </div>
           ) : flowsQ.data ? (
-            <FlowsChart buckets={flowsQ.data.buckets} currency={flowsCurrency} />
+            <FlowsChart buckets={flowsQ.data.buckets} currency={flowsQ.data.currency} />
           ) : (
             <div className="h-80 w-full animate-pulse rounded bg-muted" />
           )}
@@ -288,6 +302,11 @@ export function AdminOverview() {
         </CardHeader>
         <CardContent className="p-0">
           {opsQ.isLoading && <p className="p-6 text-sm text-muted-foreground">Loading…</p>}
+          {opsQ.isError && !opsQ.data && (
+            <p className="p-6 text-sm text-destructive">
+              Couldn&apos;t load the action queue — retrying…
+            </p>
+          )}
           {opsQ.data && opsQ.data.items.length === 0 && (
             <p className="p-6 text-sm text-muted-foreground">All clear — no pending actions.</p>
           )}
@@ -311,14 +330,19 @@ export function AdminOverview() {
   );
 }
 
-function OpsIcon({ kind }: { kind: 'withdrawal_pending' | 'transaction_reversed' }) {
-  if (kind === 'withdrawal_pending')
+type OpsKind = 'withdrawal_pending' | 'payout_pending' | 'load_pending' | 'transaction_reversed';
+
+function OpsIcon({ kind }: { kind: OpsKind }) {
+  if (kind === 'withdrawal_pending' || kind === 'payout_pending' || kind === 'load_pending') {
+    const label =
+      kind === 'withdrawal_pending' ? 'Withdrawal' : kind === 'payout_pending' ? 'Payout' : 'Load';
     return (
       <Badge variant="warning" className="mt-0.5 gap-1">
         <ArrowUpFromLine className="h-3 w-3" />
-        Withdrawal
+        {label}
       </Badge>
     );
+  }
   return (
     <Badge variant="secondary" className="mt-0.5 gap-1">
       <RotateCcw className="h-3 w-3" />
@@ -327,16 +351,19 @@ function OpsIcon({ kind }: { kind: 'withdrawal_pending' | 'transaction_reversed'
   );
 }
 
-function OpsAction({
-  kind,
-}: {
-  kind: 'withdrawal_pending' | 'transaction_reversed';
-  companyId: string;
-}) {
-  if (kind === 'withdrawal_pending') {
+function OpsAction({ kind }: { kind: OpsKind; companyId: string }) {
+  const reviewHref =
+    kind === 'withdrawal_pending'
+      ? '/admin/withdrawals'
+      : kind === 'payout_pending'
+        ? '/admin/payouts'
+        : kind === 'load_pending'
+          ? '/admin/loads'
+          : null;
+  if (reviewHref) {
     return (
       <Button variant="outline" size="sm" asChild>
-        <Link href="/admin/withdrawals">Review</Link>
+        <Link href={reviewHref}>Review</Link>
       </Button>
     );
   }

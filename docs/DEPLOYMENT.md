@@ -21,7 +21,8 @@ cookie/CORS concerns and you need only **one** DNS record.
 
 ## 1. One-time server prep
 
-A Linux server (Ubuntu recommended) with a public IP and root SSH (password).
+A Linux server (Ubuntu recommended) with a public IP and SSH **key** access (a
+non-root sudo user such as `deploy` is fine).
 
 1. **Install Docker** (includes the compose plugin):
    ```bash
@@ -45,21 +46,22 @@ That's all. Caddy obtains and renews the TLS certificate automatically.
 
 ### Required
 
-| Secret                  | What it is / how to generate                                               |
-| ----------------------- | -------------------------------------------------------------------------- |
-| `DOCKER_USERNAME`       | Your Docker Hub username.                                                  |
-| `DOCKER_SECRET`         | Docker Hub access token (Account → Security → New Access Token, R/W).      |
-| `SERVER_IP`             | Server public IP or hostname.                                              |
-| `SERVER_SECRET`         | Server **root password**.                                                  |
-| `DOMAIN`                | Your domain, e.g. `app.example.com` — **no** `https://`, **no** path.      |
-| `POSTGRES_PASSWORD`     | DB superuser password. **Alphanumeric only:** `openssl rand -hex 24`.      |
-| `POSTGRES_PASSWORD_RLS` | DB runtime-role password. **Alphanumeric only:** `openssl rand -hex 24`.   |
-| `JWT_ACCESS_SECRET`     | `openssl rand -base64 36`                                                  |
-| `JWT_REFRESH_SECRET`    | `openssl rand -base64 36` (must differ from the others)                    |
-| `CSRF_SECRET`           | `openssl rand -base64 36` (must differ from the JWT secrets)               |
-| `METRICS_TOKEN`         | `openssl rand -base64 24`                                                  |
-| `SEED_ADMIN_EMAIL`      | Initial super-admin email (your login).                                    |
-| `SEED_ADMIN_PASSWORD`   | Initial super-admin password (you'll be forced to change it on 1st login). |
+| Secret                  | What it is / how to generate                                                   |
+| ----------------------- | ------------------------------------------------------------------------------ |
+| `DOCKER_USERNAME`       | Your Docker Hub username.                                                      |
+| `DOCKER_SECRET`         | Docker Hub access token (Account → Security → New Access Token, R/W).          |
+| `VPS_HOST`              | Server public IP or hostname.                                                  |
+| `VPS_USER`              | SSH login user (e.g. `deploy`).                                                |
+| `VPS_SSH_KEY_B64`       | Base64 OpenSSH private key: `base64 -w0 ~/.ssh/id_ed25519`. (Opt: `VPS_PORT`.) |
+| `DOMAIN`                | Your domain, e.g. `app.example.com` — **no** `https://`, **no** path.          |
+| `POSTGRES_PASSWORD`     | DB superuser password. **Alphanumeric only:** `openssl rand -hex 24`.          |
+| `POSTGRES_PASSWORD_RLS` | DB runtime-role password. **Alphanumeric only:** `openssl rand -hex 24`.       |
+| `JWT_ACCESS_SECRET`     | `openssl rand -base64 36`                                                      |
+| `JWT_REFRESH_SECRET`    | `openssl rand -base64 36` (must differ from the others)                        |
+| `CSRF_SECRET`           | `openssl rand -base64 36` (must differ from the JWT secrets)                   |
+| `METRICS_TOKEN`         | `openssl rand -base64 24`                                                      |
+| `SEED_ADMIN_EMAIL`      | Initial super-admin email (your login).                                        |
+| `SEED_ADMIN_PASSWORD`   | Initial super-admin password (you'll be forced to change it on 1st login).     |
 
 ### Optional — Whish Pay
 

@@ -18,6 +18,33 @@ export const moneyAmountSchema = z
   .refine((v) => (v.split('.')[1]?.length ?? 0) <= 8, 'at most 8 decimal places')
   .refine((v) => v.split('.')[0]!.length <= 12, 'amount is too large');
 
+/**
+ * Reject an inverted or absurdly-wide date range before any per-day bucket loop
+ * or unindexed aggregate runs. Shared by the analytics range schemas, whose
+ * endpoints are throttle-exempt — so an unbounded range would otherwise be a
+ * cheap way to force a huge scan + bucket array. `.datetime()` has already
+ * validated the string format upstream, so a parse failure here just no-ops.
+ */
+export function assertSaneDateRange(r: { from?: string; to?: string }, ctx: z.RefinementCtx): void {
+  if (!r.from || !r.to) return;
+  const from = Date.parse(r.from);
+  const to = Date.parse(r.to);
+  if (Number.isNaN(from) || Number.isNaN(to)) return;
+  if (to < from) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['to'],
+      message: 'to must be on or after from',
+    });
+  } else if (to - from > 366 * 24 * 3600 * 1000) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['to'],
+      message: 'date range must not exceed 366 days',
+    });
+  }
+}
+
 export const paginationSchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(20),

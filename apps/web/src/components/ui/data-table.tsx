@@ -95,7 +95,7 @@ export function DataTable<T>({
               </TableCell>
             </TableRow>
           )}
-          {!isLoading && error != null && (
+          {!isLoading && error != null && (rows == null || rows.length === 0) && (
             <TableRow>
               <TableCell colSpan={colSpan} className="py-8 text-center text-destructive">
                 {errorMessage(error)}
@@ -109,12 +109,29 @@ export function DataTable<T>({
               </TableCell>
             </TableRow>
           )}
+          {/* Rows stay visible even if a background refetch errors (keepPreviousData),
+              so the table never blanks on a transient failure; the error row above
+              only shows on a genuine first-load failure (no rows to keep). */}
           {!isLoading &&
-            error == null &&
             rows?.map((row) => (
               <TableRow
                 key={rowKey(row)}
                 onClick={onRowClick ? () => onRowClick(row) : undefined}
+                onKeyDown={
+                  onRowClick
+                    ? (e) => {
+                        // Only activate when the ROW ITSELF is focused — let Enter/
+                        // Space reach in-row action buttons (Reject/Cancel/Reverse)
+                        // instead of hijacking them into a row click.
+                        if (e.target !== e.currentTarget) return;
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          onRowClick(row);
+                        }
+                      }
+                    : undefined
+                }
+                tabIndex={onRowClick ? 0 : undefined}
                 className={cn(onRowClick && 'cursor-pointer')}
               >
                 {columns.map((col) => (

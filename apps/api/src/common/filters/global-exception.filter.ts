@@ -4,6 +4,7 @@ import { ZodError } from 'zod';
 import { Prisma } from '@app/db';
 import type { ApiError, ApiErrorEnvelope } from '@app/shared';
 import { DomainError } from '../errors/domain.error';
+import { redactUrl } from '../logging/redact-url';
 
 /** A translated exception: the HTTP status plus the envelope's inner error object. */
 interface TranslatedError {
@@ -22,15 +23,14 @@ export class GlobalExceptionFilter implements ExceptionFilter {
 
     const { status, error } = this.translate(exception);
 
+    const safeUrl = redactUrl(req.originalUrl);
     if (status >= 500) {
       this.logger.error(
-        `${req.method} ${req.originalUrl} -> ${status} ${error.code}`,
+        `${req.method} ${safeUrl} -> ${status} ${error.code}`,
         exception instanceof Error ? exception.stack : String(exception),
       );
     } else {
-      this.logger.warn(
-        `${req.method} ${req.originalUrl} -> ${status} ${error.code}: ${error.message}`,
-      );
+      this.logger.warn(`${req.method} ${safeUrl} -> ${status} ${error.code}: ${error.message}`);
     }
 
     // Mirror the success envelope (ResponseEnvelopeInterceptor): same top-level

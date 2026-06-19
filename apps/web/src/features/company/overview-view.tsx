@@ -68,16 +68,23 @@ export function OverviewView() {
   const receivable = sum?.receivable ?? '0';
   const hasReceivable = Number(receivable) > 0;
 
+  // Label money with the currency the value is actually FOR — not the in-flight
+  // <select> state. With keepPreviousData, switching currency briefly shows the
+  // prior response's amounts, which must keep THEIR currency label until the new
+  // data lands. The wallet balance is recomputed client-side from walletsQ for the
+  // selected currency, so it correctly uses `currency`; the reconciliation cards
+  // come from summaryQ, so they use that response's currency (`sumCcy`).
+  const sumCcy = sum?.currency ?? currency;
   // Balances/reconciliation figures use full-precision formatMoney (never rounds
   // up) so a displayed amount can never exceed the real 8dp wallet value.
-  const money = (s: string | undefined) =>
-    s !== undefined ? `${formatMoney(s)} ${currency}` : '—';
+  const money = (s: string | undefined, ccy: string = currency) =>
+    s !== undefined ? `${formatMoney(s)} ${ccy}` : '—';
   // Outflows: shown with a leading minus so the right-hand column reads as a
   // literal subtraction (Net deposit + Net load − Withdrawals − Payouts = wallet).
-  const outMoney = (s: string | undefined) => {
+  const outMoney = (s: string | undefined, ccy: string = currency) => {
     if (s === undefined) return '—';
     const sign = Number(s) > 0 ? '− ' : '';
-    return `${sign}${formatMoney(s)} ${currency}`;
+    return `${sign}${formatMoney(s)} ${ccy}`;
   };
 
   return (
@@ -136,20 +143,20 @@ export function OverviewView() {
           down as Net deposit + Net load − Withdrawals − Payouts = wallet. */}
       <div className="space-y-4">
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <KpiCard label="Deposit" value={money(sum?.deposits.gross)} />
-          <KpiCard label="Net deposit" value={money(sum?.deposits.net)} align="right" />
-          <KpiCard label="Loads" value={money(sum?.loads.gross)} />
-          <KpiCard label="Net loads" value={money(sum?.loads.net)} align="right" />
+          <KpiCard label="Deposit" value={money(sum?.deposits.gross, sumCcy)} />
+          <KpiCard label="Net deposit" value={money(sum?.deposits.net, sumCcy)} align="right" />
+          <KpiCard label="Loads" value={money(sum?.loads.gross, sumCcy)} />
+          <KpiCard label="Net loads" value={money(sum?.loads.net, sumCcy)} align="right" />
         </div>
         <FlowRowCard
           label="Withdrawals"
           hint="includes in-flight"
-          value={outMoney(sum?.withdrawals.total)}
+          value={outMoney(sum?.withdrawals.total, sumCcy)}
         />
         <FlowRowCard
           label="Payouts"
           hint="includes in-flight"
-          value={outMoney(sum?.payouts.total)}
+          value={outMoney(sum?.payouts.total, sumCcy)}
         />
       </div>
       <div className="text-xs text-muted-foreground">
@@ -160,8 +167,8 @@ export function OverviewView() {
         </p>
         {hasReceivable && (
           <p className="mt-1 text-foreground">
-            + {money(receivable)} receivable — owed back to the platform from a reversed deposit
-            (included so the math ties out).
+            + {money(receivable, sumCcy)} receivable — owed back to the platform from a reversed
+            deposit (included so the math ties out).
           </p>
         )}
       </div>
@@ -170,11 +177,15 @@ export function OverviewView() {
         <CardHeader>
           <CardTitle>Volume</CardTitle>
           <CardDescription>
-            Daily completed transactions over {rangeLabel(range)} ({currency}).
+            Daily completed transactions over {rangeLabel(range)} ({data?.currency ?? currency}).
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {data ? <VolumeChart buckets={data.daily.buckets} currency={currency} /> : <Skeleton />}
+          {data ? (
+            <VolumeChart buckets={data.daily.buckets} currency={data.currency} />
+          ) : (
+            <Skeleton />
+          )}
         </CardContent>
       </Card>
 
@@ -182,7 +193,9 @@ export function OverviewView() {
         <CardHeader>
           <CardTitle>By source</CardTitle>
           <CardDescription>
-            Volume and transaction count per source over {rangeLabel(range)} ({currency}).
+            Volume and transaction count per source over {rangeLabel(range)} (
+            {data?.currency ?? currency}
+            ).
           </CardDescription>
         </CardHeader>
         <CardContent>

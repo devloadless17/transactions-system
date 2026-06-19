@@ -11,6 +11,17 @@
 {$DOMAIN} {
 	encode zstd gzip
 
+	# Security headers on every response (defense-in-depth alongside the API's own
+	# helmet headers, and covering the Next.js app too). HSTS is safe here because
+	# Caddy terminates TLS for this domain.
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+
 	# API: versioned REST + realtime socket. `handle` blocks are mutually
 	# exclusive and ordered, so this never shadows the web catch-all below.
 	@api path /v1/* /socket.io/*
@@ -34,6 +45,14 @@
 # ---------------------------------------------------------------------------
 staging.portal.rivalpayments.com {
 	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
 
 	@api path /v1/* /socket.io/*
 	handle @api {

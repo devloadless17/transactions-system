@@ -765,8 +765,14 @@ function payloadString(payload: unknown, key: string): string | null {
 }
 
 function csvCell(s: string): string {
-  if (s.includes(',') || s.includes('"') || s.includes('\n')) {
-    return `"${s.replace(/"/g, '""')}"`;
+  // Neutralize spreadsheet formula injection: Excel/Sheets execute a cell that
+  // begins with = + - @ (or a leading tab/CR). The user-derived columns
+  // (externalTransactionId, customer/target/phone/note) come verbatim from
+  // untrusted source-provider payloads, so prefix any such value with a single
+  // quote before RFC-4180 quoting. (Ledger CSV is system-controlled, so unaffected.)
+  const v = /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
+  if (v.includes(',') || v.includes('"') || v.includes('\n')) {
+    return `"${v.replace(/"/g, '""')}"`;
   }
-  return s;
+  return v;
 }

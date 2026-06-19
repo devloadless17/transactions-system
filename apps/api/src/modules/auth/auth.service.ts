@@ -25,6 +25,15 @@ interface AuthenticatedUser {
   mustChangePassword: boolean;
 }
 
+// A refresh token that was revoked within this window is treated as a BENIGN
+// concurrent refresh — multiple open tabs, the realtime socket's reconnect, and
+// an HTTP 401 retry routinely fire the same refresh cookie within a moment of
+// each other once the 15-min access token lapses. Revoking the whole session
+// family on that race is what logged real users out when they returned to an idle
+// tab. A token replayed AFTER this window still trips full reuse-detection (a
+// genuinely stolen/old token), so the security property is preserved.
+const REFRESH_REUSE_GRACE_MS = 30_000;
+
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
@@ -149,11 +158,34 @@ export class AuthService {
     if (!stored || stored.expiresAt < new Date()) {
       throw new UnauthorizedError('Refresh token revoked or expired');
     }
-    // Reuse detection: a token that was already rotated/revoked is being
-    // replayed. Either the legitimate holder lost a race or the token was
-    // stolen — fail closed by revoking the user's entire refresh-token family
-    // so any attacker chain minted from it dies too.
-    if (stored.revokedAt) {
+    const user = await this.prisma.runAsAdmin((tx) =>
+      tx.user.findUnique({ where: { id: payload.sub } }),
+    );
+    if (!user || user.status !== 'ACTIVE') throw new UnauthorizedError();
+    await assertCompanyActive(this.prisma, user.companyId);
+    const authed: AuthenticatedUser = {
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      companyId: user.companyId,
+      mustChangePassword: user.mustChangePassword,
+    };
+
+    // Reuse detection WITH a rotation grace window. A legitimate client (multiple
+    // tabs / socket reconnect / HTTP retry) often replays the SAME cookie within a
+    // second of rotating it — that must NOT log the user out. But the grace must
+    // apply ONLY to benign ROTATIONS, never to tokens deliberately killed by a
+    // security action (logout / password change / admin reset / reuse-detection):
+    // those leave `rotatedAt` null and must stay dead, or the grace would resurrect
+    // a session the user/admin just invalidated.
+    //   - rotated within grace      → benign concurrent refresh: re-issue, no revoke.
+    //   - rotated longer ago        → genuine reuse of an old token: revoke the family.
+    //   - revoked but NOT rotated   → deliberately killed: reject, never re-issue.
+    const classifyRevoked = (tok: { rotatedAt: Date | null }): 'reissue' | 'reuse' | 'reject' => {
+      if (!tok.rotatedAt) return 'reject';
+      return Date.now() - tok.rotatedAt.getTime() <= REFRESH_REUSE_GRACE_MS ? 'reissue' : 'reuse';
+    };
+    const revokeFamily = async (): Promise<void> => {
       await this.prisma.runAsAdmin((tx) =>
         tx.refreshToken.updateMany({
           where: { userId: stored.userId, revokedAt: null },
@@ -163,48 +195,52 @@ export class AuthService {
       this.logger.warn(
         `refresh token reuse detected for user ${stored.userId}; revoked all active sessions`,
       );
+    };
+    const reissue = async () => {
+      // Observability for the one window where a within-grace replay is accepted.
+      this.logger.debug(`in-grace refresh re-issue for user ${stored.userId}`);
+      return { user: authed, tokens: await this.issueTokens(authed, ctx) };
+    };
+
+    if (stored.revokedAt) {
+      const decision = classifyRevoked(stored);
+      if (decision === 'reissue') return reissue();
+      if (decision === 'reuse') {
+        await revokeFamily();
+        throw new UnauthorizedError('Refresh token revoked or expired');
+      }
+      // Deliberately revoked (logout / password change / admin reset) — stays dead.
       throw new UnauthorizedError('Refresh token revoked or expired');
     }
 
-    const user = await this.prisma.runAsAdmin((tx) =>
-      tx.user.findUnique({ where: { id: payload.sub } }),
-    );
-    if (!user || user.status !== 'ACTIVE') throw new UnauthorizedError();
-    await assertCompanyActive(this.prisma, user.companyId);
-
-    // Rotate: revoke the used refresh token and mint new tokens. Use a
-    // CONDITIONAL updateMany (revokedAt: null) so two concurrent refreshes of
-    // the same token can't both win — the loser matches 0 rows and is treated
-    // as a reuse/race, revoking the whole family (same guard as the replay path
-    // above). This closes the check-then-update TOCTOU atomically at the row.
+    // Rotate: revoke the used token with a CONDITIONAL updateMany (revokedAt: null)
+    // so two concurrent refreshes can't both win at the row, and STAMP rotatedAt so
+    // a concurrent loser (or a within-grace replay) can tell this was a benign
+    // rotation rather than a security revocation.
     const rotated = await this.prisma.runAsAdmin((tx) =>
       tx.refreshToken.updateMany({
         where: { id: stored.id, revokedAt: null },
-        data: { revokedAt: new Date() },
+        data: { revokedAt: new Date(), rotatedAt: new Date() },
       }),
     );
     if (rotated.count === 0) {
-      await this.prisma.runAsAdmin((tx) =>
-        tx.refreshToken.updateMany({
-          where: { userId: stored.userId, revokedAt: null },
-          data: { revokedAt: new Date() },
-        }),
+      // The token was revoked between our read and write. Re-read to learn WHY: a
+      // concurrent rotation (benign → re-issue) or a security revoke (logout /
+      // password change / admin reset → reject). Never blindly re-issue here, or a
+      // logout/password-change racing a refresh would be resurrected.
+      const current = await this.prisma.runAsAdmin((tx) =>
+        tx.refreshToken.findUnique({ where: { id: stored.id } }),
       );
-      this.logger.warn(
-        `refresh token rotation race for user ${stored.userId}; revoked all active sessions`,
-      );
+      const decision = current?.revokedAt ? classifyRevoked(current) : 'reject';
+      if (decision === 'reissue') return reissue();
+      if (decision === 'reuse') {
+        await revokeFamily();
+        throw new UnauthorizedError('Refresh token revoked or expired');
+      }
       throw new UnauthorizedError('Refresh token revoked or expired');
     }
 
-    const authed: AuthenticatedUser = {
-      id: user.id,
-      email: user.email,
-      role: user.role,
-      companyId: user.companyId,
-      mustChangePassword: user.mustChangePassword,
-    };
-    const tokens = await this.issueTokens(authed, ctx);
-    return { user: authed, tokens };
+    return { user: authed, tokens: await this.issueTokens(authed, ctx) };
   }
 
   async logout(rawRefreshToken: string | null): Promise<void> {

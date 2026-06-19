@@ -29,7 +29,7 @@ the list of entities and their IDs, then call **(2)** for every transaction, usi
 Every request must carry your API key in the `Authorization` header. Your key is:
 
 ```
-Authorization: Bearer tsk_GXHNAMY9_6de89005dee6a2a1a7f5fb720468c0cf4194b6ba2804d51556f5d5e0ee63f9dd
+Authorization: Bearer tsk_XXXXXXXX_REPLACE_WITH_YOUR_ISSUED_KEY
 ```
 
 - This key identifies you as the `whish` source. All requests use it unchanged.
@@ -284,7 +284,7 @@ echoes the HTTP status.
 
 ```bash
 curl -sS https://portal.rivalpayments.com/v1/ingest/companies \
-  -H "Authorization: Bearer tsk_GXHNAMY9_6de89005dee6a2a1a7f5fb720468c0cf4194b6ba2804d51556f5d5e0ee63f9dd"
+  -H "Authorization: Bearer tsk_XXXXXXXX_REPLACE_WITH_YOUR_ISSUED_KEY"
 ```
 
 **Step 2 — submit a transaction** (using an `operatingId` from step 1)
@@ -292,7 +292,7 @@ curl -sS https://portal.rivalpayments.com/v1/ingest/companies \
 ```bash
 curl -sS -X POST \
   https://portal.rivalpayments.com/v1/ingest/whish/transactions \
-  -H "Authorization: Bearer tsk_GXHNAMY9_6de89005dee6a2a1a7f5fb720468c0cf4194b6ba2804d51556f5d5e0ee63f9dd" \
+  -H "Authorization: Bearer tsk_XXXXXXXX_REPLACE_WITH_YOUR_ISSUED_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "operatingId": "3f8a1c20-9b2e-4d77-8a1f-7c2e5b0d4a11",
@@ -314,7 +314,7 @@ curl -sS -X POST \
 
 Everything you need is already fixed:
 
-1. **API key:** `tsk_GXHNAMY9_6de89005dee6a2a1a7f5fb720468c0cf4194b6ba2804d51556f5d5e0ee63f9dd`
+1. **API key:** `tsk_XXXXXXXX_REPLACE_WITH_YOUR_ISSUED_KEY`
 2. **Transaction URL:** `https://portal.rivalpayments.com/v1/ingest/whish/transactions`
 3. **Discovery URL:** `https://portal.rivalpayments.com/v1/ingest/companies`
 

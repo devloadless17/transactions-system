@@ -1,14 +1,16 @@
 import { z } from 'zod';
-import { currencySchema } from './common';
+import { assertSaneDateRange, currencySchema } from './common';
 
-export const analyticsRangeSchema = z.object({
-  // ISO date strings. Defaults to last 30 days when omitted.
-  from: z.string().datetime().optional(),
-  to: z.string().datetime().optional(),
-  // Optional admin filter.
-  companyId: z.string().uuid().optional(),
-  currency: currencySchema.optional(),
-});
+export const analyticsRangeSchema = z
+  .object({
+    // ISO date strings. Defaults to last 30 days when omitted.
+    from: z.string().datetime().optional(),
+    to: z.string().datetime().optional(),
+    // Optional admin filter.
+    companyId: z.string().uuid().optional(),
+    currency: currencySchema.optional(),
+  })
+  .superRefine(assertSaneDateRange);
 export type AnalyticsRange = z.infer<typeof analyticsRangeSchema>;
 
 export const kpiResponseSchema = z.object({
