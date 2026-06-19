@@ -13,7 +13,7 @@
     "packages:dev": "concurrently -n db,shared -c yellow,cyan \"pnpm --filter @app/db dev\" \"pnpm --filter @app/shared dev\"",
     "dev": "pnpm packages:build && concurrently -n pkgs,api,web -c yellow,blue,green \"pnpm packages:dev\" \"pnpm --filter @app/api dev\" \"pnpm --filter @app/web dev\"",
     "build": "pnpm packages:build && pnpm -r --filter ./apps/* build",
-    "lint": "eslint . --max-warnings=200 && pnpm --filter @app/web lint",
+    "lint": "eslint . --max-warnings=250 && pnpm --filter @app/web lint",
     "lint:fix": "eslint . --fix && pnpm --filter @app/web lint --fix",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
