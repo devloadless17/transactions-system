@@ -7,6 +7,17 @@ import type { Env } from '../../config/env.schema';
 
 const CORRELATION_HEADER = 'x-request-id';
 
+// Strip secret-bearing values from a logged request URL so they never reach the
+// logs / APM: the Whish callback's `token` (and any `secret`/`api_key`) query
+// param, plus the CRM-demo path token (/crm-demo/<token>/inbox). The rest of the
+// URL is preserved for debugging.
+function redactUrl(url: string | undefined): string | undefined {
+  if (!url) return url;
+  return url
+    .replace(/([?&](?:token|secret|api[-_]?key)=)[^&#]*/gi, '$1[redacted]')
+    .replace(/(\/crm-demo\/)[^/?#]+/gi, '$1[redacted]');
+}
+
 @Module({
   imports: [
     PinoModule.forRootAsync({
@@ -42,7 +53,7 @@ const CORRELATION_HEADER = 'x-request-id';
               req: (req) => ({
                 id: req.id,
                 method: req.method,
-                url: req.url,
+                url: redactUrl(req.url),
                 ip: req.remoteAddress,
               }),
               res: (res) => ({ statusCode: res.statusCode }),

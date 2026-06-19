@@ -1,5 +1,5 @@
 'use client';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, keepPreviousData } from '@tanstack/react-query';
 import { useState } from 'react';
 
 export function QueryProvider({ children }: { children: React.ReactNode }) {
@@ -16,6 +16,12 @@ export function QueryProvider({ children }: { children: React.ReactNode }) {
             staleTime: 30_000,
             refetchOnWindowFocus: false,
             retry: 1,
+            // Keep the previous page's data on screen while the next page /
+            // filter loads, so paginated tables and dashboards never blank out
+            // or jump — the new data swaps in when it arrives. `isLoading` stays
+            // false during these transitions (status is already "success" with
+            // the prior data), so spinners only show on the genuine first load.
+            placeholderData: keepPreviousData,
           },
         },
       }),

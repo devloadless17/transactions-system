@@ -1,14 +1,12 @@
 import {
   Controller,
   Get,
-  Header,
   Param,
   ParseUUIDPipe,
   Query,
-  Res,
+  StreamableFile,
   UseGuards,
 } from '@nestjs/common';
-import type { Response } from 'express';
 import { listLedgerEntriesQuerySchema, UserRole, type ListLedgerEntriesQuery } from '@app/shared';
 import { ZodPipe } from '../../common/pipes/zod-validation.pipe';
 import { CompanyAccessGuard } from '../api-keys/guards/company-access.guard';
@@ -38,15 +36,12 @@ export class LedgerController {
   @Roles(UserRole.COMPANY_OWNER, UserRole.COMPANY_MANAGER, UserRole.COMPANY_VIEWER)
   @Get('company/ledger/export.csv')
   @SkipResponseEnvelope()
-  @Header('Content-Type', 'text/csv; charset=utf-8')
-  async companyExport(
+  companyExport(
     @Query(new ZodPipe(listLedgerEntriesQuerySchema)) query: ListLedgerEntriesQuery,
     @CurrentUser() user: AuthPrincipal,
-    @Res({ passthrough: true }) res: Response,
-  ): Promise<string> {
+  ): StreamableFile {
     if (!user.companyId) throw new ForbiddenError('No company in session');
-    res.setHeader('Content-Disposition', `attachment; filename="ledger-${Date.now()}.csv"`);
-    return this.ledger.exportCsv(user.companyId, query);
+    return this.ledger.streamCsv(user.companyId, query);
   }
 
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR)

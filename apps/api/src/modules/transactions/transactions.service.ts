@@ -1,4 +1,5 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, StreamableFile } from '@nestjs/common';
+import { Readable } from 'node:stream';
 import { InjectMetric } from '@willsoto/nestjs-prometheus';
 import type { Counter } from 'prom-client';
 import {
@@ -35,11 +36,12 @@ import {
 // cache churn.
 const LIST_COUNT_CACHE_TTL_SEC = 30;
 
-// CSV export walks rows in keyset chunks (no single huge query), up to a cap
-// that keeps the in-memory CSV string bounded. Stream from the controller if a
-// larger export is ever needed.
+// CSV export streams rows in keyset chunks: each chunk is a short, RLS-scoped
+// query written straight to the HTTP response, so memory stays bounded to a
+// single chunk and there is NO row cap — a multi-million-row export completes
+// without materializing the whole result set or holding one long DB transaction
+// open across the (possibly slow) client download.
 const CSV_EXPORT_CHUNK = 1000;
-const MAX_EXPORT_ROWS = 50_000;
 
 // Offset pagination makes Postgres scan + discard every skipped row, so a very
 // deep page (e.g. page 50,000) turns into a half-million-row disk sort per
@@ -443,12 +445,12 @@ export class TransactionsService {
   }
 
   /**
-   * Export up to MAX_EXPORT_ROWS (50k) transactions matching the filters as a
-   * CSV string, walked in keyset chunks. Hard cap to bound memory; users export
-   * in
-   * date-range slices for larger sets.
+   * Stream ALL transactions matching the filters as CSV (no row cap), walked in
+   * keyset chunks over (createdAt desc, id desc). Each chunk is fetched in its
+   * own short RLS-scoped query and emitted as it's produced, so memory stays
+   * bounded to one chunk and no transaction is held open across the download.
    */
-  async exportCsv(args: { companyId?: string; query: ListTransactionsQuery }): Promise<string> {
+  streamCsv(args: { companyId?: string; query: ListTransactionsQuery }): StreamableFile {
     const header = [
       'id',
       'created_at',
@@ -465,33 +467,31 @@ export class TransactionsService {
       'phone',
       'note',
     ];
-    const lines = [header.join(',')];
 
-    await this.prisma.runAsScoped(args.companyId ?? null, async (tx) => {
-      const where: Prisma.TransactionWhereInput = {};
-      if (args.companyId) where.companyId = args.companyId;
-      else if (args.query.companyId) where.companyId = args.query.companyId;
-      if (args.query.status) where.status = args.query.status;
-      if (args.query.sourceId) where.sourceId = args.query.sourceId;
-      if (args.query.currency) where.currency = args.query.currency;
-      // Mirror the list view's search so an exported CSV contains exactly the
-      // filtered rows the user is looking at. (Was previously omitted here, so an
-      // export-after-search silently returned rows that didn't match the search.)
-      if (args.query.search) {
-        where.externalTransactionId = { contains: args.query.search };
-      }
-      if (args.query.from || args.query.to) {
-        where.createdAt = {};
-        if (args.query.from) where.createdAt.gte = new Date(args.query.from);
-        if (args.query.to) where.createdAt.lte = new Date(args.query.to);
-      }
+    const where: Prisma.TransactionWhereInput = {};
+    if (args.companyId) where.companyId = args.companyId;
+    else if (args.query.companyId) where.companyId = args.query.companyId;
+    if (args.query.status) where.status = args.query.status;
+    if (args.query.sourceId) where.sourceId = args.query.sourceId;
+    if (args.query.currency) where.currency = args.query.currency;
+    // Mirror the list view's search so an exported CSV contains exactly the
+    // filtered rows the user is looking at.
+    if (args.query.search) {
+      where.externalTransactionId = { contains: args.query.search };
+    }
+    if (args.query.from || args.query.to) {
+      where.createdAt = {};
+      if (args.query.from) where.createdAt.gte = new Date(args.query.from);
+      if (args.query.to) where.createdAt.lte = new Date(args.query.to);
+    }
 
-      // Keyset pagination over (createdAt desc, id desc): each chunk fetches the
-      // rows strictly "after" the previous chunk's last row, so we never
-      // materialize the whole result set in one query and can export past the
-      // old 10k cap. Bounded by MAX_EXPORT_ROWS to keep the CSV string sane.
+    const prisma = this.prisma;
+    const scope = args.companyId ?? null;
+
+    async function* generate(): AsyncGenerator<string> {
+      yield header.join(',') + '\n';
       let cursor: { createdAt: Date; id: string } | null = null;
-      while (lines.length <= MAX_EXPORT_ROWS) {
+      for (;;) {
         const pageWhere: Prisma.TransactionWhereInput = cursor
           ? {
               ...where,
@@ -501,15 +501,22 @@ export class TransactionsService {
               ],
             }
           : where;
-        const page = await tx.transaction.findMany({
-          where: pageWhere,
-          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-          take: CSV_EXPORT_CHUNK,
-          include: { source: { select: { code: true } } },
-        });
+        // Each chunk is its own short, RLS-scoped query (admin → bypass when
+        // scope is null). New rows inserted mid-export land at the top of the
+        // (createdAt desc) order we've already passed, so the keyset walk never
+        // double-reads or skips.
+        const page = await prisma.runAsScoped(scope, (tx) =>
+          tx.transaction.findMany({
+            where: pageWhere,
+            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+            take: CSV_EXPORT_CHUNK,
+            include: { source: { select: { code: true } } },
+          }),
+        );
         if (page.length === 0) break;
+        let buf = '';
         for (const r of page) {
-          lines.push(
+          buf +=
             [
               r.id,
               r.createdAt.toISOString(),
@@ -525,16 +532,19 @@ export class TransactionsService {
               csvCell(payloadString(r.payload, 'target') ?? ''),
               csvCell(payloadString(r.payload, 'phone') ?? ''),
               csvCell(payloadString(r.payload, 'note') ?? ''),
-            ].join(','),
-          );
+            ].join(',') + '\n';
         }
+        yield buf;
         if (page.length < CSV_EXPORT_CHUNK) break;
         const last = page[page.length - 1]!;
         cursor = { createdAt: last.createdAt, id: last.id };
       }
-    });
+    }
 
-    return lines.join('\n');
+    return new StreamableFile(Readable.from(generate()), {
+      type: 'text/csv; charset=utf-8',
+      disposition: `attachment; filename="transactions-${Date.now()}.csv"`,
+    });
   }
 
   async list(args: {

@@ -1,4 +1,5 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, StreamableFile } from '@nestjs/common';
+import { Readable } from 'node:stream';
 import {
   Money,
   type LedgerAccountType,
@@ -17,10 +18,10 @@ import { CacheService } from '../cache/cache.service';
 // live. Mirrors the transactions list — deliberately NOT invalidated on write.
 const LIST_COUNT_CACHE_TTL_SEC = 30;
 
-// CSV export walks rows in keyset chunks (no single huge query), up to a cap that
-// keeps the in-memory CSV string bounded. Mirrors the transactions export.
+// CSV export streams rows in keyset chunks — each chunk a short, RLS-scoped query
+// written straight to the response — so memory is bounded to one chunk and there
+// is no row cap. Mirrors the transactions export.
 const CSV_EXPORT_CHUNK = 1000;
-const MAX_EXPORT_ROWS = 50_000;
 
 /**
  * One side of a ledger transaction. We always write entries in
@@ -229,12 +230,12 @@ export class LedgerService {
   }
 
   /**
-   * Export up to MAX_EXPORT_ROWS (50k) ledger entries matching the filters as a
-   * CSV string, walked in keyset chunks so we never materialize the whole result
-   * set in one query. Mirrors the transactions export; companies use this to
-   * reconcile a period against their wallets offline.
+   * Stream ALL ledger entries matching the filters as CSV (no row cap), walked in
+   * keyset chunks over (createdAt desc, id desc). Each chunk is its own short
+   * RLS-scoped query, emitted as produced — memory bounded to one chunk, no long
+   * transaction held open. Companies use this to reconcile a period offline.
    */
-  async exportCsv(companyId: string, query: ListLedgerEntriesQuery): Promise<string> {
+  streamCsv(companyId: string, query: ListLedgerEntriesQuery): StreamableFile {
     const header = [
       'id',
       'created_at',
@@ -247,15 +248,14 @@ export class LedgerService {
       'payout_id',
       'load_id',
     ];
-    const lines = [header.join(',')];
 
-    await this.prisma.runAsScoped(companyId, async (tx) => {
-      const where = this.buildWhere(companyId, query);
+    const where = this.buildWhere(companyId, query);
+    const prisma = this.prisma;
 
-      // Keyset over (createdAt desc, id desc): each chunk fetches the rows strictly
-      // "after" the previous chunk's last row. Bounded by MAX_EXPORT_ROWS.
+    async function* generate(): AsyncGenerator<string> {
+      yield header.join(',') + '\n';
       let cursor: { createdAt: Date; id: string } | null = null;
-      while (lines.length <= MAX_EXPORT_ROWS) {
+      for (;;) {
         const pageWhere: Prisma.LedgerEntryWhereInput = cursor
           ? {
               ...where,
@@ -265,14 +265,17 @@ export class LedgerService {
               ],
             }
           : where;
-        const page = await tx.ledgerEntry.findMany({
-          where: pageWhere,
-          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-          take: CSV_EXPORT_CHUNK,
-        });
+        const page = await prisma.runAsScoped(companyId, (tx) =>
+          tx.ledgerEntry.findMany({
+            where: pageWhere,
+            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+            take: CSV_EXPORT_CHUNK,
+          }),
+        );
         if (page.length === 0) break;
+        let buf = '';
         for (const r of page) {
-          lines.push(
+          buf +=
             [
               r.id,
               r.createdAt.toISOString(),
@@ -284,15 +287,18 @@ export class LedgerService {
               r.withdrawalId ?? '',
               r.payoutId ?? '',
               r.loadId ?? '',
-            ].join(','),
-          );
+            ].join(',') + '\n';
         }
+        yield buf;
         if (page.length < CSV_EXPORT_CHUNK) break;
         const last = page[page.length - 1]!;
         cursor = { createdAt: last.createdAt, id: last.id };
       }
-    });
+    }
 
-    return lines.join('\n');
+    return new StreamableFile(Readable.from(generate()), {
+      type: 'text/csv; charset=utf-8',
+      disposition: `attachment; filename="ledger-${Date.now()}.csv"`,
+    });
   }
 }

@@ -20,10 +20,16 @@ import { netOfFee, reservedTotal } from '../ledger/flow-ledger';
 import { WalletsService } from '../wallets/wallets.service';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { RealtimeService } from '../realtime/realtime.service';
+import { CacheService } from '../cache/cache.service';
 import { FeesService } from '../commissions/fees.service';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain.error';
 
 const REQUESTABLE_STATUS: WithdrawalStatus = 'PENDING';
+
+// Per-(filter) list COUNT cached briefly so paging reuses it instead of re-running
+// COUNT(*) on every page — mirrors the transactions/ledger lists. Rows stay live;
+// the total may lag by up to this window. TTL-only (not invalidated on write).
+const LIST_COUNT_CACHE_TTL_SEC = 30;
 
 /**
  * Loads: company tops up its own wallet (money in, not out). An optional LOAD
@@ -47,6 +53,7 @@ export class LoadsService {
     private readonly wallets: WalletsService,
     private readonly analytics: AnalyticsService,
     private readonly realtime: RealtimeService,
+    private readonly cache: CacheService,
     private readonly fees: FeesService,
   ) {}
 
@@ -260,6 +267,10 @@ export class LoadsService {
       }
 
       const skip = (args.query.page - 1) * args.query.pageSize;
+      const countKey =
+        `list-count:ld:${args.companyId ?? args.query.companyId ?? 'all'}` +
+        `:${args.query.status ?? ''}:${args.query.currency ?? ''}:${args.query.payoutMethod ?? ''}` +
+        `:${args.query.from ?? ''}:${args.query.to ?? ''}`;
       const [rows, total] = await Promise.all([
         tx.load.findMany({
           where,
@@ -267,7 +278,7 @@ export class LoadsService {
           skip,
           take: args.query.pageSize,
         }),
-        tx.load.count({ where }),
+        this.cache.wrap(countKey, LIST_COUNT_CACHE_TTL_SEC, () => tx.load.count({ where })),
       ]);
 
       return {

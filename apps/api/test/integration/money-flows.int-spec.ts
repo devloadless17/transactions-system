@@ -67,7 +67,7 @@ describe('ingest', () => {
     expect(snap.balanced).toBe(true);
   });
 
-  it('exportCsv returns a header plus one row per transaction (keyset walk)', async () => {
+  it('streamCsv emits a header plus one row per transaction (keyset walk)', async () => {
     const { companyId } = await createCompany(h);
     const sourceId = await createEnabledSource(h, companyId);
     await addTransactionFee(h, companyId, '10');
@@ -75,10 +75,12 @@ describe('ingest', () => {
       await h.transactions.ingest({ kind: 'source', sourceId }, ingestInput(companyId, amount));
     }
 
-    const csv = await h.transactions.exportCsv({
+    const file = h.transactions.streamCsv({
       companyId,
       query: { page: 1, pageSize: 20 },
     });
+    let csv = '';
+    for await (const chunk of file.getStream()) csv += chunk;
     const lines = csv.trim().split('\n');
     expect(lines).toHaveLength(4); // header + 3 rows
     expect(lines[0]).toContain('external_transaction_id');

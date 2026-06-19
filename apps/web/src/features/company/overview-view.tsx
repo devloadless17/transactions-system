@@ -44,18 +44,18 @@ export function OverviewView() {
       );
     },
     enabled: isRangeReady(range),
-    refetchInterval: 30_000,
+    // Freshness comes from the Socket.IO bridge (it invalidates ['company',
+    // 'analytics'|'wallets'|'transactions'] the instant anything changes and
+    // does a full refetch on reconnect), so these no longer poll on a timer.
   });
   const walletsQ = useQuery({
     queryKey: ['company', 'wallets'],
     queryFn: () => apiFetch<{ data: WalletResponse[] }>('/company/wallets'),
-    refetchInterval: 30_000,
   });
   const txQ = useQuery({
     queryKey: ['company', 'transactions', 'recent'],
     queryFn: () =>
       apiFetch<PaginatedResponse<TransactionResponse>>('/company/transactions?pageSize=5'),
-    refetchInterval: 30_000,
   });
 
   const data = overviewQ.data;

@@ -136,10 +136,27 @@ export function buildHarness(): Harness {
     wallets,
     fakeAnalytics,
     fakeRealtime,
+    fakeCache,
     fees,
   );
-  const payouts = new PayoutsService(prisma, ledger, wallets, fakeAnalytics, fakeRealtime, fees);
-  const loads = new LoadsService(prisma, ledger, wallets, fakeAnalytics, fakeRealtime, fees);
+  const payouts = new PayoutsService(
+    prisma,
+    ledger,
+    wallets,
+    fakeAnalytics,
+    fakeRealtime,
+    fakeCache,
+    fees,
+  );
+  const loads = new LoadsService(
+    prisma,
+    ledger,
+    wallets,
+    fakeAnalytics,
+    fakeRealtime,
+    fakeCache,
+    fees,
+  );
 
   const whishClient = new FakeWhishClient();
   const whish = new WhishPaymentsService(

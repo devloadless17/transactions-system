@@ -19,6 +19,7 @@ import { LedgerService } from '../ledger/ledger.service';
 import { WalletsService } from '../wallets/wallets.service';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { RealtimeService } from '../realtime/realtime.service';
+import { CacheService } from '../cache/cache.service';
 import { FeesService } from '../commissions/fees.service';
 import {
   assertSufficient,
@@ -31,6 +32,11 @@ import {
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain.error';
 
 const REQUESTABLE_STATUS: WithdrawalStatus = 'PENDING';
+
+// Per-(filter) list COUNT cached briefly so paging reuses it instead of re-running
+// COUNT(*) on every page — mirrors the transactions/ledger lists. Rows stay live;
+// the total may lag by up to this window. TTL-only (not invalidated on write).
+const LIST_COUNT_CACHE_TTL_SEC = 30;
 
 /**
  * Withdrawals: company pays an external third party. Funds move
@@ -51,6 +57,7 @@ export class WithdrawalsService {
     private readonly wallets: WalletsService,
     private readonly analytics: AnalyticsService,
     private readonly realtime: RealtimeService,
+    private readonly cache: CacheService,
     private readonly fees: FeesService,
   ) {}
 
@@ -310,6 +317,10 @@ export class WithdrawalsService {
       }
 
       const skip = (args.query.page - 1) * args.query.pageSize;
+      const countKey =
+        `list-count:wd:${args.companyId ?? args.query.companyId ?? 'all'}` +
+        `:${args.query.status ?? ''}:${args.query.currency ?? ''}:${args.query.payoutMethod ?? ''}` +
+        `:${args.query.from ?? ''}:${args.query.to ?? ''}`;
       const [rows, total] = await Promise.all([
         tx.withdrawal.findMany({
           where,
@@ -317,7 +328,7 @@ export class WithdrawalsService {
           skip,
           take: args.query.pageSize,
         }),
-        tx.withdrawal.count({ where }),
+        this.cache.wrap(countKey, LIST_COUNT_CACHE_TTL_SEC, () => tx.withdrawal.count({ where })),
       ]);
 
       return {

@@ -344,6 +344,15 @@ model Transaction {
   @@unique([companyId, idempotencyKey])
   @@index([companyId, createdAt])
   @@index([companyId, status])
+  // Admin cross-company list (default view, all statuses) orders by created_at
+  // desc with no company filter — (company_id, created_at) can't serve that.
+  // Mirrors the standalone created_at index the sibling money tables already have.
+  @@index([createdAt])
+  // Company list filtered by status AND ordered by created_at, and the
+  // company-scoped COMPLETED volume/daily KPI: (company_id, status) finds the rows
+  // but can't avoid the sort — this composite serves filter + sort + limit (and
+  // the analytics aggregate) from one index.
+  @@index([companyId, status, createdAt], map: "transactions_company_status_created_idx")
   // Trigram GIN index backing the admin `externalTransactionId contains …` search.
   // A btree can't serve an unanchored substring LIKE. Declared here (not just in raw
   // SQL) so `prisma migrate dev` tracks it and never drift-drops it again. Requires

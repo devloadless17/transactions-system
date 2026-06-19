@@ -25,8 +25,9 @@ export function useOverview(args: {
     },
     // A half-finished custom range (one date picked) shouldn't fire a query.
     enabled: isRangeReady(range),
-    // Periodic refresh keeps the dashboard live without the user touching it.
+    // No timer polling: the Socket.IO bridge invalidates ['<scope>','analytics']
+    // the moment underlying data changes and refetches everything on reconnect,
+    // so the dashboard stays live without hammering the API every 30s.
     // (staleTime / focus behaviour come from the global QueryClient defaults.)
-    refetchInterval: 30_000,
   });
 }

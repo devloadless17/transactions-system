@@ -2,15 +2,13 @@ import {
   Body,
   Controller,
   Get,
-  Header,
   Param,
   ParseUUIDPipe,
   Post,
   Query,
-  Res,
+  StreamableFile,
   UseGuards,
 } from '@nestjs/common';
-import type { Response } from 'express';
 import {
   listTransactionsQuerySchema,
   reverseTransactionSchema,
@@ -45,13 +43,10 @@ export class TransactionsReadController {
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
   @Get('admin/transactions/export.csv')
   @SkipResponseEnvelope()
-  @Header('Content-Type', 'text/csv; charset=utf-8')
-  async adminExport(
+  adminExport(
     @Query(new ZodPipe(listTransactionsQuerySchema)) query: ListTransactionsQuery,
-    @Res({ passthrough: true }) res: Response,
-  ): Promise<string> {
-    res.setHeader('Content-Disposition', `attachment; filename="transactions-${Date.now()}.csv"`);
-    return this.transactions.exportCsv({ query });
+  ): StreamableFile {
+    return this.transactions.streamCsv({ query });
   }
 
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
@@ -92,15 +87,12 @@ export class TransactionsReadController {
   @Roles(UserRole.COMPANY_OWNER, UserRole.COMPANY_MANAGER, UserRole.COMPANY_VIEWER)
   @Get('company/transactions/export.csv')
   @SkipResponseEnvelope()
-  @Header('Content-Type', 'text/csv; charset=utf-8')
-  async companyExport(
+  companyExport(
     @Query(new ZodPipe(listTransactionsQuerySchema)) query: ListTransactionsQuery,
     @CurrentUser() user: AuthPrincipal,
-    @Res({ passthrough: true }) res: Response,
-  ): Promise<string> {
+  ): StreamableFile {
     if (!user.companyId) throw new ForbiddenError('No company in session');
-    res.setHeader('Content-Disposition', `attachment; filename="transactions-${Date.now()}.csv"`);
-    return this.transactions.exportCsv({ companyId: user.companyId, query });
+    return this.transactions.streamCsv({ companyId: user.companyId, query });
   }
 
   @Roles(UserRole.COMPANY_OWNER, UserRole.COMPANY_MANAGER, UserRole.COMPANY_VIEWER)
