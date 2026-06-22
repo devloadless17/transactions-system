@@ -11,6 +11,7 @@ import type {
 import { Prisma } from '@app/db';
 import { PrismaService } from '../../database/prisma.service';
 import { RealtimeService } from '../realtime/realtime.service';
+import { recomputeSourceFeeAmounts } from '../analytics/source-fees';
 import { ConflictError, NotFoundError } from '../../common/errors/domain.error';
 
 @Injectable()
@@ -138,6 +139,12 @@ export class SourcesService {
           })),
         });
       }
+      // Apply the saved schedule to this source's EXISTING deposits too — the
+      // per-deposit source fee is frozen at settlement, so without this a newly
+      // configured (or edited) schedule would only affect future deposits and
+      // leave historical ones at their old/zero value. Same tx ⇒ atomic with the
+      // rule change; analytics then just SUM the refreshed column.
+      await recomputeSourceFeeAmounts(tx, sourceId);
       const rows = await tx.sourceFeeRule.findMany({
         where: { sourceId },
         orderBy: [{ channel: 'asc' }, { minAmount: 'asc' }],

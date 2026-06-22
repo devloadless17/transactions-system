@@ -16,6 +16,7 @@ import { Money, SourceFeeChannel } from '@app/shared';
 import type { CacheService } from '../../src/modules/cache/cache.service';
 import { PlatformAnalyticsService } from '../../src/modules/analytics/platform-analytics.service';
 import { AnalyticsService } from '../../src/modules/analytics/analytics.service';
+import { SourcesService } from '../../src/modules/sources/sources.service';
 import {
   addTransactionFee,
   buildHarness,
@@ -155,5 +156,46 @@ describe('source fees & net revenue', () => {
 
     const overview = await analytics.sourceOverview({ sourceId, range: { currency: 'USD' } });
     expect(eq(overview.sourceFees, '0')).toBe(true);
+  });
+
+  it('configuring a schedule reprices deposits that already settled (retroactive)', async () => {
+    const { companyId } = await createCompany(h);
+    const sourceId = await createEnabledSource(h, companyId);
+    await addTransactionFee(h, companyId, '10');
+
+    // Deposit settles BEFORE any source-fee rule exists → frozen at 0 (the bug:
+    // a schedule configured afterwards used to leave this at 0 forever).
+    const t = await h.transactions.ingest(
+      { kind: 'source', sourceId },
+      ingestInput(companyId, '100'),
+    );
+    const before = await h.prisma.runAsAdmin((tx) =>
+      tx.transaction.findUnique({ where: { id: t.id }, select: { sourceFeeAmount: true } }),
+    );
+    expect(eq(before!.sourceFeeAmount.toString(), '0')).toBe(true);
+
+    // Configure the schedule through the real service path (which now recomputes
+    // existing deposits). A bare realtime stub is enough for this unit of work.
+    const sources = new SourcesService(h.prisma, { admin() {} } as never);
+    await sources.setFeeRules(sourceId, {
+      rules: [
+        {
+          channel: SourceFeeChannel.INGEST,
+          minAmount: '0',
+          maxAmount: null,
+          feeType: 'PERCENTAGE',
+          feeValue: '1',
+          active: true,
+        },
+      ],
+    });
+
+    // The already-settled deposit is repriced: 1% of $100 = $1.
+    const after = await h.prisma.runAsAdmin((tx) =>
+      tx.transaction.findUnique({ where: { id: t.id }, select: { sourceFeeAmount: true } }),
+    );
+    expect(eq(after!.sourceFeeAmount.toString(), '1')).toBe(true);
+    const overview = await analytics.sourceOverview({ sourceId, range: { currency: 'USD' } });
+    expect(eq(overview.sourceFees, '1')).toBe(true);
   });
 });
