@@ -201,7 +201,13 @@ export function SourceDetailView({ sourceId }: { sourceId: string }) {
       </Card>
 
       {/* What this source charges the platform per deposit (admin/system-only). */}
-      {sourceQ.data && <SourceFeeSchedule sourceId={sourceId} sourceCode={sourceQ.data.code} />}
+      {sourceQ.data && (
+        <SourceFeeSchedule
+          sourceId={sourceId}
+          sourceCode={sourceQ.data.code}
+          onSaved={() => void overviewQ.refetch()}
+        />
+      )}
     </div>
   );
 }

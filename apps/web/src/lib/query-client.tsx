@@ -14,6 +14,11 @@ export function QueryProvider({ children }: { children: React.ReactNode }) {
             // network round-trips when navigating between views; focus
             // refetching is off since the socket keeps things fresh.
             staleTime: 30_000,
+            // Keep a view's data cached for 30 min after navigating away, so
+            // bouncing between pages in a work session re-renders INSTANTLY from
+            // cache (then silently revalidates if older than staleTime) rather than
+            // re-showing a skeleton + refetch. Default is 5 min, which evicts mid-session.
+            gcTime: 30 * 60_000,
             refetchOnWindowFocus: false,
             retry: 1,
             // Keep the previous page's data on screen while the next page /

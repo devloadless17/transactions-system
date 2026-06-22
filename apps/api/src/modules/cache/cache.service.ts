@@ -8,6 +8,16 @@ import type { Env } from '../../config/env.schema';
 // (fail-open), and unlock treats it as a no-op. Never collides with a real token.
 const LOCK_DEGRADED = 'degraded';
 
+// Single-flight tuning for `wrap`. When a read misses and another caller already
+// holds the compute lock, we poll for its result up to SINGLE_FLIGHT_MAX_WAIT_MS
+// (in SINGLE_FLIGHT_POLL_MS steps) before giving up and computing ourselves — so
+// a crashed/slow lock holder can never block or deadlock other readers.
+const SINGLE_FLIGHT_LOCK_TTL_MS = 5_000;
+const SINGLE_FLIGHT_POLL_MS = 50;
+const SINGLE_FLIGHT_MAX_WAIT_MS = 3_000;
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
 /**
  * Thin Redis-backed cache. Keys are namespaced via constructor args.
  *
@@ -113,9 +123,37 @@ export class CacheService implements OnModuleDestroy {
     const genKey = `${key}::g${gen}`;
     const cached = await this.get<T>(genKey);
     if (cached !== null) return cached;
-    const fresh = await fn();
-    await this.set(genKey, fresh, ttlSeconds);
-    return fresh;
+
+    // Single-flight: on a miss, only one caller should run `fn` while the others
+    // wait for its result, to avoid a stampede when many reads miss at once
+    // (e.g. right after an invalidation bumps the generation). The lock is keyed
+    // on `genKey`, so it is scoped to this exact generation — we can never wait
+    // for or serve a value from a stale generation.
+    //
+    // When Redis is unavailable `tryLock` returns the LOCK_DEGRADED sentinel, so
+    // every caller "wins" and computes directly — behavior identical to today's
+    // uncached/degraded path. `unlock` is a no-op for that sentinel.
+    const token = await this.tryLock(genKey, SINGLE_FLIGHT_LOCK_TTL_MS);
+    if (token === null) {
+      // Another caller is computing. Poll for its result, bounded so a crashed or
+      // slow holder can never block us indefinitely; on timeout we compute too.
+      const deadline = Date.now() + SINGLE_FLIGHT_MAX_WAIT_MS;
+      while (Date.now() < deadline) {
+        await sleep(SINGLE_FLIGHT_POLL_MS);
+        const value = await this.get<T>(genKey);
+        if (value !== null) return value;
+      }
+      // Holder never published in time — fall back to computing ourselves.
+      return fn();
+    }
+
+    try {
+      const fresh = await fn();
+      await this.set(genKey, fresh, ttlSeconds);
+      return fresh;
+    } finally {
+      await this.unlock(genKey, token);
+    }
   }
 
   /**

@@ -27,7 +27,19 @@ const FADE_MS = 300;
 const MIN_VISIBLE_MS = 300;
 
 export function TopProgressBar() {
-  const active = useIsFetching() + useIsMutating() > 0;
+  // Only count loads the user is actually *waiting on*:
+  //   • `data === undefined` → an initial / new-query-key fetch (nothing to show
+  //     yet). Background refetches (revalidation, refetchInterval, refetch on a
+  //     cached page) already have data on screen, so they must not flash the bar.
+  //   • `meta.background` → ambient widgets (sidebar pending-counts, the
+  //     notification bell) that mount with the persistent layout. Excluding them
+  //     stops the "bar runs twice on refresh" (layout-fetch wave + page-fetch wave)
+  //     and the periodic flashes from their polling.
+  // Mutations are always user-initiated, so they keep driving the bar.
+  const fetching = useIsFetching({
+    predicate: (q) => q.state.data === undefined && !q.meta?.background,
+  });
+  const active = fetching + useIsMutating() > 0;
 
   const [progress, setProgress] = useState(0); // 0..1, the scaleX of the bar
   const [visible, setVisible] = useState(false);

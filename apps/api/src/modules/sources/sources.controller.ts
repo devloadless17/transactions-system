@@ -41,18 +41,26 @@ export class SourcesAdminController {
     return this.sources.create(body);
   }
 
-  // Read endpoints: any authenticated user can see the source catalog,
-  // since they need it to interpret transactions.
+  // The paginated catalog (includes INACTIVE sources and the full admin-set
+  // `metadata` blob) and the by-id detail are admin-console surfaces only — gate
+  // them to platform admins. Companies never call these; their /app/sources page
+  // uses GET 'all', which returns only the metadata-free active catalog.
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR)
   @Get()
   async list(@Query(new ZodPipe(paginationSchema)) query: Pagination) {
     return this.sources.list(query);
   }
 
+  // Intentionally ungated: any authenticated user (incl. companies) can read the
+  // active source catalog, since they need name/code/status to interpret their
+  // transactions. The admin-set `metadata` is stripped here (see listActiveAll),
+  // so this exposes no internal config. Asserted by e2e/admin-isolation.spec.ts.
   @Get('all')
   async all() {
     return { data: await this.sources.listActiveAll() };
   }
 
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR)
   @Get(':id')
   async get(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.sources.getById(id);

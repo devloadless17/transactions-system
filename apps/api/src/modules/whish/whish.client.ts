@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Env } from '../../config/env.schema';
+import { z } from 'zod';
 import { DomainError, ValidationError } from '../../common/errors/domain.error';
 
 // Cap every Whish call so an unresponsive upstream can't hang the callback
@@ -34,6 +35,11 @@ export interface PostPaymentInput {
 }
 
 export type WhishCollectStatus = 'success' | 'failed' | 'pending';
+
+// Runtime contract for the collect status. `as` casts in `call<T>` give only
+// compile-time safety, so an off-contract string (e.g. a new upstream status)
+// would otherwise flow straight into reconcile() and be (mis)treated as success.
+const whishCollectStatusSchema = z.enum(['success', 'failed', 'pending']);
 
 /**
  * Thin client over the three Whish Pay endpoints. Injects the four required
@@ -83,8 +89,18 @@ export class WhishClient {
       externalId: input.externalId,
     });
     if (!data?.collectStatus) throw new WhishError('Whish status response missing collectStatus');
+    // Validate the status against the known contract at runtime — `call<T>` only
+    // casts the envelope, so an off-contract value (a new/unexpected upstream
+    // status) must be rejected here rather than silently settling downstream.
+    const parsed = whishCollectStatusSchema.safeParse(data.collectStatus);
+    if (!parsed.success) {
+      throw new WhishError(
+        `Whish returned an unrecognized collectStatus: ${String(data.collectStatus)}`,
+        { collectStatus: data.collectStatus },
+      );
+    }
     return {
-      collectStatus: data.collectStatus,
+      collectStatus: parsed.data,
       payerPhoneNumber: data.payerPhoneNumber != null ? String(data.payerPhoneNumber) : null,
     };
   }

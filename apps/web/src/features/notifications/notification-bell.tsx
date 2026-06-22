@@ -52,6 +52,8 @@ export function NotificationBell({ scope }: { scope: 'admin' | 'company' }) {
     // focused tab. Never poll a hidden/blurred tab.
     refetchInterval: 5 * 60_000,
     refetchIntervalInBackground: false,
+    // Ambient topbar widget — must not drive the top progress bar (see TopProgressBar).
+    meta: { background: true },
   });
   const unread = q.data?.unreadCount ?? 0;
   const items = q.data?.data ?? [];

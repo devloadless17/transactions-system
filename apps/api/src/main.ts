@@ -10,7 +10,9 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import { IoAdapter } from '@nestjs/platform-socket.io';
-import type { ServerOptions } from 'socket.io';
+import { createAdapter } from '@socket.io/redis-adapter';
+import IORedis from 'ioredis';
+import type { Server, ServerOptions } from 'socket.io';
 import type { INestApplicationContext } from '@nestjs/common';
 import { AppModule } from './app.module';
 import type { Env } from './config/env.schema';
@@ -21,20 +23,68 @@ import { CSRF_HEADER_NAME } from './modules/auth/auth.constants';
  * HTTP server, so only our web origins can open an authenticated socket
  * (the handshake carries the auth cookie — origin:true would invite
  * cross-site websocket hijacking).
+ *
+ * It also attaches the Redis adapter (`@socket.io/redis-adapter`) so realtime
+ * `invalidate` hints emitted on one API replica reach clients connected to
+ * another. Without it, the default in-memory adapter drops cross-instance
+ * events whenever the API runs >1 replica behind a non-sticky load balancer.
+ * Wiring is unconditional when REDIS_URL is set: on a single instance it is a
+ * harmless no-op (the local emit still works), and on a fleet it is correct.
+ * If Redis is unreachable the socket server keeps serving from the in-memory
+ * adapter (degraded — cross-instance events are dropped — but never crashing),
+ * matching the fail-open posture of the cache and throttler.
  */
 class CorsIoAdapter extends IoAdapter {
+  private readonly logger = new Logger(CorsIoAdapter.name);
+
   constructor(
     app: INestApplicationContext,
     private readonly origins: string[],
+    private readonly redisUrl: string,
   ) {
     super(app);
   }
 
   override createIOServer(port: number, options?: ServerOptions): unknown {
-    return super.createIOServer(port, {
+    const server = super.createIOServer(port, {
       ...options,
       cors: { origin: this.origins, credentials: true },
-    });
+    }) as Server;
+
+    if (this.redisUrl) {
+      // pub + sub must be SEPARATE connections: once a client issues SUBSCRIBE it
+      // can't run normal commands, so the adapter publishes on `pubClient` and
+      // listens on a duplicated `subClient` (the adapter's required contract).
+      const pubClient = new IORedis(this.redisUrl, {
+        maxRetriesPerRequest: null,
+        enableOfflineQueue: true,
+        lazyConnect: false,
+      });
+      const subClient = pubClient.duplicate();
+      let attached = false;
+      const onError = (e: Error) => {
+        if (!attached) {
+          this.logger.warn(
+            `redis adapter unavailable — realtime falls back to in-memory (cross-instance events dropped): ${e.message}`,
+          );
+        }
+      };
+      pubClient.on('error', onError);
+      subClient.on('error', onError);
+      try {
+        server.adapter(createAdapter(pubClient, subClient));
+        attached = true;
+        this.logger.log('Socket.IO Redis adapter enabled (cross-replica realtime).');
+      } catch (e) {
+        this.logger.warn(
+          `failed to attach redis adapter — realtime stays in-memory: ${(e as Error).message}`,
+        );
+        void pubClient.quit().catch(() => undefined);
+        void subClient.quit().catch(() => undefined);
+      }
+    }
+
+    return server;
   }
 }
 
@@ -134,8 +184,11 @@ async function bootstrap() {
     allowedHeaders: ['Content-Type', 'Authorization', CSRF_HEADER_NAME],
   });
 
-  // Realtime (Socket.IO) shares the HTTP server and the same CORS allowlist.
-  app.useWebSocketAdapter(new CorsIoAdapter(app, allowed));
+  // Realtime (Socket.IO) shares the HTTP server and the same CORS allowlist, and
+  // uses the Redis adapter so invalidations propagate across API replicas.
+  app.useWebSocketAdapter(
+    new CorsIoAdapter(app, allowed, config.get('REDIS_URL', { infer: true })),
+  );
 
   // Apply the API prefix to everything EXCEPT operational endpoints. /metrics
   // and /docs live at root so ops tooling can hit them without knowing the

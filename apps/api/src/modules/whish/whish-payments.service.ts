@@ -121,6 +121,14 @@ export class WhishPaymentsService {
       );
     }
 
+    // 1b. Amount must be positive at the 8dp money scale. The amount schema's
+    //     regex accepts "0" (and sub-unit values that round to 0), which would
+    //     mint a PENDING link that can never settle and would violate the ledger
+    //     amount>0 CHECK. Reject up front, same as ingest/withdrawal/payout/load.
+    if (!Money.of(input.amount).round().isPositive()) {
+      throw new ValidationError('amount must be positive at up to 8 decimal places');
+    }
+
     // 2. Commission must resolve up front — never mint a link that can't
     //    settle. (Without this, a paid payment with no matching rule would be
     //    stuck PENDING forever.) This is also what makes enabling LBP safe:
@@ -435,6 +443,30 @@ export class WhishPaymentsService {
         });
       }
       return mapWhishPayment(current);
+    }
+
+    // Settlement is OPT-IN: ONLY an explicit 'success' credits money. The client
+    // already validates collectStatus against z.enum(['success','failed','pending']),
+    // so by type this is 'success' here — the cast keeps this as a runtime
+    // backstop should the contract ever widen or the client guard be removed: an
+    // off-contract status must NEVER fall through to the credit path. Treat it
+    // like paid-but-unsettled: log, flag for an operator, leave PENDING for
+    // retry, and do NOT touch the wallet/ledger.
+    if ((collectStatus as string) !== 'success') {
+      this.logger.error(
+        `Whish payment ${payment.externalId} returned unexpected collectStatus '${String(collectStatus)}' ` +
+          `(company ${payment.companyId}) — NOT crediting; flagging for operator and leaving PENDING for retry.`,
+      );
+      const flagged = await this.prisma.runAsAdmin((tx) =>
+        tx.whishPayment.update({
+          where: { id: payment.id },
+          data: {
+            metadata: { needsAttention: true, unknownStatus: String(collectStatus) },
+          },
+        }),
+      );
+      this.realtime.company(payment.companyId, ['whish']);
+      return mapWhishPayment(flagged);
     }
 
     // success → the customer paid. Before crediting, re-check the CURRENT row

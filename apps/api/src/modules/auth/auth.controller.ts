@@ -12,7 +12,6 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { Throttle } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
-import crypto from 'node:crypto';
 import {
   changePasswordSchema,
   loginSchema,
@@ -24,6 +23,7 @@ import type { Env } from '../../config/env.schema';
 import { ZodPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthService } from './auth.service';
 import { ACCESS_COOKIE_NAME, CSRF_COOKIE_NAME, REFRESH_COOKIE_NAME } from './auth.constants';
+import { issueCsrfToken } from './csrf.token';
 import { Public } from './decorators/public.decorator';
 import { CurrentUser } from './decorators/current-user.decorator';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
@@ -127,7 +127,7 @@ export class AuthController {
   @Public()
   @Get('csrf')
   csrf(@Res({ passthrough: true }) res: Response): { csrfToken: string } {
-    const token = crypto.randomBytes(32).toString('hex');
+    const token = issueCsrfToken(this.config.get('CSRF_SECRET', { infer: true }));
     res.cookie(CSRF_COOKIE_NAME, token, {
       httpOnly: false,
       secure: this.config.get('COOKIE_SECURE', { infer: true }),
@@ -171,7 +171,7 @@ export class AuthController {
       maxAge: tokens.refreshTtlSec * 1000,
     });
     // (Re-)issue a CSRF token so the web client can immediately call protected routes.
-    const csrf = crypto.randomBytes(32).toString('hex');
+    const csrf = issueCsrfToken(this.config.get('CSRF_SECRET', { infer: true }));
     res.cookie(CSRF_COOKIE_NAME, csrf, {
       ...common,
       httpOnly: false,

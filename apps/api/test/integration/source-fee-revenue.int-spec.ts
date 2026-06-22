@@ -175,8 +175,13 @@ describe('source fees & net revenue', () => {
     expect(eq(before!.sourceFeeAmount.toString(), '0')).toBe(true);
 
     // Configure the schedule through the real service path (which now recomputes
-    // existing deposits). A bare realtime stub is enough for this unit of work.
-    const sources = new SourcesService(h.prisma, { admin() {} } as never);
+    // existing deposits). Bare realtime + cache stubs are enough for this unit of
+    // work (setFeeRules busts the source-fee rule cache after recompute).
+    const sources = new SourcesService(
+      h.prisma,
+      { admin() {} } as never,
+      { async invalidate() {} } as never,
+    );
     await sources.setFeeRules(sourceId, {
       rules: [
         {

@@ -11,6 +11,7 @@ import type {
 import { Prisma } from '@app/db';
 import { PrismaService } from '../../database/prisma.service';
 import { RealtimeService } from '../realtime/realtime.service';
+import { CacheService } from '../cache/cache.service';
 import { recomputeSourceFeeAmounts } from '../analytics/source-fees';
 import { ConflictError, NotFoundError } from '../../common/errors/domain.error';
 
@@ -19,6 +20,7 @@ export class SourcesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly realtime: RealtimeService,
+    private readonly cache: CacheService,
   ) {}
 
   async create(input: CreateSourceInput): Promise<SourceResponse> {
@@ -59,13 +61,29 @@ export class SourcesService {
     });
   }
 
+  /**
+   * Active source catalog for ANY authenticated user (incl. company tenants),
+   * who need name/code/status to interpret their transactions. The admin-set
+   * `metadata` blob is internal config and is deliberately NOT selected or
+   * returned here — only the paginated admin `list`/`getById` (admin-gated)
+   * expose it. Keep this metadata-free: it is the one source read companies can
+   * reach.
+   */
   async listActiveAll(): Promise<SourceResponse[]> {
     return this.prisma.runAsAdmin(async (tx) => {
       const rows = await tx.source.findMany({
         where: { status: 'ACTIVE' },
         orderBy: { name: 'asc' },
+        select: {
+          id: true,
+          name: true,
+          code: true,
+          status: true,
+          createdAt: true,
+          updatedAt: true,
+        },
       });
-      return rows.map(mapSource);
+      return rows.map((row) => ({ ...mapSource({ ...row, metadata: null }), metadata: null }));
     });
   }
 
@@ -151,6 +169,10 @@ export class SourcesService {
       });
       return rows.map(mapFeeRule);
     });
+    // The fee schedule just changed — bust the (source, channel) rule cache the
+    // ingest path reads from so new deposits price against the updated schedule
+    // immediately instead of waiting out the short TTL.
+    await this.cache.invalidate('sourcefee:rules:');
     this.realtime.admin(['sources']);
     return result;
   }

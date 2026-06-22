@@ -1067,7 +1067,7 @@ curl "https://portal.rivalpayments.com/v1/company/withdrawals?status=PENDING&pag
 
 ### Get one request
 
-`GET https://portal.rivalpayments.com/v1/company/{flow}/:id` → **200**. `:id` must be a UUID (non-UUID → `400 VALIDATION_ERROR`). A request belonging to another company returns `404 NOT_FOUND` (not 403), so existence isn't leaked across tenants.
+`GET https://portal.rivalpayments.com/v1/company/{flow}/:id` → **200**. `:id` must be a UUID (non-UUID → `400 BAD_REQUEST` — rejected by the path pipe before the handler; `VALIDATION_ERROR` is reserved for zod query-param failures). A request belonging to another company returns `404 NOT_FOUND` (not 403), so existence isn't leaked across tenants.
 
 ```bash
 curl "https://portal.rivalpayments.com/v1/company/payouts/a3f1c2d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d" \
@@ -1473,7 +1473,7 @@ The chosen URL always gets `?ref=<externalId>` appended, so your landing page ca
 - `GET https://portal.rivalpayments.com/v1/company/whish/redirects` → `{ "successUrl": string|null, "failureUrl": string|null }` (`null` = the platform's `/pay` pages).
 - `PUT https://portal.rivalpayments.com/v1/company/whish/redirects` → body `{ "successUrl": string|null, "failureUrl": string|null }`. URLs must be `http(s)`, ≤ 2048 chars; send `null` to clear a default. Returns the saved config.
 
-Like the webhook config, these are **dashboard/session endpoints** — cookie session + CSRF, roles `COMPANY_OWNER` / `COMPANY_MANAGER` — not callable with an API key. The per-link `successRedirectUrl` / `failureRedirectUrl` above override these defaults for a single payment.
+Both endpoints accept **either** a company API key (`Authorization: Bearer tsk_…`, no CSRF) **or** a dashboard cookie session (with the CSRF token). Roles: `GET` requires `COMPANY_OWNER` / `COMPANY_MANAGER` / `COMPANY_VIEWER`; `PUT` requires `COMPANY_OWNER` / `COMPANY_MANAGER`. (API-key callers act as a `COMPANY_OWNER` surrogate, so both pass.) The per-link `successRedirectUrl` / `failureRedirectUrl` above override these defaults for a single payment.
 
 **Error — no commission rule covers the amount (422):**
 
@@ -1587,7 +1587,7 @@ Returns the (possibly updated) payment object under a **200** envelope, same sha
 
 ### Outbound webhook (avoid polling)
 
-Instead of polling, register an endpoint and the platform will POST you a signed `whish.payment.paid` event when a payment settles. **Webhook config is dashboard-only** (`company/whish/webhook`, session + CSRF, roles COMPANY_OWNER to set/rotate/clear) — it cannot currently be managed with an API key. Once set, delivery is best-effort (2 attempts, never blocks settlement); always keep polling/refresh as a fallback.
+Instead of polling, register an endpoint and the platform will POST you a signed `whish.payment.paid` event when a payment settles. Webhook config (`company/whish/webhook`) is manageable with **either** a company API key (`Authorization: Bearer tsk_…`, no CSRF) **or** a dashboard cookie session (with the CSRF token): `GET` requires `COMPANY_OWNER` / `COMPANY_MANAGER` / `COMPANY_VIEWER`; `PUT` (set), `POST rotate-secret`, and `DELETE` (clear) require `COMPANY_OWNER`. (API-key callers act as a `COMPANY_OWNER` surrogate, so all pass.) Once set, delivery is best-effort (2 attempts, never blocks settlement); always keep polling/refresh as a fallback.
 
 Delivered request:
 

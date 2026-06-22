@@ -22,6 +22,14 @@ import {
   type DateRange,
 } from '@/features/analytics/date-range';
 
+// Realtime (Socket.IO) is the PRIMARY freshness mechanism: every money event
+// invalidates ['admin','analytics'], so these tiles update LIVE, and a socket
+// reconnect refetches them to catch up on anything missed while disconnected.
+// This interval is therefore only a slow safety net — for a silently-dropped
+// socket and to roll the time-window boundary forward — so the dashboard no
+// longer visibly re-fetches every minute. Skipped while the tab is hidden.
+const LIVE_FALLBACK_POLL_MS = 5 * 60_000;
+
 export function AdminOverview() {
   const [range, setRange] = useState<DateRange>(DEFAULT_RANGE);
   const [flowsCurrency, setFlowsCurrency] = useState<string>('USD');
@@ -40,7 +48,8 @@ export function AdminOverview() {
     queryKey: ['admin', 'analytics', 'platform', rk],
     queryFn: () =>
       apiFetch<PlatformAnalyticsResponse>(`/admin/analytics/platform?${rangeParams().toString()}`),
-    refetchInterval: 60_000,
+    refetchInterval: LIVE_FALLBACK_POLL_MS,
+    refetchIntervalInBackground: false,
   });
 
   const flowsQ = useQuery({
@@ -55,7 +64,8 @@ export function AdminOverview() {
   const opsQ = useQuery({
     queryKey: ['admin', 'analytics', 'operations'],
     queryFn: () => apiFetch<OperationsResponse>('/admin/analytics/operations'),
-    refetchInterval: 60_000,
+    refetchInterval: LIVE_FALLBACK_POLL_MS,
+    refetchIntervalInBackground: false,
   });
 
   const overviewQ = useOverview({ scope: 'admin', currency: flowsCurrency, range });

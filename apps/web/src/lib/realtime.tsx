@@ -60,12 +60,19 @@ const TOPIC_KEYS: Record<RealtimeTopic, KeysFor> = {
   analytics: (c) => [
     ['admin', 'analytics'],
     ['company', 'analytics'],
+    // Per-source detail page: overview tiles are keyed ['admin','source',id,'overview',…].
+    // A deposit emits the `analytics` topic, so refresh that source's detail too.
+    ['admin', 'source'],
     ...(c ? [['admin', 'company', c, 'overview']] : []),
   ],
   companies: (c) => [['admin', 'companies'], ...(c ? [['admin', 'company', c]] : [])],
   sources: () => [
     ['admin', 'sources'],
     ['sources', 'all'],
+    // Per-source detail page: source row + fee-schedule + overview live under the
+    // singular ['admin','source',id,…] prefix. setFeeRules emits the `sources`
+    // topic, so editing the schedule must refresh that detail page too.
+    ['admin', 'source'],
   ],
   commissions: () => [['admin', 'commission-rules']],
   'api-keys': () => [['company', 'api-keys']],

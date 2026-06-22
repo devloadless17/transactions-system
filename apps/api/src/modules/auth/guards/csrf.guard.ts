@@ -1,8 +1,11 @@
 import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import type { Request } from 'express';
 import { Reflector } from '@nestjs/core';
 import { ForbiddenError } from '../../../common/errors/domain.error';
+import type { Env } from '../../../config/env.schema';
 import { CSRF_COOKIE_NAME, CSRF_HEADER_NAME } from '../auth.constants';
+import { verifyCsrfToken } from '../csrf.token';
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
 import type { AuthenticatedRequest } from '../../../common/types/request.types';
 
@@ -20,7 +23,10 @@ const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
  */
 @Injectable()
 export class CsrfGuard implements CanActivate {
-  constructor(private readonly reflector: Reflector) {}
+  constructor(
+    private readonly reflector: Reflector,
+    private readonly config: ConfigService<Env, true>,
+  ) {}
 
   canActivate(ctx: ExecutionContext): boolean {
     const req = ctx.switchToHttp().getRequest<Request & { cookies?: Record<string, string> }>();
@@ -42,7 +48,12 @@ export class CsrfGuard implements CanActivate {
     const header = req.headers[CSRF_HEADER_NAME];
     const headerValue = Array.isArray(header) ? header[0] : header;
 
-    if (!cookie || !headerValue || cookie !== headerValue) {
+    // Double-submit: the cookie and the echoed header must match (proves the
+    // request came from a page that can read our cookie, not a blind cross-site
+    // POST). The HMAC check then proves the value was minted by us with the
+    // current CSRF_SECRET — so rotating the secret invalidates every token.
+    const secret = this.config.get('CSRF_SECRET', { infer: true });
+    if (!cookie || !headerValue || cookie !== headerValue || !verifyCsrfToken(cookie, secret)) {
       throw new ForbiddenError('CSRF token missing or invalid');
     }
     return true;

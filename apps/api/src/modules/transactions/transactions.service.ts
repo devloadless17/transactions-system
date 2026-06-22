@@ -64,6 +64,13 @@ const MAX_LIST_OFFSET = 100_000;
 // a source retrying the same blocked transaction can't flood the error log.
 const NO_RULE_ALERT_TTL_MS = 10 * 60_000;
 
+// Source-fee schedules are admin-only static config that changes rarely, yet the
+// fee is priced on EVERY deposit. Without caching, each ingest opens a second
+// (RLS-bypassing) DB transaction just to re-read these rows. Cache the rule set
+// per (source, channel) for a short window — edits take effect within the TTL,
+// and `SourcesService.setFeeRules` busts the `sourcefee` namespace for immediacy.
+const SOURCE_FEE_RULE_CACHE_TTL_SEC = 15;
+
 @Injectable()
 export class TransactionsService {
   private readonly logger = new Logger(TransactionsService.name);
@@ -176,8 +183,29 @@ export class TransactionsService {
     const channel: SourceFeeChannel = ctx.channel ?? SourceFeeChannel.INGEST;
     let sourceFeeAmount = Money.zero();
     try {
-      const feeRules = await this.prisma.runAsAdmin((tx) =>
-        tx.sourceFeeRule.findMany({ where: { sourceId: source.id, channel, active: true } }),
+      // Cache the (rarely-changing) rule set per (source, channel) so we don't open
+      // a second RLS-bypass DB transaction per deposit. On a miss the fetch still
+      // runs inside runAsAdmin; rows are mapped to plain string fields so the JSON
+      // cache round-trip is lossless (computeSourceFee reads every value via
+      // .toString()). Busted by SourcesService.setFeeRules on any schedule change.
+      const feeRules = await this.cache.wrap(
+        `sourcefee:rules:${source.id}:${channel}`,
+        SOURCE_FEE_RULE_CACHE_TTL_SEC,
+        () =>
+          this.prisma.runAsAdmin((tx) =>
+            tx.sourceFeeRule
+              .findMany({ where: { sourceId: source.id, channel, active: true } })
+              .then((rows) =>
+                rows.map((r) => ({
+                  channel: r.channel,
+                  minAmount: r.minAmount.toString(),
+                  maxAmount: r.maxAmount === null ? null : r.maxAmount.toString(),
+                  feeType: r.feeType,
+                  feeValue: r.feeValue.toString(),
+                  active: r.active,
+                })),
+              ),
+          ),
       );
       sourceFeeAmount = computeSourceFee(feeRules, channel, amount);
     } catch (err) {

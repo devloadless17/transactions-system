@@ -464,77 +464,93 @@ export class AnalyticsService {
         // "by OMT: $X volume, $Y fees" / "by wish: ..." breakdowns. When
         // scoped to a single company (drilldown), return ALL of its sources;
         // the platform-wide view stays capped to the top few.
-        const topSrcRows = await tx.transaction.groupBy({
-          by: ['sourceId'],
-          where: {
-            status: 'COMPLETED',
-            currency: p.currency,
-            createdAt: { gte: p.from, lte: p.to },
-            ...(companyFilter ? { companyId: companyFilter } : {}),
-          },
-          _sum: { amount: true, netAmount: true, commissionAmount: true },
-          _count: { _all: true },
-          // No DB `take`: we rank by the DISPLAYED volume (net + fee), which Prisma
-          // groupBy can't ORDER BY, so fetch all in-window source groups (a small
-          // set) and sort + slice below. A net-only top-N could otherwise exclude a
-          // fee-heavy source that belongs in the top-5 by volume.
-          orderBy: { _sum: { netAmount: 'desc' } },
-        });
+        // Sources ranked by DISPLAYED volume (net + fee), which Prisma groupBy
+        // can't ORDER BY (it sorts a single aggregated field, not net+fee), so we
+        // do it in raw SQL and LIMIT at the DB. The platform-wide view caps to the
+        // top few; a single-company drilldown (companyFilter set) returns ALL of
+        // its sources, so no LIMIT there. Bounding the LIMIT also keeps the
+        // source.findMany IN-list small on the platform path.
+        const topSrcRows = await tx.$queryRawUnsafe<
+          Array<{ sourceId: string; volume: string; fees: string; count: bigint }>
+        >(
+          `
+          SELECT
+            source_id                                    AS "sourceId",
+            SUM(net_amount + commission_amount)::text    AS volume,
+            SUM(commission_amount)::text                 AS fees,
+            COUNT(*)::bigint                             AS count
+          FROM transactions
+          WHERE status = 'COMPLETED'
+            AND currency = $1
+            AND created_at >= $2
+            AND created_at <= $3
+            ${companyFilter ? 'AND company_id = $4::uuid' : ''}
+          GROUP BY source_id
+          ORDER BY SUM(net_amount + commission_amount) DESC
+          ${companyFilter ? '' : `LIMIT ${TOP_LIMIT}`}
+          `,
+          p.currency,
+          p.from,
+          p.to,
+          ...(companyFilter ? [companyFilter] : []),
+        );
         const sourceIds = topSrcRows.map((r) => r.sourceId);
         const sources = sourceIds.length
           ? await tx.source.findMany({ where: { id: { in: sourceIds } } })
           : [];
         const sourceCode = new Map(sources.map((s) => [s.id, s.code]));
-        const topSourcesAll = topSrcRows.map((r) => ({
+        const topSources = topSrcRows.map((r) => ({
           sourceId: r.sourceId,
           sourceCode: sourceCode.get(r.sourceId) ?? '',
           // net + fee (money moved), matching totalVolume and the deposit card.
-          volume: Money.of((r._sum.netAmount ?? 0).toString())
-            .add(Money.of((r._sum.commissionAmount ?? 0).toString()))
-            .toString(),
-          fees: Money.of((r._sum.commissionAmount ?? 0).toString()).toString(),
-          count: r._count._all,
+          volume: Money.of(r.volume ?? '0').toString(),
+          fees: Money.of(r.fees ?? '0').toString(),
+          count: Number(r.count),
         }));
-        // Order by the displayed volume; the platform view shows the top few, a
-        // single-company drilldown returns all of its sources.
-        topSourcesAll.sort((a, b) => Money.of(b.volume).cmp(Money.of(a.volume)));
-        const topSources = companyFilter ? topSourcesAll : topSourcesAll.slice(0, TOP_LIMIT);
 
         // Top companies — admin scope only.
         let topCompanies:
           | { companyId: string; companyName: string; volume: string; count: number }[]
           | undefined;
         if (p.args.scope === 'admin' && !companyFilter) {
-          const rows = await tx.transaction.groupBy({
-            by: ['companyId'],
-            where: {
-              status: 'COMPLETED',
-              currency: p.currency,
-              createdAt: { gte: p.from, lte: p.to },
-            },
-            _sum: { amount: true, netAmount: true, commissionAmount: true },
-            _count: { _all: true },
-            // No DB `take`: rank by the displayed volume (net + fee), which groupBy
-            // can't ORDER BY. Fetch all in-window company groups and sort + slice
-            // below, so a fee-heavy company isn't dropped by a net-only top-N.
-            orderBy: { _sum: { netAmount: 'desc' } },
-          });
+          // Rank by DISPLAYED volume (net + fee), which Prisma groupBy can't
+          // ORDER BY, and LIMIT at the DB so the company.findMany IN-list stays
+          // bounded (this branch has no companyFilter — without a LIMIT the group
+          // count grows with the whole tenant table). A fee-heavy company isn't
+          // dropped because we order by net+fee, not net alone.
+          const rows = await tx.$queryRawUnsafe<
+            Array<{ companyId: string; volume: string; count: bigint }>
+          >(
+            `
+            SELECT
+              company_id                                   AS "companyId",
+              SUM(net_amount + commission_amount)::text    AS volume,
+              COUNT(*)::bigint                             AS count
+            FROM transactions
+            WHERE status = 'COMPLETED'
+              AND currency = $1
+              AND created_at >= $2
+              AND created_at <= $3
+            GROUP BY company_id
+            ORDER BY SUM(net_amount + commission_amount) DESC
+            LIMIT ${TOP_LIMIT}
+            `,
+            p.currency,
+            p.from,
+            p.to,
+          );
           const companyIds = rows.map((r) => r.companyId);
           const companies = companyIds.length
             ? await tx.company.findMany({ where: { id: { in: companyIds } } })
             : [];
           const nameById = new Map(companies.map((c) => [c.id, c.name]));
-          const mappedCompanies = rows.map((r) => ({
+          topCompanies = rows.map((r) => ({
             companyId: r.companyId,
             companyName: nameById.get(r.companyId) ?? r.companyId.slice(0, 8),
             // net + fee (money moved), consistent with totalVolume.
-            volume: Money.of((r._sum.netAmount ?? 0).toString())
-              .add(Money.of((r._sum.commissionAmount ?? 0).toString()))
-              .toString(),
-            count: r._count._all,
+            volume: Money.of(r.volume ?? '0').toString(),
+            count: Number(r.count),
           }));
-          mappedCompanies.sort((a, b) => Money.of(b.volume).cmp(Money.of(a.volume)));
-          topCompanies = mappedCompanies.slice(0, TOP_LIMIT);
         }
 
         return {

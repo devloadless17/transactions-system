@@ -7,6 +7,7 @@ const base: Record<string, string> = {
   DATABASE_URL: 'postgresql://u:p@localhost:5432/db',
   JWT_ACCESS_SECRET: 'a'.repeat(40),
   JWT_REFRESH_SECRET: 'b'.repeat(40),
+  CSRF_SECRET: 'c'.repeat(40),
 };
 
 // A production env that satisfies every hardening rule.
@@ -60,6 +61,24 @@ describe('validateEnv', () => {
     expect(() =>
       validateEnv({ ...prodOk, JWT_ACCESS_SECRET: same, JWT_REFRESH_SECRET: same }),
     ).toThrow(/JWT_REFRESH_SECRET/);
+  });
+
+  it('requires CSRF_SECRET (>=32 chars) in every environment', () => {
+    const { CSRF_SECRET: _omit, ...noCsrf } = base;
+    expect(() => validateEnv(noCsrf)).toThrow(/CSRF_SECRET/);
+    expect(() => validateEnv({ ...base, CSRF_SECRET: 'too-short' })).toThrow(/CSRF_SECRET/);
+  });
+
+  it('rejects production when CSRF_SECRET equals a JWT secret', () => {
+    expect(() => validateEnv({ ...prodOk, CSRF_SECRET: prodOk.JWT_ACCESS_SECRET })).toThrow(
+      /CSRF_SECRET/,
+    );
+  });
+
+  it('rejects production with a dev/default CSRF secret', () => {
+    expect(() =>
+      validateEnv({ ...prodOk, CSRF_SECRET: 'dev_csrf_secret_change_me_min_32_chars_xxxxx' }),
+    ).toThrow(/CSRF_SECRET/);
   });
 
   it('rejects production without a METRICS_TOKEN', () => {

@@ -151,15 +151,25 @@ The single-instance default is solid. Before scaling to **multiple API instances
 or to **very large tables**, action these (none are code bugs — they're topology
 decisions):
 
-- **Realtime needs a shared adapter beyond one API instance.** Socket.IO uses the
-  in-memory adapter by default ([apps/api/src/main.ts](../apps/api/src/main.ts)),
-  so an event emitted on instance A is **not** delivered to clients connected to
-  instance B. Running >1 API replica therefore requires **either** sticky sessions
-  **or** the Redis adapter (`@socket.io/redis-adapter`, pointed at the Redis you
-  already run for cache/rate-limit). Until then, keep the API at **one replica**
-  (the web can scale freely). Realtime is an optimization — the UI is still correct
-  after a manual reload — so a missed cross-instance event degrades gracefully, but
-  fix this before relying on live updates at scale.
+- **Realtime is cross-replica via the Redis adapter (wired automatically).**
+  Socket.IO attaches the Redis adapter (`@socket.io/redis-adapter`) whenever
+  `REDIS_URL` is set — see `CorsIoAdapter` in
+  [apps/api/src/main.ts](../apps/api/src/main.ts) — so an event emitted on instance
+  A reaches clients connected to instance B across any number of replicas, no
+  sticky sessions required. It reuses the Redis you already run for
+  cache/rate-limit. If Redis is unreachable the socket server falls back to the
+  in-memory adapter (a startup warning is logged): the API keeps serving and the
+  UI stays correct after a manual reload, but cross-instance live updates are
+  dropped until Redis recovers — so monitor that warning when running >1 replica.
+- **The reverse proxy MUST forward WebSocket upgrades with a long idle timeout.**
+  The realtime socket is a long-lived connection. If the proxy (Caddy/nginx)
+  doesn't pass the `Upgrade`/`Connection` headers, or closes idle connections
+  after a short window, the client is dropped and reconnects repeatedly — and
+  every reconnect triggers a full catch-up refetch of the open dashboard, which
+  looks like the page "refreshing itself" every minute or two. Caddy's
+  `reverse_proxy` forwards WebSockets by default; just keep its read/idle timeout
+  generous (or unset) for the API upstream so a healthy socket stays open for the
+  whole session (it only legitimately reconnects ~every 13 min on token refresh).
 - **Set the DB connection pool per instance.** `DATABASE_URL` has no
   `connection_limit`, so Prisma defaults to `num_cpus*2+1` **per instance**. With
   N replicas + the 120s reconcile transaction, that can exceed Postgres
@@ -173,8 +183,19 @@ decisions):
   `IF NOT EXISTS` in the migration then no-ops on deploy) to avoid blocking writes.
 - **The `source_fee_amount` backfill is one-time but O(rows).** The
   `20260622210000_transaction_source_fee` migration backfills every existing
-  COMPLETED deposit. On a multi-million-row table run it in a maintenance window
-  (or batch the `UPDATE`), then it's free forever — analytics just SUM the column.
+  COMPLETED deposit inline, and `20260622230000_recompute_source_fee_backfill`
+  re-runs it once schedules exist. Both run inside `migrate deploy`, which is fine
+  on a fresh or small database. On an **already-multi-million-row** `transactions`
+  table those inline `UPDATE`s take a long lock and can wedge the deploy — in that
+  case run `migrate deploy` during a maintenance window, **or** prefer the batched,
+  resumable, lock-free out-of-band script:
+  `pnpm --filter @app/db exec tsx scripts/backfill-source-fee.ts` (keyset-paginated
+  in `BACKFILL_BATCH_SIZE` chunks; idempotent — only touches rows still at the 0
+  default; rounds ROUND_HALF_EVEN to match app-computed rows). Going forward this
+  is automatic: editing a source's schedule recomputes that source's deposits in
+  `SourcesService.setFeeRules`. Then analytics just SUM the column — free forever.
+  **Do not edit those applied migration SQL files to "fix" the lock** — that breaks
+  Prisma's checksum; use the script instead.
 - **Background tickers assume a single runner.** Reconciliation, maintenance, and
   Whish reconciliation tickers have no cross-instance lock. The work is idempotent
   (no double-settlement), so multiple instances are _safe_ but do _redundant_ work;

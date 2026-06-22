@@ -13,6 +13,8 @@ export function usePendingCounts(scope: 'admin' | 'company'): Record<string, num
     queryKey: [scope, 'operations', 'counts'],
     queryFn: () => apiFetch<PendingCounts>(`/${scope}/operations/counts`),
     staleTime: 30_000,
+    // Ambient sidebar badge — must not drive the top progress bar (see TopProgressBar).
+    meta: { background: true },
   });
   return {
     withdrawals: q.data?.withdrawals ?? 0,

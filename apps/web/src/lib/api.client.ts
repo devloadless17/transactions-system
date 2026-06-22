@@ -129,6 +129,20 @@ async function requestWithAuthRetry<T>(
       notifySessionExpired();
     }
     const body = (await res.json().catch(() => null)) as ApiErrorBody | null;
+    // A stale CSRF token — e.g. right after CSRF_SECRET rotates or the token
+    // format changes across a deploy — is rejected 403 by CsrfGuard BEFORE the
+    // handler runs, so no side effect occurred and it is safe to re-mint the
+    // token and replay the mutation once. Matched on the guard's exact message
+    // so genuine authorization (role) 403s are never replayed.
+    if (
+      res.status === 403 &&
+      !retried &&
+      MUTATING.has(method) &&
+      body?.error?.message === 'CSRF token missing or invalid'
+    ) {
+      const r = await fetch(`${publicApiBase()}/auth/csrf`, { credentials: 'include' });
+      if (r.ok) return requestWithAuthRetry<T>(path, opts, true);
+    }
     throw new ApiClientError(res.status, body, `API ${method} ${path} failed`);
   }
 
