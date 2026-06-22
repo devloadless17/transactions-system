@@ -148,20 +148,23 @@ export async function createCommissionRule(
   csrf: string,
   data: Record<string, unknown>,
 ): Promise<{ id: string }> {
-  // The endpoint now takes the rule-GROUP shape (companyIds[] / operationTypes[] /
-  // tiers[]). Specs still pass the legacy flat shape, so translate a flat rule
-  // into a single-tier group here — keeps every caller working unchanged.
+  // The endpoint takes the rule-GROUP shape (companyIds[] / operations[] /
+  // tiers[]), where each operation carries its own fee application. Specs still
+  // pass the legacy flat shape ({operationType, feeApplication, min/max, type,
+  // value}), so translate a flat rule into a single-operation, single-tier group
+  // here — keeps every caller working unchanged.
   const body =
     'tiers' in data
       ? data
       : {
           name: (data.name as string | null) ?? null,
           companyIds: data.companyId != null ? [data.companyId] : null,
-          operationTypes:
-            data.operationType != null
-              ? [data.operationType]
-              : ((data.operationTypes as unknown[]) ?? ['TRANSACTION']),
-          feeApplication: data.feeApplication ?? 'DEDUCTED',
+          operations: [
+            {
+              operationType: data.operationType ?? 'TRANSACTION',
+              feeApplication: data.feeApplication ?? 'DEDUCTED',
+            },
+          ],
           priority: data.priority ?? 100,
           active: data.active ?? true,
           tiers: [

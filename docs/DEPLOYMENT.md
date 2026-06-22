@@ -144,3 +144,39 @@ release ran a destructive migration, restore the DB from a backup.
 > Each deploy keeps the current + previous images on the server (older ones are
 > pruned), and never recreates the database container — the new image ref only
 > changes api/web, so the `postgres_data` volume is preserved untouched.
+
+## Scaling & operational notes (from the production-readiness audit)
+
+The single-instance default is solid. Before scaling to **multiple API instances**
+or to **very large tables**, action these (none are code bugs — they're topology
+decisions):
+
+- **Realtime needs a shared adapter beyond one API instance.** Socket.IO uses the
+  in-memory adapter by default ([apps/api/src/main.ts](../apps/api/src/main.ts)),
+  so an event emitted on instance A is **not** delivered to clients connected to
+  instance B. Running >1 API replica therefore requires **either** sticky sessions
+  **or** the Redis adapter (`@socket.io/redis-adapter`, pointed at the Redis you
+  already run for cache/rate-limit). Until then, keep the API at **one replica**
+  (the web can scale freely). Realtime is an optimization — the UI is still correct
+  after a manual reload — so a missed cross-instance event degrades gracefully, but
+  fix this before relying on live updates at scale.
+- **Set the DB connection pool per instance.** `DATABASE_URL` has no
+  `connection_limit`, so Prisma defaults to `num_cpus*2+1` **per instance**. With
+  N replicas + the 120s reconcile transaction, that can exceed Postgres
+  `max_connections`. Append `?connection_limit=<n>&pool_timeout=<s>` to
+  `DATABASE_URL` (size it: `N_replicas * connection_limit < max_connections`,
+  leaving headroom for migrations/admin).
+- **Build big-table indexes `CONCURRENTLY` out-of-band.** Index-adding migrations
+  (`20260619120000_transactions_list_indexes`, `20260622180000_activity_*`) use a
+  plain `CREATE INDEX`, which takes a brief write lock. On an already-large
+  `transactions` table, create those indexes `CONCURRENTLY` by hand first (the
+  `IF NOT EXISTS` in the migration then no-ops on deploy) to avoid blocking writes.
+- **The `source_fee_amount` backfill is one-time but O(rows).** The
+  `20260622210000_transaction_source_fee` migration backfills every existing
+  COMPLETED deposit. On a multi-million-row table run it in a maintenance window
+  (or batch the `UPDATE`), then it's free forever — analytics just SUM the column.
+- **Background tickers assume a single runner.** Reconciliation, maintenance, and
+  Whish reconciliation tickers have no cross-instance lock. The work is idempotent
+  (no double-settlement), so multiple instances are _safe_ but do _redundant_ work;
+  with >1 replica, gate them behind a Postgres advisory lock or run them on one
+  designated instance.

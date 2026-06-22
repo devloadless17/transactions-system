@@ -212,13 +212,18 @@ export class AnalyticsService {
       );
       const buckets = fillDailyGaps(p.from, p.to, dailyRows);
 
-      // Every company that used this source in the range — no cap.
+      // Top companies by volume for this source. Capped so the payload can't grow
+      // unbounded with tenant count on a high-fan-out source (a source used by tens
+      // of thousands of companies would otherwise return one row each). 500 is far
+      // beyond what the drilldown table meaningfully shows; raise if ever needed.
+      const SOURCE_COMPANY_CAP = 500;
       const companyRows = await tx.transaction.groupBy({
         by: ['companyId'],
         where,
         _sum: { amount: true, netAmount: true, commissionAmount: true },
         _count: { _all: true },
         orderBy: { _sum: { amount: 'desc' } },
+        take: SOURCE_COMPANY_CAP,
       });
       const companyIds = companyRows.map((r) => r.companyId);
       const companies = companyIds.length

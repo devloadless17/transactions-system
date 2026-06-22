@@ -132,8 +132,7 @@ describe('ingest idempotency & replay', () => {
       // 0% deducted on TRANSACTION so net == amount and the math is obvious.
       commission: {
         name: 'starter',
-        operationTypes: ['TRANSACTION'],
-        feeApplication: 'DEDUCTED',
+        operations: [{ operationType: 'TRANSACTION', feeApplication: 'DEDUCTED' }],
         priority: 100,
         active: true,
         tiers: [

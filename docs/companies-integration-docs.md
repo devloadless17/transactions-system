@@ -1468,6 +1468,13 @@ Send your customer to `data.collectUrl`. Keep `data.externalId` (the reference) 
 
 The chosen URL always gets `?ref=<externalId>` appended, so your landing page can read the reference and show the right order. These are **customer-facing redirects only** — they are _not_ how you learn the payment settled (that happens automatically via the CRM webhook / status endpoints). The settlement **callback** URLs are managed by the platform and are not yours to set.
 
+**Managing your default redirect URLs.** Set the company-wide defaults on the dashboard **Whish Pay** page, or programmatically:
+
+- `GET https://portal.rivalpayments.com/v1/company/whish/redirects` → `{ "successUrl": string|null, "failureUrl": string|null }` (`null` = the platform's `/pay` pages).
+- `PUT https://portal.rivalpayments.com/v1/company/whish/redirects` → body `{ "successUrl": string|null, "failureUrl": string|null }`. URLs must be `http(s)`, ≤ 2048 chars; send `null` to clear a default. Returns the saved config.
+
+Like the webhook config, these are **dashboard/session endpoints** — cookie session + CSRF, roles `COMPANY_OWNER` / `COMPANY_MANAGER` — not callable with an API key. The per-link `successRedirectUrl` / `failureRedirectUrl` above override these defaults for a single payment.
+
 **Error — no commission rule covers the amount (422):**
 
 ```json

@@ -69,6 +69,12 @@ export type SourceFeeRuleInput = z.infer<typeof sourceFeeRuleInputSchema>;
 // at a boundary (e.g. [0,10] then [10,∞]) is allowed and resolves to the
 // LOWER tier (so [0,10] includes exactly 10); only one open-ended (null max)
 // tier per channel, and it must be the highest band.
+//
+// NOTE — this touching-boundary convention is DELIBERATELY the opposite of
+// commission rules (schemas/commission.ts validateTierLadder), which forbid
+// touching. Source fees read naturally as "≤ $10 → …, above $10 → …", so the
+// resolver (analytics/source-fees + source-fee.compute) picks the lowest-min
+// matching tier. Don't assume the commission rule when editing this one.
 export const setSourceFeeRulesSchema = z
   .object({
     rules: z.array(sourceFeeRuleInputSchema).max(50),

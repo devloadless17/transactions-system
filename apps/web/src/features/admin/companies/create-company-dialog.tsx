@@ -2,16 +2,16 @@
 import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
+import { useQuery } from '@tanstack/react-query';
 import { toast } from '@/lib/toast';
 import {
   createCompanySchema,
-  CommissionType,
-  FeeApplication,
-  FeeOperationType,
+  FEE_OPERATION_LABEL,
   SUPPORTED_CURRENCIES,
-  type CompanyScopedCommissionRuleInput,
+  type CommissionRuleGroupResponse,
   type CreateCompanyInput,
   type CreateCompanyResponse,
+  type PaginatedResponse,
 } from '@app/shared';
 import {
   Dialog,
@@ -26,23 +26,24 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { apiFetch } from '@/lib/api.client';
 import { ApiClientError } from '@/lib/api';
-import { cn } from '@/lib/cn';
-
-const ALL_OPS = Object.values(FeeOperationType);
-// Default selection matches the Commissions page's new-rule default: a starter
-// rule covers Deposits + Withdrawals (Payouts/Loads stay opt-in).
-const DEFAULT_OPS: FeeOperationType[] = [FeeOperationType.TRANSACTION, FeeOperationType.WITHDRAWAL];
-const OP_LABEL: Record<FeeOperationType, string> = {
-  TRANSACTION: 'Deposits',
-  WITHDRAWAL: 'Withdrawals',
-  PAYOUT: 'Payouts',
-  LOAD: 'Loads',
-};
+import {
+  CommissionRuleFields,
+  buildRuleSpec,
+  defaultRuleDraft,
+  draftFromGroup,
+  type RuleDraft,
+} from '@/features/admin/commissions/rule-fields';
 
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onCreated: () => void;
+}
+
+// A readable label for an existing rule in the picker.
+function ruleLabel(g: CommissionRuleGroupResponse): string {
+  const ops = g.operations.map((o) => FEE_OPERATION_LABEL[o.operationType]).join(' / ');
+  return g.name?.trim() || `Rule · ${ops || 'no operations'}`;
 }
 
 export function CreateCompanyDialog({ open, onOpenChange, onCreated }: Props) {
@@ -58,64 +59,52 @@ export function CreateCompanyDialog({ open, onOpenChange, onCreated }: Props) {
     watch,
   } = useForm<CreateCompanyInput>({
     resolver: zodResolver(createCompanySchema),
-    defaultValues: {
-      name: '',
-      slug: '',
-      defaultCurrency: 'USD',
-      ownerEmail: '',
-    },
+    defaultValues: { name: '', slug: '', defaultCurrency: 'USD', ownerEmail: '' },
   });
   const currency = watch('defaultCurrency');
 
-  // Starter commission rule, created atomically with the company. "Skip" leaves
-  // the company unpriced — it can't receive transactions until a rule (or a
-  // platform-wide default) exists.
-  const [pricing, setPricing] = useState<'now' | 'skip'>('now');
-  const [feeType, setFeeType] = useState<CommissionType>(CommissionType.PERCENTAGE);
-  const [feeValue, setFeeValue] = useState('');
-  const [feeApp, setFeeApp] = useState<FeeApplication>(FeeApplication.DEDUCTED);
-  const [ops, setOps] = useState<FeeOperationType[]>(DEFAULT_OPS);
+  // Starter commission rule. 'new' = build one (editor), a groupId = start from
+  // that existing rule (prefills the same editor; saved as THIS company's own
+  // rule), 'skip' = leave unpriced (configure later).
+  const [ruleChoice, setRuleChoice] = useState<'new' | 'skip' | string>('new');
+  const [draft, setDraft] = useState<RuleDraft>(defaultRuleDraft);
 
-  // Reset the commission section whenever the dialog is closed.
+  // Existing rules to pick from (cloned into the new company's own rule on save).
+  const rulesQ = useQuery({
+    queryKey: ['admin', 'commission-rules', 'picker'],
+    queryFn: () =>
+      apiFetch<PaginatedResponse<CommissionRuleGroupResponse>>(
+        '/admin/commission-rules?page=1&pageSize=100',
+      ),
+    enabled: open,
+  });
+  const groups = rulesQ.data?.data ?? [];
+
   useEffect(() => {
     if (!open) {
-      setPricing('now');
-      setFeeType(CommissionType.PERCENTAGE);
-      setFeeValue('');
-      setFeeApp(FeeApplication.DEDUCTED);
-      setOps(DEFAULT_OPS);
+      setRuleChoice('new');
+      setDraft(defaultRuleDraft());
     }
   }, [open]);
 
-  const toggleOp = (op: FeeOperationType) =>
-    setOps((cur) => (cur.includes(op) ? cur.filter((o) => o !== op) : [...cur, op]));
+  function selectRule(choice: string) {
+    setRuleChoice(choice);
+    if (choice === 'new') setDraft(defaultRuleDraft());
+    else if (choice !== 'skip') {
+      const g = groups.find((x) => x.groupId === choice);
+      if (g) setDraft(draftFromGroup(g));
+    }
+  }
 
   const onSubmit = handleSubmit(async (values) => {
-    let commission: CompanyScopedCommissionRuleInput | undefined;
-    if (pricing === 'now') {
-      if (!feeValue.trim()) {
-        toast.error('Enter a fee value, or choose “Skip for now”.');
+    let commission: CreateCompanyInput['commission'];
+    if (ruleChoice !== 'skip') {
+      const built = buildRuleSpec(draft, { name: `${values.name} fees`, active: true });
+      if (!built.ok) {
+        toast.error(built.error);
         return;
       }
-      if (ops.length === 0) {
-        toast.error('Pick at least one operation for the commission rule.');
-        return;
-      }
-      commission = {
-        name: `${values.name} fees`,
-        operationTypes: ops,
-        feeApplication: feeApp,
-        priority: 100,
-        active: true,
-        tiers: [
-          {
-            minAmount: '0',
-            maxAmount: null,
-            commissionType: feeType,
-            commissionValue: feeValue.trim(),
-          },
-        ],
-      };
+      commission = built.value;
     }
     setSubmitting(true);
     try {
@@ -126,8 +115,7 @@ export function CreateCompanyDialog({ open, onOpenChange, onCreated }: Props) {
       setResult(res);
       toast.success(`Created company ${res.company.name}`);
     } catch (err) {
-      const message = err instanceof ApiClientError ? err.message : 'Failed to create company';
-      toast.error(message);
+      toast.error(err instanceof ApiClientError ? err.message : 'Failed to create company');
     } finally {
       setSubmitting(false);
     }
@@ -135,7 +123,6 @@ export function CreateCompanyDialog({ open, onOpenChange, onCreated }: Props) {
 
   function handleClose(next: boolean) {
     if (!next && result) {
-      // Closing after success — refresh parent.
       onCreated();
       setResult(null);
       reset();
@@ -149,7 +136,7 @@ export function CreateCompanyDialog({ open, onOpenChange, onCreated }: Props) {
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent>
+      <DialogContent className="max-h-[90vh] overflow-y-auto">
         {result ? (
           <SuccessView
             result={result}
@@ -164,7 +151,8 @@ export function CreateCompanyDialog({ open, onOpenChange, onCreated }: Props) {
             <DialogHeader>
               <DialogTitle>Create company</DialogTitle>
               <DialogDescription>
-                Provisions the tenant, an owner user, and a default wallet.
+                Provisions the tenant, an owner user, a default wallet, and (optionally) its
+                commission rule.
               </DialogDescription>
             </DialogHeader>
             <form onSubmit={onSubmit} className="space-y-4">
@@ -205,31 +193,31 @@ export function CreateCompanyDialog({ open, onOpenChange, onCreated }: Props) {
                 )}
               </div>
 
-              {/* Starter commission rule — set pricing now so the company can take
-                  transactions immediately, or skip and configure it later. */}
+              {/* Starter commission rule: new, from an existing rule, or skip. */}
               <div className="space-y-3 rounded-md border p-3">
-                <div className="flex items-center justify-between">
-                  <Label>Commission rule</Label>
-                  <div className="inline-flex rounded-md border p-0.5">
-                    {(['now', 'skip'] as const).map((m) => (
-                      <button
-                        key={m}
-                        type="button"
-                        onClick={() => setPricing(m)}
-                        className={cn(
-                          'rounded px-2.5 py-1 text-xs font-medium transition-colors',
-                          pricing === m
-                            ? 'bg-primary text-primary-foreground'
-                            : 'text-muted-foreground hover:text-foreground',
-                        )}
-                      >
-                        {m === 'now' ? 'Set now' : 'Skip for now'}
-                      </button>
-                    ))}
-                  </div>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <Label htmlFor="rule-choice">Commission rule</Label>
+                  <select
+                    id="rule-choice"
+                    className="h-9 max-w-[16rem] rounded-md border border-input bg-background px-2 text-sm"
+                    value={ruleChoice}
+                    onChange={(e) => selectRule(e.target.value)}
+                  >
+                    <option value="new">Create a new rule</option>
+                    {groups.length > 0 && (
+                      <optgroup label="Start from an existing rule">
+                        {groups.map((g) => (
+                          <option key={g.groupId} value={g.groupId}>
+                            {ruleLabel(g)}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
+                    <option value="skip">Skip for now</option>
+                  </select>
                 </div>
 
-                {pricing === 'skip' ? (
+                {ruleChoice === 'skip' ? (
                   <p className="text-xs text-muted-foreground">
                     Heads up — this company won&apos;t be able to receive transactions until a
                     commission rule (or a platform-wide default rule) covers it. You can add one
@@ -237,81 +225,13 @@ export function CreateCompanyDialog({ open, onOpenChange, onCreated }: Props) {
                   </p>
                 ) : (
                   <div className="space-y-3">
-                    <div className="flex items-end gap-2">
-                      <div className="inline-flex rounded-md border p-0.5">
-                        {[CommissionType.PERCENTAGE, CommissionType.FIXED].map((t) => (
-                          <button
-                            key={t}
-                            type="button"
-                            onClick={() => setFeeType(t)}
-                            className={cn(
-                              'rounded px-2.5 py-1 text-xs font-medium transition-colors',
-                              feeType === t
-                                ? 'bg-primary text-primary-foreground'
-                                : 'text-muted-foreground hover:text-foreground',
-                            )}
-                          >
-                            {t === CommissionType.PERCENTAGE ? 'Percentage' : 'Fixed'}
-                          </button>
-                        ))}
-                      </div>
-                      <div className="relative flex-1">
-                        <Input
-                          inputMode="decimal"
-                          placeholder={
-                            feeType === CommissionType.PERCENTAGE ? 'e.g. 2.5' : 'e.g. 1.00'
-                          }
-                          value={feeValue}
-                          onChange={(e) => setFeeValue(e.target.value)}
-                          aria-label="Fee value"
-                        />
-                        <span className="pointer-events-none absolute right-3 top-2.5 text-xs text-muted-foreground">
-                          {feeType === CommissionType.PERCENTAGE ? '%' : currency}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="inline-flex rounded-md border p-0.5">
-                      {[FeeApplication.DEDUCTED, FeeApplication.ON_TOP].map((a) => (
-                        <button
-                          key={a}
-                          type="button"
-                          onClick={() => setFeeApp(a)}
-                          className={cn(
-                            'rounded px-2.5 py-1 text-xs font-medium transition-colors',
-                            feeApp === a
-                              ? 'bg-primary text-primary-foreground'
-                              : 'text-muted-foreground hover:text-foreground',
-                          )}
-                        >
-                          {a === FeeApplication.DEDUCTED ? 'Deduct from amount' : 'Add on top'}
-                        </button>
-                      ))}
-                    </div>
-
-                    <div className="space-y-1.5">
-                      <span className="text-xs text-muted-foreground">Applies to</span>
-                      <div className="flex flex-wrap gap-1.5">
-                        {ALL_OPS.map((op) => (
-                          <button
-                            key={op}
-                            type="button"
-                            onClick={() => toggleOp(op)}
-                            className={cn(
-                              'rounded-md border px-2.5 py-1 text-xs font-medium transition-colors',
-                              ops.includes(op)
-                                ? 'border-primary bg-primary/10 text-foreground'
-                                : 'text-muted-foreground hover:text-foreground',
-                            )}
-                          >
-                            {OP_LABEL[op]}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <p className="text-[11px] text-muted-foreground">
-                      Creates one open-ended tier; refine tiers later under Commissions.
-                    </p>
+                    {ruleChoice !== 'new' && (
+                      <p className="text-xs text-muted-foreground">
+                        Prefilled from an existing rule — tweak it below if you like. It&apos;s
+                        saved as <span className="font-medium">this company&apos;s own</span> rule.
+                      </p>
+                    )}
+                    <CommissionRuleFields draft={draft} onChange={setDraft} />
                   </div>
                 )}
               </div>

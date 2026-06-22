@@ -83,6 +83,17 @@ export const FeeOperationType = {
 } as const;
 export type FeeOperationType = (typeof FeeOperationType)[keyof typeof FeeOperationType];
 
+// User-facing labels for fee operation types. `TRANSACTION` is the deposit/ingest
+// operation everywhere else in the product, so it reads as "Deposits". One source
+// of truth so the commissions UI, company onboarding, and any other surface stay
+// consistent.
+export const FEE_OPERATION_LABEL: Record<FeeOperationType, string> = {
+  TRANSACTION: 'Deposits',
+  WITHDRAWAL: 'Withdrawals',
+  PAYOUT: 'Payouts',
+  LOAD: 'Loads',
+};
+
 // How a fee is taken relative to the requested amount.
 //   DEDUCTED — recipient gets amount − fee (platform keeps the fee)
 //   ON_TOP   — recipient gets the full amount; the company pays amount + fee

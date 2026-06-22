@@ -374,6 +374,11 @@ model Transaction {
   currency              String            @db.Char(3)
   commissionAmount      Decimal           @map("commission_amount") @db.Decimal(20, 8)
   netAmount             Decimal           @map("net_amount") @db.Decimal(20, 8)
+  // What the upstream source charged THE PLATFORM on this deposit (cost of funds),
+  // frozen at settlement from the source's fee schedule. Net revenue =
+  // Σ commission_amount (FEE ledger) − Σ source_fee_amount. Admin/system-only;
+  // never exposed to companies. Not a ledger account — a recorded cost estimate.
+  sourceFeeAmount       Decimal           @default(0) @map("source_fee_amount") @db.Decimal(20, 8)
   status                TransactionStatus @default(PENDING)
   payload               Json              @db.JsonB
   idempotencyKey        String?           @map("idempotency_key")
@@ -601,6 +606,10 @@ model AuditLog {
   @@index([companyId, createdAt])
   @@index([actorId])
   @@index([entityType, entityId])
+  // Covers the default (unfiltered) admin audit list, ordered by (created_at DESC,
+  // id DESC) — without this, that view seq-scans + external-sorts the whole table
+  // at scale. A backward index scan early-stops on LIMIT instead.
+  @@index([createdAt(sort: Desc), id(sort: Desc)], map: "audit_logs_created_at_id_idx")
   @@map("audit_logs")
 }
 

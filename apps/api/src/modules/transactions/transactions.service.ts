@@ -4,6 +4,7 @@ import { InjectMetric } from '@willsoto/nestjs-prometheus';
 import type { Counter } from 'prom-client';
 import {
   Money,
+  SourceFeeChannel,
   type FeeApplication,
   type IngestCompanyListItem,
   type IngestTransactionInput,
@@ -11,6 +12,7 @@ import {
   type PaginatedResponse,
   type TransactionResponse,
 } from '@app/shared';
+import { computeSourceFee } from '../sources/source-fee.compute';
 import { Prisma } from '@app/db';
 import type { PrismaClient } from '@app/db';
 import { PrismaService } from '../../database/prisma.service';
@@ -126,7 +128,11 @@ export class TransactionsService {
    *   7. Invalidate analytics cache
    */
   async ingest(
-    ctx: { kind: 'source'; sourceId: string },
+    // `channel` classifies the deposit for source-fee pricing: WHISH_PAY when the
+    // caller is the Whish collect-link settlement (the whish_payments link isn't
+    // attached until after this insert, so it can't be inferred here), else INGEST
+    // for a direct ingest-API deposit. Internal-only — never set by external input.
+    ctx: { kind: 'source'; sourceId: string; channel?: SourceFeeChannel },
     input: IngestTransactionInput,
     // `replayed` is attached to the returned transaction (rather than a wrapper)
     // so every existing caller that just wants the transaction is unaffected;
@@ -161,6 +167,24 @@ export class TransactionsService {
     }
     const companyId = company.id;
     const source: { id: string; code: string; status: string } = foundSource;
+
+    // Source fee = what this source charges THE PLATFORM on this deposit (cost of
+    // funds), frozen here at settlement and persisted so net-revenue analytics can
+    // SUM a column instead of recomputing per-deposit at query time. Computed
+    // OUTSIDE the money transaction and best-effort: a reporting figure must never
+    // block or roll back a real deposit, so any failure defaults to 0.
+    const channel: SourceFeeChannel = ctx.channel ?? SourceFeeChannel.INGEST;
+    let sourceFeeAmount = Money.zero();
+    try {
+      const feeRules = await this.prisma.runAsAdmin((tx) =>
+        tx.sourceFeeRule.findMany({ where: { sourceId: source.id, channel, active: true } }),
+      );
+      sourceFeeAmount = computeSourceFee(feeRules, channel, amount);
+    } catch (err) {
+      this.logger.warn(
+        `source-fee compute failed (source=${source.id}, channel=${channel}); defaulting to 0: ${(err as Error).message}`,
+      );
+    }
 
     // Run the whole financial mutation scoped to the target company, so RLS
     // WITH CHECK validates that every row written (transaction, ledger, wallet)
@@ -231,6 +255,7 @@ export class TransactionsService {
               currency: input.currency,
               commissionAmount: fee.toString(),
               netAmount: availableCredit.toString(),
+              sourceFeeAmount: sourceFeeAmount.toString(),
               status: 'COMPLETED',
               payload: (input.payload ?? {}) as Prisma.InputJsonValue,
               idempotencyKey: input.idempotencyKey ?? null,

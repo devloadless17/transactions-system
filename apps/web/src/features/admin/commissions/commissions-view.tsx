@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from '@/lib/toast';
 import { Building2, Layers, Pencil, Trash2 } from 'lucide-react';
+import { FEE_OPERATION_LABEL } from '@app/shared';
 import type { CommissionRuleGroupResponse, CompanyResponse, PaginatedResponse } from '@app/shared';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -173,8 +174,13 @@ function RuleCard({
   // Avoid repeating the company summary in the subtitle when it's already the title.
   const metaParts = [
     ...(group.name?.trim() ? [companies] : []),
-    group.operationTypes.map(titleCase).join(', '),
-    group.feeApplication === 'ON_TOP' ? 'fee on top' : 'fee deducted',
+    // Each operation with its own application, e.g. "Deposits (deducted), Withdrawals (on top)".
+    group.operations
+      .map(
+        (o) =>
+          `${FEE_OPERATION_LABEL[o.operationType]} (${o.feeApplication === 'ON_TOP' ? 'on top' : 'deducted'})`,
+      )
+      .join(', '),
     `priority ${group.priority}`,
   ];
 
@@ -272,10 +278,6 @@ function companySummary(group: CommissionRuleGroupResponse, nameById: Map<string
   const names = group.companyIds.map((id) => nameById.get(id) ?? '…');
   if (names.length <= 2) return names.join(', ');
   return `${names.slice(0, 2).join(', ')} +${names.length - 2}`;
-}
-
-function titleCase(op: string): string {
-  return op.charAt(0) + op.slice(1).toLowerCase();
 }
 
 /** Plain, grouped decimal — turns decimal.js scientific (e.g. "1e-8") into readable text. */

@@ -84,6 +84,10 @@ export class AuthController {
     return mapToMeResponse(user);
   }
 
+  // CSRF-guarded like every other cookie-authed mutation: a cross-site forged
+  // POST shouldn't be able to force-log-out a signed-in user. The web sends the
+  // x-csrf-token header on logout (it goes through the CSRF-aware apiFetch).
+  @UseGuards(CsrfGuard)
   @Post('logout')
   @HttpCode(204)
   async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response): Promise<void> {

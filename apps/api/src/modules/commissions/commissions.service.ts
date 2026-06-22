@@ -4,6 +4,8 @@ import { Money } from '@app/shared';
 import type {
   CommissionRuleGroupResponse,
   CreateCommissionRuleGroupInput,
+  FeeApplication,
+  FeeOperationType,
   ListCommissionRulesQuery,
   PaginatedResponse,
   UpdateCommissionRuleGroupInput,
@@ -21,8 +23,8 @@ type RuleRow = {
   name: string | null;
   companyId: string | null;
   sourceId: string | null;
-  operationType: CommissionRuleGroupResponse['operationTypes'][number];
-  feeApplication: CommissionRuleGroupResponse['feeApplication'];
+  operationType: FeeOperationType;
+  feeApplication: FeeApplication;
   minAmount: { toString(): string };
   maxAmount: { toString(): string } | null;
   commissionType: CommissionRuleGroupResponse['tiers'][number]['commissionType'];
@@ -160,15 +162,16 @@ export function expand(
     input.companyIds && input.companyIds.length > 0 ? input.companyIds : [null];
   const rows: Prisma.CommissionRuleCreateManyInput[] = [];
   for (const companyId of companies) {
-    for (const operationType of input.operationTypes) {
+    for (const op of input.operations) {
       for (const tier of input.tiers) {
         rows.push({
           groupId,
           name: input.name ?? null,
           companyId,
           sourceId: null,
-          operationType,
-          feeApplication: input.feeApplication,
+          operationType: op.operationType,
+          // Per-operation: e.g. deposits DEDUCTED, withdrawals ON_TOP at the same tiers.
+          feeApplication: op.feeApplication,
           minAmount: tier.minAmount,
           maxAmount: tier.maxAmount,
           commissionType: tier.commissionType,
@@ -187,7 +190,18 @@ function groupRowsToResponse(groupId: string, rows: RuleRow[]): CommissionRuleGr
   const first = rows[0]!;
   const hasGlobal = rows.some((r) => r.companyId === null);
   const companyIds = hasGlobal ? null : [...new Set(rows.map((r) => r.companyId as string))];
-  const operationTypes = [...new Set(rows.map((r) => r.operationType))];
+
+  // One entry per operation, carrying that operation's fee application. All rows
+  // of a given operation share its application (expand() writes it that way), so
+  // the first row per operation is authoritative. Stable order by first sighting.
+  const opApp = new Map<FeeOperationType, FeeApplication>();
+  for (const r of rows) {
+    if (!opApp.has(r.operationType)) opApp.set(r.operationType, r.feeApplication);
+  }
+  const operations = [...opApp.entries()].map(([operationType, feeApplication]) => ({
+    operationType,
+    feeApplication,
+  }));
 
   // Distinct tiers (they repeat across company × operation), sorted ascending by
   // min; an open-ended (null max) tier sorts last.
@@ -217,8 +231,7 @@ function groupRowsToResponse(groupId: string, rows: RuleRow[]): CommissionRuleGr
     groupId,
     name: first.name ?? null,
     companyIds,
-    operationTypes,
-    feeApplication: first.feeApplication,
+    operations,
     priority: first.priority,
     active: rows.every((r) => r.active),
     tiers,

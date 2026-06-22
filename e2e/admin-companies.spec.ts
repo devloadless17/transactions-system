@@ -29,10 +29,10 @@ test.describe('admin: companies', () => {
     await dialog.locator('#slug').fill(slug);
     await dialog.locator('#ownerEmail').fill(ownerEmail);
 
-    // Pricing defaults to "Set now" (the starter-commission-rule onboarding). This
-    // test only verifies company creation, so skip pricing — a platform-wide rule
-    // (or a later per-company rule) covers the company.
-    await dialog.getByRole('button', { name: 'Skip for now' }).click();
+    // The starter-commission-rule picker is a <select id="rule-choice">; this test
+    // only verifies company creation, so choose "Skip for now" (a platform-wide or
+    // later per-company rule covers pricing) rather than filling the rule editor.
+    await dialog.locator('#rule-choice').selectOption('skip');
 
     await dialog.getByRole('button', { name: 'Create', exact: true }).click();
 

@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import crypto from 'node:crypto';
 import {
   Money,
+  SourceFeeChannel,
   WHISH_CURRENCIES,
   type CreateWhishPaymentInput,
   type ListWhishPaymentsQuery,
@@ -469,7 +470,9 @@ export class WhishPaymentsService {
     let txn: { id: string };
     try {
       txn = await this.transactions.ingest(
-        { kind: 'source', sourceId: source.id },
+        // WHISH_PAY channel: this deposit is a Whish collect-link settlement, so it
+        // is priced on the source's WHISH_PAY fee schedule (not direct INGEST).
+        { kind: 'source', sourceId: source.id, channel: SourceFeeChannel.WHISH_PAY },
         {
           companyId: payment.companyId,
           externalTransactionId: String(payment.externalId),

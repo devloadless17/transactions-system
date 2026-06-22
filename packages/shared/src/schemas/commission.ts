@@ -148,6 +148,12 @@ export type CommissionTierInput = z.infer<typeof commissionTierSchema>;
  * Validate the tier ladder: brackets must not overlap, must be ordered, and only
  * the highest bracket may be open-ended ("and above"). Keeps pricing
  * deterministic (no two tiers of the same scope ever match one amount).
+ *
+ * NOTE — boundary convention differs DELIBERATELY from source-fee rules: commission
+ * tiers must NOT touch (e.g. [1,100],[101,300]); a touching boundary is rejected
+ * here. Source-fee tiers (schemas/source.ts) intentionally ALLOW touching
+ * ([0,10],[10,∞]) and resolve the shared point to the lower tier. Don't assume one
+ * resolver's rule when editing the other.
  */
 function validateTierLadder(tiers: CommissionTierInput[], ctx: z.RefinementCtx): void {
   const sorted = [...tiers].sort((a, b) =>
@@ -177,25 +183,58 @@ function validateTierLadder(tiers: CommissionTierInput[], ctx: z.RefinementCtx):
   }
 }
 
+/**
+ * One operation a rule prices, plus how that operation's fee is applied. The fee
+ * TIERS (the amounts) are shared across all of a rule's operations; only the
+ * application (deducted vs on top) is per-operation — e.g. deposits deducted but
+ * withdrawals on top, at the very same fee schedule.
+ */
+export const commissionOperationSchema = z.object({
+  operationType: z.nativeEnum(FeeOperationType),
+  feeApplication: z.nativeEnum(FeeApplication).default(FeeApplication.DEDUCTED),
+});
+export type CommissionOperationInput = z.infer<typeof commissionOperationSchema>;
+
+/** Validate a group: tier ladder must be well-formed AND no operation repeats. */
+function validateGroup(
+  v: { operations: CommissionOperationInput[]; tiers: CommissionTierInput[] },
+  ctx: z.RefinementCtx,
+): void {
+  validateTierLadder(v.tiers, ctx);
+  const seen = new Set<FeeOperationType>();
+  for (const op of v.operations) {
+    if (seen.has(op.operationType)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Each operation can appear once — "${op.operationType}" is listed twice`,
+        path: ['operations'],
+      });
+    }
+    seen.add(op.operationType);
+  }
+}
+
 // companyIds: null or [] = ALL companies (a single global row per operation/tier);
 // a non-empty list targets exactly those companies.
 const baseGroupShape = {
   // Optional admin-facing label, e.g. "Standard fees".
   name: z.string().trim().max(120).nullable().default(null),
   companyIds: z.array(z.string().uuid()).nullable().default(null),
-  operationTypes: z
-    .array(z.nativeEnum(FeeOperationType))
+  // Which operations this rule prices, each with its own fee application. The
+  // fee tiers below are shared across them.
+  operations: z
+    .array(commissionOperationSchema)
     .min(1, 'pick at least one operation')
-    .default([FeeOperationType.TRANSACTION, FeeOperationType.WITHDRAWAL]),
-  feeApplication: z.nativeEnum(FeeApplication).default(FeeApplication.DEDUCTED),
+    .default([
+      { operationType: FeeOperationType.TRANSACTION, feeApplication: FeeApplication.DEDUCTED },
+      { operationType: FeeOperationType.WITHDRAWAL, feeApplication: FeeApplication.DEDUCTED },
+    ]),
   priority: z.number().int().min(0).max(10_000).default(100),
   active: z.boolean().default(true),
   tiers: z.array(commissionTierSchema).min(1, 'add at least one tier'),
 };
 
-export const createCommissionRuleGroupSchema = z
-  .object(baseGroupShape)
-  .superRefine((v, ctx) => validateTierLadder(v.tiers, ctx));
+export const createCommissionRuleGroupSchema = z.object(baseGroupShape).superRefine(validateGroup);
 export type CreateCommissionRuleGroupInput = z.infer<typeof createCommissionRuleGroupSchema>;
 
 // The same rule spec WITHOUT `companyIds` — used to create a starter rule for a
@@ -204,7 +243,7 @@ export type CreateCommissionRuleGroupInput = z.infer<typeof createCommissionRule
 const { companyIds: _omitCompanyIds, ...companyScopedShape } = baseGroupShape;
 export const companyScopedCommissionRuleSchema = z
   .object(companyScopedShape)
-  .superRefine((v, ctx) => validateTierLadder(v.tiers, ctx));
+  .superRefine(validateGroup);
 export type CompanyScopedCommissionRuleInput = z.infer<typeof companyScopedCommissionRuleSchema>;
 
 // A group PATCH fully replaces the spec (re-expands the rows), so it mirrors create.
@@ -216,8 +255,13 @@ export const commissionRuleGroupResponseSchema = z.object({
   name: z.string().nullable(),
   // null = all companies (global).
   companyIds: z.array(z.string().uuid()).nullable(),
-  operationTypes: z.array(z.nativeEnum(FeeOperationType)),
-  feeApplication: z.nativeEnum(FeeApplication),
+  // Each priced operation with its own fee application; the tiers below are shared.
+  operations: z.array(
+    z.object({
+      operationType: z.nativeEnum(FeeOperationType),
+      feeApplication: z.nativeEnum(FeeApplication),
+    }),
+  ),
   priority: z.number().int(),
   active: z.boolean(),
   tiers: z.array(
