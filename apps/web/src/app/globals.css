@@ -49,3 +49,21 @@
       'calt' 1;
   }
 }
+
+/* Respect the OS "reduce motion" setting across the whole app: skeleton pulses,
+   Radix open/close transitions, recharts, the top progress bar, etc. Placed
+   OUTSIDE @layer base so this reset is never reordered below component styles by
+   Tailwind's cascade layers. 0.01ms (not 0) is deliberate — it keeps `animationend`
+   firing so Radix `data-[state=closed]:animate-out` content still unmounts. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  html {
+    scroll-behavior: auto !important;
+  }
+}

@@ -24,8 +24,12 @@ async function main() {
   await prisma.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
 
   // --- Admin user ---
-  // Force a password change on first login so the seeded credential can't live
-  // forever (set only on create; a re-seed won't re-flag a rotated admin).
+  // In PRODUCTION, force a password change on first login so the seeded credential
+  // can't live forever (set only on create; a re-seed won't re-flag a rotated
+  // admin). In dev/test we skip the flag so a clean re-seed leaves the admin
+  // immediately usable by the app, the API, and the e2e suite (which logs in and
+  // expects to land on /admin, not /change-password).
+  const forcePasswordChange = process.env.NODE_ENV === 'production';
   const passwordHash = await argon2.hash(adminPassword, { type: argon2.argon2id });
   const admin = await prisma.user.upsert({
     where: { email: adminEmail },
@@ -35,7 +39,7 @@ async function main() {
       passwordHash,
       role: UserRole.SUPER_ADMIN,
       status: UserStatus.ACTIVE,
-      mustChangePassword: true,
+      mustChangePassword: forcePasswordChange,
     },
   });
 
@@ -50,6 +54,51 @@ async function main() {
       update: { name: s.name },
       create: s,
     });
+  }
+
+  // --- Whish source-fee schedule (what Whish charges THE PLATFORM per deposit) ---
+  // System/admin-only cost data used to compute net revenue. It's the SAME source
+  // as ingestion — only the per-transaction channel differs:
+  //   INGEST    (direct ingest API):    ≤ $10 → flat $1, > $10 → 1%
+  //   WHISH_PAY (company collect link): 1% on everything
+  // Idempotent: only seeds when the source has no fee rules yet.
+  const whish = await prisma.source.findUnique({ where: { code: 'whish' } });
+  if (whish) {
+    const existingFeeRules = await prisma.sourceFeeRule.count({ where: { sourceId: whish.id } });
+    if (existingFeeRules === 0) {
+      await prisma.sourceFeeRule.createMany({
+        data: [
+          // INGEST. The bands touch at exactly 10 on purpose — the analytics
+          // resolver picks the LOWEST matching min_amount, so exactly $10 lands in
+          // the flat-$1 tier ("$10 or under") and only $10.00000001+ in the 1% tier.
+          {
+            sourceId: whish.id,
+            channel: 'INGEST',
+            minAmount: '0',
+            maxAmount: '10',
+            feeType: 'FIXED',
+            feeValue: '1',
+          },
+          {
+            sourceId: whish.id,
+            channel: 'INGEST',
+            minAmount: '10',
+            maxAmount: null,
+            feeType: 'PERCENTAGE',
+            feeValue: '1',
+          },
+          // WHISH_PAY: flat 1% on everything.
+          {
+            sourceId: whish.id,
+            channel: 'WHISH_PAY',
+            minAmount: '0',
+            maxAmount: null,
+            feeType: 'PERCENTAGE',
+            feeValue: '1',
+          },
+        ],
+      });
+    }
   }
 
   // --- Whish externalId base (avoid cross-environment collisions) ---

@@ -11,9 +11,13 @@ import {
   type PaginatedResponse,
   type TransactionResponse,
 } from '@app/shared';
-import type { Prisma, PrismaClient } from '@app/db';
+import { Prisma } from '@app/db';
+import type { PrismaClient } from '@app/db';
 import { PrismaService } from '../../database/prisma.service';
-import { CommissionResolverService } from '../commissions/commission-resolver.service';
+import {
+  CommissionResolverService,
+  NoMatchingCommissionRuleError,
+} from '../commissions/commission-resolver.service';
 import { CommissionsRepository } from '../commissions/commissions.repository';
 import { LedgerService } from '../ledger/ledger.service';
 import { netOfFee, reservedTotal } from '../ledger/flow-ledger';
@@ -24,6 +28,7 @@ import { CacheService } from '../cache/cache.service';
 import { CrmDispatchService } from '../crm/crm-dispatch.service';
 import {
   ConflictError,
+  DuplicateTransactionError,
   ForbiddenError,
   NotFoundError,
   ValidationError,
@@ -51,6 +56,12 @@ const CSV_EXPORT_CHUNK = 1000;
 // browsing hits it (100k rows at pageSize 100 = page 1,000).
 const MAX_LIST_OFFSET = 100_000;
 
+// A company with no matching commission rule blocks EVERY ingest for it (a
+// transaction can't be booked unpriced). That's a silent money-stopper, so we
+// alert ops — but re-alert at most once per (company, source) per this window so
+// a source retrying the same blocked transaction can't flood the error log.
+const NO_RULE_ALERT_TTL_MS = 10 * 60_000;
+
 @Injectable()
 export class TransactionsService {
   private readonly logger = new Logger(TransactionsService.name);
@@ -64,6 +75,8 @@ export class TransactionsService {
     private readonly analytics: AnalyticsService,
     private readonly realtime: RealtimeService,
     @InjectMetric('txn_ingest_total') private readonly ingestCounter: Counter<string>,
+    @InjectMetric('txn_ingest_no_rule_total')
+    private readonly noRuleCounter: Counter<string>,
     private readonly cache: CacheService,
     private readonly crm: CrmDispatchService,
   ) {}
@@ -115,7 +128,10 @@ export class TransactionsService {
   async ingest(
     ctx: { kind: 'source'; sourceId: string },
     input: IngestTransactionInput,
-  ): Promise<TransactionResponse> {
+    // `replayed` is attached to the returned transaction (rather than a wrapper)
+    // so every existing caller that just wants the transaction is unaffected;
+    // only the ingest controller reads the flag.
+  ): Promise<TransactionResponse & { replayed: boolean }> {
     const amount = Money.of(input.amount);
     // Reject not just non-positive but also sub-unit amounts that round to 0 at
     // the 8dp money scale (they would pass isPositive() yet violate the DB
@@ -149,9 +165,8 @@ export class TransactionsService {
     // Run the whole financial mutation scoped to the target company, so RLS
     // WITH CHECK validates that every row written (transaction, ledger, wallet)
     // belongs to `companyId` — a bug can't mis-book into another tenant.
-    const { result, replayed } = await this.prisma.runSerializableAsTenant(
-      companyId,
-      async (tx) => {
+    const { result, replayed } = await this.prisma
+      .runSerializableAsTenant(companyId, async (tx) => {
         const cTx = tx as unknown as PrismaClient;
 
         // ---- idempotency: explicit key OR natural (source,external) pair ----
@@ -201,21 +216,33 @@ export class TransactionsService {
         );
 
         // ---- insert transaction row ----
-        const txRow = await cTx.transaction.create({
-          data: {
-            companyId,
-            sourceId: source.id,
-            externalTransactionId: input.externalTransactionId,
-            amount: amount.toString(),
-            currency: input.currency,
-            commissionAmount: fee.toString(),
-            netAmount: availableCredit.toString(),
-            status: 'COMPLETED',
-            payload: (input.payload ?? {}) as Prisma.InputJsonValue,
-            idempotencyKey: input.idempotencyKey ?? null,
-            processedAt: new Date(),
-          },
-        });
+        // A different company reusing the same (source, externalTransactionId)
+        // pair can't be seen by the tenant-scoped findFirst above, so it surfaces
+        // here as the global unique-constraint violation (P2002). Translate it to
+        // a clear DUPLICATE_TRANSACTION 409 instead of leaking a raw Prisma error.
+        let txRow;
+        try {
+          txRow = await cTx.transaction.create({
+            data: {
+              companyId,
+              sourceId: source.id,
+              externalTransactionId: input.externalTransactionId,
+              amount: amount.toString(),
+              currency: input.currency,
+              commissionAmount: fee.toString(),
+              netAmount: availableCredit.toString(),
+              status: 'COMPLETED',
+              payload: (input.payload ?? {}) as Prisma.InputJsonValue,
+              idempotencyKey: input.idempotencyKey ?? null,
+              processedAt: new Date(),
+            },
+          });
+        } catch (e) {
+          if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+            throw new DuplicateTransactionError(input.externalTransactionId);
+          }
+          throw e;
+        }
 
         // ---- ledger: balanced double-entry ----
         // DEBIT  EXTERNAL  externalDebit   (the outside world owes us this)
@@ -269,8 +296,18 @@ export class TransactionsService {
         );
 
         return { result: await this.mapTransaction(cTx, txRow), replayed: false };
-      },
-    );
+      })
+      .catch((e: unknown) => {
+        // A blocked-on-pricing ingest is a silent money-stopper: the source's
+        // transaction can't be booked until an operator configures a commission
+        // rule. Surface it loudly (counter + deduped log) so ops can fix pricing,
+        // then rethrow the original 422 — the caller's behaviour is unchanged.
+        if (e instanceof NoMatchingCommissionRuleError) {
+          this.noRuleCounter.inc({ source_code: source.code, currency: input.currency });
+          void this.warnNoCommissionRule(companyId, source.code, source.id, input);
+        }
+        throw e;
+      });
 
     // An idempotent replay (explicit key or natural (source,externalId) pair)
     // books NO new money — the ledger/wallet writes were skipped above — so it
@@ -295,7 +332,35 @@ export class TransactionsService {
       this.crm.emitFromTransaction(result, 'transaction.completed');
     }
 
-    return result;
+    return { ...result, replayed };
+  }
+
+  /**
+   * Best-effort operator alert when an ingest is blocked because the company has
+   * no commission rule. Deduped per (company, source) via a TTL'd cache lock so a
+   * retrying source can't flood the log. Never throws — alerting must not affect
+   * the ingest path.
+   */
+  private async warnNoCommissionRule(
+    companyId: string,
+    sourceCode: string,
+    sourceId: string,
+    input: IngestTransactionInput,
+  ): Promise<void> {
+    try {
+      const token = await this.cache.tryLock(
+        `ingest-no-rule:${companyId}:${sourceId}`,
+        NO_RULE_ALERT_TTL_MS,
+      );
+      if (!token) return; // already alerted within the window
+      this.logger.error(
+        `Ingest BLOCKED — company ${companyId} has no commission rule for source ${sourceCode}; ` +
+          `${input.currency} ${input.amount} could not be booked. No transactions will be accepted for ` +
+          `this company until a commission rule is configured (admin → Commissions, or a global default rule).`,
+      );
+    } catch {
+      // Best-effort: alerting must never affect the money path.
+    }
   }
 
   /**

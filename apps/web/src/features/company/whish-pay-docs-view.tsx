@@ -124,6 +124,11 @@ function ApiSection() {
       'idempotencyKey',
       'Optional (8–120 chars). A retried create with the same key returns the original link instead of minting a duplicate — safe to retry on a network error.',
     ],
+    [
+      'successRedirectUrl',
+      'Optional (http/https). Where your customer is sent after a successful payment — overrides your saved default for this one link. We append ?ref=<externalId> so your page can identify it.',
+    ],
+    ['failureRedirectUrl', 'Optional. Same, for a failed or abandoned payment.'],
   ];
   const statuses: [string, string][] = [
     ['PENDING', 'Link created, waiting for the customer to pay.'],
@@ -174,6 +179,20 @@ function ApiSection() {
             <code className="font-mono">externalId</code> on your order — it is the reference you
             use to look the payment up and the same id every CRM event carries.
           </p>
+        </div>
+
+        <div className="rounded-md border-l-4 border-primary bg-primary/5 p-3 text-xs text-muted-foreground">
+          <strong className="text-foreground">Where your customer lands after paying:</strong> set
+          default success / failure pages once on the{' '}
+          <Link href="/app/whish" className="text-primary hover:underline">
+            Whish Pay
+          </Link>{' '}
+          page, or override per link with <code className="font-mono">successRedirectUrl</code> /{' '}
+          <code className="font-mono">failureRedirectUrl</code> above. Set neither and we use our
+          own confirmation pages. We always append{' '}
+          <code className="font-mono">?ref=&lt;externalId&gt;</code> so your page knows which
+          payment it was. (These are customer redirects only — the money reaches you via the CRM /
+          status, not these URLs.)
         </div>
 
         <div>

@@ -1,7 +1,7 @@
 'use client';
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import Link from 'next/link';
 import type { PaginatedResponse, SourceResponse } from '@app/shared';
 import { Button } from '@/components/ui/button';
@@ -29,11 +29,31 @@ export function SourcesView() {
         method: 'PATCH',
         body: { status: active ? 'ACTIVE' : 'INACTIVE' },
       }),
+    // Optimistic: flip the switch in cache immediately so the toggle feels instant,
+    // then reconcile (or roll back) once the server responds.
+    onMutate: async ({ id, active }) => {
+      await qc.cancelQueries({ queryKey: ['admin', 'sources'] });
+      const prev = qc.getQueryData<PaginatedResponse<SourceResponse>>(['admin', 'sources']);
+      if (prev) {
+        qc.setQueryData<PaginatedResponse<SourceResponse>>(['admin', 'sources'], {
+          ...prev,
+          data: prev.data.map((s) =>
+            s.id === id ? { ...s, status: active ? 'ACTIVE' : 'INACTIVE' } : s,
+          ),
+        });
+      }
+      return { prev };
+    },
+    onError: (err, _v, ctx) => {
+      if (ctx?.prev) qc.setQueryData(['admin', 'sources'], ctx.prev);
+      toast.error(err instanceof ApiClientError ? err.message : 'Failed');
+    },
     onSuccess: (s) => {
       toast.success(s.status === 'ACTIVE' ? 'Source activated' : 'Source deactivated');
+    },
+    onSettled: () => {
       qc.invalidateQueries({ queryKey: ['admin', 'sources'] });
     },
-    onError: (err) => toast.error(err instanceof ApiClientError ? err.message : 'Failed'),
   });
 
   const columns: Column<SourceResponse>[] = [
@@ -56,7 +76,8 @@ export function SourcesView() {
           <Switch
             aria-label={`Source ${s.name} active`}
             checked={s.status === 'ACTIVE'}
-            disabled={toggleMu.isPending}
+            // Guard only THIS row's in-flight toggle, not the whole column.
+            disabled={toggleMu.isPending && toggleMu.variables?.id === s.id}
             onCheckedChange={(active) => toggleMu.mutate({ id: s.id, active })}
           />
           <Badge variant={s.status === 'ACTIVE' ? 'success' : 'secondary'}>{s.status}</Badge>

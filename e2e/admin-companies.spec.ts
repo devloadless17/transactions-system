@@ -29,6 +29,11 @@ test.describe('admin: companies', () => {
     await dialog.locator('#slug').fill(slug);
     await dialog.locator('#ownerEmail').fill(ownerEmail);
 
+    // Pricing defaults to "Set now" (the starter-commission-rule onboarding). This
+    // test only verifies company creation, so skip pricing — a platform-wide rule
+    // (or a later per-company rule) covers the company.
+    await dialog.getByRole('button', { name: 'Skip for now' }).click();
+
     await dialog.getByRole('button', { name: 'Create', exact: true }).click();
 
     // Success view shows the just-created credentials.

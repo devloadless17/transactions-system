@@ -1,5 +1,5 @@
 'use client';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/cn';
 

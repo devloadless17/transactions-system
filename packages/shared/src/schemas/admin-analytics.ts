@@ -21,6 +21,12 @@ export const currencyRollupSchema = z.object({
   // the fee. Mirrors the per-company cards and walletSummary.
   volumeIn: z.string(),
   feesEarned: z.string(), // platform fee revenue (FEE ledger, all flows)
+  // What upstream sources (e.g. Whish) charge the PLATFORM on this currency's
+  // deposits — the platform's cost of funds. Computed per-deposit from each
+  // source's fee schedule. Admin/system-only; never shown to companies.
+  sourceFees: z.string(),
+  // The platform's real take-home: feesEarned − sourceFees. Admin/system-only.
+  netRevenue: z.string(),
   volumeOut: z.string(),
   netHeld: z.string(), // wallet total still parked in the platform (sum of available + pending + reserved)
   ingestCount: z.number().int(), // completed transaction (ingestion) count
@@ -28,9 +34,22 @@ export const currencyRollupSchema = z.object({
 });
 export type CurrencyRollup = z.infer<typeof currencyRollupSchema>;
 
+// What a single source charged the platform on its deposits in one currency over
+// the range — drives the per-source "fees paid to <source>" breakdown card.
+export const sourceFeeBreakdownSchema = z.object({
+  sourceId: z.string().uuid(),
+  sourceCode: z.string(),
+  sourceName: z.string(),
+  currency: z.string(),
+  fees: z.string(),
+});
+export type SourceFeeBreakdown = z.infer<typeof sourceFeeBreakdownSchema>;
+
 export const platformAnalyticsResponseSchema = z.object({
   range: z.object({ from: z.string(), to: z.string() }),
   byCurrency: z.array(currencyRollupSchema),
+  // Per-source cost breakdown across every currency (e.g. "Whish · USD · $123").
+  sourceFeeBreakdown: z.array(sourceFeeBreakdownSchema),
 });
 export type PlatformAnalyticsResponse = z.infer<typeof platformAnalyticsResponseSchema>;
 

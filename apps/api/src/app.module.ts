@@ -19,6 +19,8 @@ import { TransactionsModule } from './modules/transactions/transactions.module';
 import { WithdrawalsModule } from './modules/withdrawals/withdrawals.module';
 import { PayoutsModule } from './modules/payouts/payouts.module';
 import { LoadsModule } from './modules/loads/loads.module';
+import { ActivityModule } from './modules/activity/activity.module';
+import { NotificationsModule } from './modules/notifications/notifications.module';
 import { AuditModule } from './modules/audit/audit.module';
 import { TransactionLogsModule } from './modules/transaction-logs/transaction-logs.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
@@ -70,6 +72,8 @@ import type { Env } from './config/env.schema';
     WithdrawalsModule,
     PayoutsModule,
     LoadsModule,
+    ActivityModule,
+    NotificationsModule,
     AnalyticsModule,
     TeamModule,
     AdminUsersModule,

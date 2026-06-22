@@ -19,6 +19,7 @@ import { LedgerService } from '../ledger/ledger.service';
 import { WalletsService } from '../wallets/wallets.service';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { RealtimeService } from '../realtime/realtime.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { CacheService } from '../cache/cache.service';
 import { FeesService } from '../commissions/fees.service';
 import {
@@ -54,6 +55,7 @@ export class PayoutsService {
     private readonly wallets: WalletsService,
     private readonly analytics: AnalyticsService,
     private readonly realtime: RealtimeService,
+    private readonly notifications: NotificationsService,
     private readonly cache: CacheService,
     private readonly fees: FeesService,
   ) {}
@@ -134,6 +136,13 @@ export class PayoutsService {
 
     await this.invalidateAnalytics();
     this.notify(row.companyId);
+    void this.notifications.requestSubmitted({
+      flow: 'PAYOUT',
+      companyId: row.companyId,
+      entityId: row.id,
+      amount: row.amount.toString(),
+      currency: row.currency,
+    });
     return mapPayout(row);
   }
 
@@ -198,6 +207,14 @@ export class PayoutsService {
 
     await this.invalidateAnalytics();
     this.notify(row.companyId);
+    void this.notifications.requestResolved({
+      flow: 'PAYOUT',
+      event: 'APPROVED',
+      companyId: row.companyId,
+      entityId: row.id,
+      amount: row.amount.toString(),
+      currency: row.currency,
+    });
     return mapPayout(row);
   }
 
@@ -285,6 +302,16 @@ export class PayoutsService {
 
     await this.invalidateAnalytics();
     this.notify(row.companyId);
+    if (opts.status === 'REJECTED') {
+      void this.notifications.requestResolved({
+        flow: 'PAYOUT',
+        event: 'REJECTED',
+        companyId: row.companyId,
+        entityId: row.id,
+        amount: row.amount.toString(),
+        currency: row.currency,
+      });
+    }
     return mapPayout(row);
   }
 

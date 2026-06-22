@@ -4,6 +4,18 @@ import { moneyAmountSchema, paginationSchema } from './common';
 
 const decimalString = moneyAmountSchema;
 
+// A customer-facing redirect URL. Must be a real http(s) URL (no javascript:,
+// data:, etc.) and bounded in length. Used for where the PAYER lands after a
+// Whish payment — never for any server-side fetch, so this is about input
+// hygiene, not SSRF (the browser, not the platform, follows it).
+export const redirectUrlSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(2048)
+  .url('must be a valid URL')
+  .refine((u) => /^https?:\/\//i.test(u), 'must start with http:// or https://');
+
 // What a company submits to mint a Whish payment link.
 export const createWhishPaymentSchema = z.object({
   amount: decimalString,
@@ -12,8 +24,26 @@ export const createWhishPaymentSchema = z.object({
   // Optional client key — a retried create with the same key returns the same
   // payment instead of minting a duplicate link.
   idempotencyKey: z.string().trim().min(8).max(120).optional(),
+  // Optional per-link override of where the payer is sent after paying. When
+  // omitted, the company's saved defaults are used, then the platform pages.
+  successRedirectUrl: redirectUrlSchema.optional(),
+  failureRedirectUrl: redirectUrlSchema.optional(),
 });
 export type CreateWhishPaymentInput = z.infer<typeof createWhishPaymentSchema>;
+
+// Per-company default redirect URLs (the saved defaults behind the per-link
+// override above). null = fall back to the platform's /pay pages.
+export const whishRedirectConfigSchema = z.object({
+  successUrl: z.string().nullable(),
+  failureUrl: z.string().nullable(),
+});
+export type WhishRedirectConfig = z.infer<typeof whishRedirectConfigSchema>;
+
+export const setWhishRedirectConfigSchema = z.object({
+  successUrl: redirectUrlSchema.nullable(),
+  failureUrl: redirectUrlSchema.nullable(),
+});
+export type SetWhishRedirectConfigInput = z.infer<typeof setWhishRedirectConfigSchema>;
 
 // Per-company outbound webhook config.
 export const setWhishWebhookSchema = z.object({

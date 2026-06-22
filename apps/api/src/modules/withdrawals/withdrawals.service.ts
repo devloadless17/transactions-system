@@ -19,6 +19,7 @@ import { LedgerService } from '../ledger/ledger.service';
 import { WalletsService } from '../wallets/wallets.service';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { RealtimeService } from '../realtime/realtime.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { CacheService } from '../cache/cache.service';
 import { FeesService } from '../commissions/fees.service';
 import {
@@ -57,6 +58,7 @@ export class WithdrawalsService {
     private readonly wallets: WalletsService,
     private readonly analytics: AnalyticsService,
     private readonly realtime: RealtimeService,
+    private readonly notifications: NotificationsService,
     private readonly cache: CacheService,
     private readonly fees: FeesService,
   ) {}
@@ -142,6 +144,13 @@ export class WithdrawalsService {
 
     await this.invalidateAnalytics();
     this.notify(row.companyId);
+    void this.notifications.requestSubmitted({
+      flow: 'WITHDRAWAL',
+      companyId: row.companyId,
+      entityId: row.id,
+      amount: row.amount.toString(),
+      currency: row.currency,
+    });
     return mapWithdrawal(row);
   }
 
@@ -206,6 +215,14 @@ export class WithdrawalsService {
 
     await this.invalidateAnalytics();
     this.notify(row.companyId);
+    void this.notifications.requestResolved({
+      flow: 'WITHDRAWAL',
+      event: 'APPROVED',
+      companyId: row.companyId,
+      entityId: row.id,
+      amount: row.amount.toString(),
+      currency: row.currency,
+    });
     return mapWithdrawal(row);
   }
 
@@ -295,6 +312,17 @@ export class WithdrawalsService {
 
     await this.invalidateAnalytics();
     this.notify(row.companyId);
+    // Only an admin reject notifies the company; a company self-cancel doesn't.
+    if (opts.status === 'REJECTED') {
+      void this.notifications.requestResolved({
+        flow: 'WITHDRAWAL',
+        event: 'REJECTED',
+        companyId: row.companyId,
+        entityId: row.id,
+        amount: row.amount.toString(),
+        currency: row.currency,
+      });
+    }
     return mapWithdrawal(row);
   }
 

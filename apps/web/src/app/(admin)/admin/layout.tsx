@@ -2,7 +2,7 @@ import { ADMIN_ROLES } from '@app/shared';
 import { requireRole } from '@/lib/session';
 import { AdminSidebar } from '@/features/admin/sidebar';
 import { AdminTopbar } from '@/features/admin/topbar';
-import { RealtimeBridge } from '@/lib/realtime';
+import { RealtimeBridge } from '@/lib/realtime.lazy';
 import { SessionKeepAlive } from '@/lib/session-keep-alive';
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {

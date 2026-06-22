@@ -15,6 +15,7 @@ import {
 import { PrismaService } from '../../database/prisma.service';
 import { RealtimeService } from '../realtime/realtime.service';
 import { ConflictError, NotFoundError } from '../../common/errors/domain.error';
+import { expand } from '../commissions/commissions.service';
 import type { Prisma } from '@app/db';
 
 @Injectable()
@@ -67,6 +68,16 @@ export class CompaniesService {
           currency: input.defaultCurrency,
         },
       });
+
+      // Optional starter commission rule, created in the SAME transaction so the
+      // company is never left unpriced (the whole create rolls back together if
+      // anything fails). The new company's id is injected as the rule's scope.
+      if (input.commission) {
+        await tx.commissionRule.createMany({
+          data: expand(crypto.randomUUID(), { ...input.commission, companyIds: [company.id] }),
+        });
+        this.logger.log(`Seeded starter commission rule for company ${company.id}`);
+      }
 
       this.logger.log(`Created company ${company.slug} (${company.id}) with owner ${owner.email}`);
 

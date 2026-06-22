@@ -147,6 +147,10 @@ export const sourceOverviewResponseSchema = z.object({
     name: z.string(),
   }),
   kpi: kpiResponseSchema,
+  // What this source charged the PLATFORM on its deposits in the range/currency
+  // (the platform's cost of funds for this source). Admin-only endpoint — this
+  // figure is never exposed to companies.
+  sourceFees: z.string(),
   daily: dailySeriesResponseSchema,
   // Every company that transacted through this source in the range, by volume.
   byCompany: z.array(sourceCompanyBreakdownSchema),

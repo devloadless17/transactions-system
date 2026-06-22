@@ -12,6 +12,7 @@ import {
 } from '@app/shared';
 import { PrismaService } from '../../database/prisma.service';
 import { CacheService } from '../cache/cache.service';
+import { sourceFeesByCurrency, sourceFeesBreakdown } from './source-fees';
 
 const DEFAULT_DAYS = 30;
 const PENDING_OPS_LIMIT = 20;
@@ -113,6 +114,8 @@ export class PlatformAnalyticsService {
               currency: key,
               volumeIn: '0',
               feesEarned: '0',
+              sourceFees: '0',
+              netRevenue: '0',
               volumeOut: '0',
               netHeld: '0',
               ingestCount: 0,
@@ -121,6 +124,13 @@ export class PlatformAnalyticsService {
           }
           return byCurrency.get(key)!;
         };
+
+        // Source fees = what upstream sources (e.g. Whish) charge THE PLATFORM on
+        // their deposits, evaluated per-deposit from each source's fee schedule.
+        // Net revenue = platform revenue (FEE ledger) − source fees. Both are
+        // system/admin-only and never leak to a company response.
+        const feesBySource = await sourceFeesByCurrency(tx, from, to);
+        const sourceBreakdown = await sourceFeesBreakdown(tx, from, to);
 
         // net + fee for a flow aggregate (feeAmount column).
         const netPlusFee = (m: { _sum: { netAmount?: unknown; feeAmount?: unknown } }) =>
@@ -164,12 +174,27 @@ export class PlatformAnalyticsService {
           s.netHeld = total.toString();
         }
 
+        // Apply per-currency source fees, then derive net revenue.
+        for (const [ccy, fees] of feesBySource) {
+          ensure(ccy).sourceFees = Money.of(fees || '0').toString();
+        }
+        for (const s of byCurrency.values()) {
+          s.netRevenue = Money.of(s.feesEarned).sub(Money.of(s.sourceFees)).toString();
+        }
+
         const sorted = [...byCurrency.values()].sort((a, b) =>
           a.currency.localeCompare(b.currency),
         );
         return {
           range: { from: from.toISOString(), to: to.toISOString() },
           byCurrency: sorted,
+          sourceFeeBreakdown: sourceBreakdown.map((b) => ({
+            sourceId: b.sourceId,
+            sourceCode: b.sourceCode,
+            sourceName: b.sourceName,
+            currency: b.currency,
+            fees: Money.of(b.fees || '0').toString(),
+          })),
         };
       });
     });

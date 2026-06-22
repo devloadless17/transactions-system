@@ -66,6 +66,15 @@ export function AdminOverview() {
     platformQ.data?.byCurrency.find((c) => Number(c.feesEarned) > 0) ??
     platformQ.data?.byCurrency[0];
 
+  // Per-source cost (what each source charged the platform) in the By-source
+  // currency, joined onto topSources by id — keeps the company-shared topSource
+  // schema clean while still showing "Whish · $X cost" to admins.
+  const sourceFeeById = new Map(
+    (platformQ.data?.sourceFeeBreakdown ?? [])
+      .filter((b) => b.currency === flowsCurrency)
+      .map((b) => [b.sourceId, b.fees]),
+  );
+
   type CurrencyRow = PlatformAnalyticsResponse['byCurrency'][number];
   type SourceRow = NonNullable<typeof overviewQ.data>['topSources'][number];
 
@@ -87,10 +96,24 @@ export function AdminOverview() {
     },
     {
       key: 'feesEarned',
-      header: 'Fees earned',
+      header: 'Revenue',
       align: 'right',
       className: 'font-mono',
       cell: (c) => fmt(c.feesEarned),
+    },
+    {
+      key: 'sourceFees',
+      header: 'Source fees',
+      align: 'right',
+      className: 'font-mono text-muted-foreground',
+      cell: (c) => fmt(c.sourceFees),
+    },
+    {
+      key: 'netRevenue',
+      header: 'Net revenue',
+      align: 'right',
+      className: 'font-mono font-medium',
+      cell: (c) => fmt(c.netRevenue),
     },
     {
       key: 'netHeld',
@@ -133,10 +156,17 @@ export function AdminOverview() {
     },
     {
       key: 'fees',
-      header: 'Fees',
+      header: 'Revenue',
       align: 'right',
       className: 'font-mono text-muted-foreground',
       cell: (s) => fmt(s.fees),
+    },
+    {
+      key: 'sourceFee',
+      header: 'Source fee (cost)',
+      align: 'right',
+      className: 'font-mono text-muted-foreground',
+      cell: (s) => fmt(sourceFeeById.get(s.sourceId) ?? '0'),
     },
   ];
 
@@ -152,8 +182,8 @@ export function AdminOverview() {
         <DateRangeControls value={range} onChange={setRange} className="self-start sm:self-auto" />
       </div>
 
-      {/* Hero KPIs */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      {/* Revenue trio: platform revenue − source fees = net revenue. */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <KpiCard
           label="Platform revenue"
           value={primary ? `${fmt(primary.feesEarned)} ${primary.currency}` : '—'}
@@ -162,6 +192,20 @@ export function AdminOverview() {
             (currencies.length > 1 ? ` (primary: ${primary?.currency})` : '')
           }
         />
+        <KpiCard
+          label="Source fees"
+          value={primary ? `− ${fmt(primary.sourceFees)} ${primary.currency}` : '—'}
+          hint="What sources (e.g. Whish) charge the platform on deposits"
+        />
+        <KpiCard
+          label="Net revenue"
+          value={primary ? `${fmt(primary.netRevenue)} ${primary.currency}` : '—'}
+          hint="Platform revenue − source fees (your real take-home)"
+        />
+      </div>
+
+      {/* Activity KPIs */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <KpiCard
           label="Volume in"
           value={primary ? `${fmt(primary.volumeIn)} ${primary.currency}` : '—'}
@@ -369,7 +413,7 @@ function OpsAction({ kind }: { kind: OpsKind; companyId: string }) {
   }
   return (
     <Button variant="ghost" size="sm" asChild>
-      <Link href="/admin/transactions">View</Link>
+      <Link href="/admin/deposits">View</Link>
     </Button>
   );
 }

@@ -1,7 +1,7 @@
 'use client';
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import Link from 'next/link';
 import {
   SUPPORTED_CURRENCIES,
@@ -16,6 +16,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Skeleton } from '@/components/ui/skeleton';
 import { Switch } from '@/components/ui/switch';
 import { DataTable, type Column } from '@/components/ui/data-table';
 import { apiFetch } from '@/lib/api.client';
@@ -242,59 +243,67 @@ export function CompanyDetailView({ companyId }: { companyId: string }) {
           <Link href="/admin/companies" className="text-xs text-muted-foreground hover:underline">
             ← All companies
           </Link>
-          <h1 className="mt-1 text-2xl font-semibold">
-            {companyQ.data?.name ?? 'Loading…'}
-            {companyQ.data && (
-              <Badge
-                className="ml-3 align-middle"
-                variant={companyQ.data.status === 'ACTIVE' ? 'success' : 'destructive'}
-              >
-                {companyQ.data.status}
-              </Badge>
+          <h1 className="mt-1 flex items-center gap-3 text-2xl font-semibold">
+            {companyQ.data ? (
+              <>
+                {companyQ.data.name}
+                <Badge variant={companyQ.data.status === 'ACTIVE' ? 'success' : 'destructive'}>
+                  {companyQ.data.status}
+                </Badge>
+              </>
+            ) : companyQ.isError ? null : (
+              // Reserve the H1's height while loading so the name doesn't pop in
+              // and shift the page (no "Loading…" text swap).
+              <Skeleton className="h-7 w-48" />
             )}
           </h1>
-          {companyQ.data && (
+          {companyQ.data ? (
             <p className="text-sm text-muted-foreground">
               slug: <span className="font-mono break-all">{companyQ.data.slug}</span> · default
               currency: {companyQ.data.defaultCurrency} · created{' '}
               {new Date(companyQ.data.createdAt).toLocaleDateString()}
             </p>
+          ) : companyQ.isError ? null : (
+            <Skeleton className="mt-1 h-4 w-72" />
           )}
         </div>
-        {companyQ.data &&
-          (companyQ.data.status === 'ACTIVE' ? (
-            <Button
-              className="w-full sm:w-auto"
-              variant="destructive"
-              onClick={() => {
-                if (
-                  confirm(
-                    `Deactivate ${companyQ.data?.name}? It will immediately lose all access — ` +
-                      `users can't log in, API keys stop working, and it can't send or receive ` +
-                      `anything. All of its data is kept and access is fully restored if you ` +
-                      `reactivate it.`,
-                  )
-                ) {
-                  disableMu.mutate();
-                }
-              }}
-              disabled={disableMu.isPending}
-            >
-              {disableMu.isPending ? 'Deactivating…' : 'Deactivate company'}
-            </Button>
-          ) : (
-            <Button
-              className="w-full sm:w-auto"
-              onClick={() => {
-                if (confirm(`Reactivate ${companyQ.data?.name}? Full access will be restored.`)) {
-                  activateMu.mutate();
-                }
-              }}
-              disabled={activateMu.isPending}
-            >
-              {activateMu.isPending ? 'Activating…' : 'Activate company'}
-            </Button>
-          ))}
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <DateRangeControls value={range} onChange={setRange} className="w-full sm:w-auto" />
+          {companyQ.data &&
+            (companyQ.data.status === 'ACTIVE' ? (
+              <Button
+                className="w-full sm:w-auto"
+                variant="destructive"
+                onClick={() => {
+                  if (
+                    confirm(
+                      `Deactivate ${companyQ.data?.name}? It will immediately lose all access — ` +
+                        `users can't log in, API keys stop working, and it can't send or receive ` +
+                        `anything. All of its data is kept and access is fully restored if you ` +
+                        `reactivate it.`,
+                    )
+                  ) {
+                    disableMu.mutate();
+                  }
+                }}
+                disabled={disableMu.isPending}
+              >
+                {disableMu.isPending ? 'Deactivating…' : 'Deactivate company'}
+              </Button>
+            ) : (
+              <Button
+                className="w-full sm:w-auto"
+                onClick={() => {
+                  if (confirm(`Reactivate ${companyQ.data?.name}? Full access will be restored.`)) {
+                    activateMu.mutate();
+                  }
+                }}
+                disabled={activateMu.isPending}
+              >
+                {activateMu.isPending ? 'Activating…' : 'Activate company'}
+              </Button>
+            ))}
+        </div>
       </div>
 
       {companyQ.data && (
@@ -389,7 +398,6 @@ export function CompanyDetailView({ companyId }: { companyId: string }) {
               <CardDescription>Daily completed transaction volume.</CardDescription>
             </div>
             <div className="flex flex-wrap gap-2">
-              <DateRangeControls value={range} onChange={setRange} />
               <select
                 value={chartCurrency}
                 onChange={(e) => setChartCurrency(e.target.value)}

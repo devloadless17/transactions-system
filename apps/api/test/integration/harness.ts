@@ -32,6 +32,7 @@ import { WhishPaymentsService } from '../../src/modules/whish/whish-payments.ser
 import type { CacheService } from '../../src/modules/cache/cache.service';
 import type { AnalyticsService } from '../../src/modules/analytics/analytics.service';
 import type { RealtimeService } from '../../src/modules/realtime/realtime.service';
+import type { NotificationsService } from '../../src/modules/notifications/notifications.service';
 import type { CrmDispatchService } from '../../src/modules/crm/crm-dispatch.service';
 import type { WhishClient, WhishCollectStatus } from '../../src/modules/whish/whish.client';
 import type { WhishWebhookService } from '../../src/modules/whish/whish-webhook.service';
@@ -86,6 +87,11 @@ const fakeRealtime = {
   company: () => undefined,
 } as unknown as RealtimeService;
 
+const fakeNotifications = {
+  requestSubmitted: async () => undefined,
+  requestResolved: async () => undefined,
+} as unknown as NotificationsService;
+
 const fakeCounter = { inc: () => undefined } as unknown as Counter<string>;
 
 // CRM dispatch is a fire-and-forget side effect; no-op it in the harness.
@@ -126,7 +132,8 @@ export function buildHarness(): Harness {
     wallets,
     fakeAnalytics,
     fakeRealtime,
-    fakeCounter,
+    fakeCounter, // txn_ingest_total
+    fakeCounter, // txn_ingest_no_rule_total
     fakeCache,
     fakeCrm,
   );
@@ -136,6 +143,7 @@ export function buildHarness(): Harness {
     wallets,
     fakeAnalytics,
     fakeRealtime,
+    fakeNotifications,
     fakeCache,
     fees,
   );
@@ -145,6 +153,7 @@ export function buildHarness(): Harness {
     wallets,
     fakeAnalytics,
     fakeRealtime,
+    fakeNotifications,
     fakeCache,
     fees,
   );
@@ -154,6 +163,7 @@ export function buildHarness(): Harness {
     wallets,
     fakeAnalytics,
     fakeRealtime,
+    fakeNotifications,
     fakeCache,
     fees,
   );

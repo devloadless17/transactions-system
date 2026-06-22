@@ -1,7 +1,7 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import {
   type PaginatedResponse,
   type WithdrawalResponse,
@@ -58,7 +58,13 @@ export interface AdminProcessConfig {
   noun: string;
 }
 
-export function AdminWithdrawalsView({ config }: { config: AdminProcessConfig }) {
+export function AdminWithdrawalsView({
+  config,
+  headerAction,
+}: {
+  config: AdminProcessConfig;
+  headerAction?: ReactNode;
+}) {
   const qc = useQueryClient();
   // Operators land on the pending queue by default; all other filters start "any".
   const [filters, setFilters] = useState<FlowFilters>({ ...EMPTY_FLOW_FILTERS, status: 'PENDING' });
@@ -156,9 +162,12 @@ export function AdminWithdrawalsView({ config }: { config: AdminProcessConfig })
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold">{config.heading}</h1>
-        <p className="text-sm text-muted-foreground">{config.subhead}</p>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold">{config.heading}</h1>
+          <p className="text-sm text-muted-foreground">{config.subhead}</p>
+        </div>
+        {headerAction}
       </div>
 
       <FlowFilterBar

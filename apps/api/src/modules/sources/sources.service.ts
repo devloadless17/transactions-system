@@ -3,6 +3,8 @@ import type {
   CreateSourceInput,
   PaginatedResponse,
   Pagination,
+  SetSourceFeeRulesInput,
+  SourceFeeRuleResponse,
   SourceResponse,
   UpdateSourceInput,
 } from '@app/shared';
@@ -97,6 +99,80 @@ export class SourcesService {
     this.realtime.admin(['sources']);
     return mapSource(row);
   }
+
+  // ---------------- source fee schedule (cost the source charges the platform) ----
+  // System/admin-only: what an upstream source takes from THE PLATFORM per
+  // deposit, used to compute net revenue. Never exposed to companies.
+
+  async listFeeRules(sourceId: string): Promise<SourceFeeRuleResponse[]> {
+    return this.prisma.runAsAdmin(async (tx) => {
+      const source = await tx.source.findUnique({ where: { id: sourceId } });
+      if (!source) throw new NotFoundError('Source', sourceId);
+      const rows = await tx.sourceFeeRule.findMany({
+        where: { sourceId },
+        orderBy: [{ channel: 'asc' }, { minAmount: 'asc' }],
+      });
+      return rows.map(mapFeeRule);
+    });
+  }
+
+  /** Replace a source's whole fee schedule atomically (delete-all + recreate). */
+  async setFeeRules(
+    sourceId: string,
+    input: SetSourceFeeRulesInput,
+  ): Promise<SourceFeeRuleResponse[]> {
+    const result = await this.prisma.runAsAdmin(async (tx) => {
+      const source = await tx.source.findUnique({ where: { id: sourceId } });
+      if (!source) throw new NotFoundError('Source', sourceId);
+      await tx.sourceFeeRule.deleteMany({ where: { sourceId } });
+      if (input.rules.length > 0) {
+        await tx.sourceFeeRule.createMany({
+          data: input.rules.map((r) => ({
+            sourceId,
+            channel: r.channel,
+            minAmount: r.minAmount,
+            maxAmount: r.maxAmount,
+            feeType: r.feeType,
+            feeValue: r.feeValue,
+            active: r.active,
+          })),
+        });
+      }
+      const rows = await tx.sourceFeeRule.findMany({
+        where: { sourceId },
+        orderBy: [{ channel: 'asc' }, { minAmount: 'asc' }],
+      });
+      return rows.map(mapFeeRule);
+    });
+    this.realtime.admin(['sources']);
+    return result;
+  }
+}
+
+function mapFeeRule(row: {
+  id: string;
+  sourceId: string;
+  channel: SourceFeeRuleResponse['channel'];
+  minAmount: { toString(): string };
+  maxAmount: { toString(): string } | null;
+  feeType: SourceFeeRuleResponse['feeType'];
+  feeValue: { toString(): string };
+  active: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}): SourceFeeRuleResponse {
+  return {
+    id: row.id,
+    sourceId: row.sourceId,
+    channel: row.channel,
+    minAmount: row.minAmount.toString(),
+    maxAmount: row.maxAmount === null ? null : row.maxAmount.toString(),
+    feeType: row.feeType,
+    feeValue: row.feeValue.toString(),
+    active: row.active,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
 }
 
 function mapSource(row: {

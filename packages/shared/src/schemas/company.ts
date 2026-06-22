@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { CompanyStatus } from '../enums';
 import { currencySchema } from './common';
+import { companyScopedCommissionRuleSchema } from './commission';
 
 // slugs: lowercase alphanumeric + dashes, 2-50 chars
 const slugRegex = /^[a-z0-9][a-z0-9-]{1,48}[a-z0-9]$/;
@@ -15,6 +16,11 @@ export const createCompanySchema = z.object({
   defaultCurrency: currencySchema,
   ownerEmail: z.string().email(),
   ownerName: z.string().trim().min(2).max(120).optional(),
+  // Optional starter commission rule, created atomically with the company so it
+  // can accept (and price) transactions immediately — preventing the "company
+  // exists but every ingest fails NO_COMMISSION_RULE" trap. Omit to rely on a
+  // global default rule or to configure pricing later on the Commissions page.
+  commission: companyScopedCommissionRuleSchema.optional(),
 });
 export type CreateCompanyInput = z.infer<typeof createCompanySchema>;
 

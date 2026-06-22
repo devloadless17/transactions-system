@@ -1,5 +1,18 @@
 // Per-process configs for the admin Withdraw / Payout / Load review pages.
 import type { AdminProcessConfig } from './withdrawals-view';
+import type { ListPrefetch } from '@/lib/prefetch';
+
+/**
+ * Descriptor for AdminWithdrawalsView's initial list query — page 1, pageSize 50,
+ * no filters. MUST stay in sync with the admin withdrawals-view.tsx
+ * (`flowFilterParams(EMPTY_FLOW_FILTERS, { pageSize: '50', page: '1' })` → key
+ * `[...queryKey, '<qs>']`, NOTE: no 'list' segment). Lives in this non-'use
+ * client' module so the server page can import it.
+ */
+export function defaultListPrefetch(config: AdminProcessConfig): ListPrefetch {
+  const qs = 'pageSize=50&page=1';
+  return { queryKey: [...config.queryKey, qs], path: `${config.listEndpoint}?${qs}` };
+}
 
 export const ADMIN_WITHDRAWAL_CONFIG: AdminProcessConfig = {
   listEndpoint: '/admin/withdrawals',

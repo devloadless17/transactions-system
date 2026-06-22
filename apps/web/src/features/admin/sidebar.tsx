@@ -4,6 +4,7 @@ import {
   Building2,
   Boxes,
   ArrowLeftRight,
+  Banknote,
   Wallet,
   HandCoins,
   ArrowDownToLine,
@@ -17,6 +18,7 @@ import {
 import type { UserRole } from '@app/shared';
 import { DashboardSidebar } from '@/components/nav/dashboard-sidebar';
 import type { NavItem } from '@/components/nav/sidebar-nav';
+import { usePendingCounts } from '@/features/operations/use-pending-counts';
 import { canSeeAdminSection } from './access';
 
 export const adminNavItems: NavItem[] = [
@@ -24,9 +26,10 @@ export const adminNavItems: NavItem[] = [
   { href: '/admin/companies', label: 'Companies', icon: Building2 },
   { href: '/admin/sources', label: 'Sources', icon: Boxes },
   { href: '/admin/transactions', label: 'Transactions', icon: ArrowLeftRight },
-  { href: '/admin/withdrawals', label: 'Withdrawals', icon: Wallet },
-  { href: '/admin/payouts', label: 'Payouts', icon: HandCoins },
-  { href: '/admin/loads', label: 'Loads', icon: ArrowDownToLine },
+  { href: '/admin/deposits', label: 'Deposits', icon: Banknote },
+  { href: '/admin/withdrawals', label: 'Withdrawals', icon: Wallet, badgeKey: 'withdrawals' },
+  { href: '/admin/loads', label: 'Loads', icon: ArrowDownToLine, badgeKey: 'loads' },
+  { href: '/admin/payouts', label: 'Payouts', icon: HandCoins, badgeKey: 'payouts' },
   { href: '/admin/commissions', label: 'Commission Rules', icon: Percent },
   { href: '/admin/whish', label: 'Whish Pay', icon: Link2 },
   { href: '/admin/transaction-logs', label: 'Transaction Logs', icon: ScrollText },
@@ -41,11 +44,13 @@ export function adminNavItemsFor(role: UserRole): NavItem[] {
 }
 
 export function AdminSidebar({ role }: { role: UserRole }) {
+  const badges = usePendingCounts('admin');
   return (
     <DashboardSidebar
       title="Txn Admin"
       items={adminNavItemsFor(role)}
       storageKey="admin-sidebar-collapsed"
+      badges={badges}
     />
   );
 }

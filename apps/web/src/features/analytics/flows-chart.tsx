@@ -72,12 +72,15 @@ export function FlowsChart({ buckets, currency }: { buckets: FlowsBucket[]; curr
                   : 'Fees earned'
             }
           />
+          {/* No draw animation on any series: the chart re-renders on every live
+              realtime refresh, and the triple path-morph reads as jank. */}
           <Area
             type="monotone"
             dataKey="in"
             stroke="hsl(142 71% 45%)"
             strokeWidth={2}
             fill="url(#inFill)"
+            isAnimationActive={false}
           />
           <Area
             type="monotone"
@@ -85,6 +88,7 @@ export function FlowsChart({ buckets, currency }: { buckets: FlowsBucket[]; curr
             stroke="hsl(0 84% 60%)"
             strokeWidth={2}
             fill="url(#outFill)"
+            isAnimationActive={false}
           />
           <Line
             type="monotone"
@@ -92,6 +96,7 @@ export function FlowsChart({ buckets, currency }: { buckets: FlowsBucket[]; curr
             stroke="hsl(var(--primary))"
             strokeWidth={2}
             dot={false}
+            isAnimationActive={false}
           />
         </ComposedChart>
       </ResponsiveContainer>

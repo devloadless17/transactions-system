@@ -44,10 +44,12 @@ export function DashboardSidebar({
   title,
   items,
   storageKey,
+  badges,
 }: {
   title: string;
   items: readonly NavItem[];
   storageKey: string;
+  badges?: Record<string, number>;
 }): React.JSX.Element {
   const [collapsed, toggle] = useCollapsed(storageKey);
 
@@ -66,7 +68,7 @@ export function DashboardSidebar({
       >
         {collapsed ? title.charAt(0) : title}
       </div>
-      <SidebarNav items={items} collapsed={collapsed} />
+      <SidebarNav items={items} collapsed={collapsed} badges={badges} />
       <div className={cn('border-t p-3', collapsed && 'flex justify-center')}>
         <Button
           variant="ghost"

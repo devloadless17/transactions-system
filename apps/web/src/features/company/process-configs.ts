@@ -2,6 +2,19 @@
 // pages. The three pages share `WithdrawalsView` and differ only in
 // which backend endpoint they hit and how their copy reads.
 import type { ProcessConfig } from './withdrawals-view';
+import type { ListPrefetch } from '@/lib/prefetch';
+
+/**
+ * Descriptor for WithdrawalsView's initial list query — page 1, pageSize 50, no
+ * filters. MUST stay in sync with withdrawals-view.tsx
+ * (`flowFilterParams(EMPTY_FLOW_FILTERS, { pageSize: '50', page: '1' })` → key
+ * `[...queryKey, 'list', '<qs>']`). Lives in this non-'use client' module so the
+ * server page can import it (the client param builder can't run in RSC).
+ */
+export function defaultListPrefetch(config: ProcessConfig): ListPrefetch {
+  const qs = 'pageSize=50&page=1';
+  return { queryKey: [...config.queryKey, 'list', qs], path: `${config.endpoint}?${qs}` };
+}
 
 export const WITHDRAWAL_CONFIG: ProcessConfig = {
   endpoint: '/company/withdrawals',

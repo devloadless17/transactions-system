@@ -2,7 +2,7 @@ import { UserRole } from '@app/shared';
 import { requireRole } from '@/lib/session';
 import { CompanySidebar } from '@/features/company/sidebar';
 import { CompanyTopbar } from '@/features/company/topbar';
-import { RealtimeBridge } from '@/lib/realtime';
+import { RealtimeBridge } from '@/lib/realtime.lazy';
 import { SessionKeepAlive } from '@/lib/session-keep-alive';
 
 export default async function CompanyLayout({ children }: { children: React.ReactNode }) {

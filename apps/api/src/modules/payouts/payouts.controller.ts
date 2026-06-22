@@ -65,6 +65,16 @@ export class PayoutsController {
     return this.payouts.list({ companyId: user.companyId, query });
   }
 
+  @Roles(UserRole.COMPANY_OWNER, UserRole.COMPANY_MANAGER, UserRole.COMPANY_VIEWER)
+  @Get('company/payouts/:id')
+  async companyGet(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @CurrentUser() user: AuthPrincipal,
+  ) {
+    if (!user.companyId) throw new ForbiddenError('No company in session');
+    return this.payouts.getById(id, user.companyId);
+  }
+
   @Roles(UserRole.COMPANY_OWNER, UserRole.COMPANY_MANAGER)
   @Post('company/payouts/:id/cancel')
   @Audited({ action: 'payout.cancelled', entityType: 'payout', idFrom: 'params.id' })

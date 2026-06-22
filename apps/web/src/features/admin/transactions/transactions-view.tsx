@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import {
   TransactionStatus,
   type PaginatedResponse,

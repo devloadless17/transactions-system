@@ -1,7 +1,10 @@
 import { expect, type APIRequestContext, type Page, request as pwRequest } from '@playwright/test';
 
 export const ADMIN_EMAIL = process.env.E2E_ADMIN_EMAIL ?? 'admin@example.com';
-export const ADMIN_PASSWORD = process.env.E2E_ADMIN_PASSWORD ?? 'loadless';
+// Mirror global.setup.ts: prefer an explicit e2e override, else reuse the seeded
+// admin password (loaded from .env by playwright.config.ts), else the CI default.
+export const ADMIN_PASSWORD =
+  process.env.E2E_ADMIN_PASSWORD ?? process.env.SEED_ADMIN_PASSWORD ?? 'loadless';
 export const API_BASE = process.env.E2E_API_BASE ?? 'http://localhost:3001';
 
 // POST /v1/auth/login is throttled to 10 req / 60s per IP. A serial suite that
@@ -145,9 +148,34 @@ export async function createCommissionRule(
   csrf: string,
   data: Record<string, unknown>,
 ): Promise<{ id: string }> {
+  // The endpoint now takes the rule-GROUP shape (companyIds[] / operationTypes[] /
+  // tiers[]). Specs still pass the legacy flat shape, so translate a flat rule
+  // into a single-tier group here — keeps every caller working unchanged.
+  const body =
+    'tiers' in data
+      ? data
+      : {
+          name: (data.name as string | null) ?? null,
+          companyIds: data.companyId != null ? [data.companyId] : null,
+          operationTypes:
+            data.operationType != null
+              ? [data.operationType]
+              : ((data.operationTypes as unknown[]) ?? ['TRANSACTION']),
+          feeApplication: data.feeApplication ?? 'DEDUCTED',
+          priority: data.priority ?? 100,
+          active: data.active ?? true,
+          tiers: [
+            {
+              minAmount: data.minAmount,
+              maxAmount: data.maxAmount ?? null,
+              commissionType: data.commissionType,
+              commissionValue: data.commissionValue,
+            },
+          ],
+        };
   const res = await api.post('/v1/admin/commission-rules', {
     headers: { 'x-csrf-token': csrf },
-    data,
+    data: body,
   });
   if (!res.ok())
     throw new Error(`create commission rule failed: ${res.status()} ${await res.text()}`);

@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import './globals.css';
 import { QueryProvider } from '@/lib/query-client';
 import { ThemeProvider } from '@/lib/theme-provider';
+import { TopProgressBar } from '@/components/top-progress-bar';
 import { Toaster } from 'sonner';
 
 export const metadata: Metadata = {
@@ -15,8 +16,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         <ThemeProvider>
           <QueryProvider>
+            <TopProgressBar />
             {children}
-            <Toaster richColors position="top-right" />
+            {/* Shorter than Sonner's 4s default so success/info toasts dismiss quickly. */}
+            <Toaster richColors position="top-right" duration={2500} />
           </QueryProvider>
         </ThemeProvider>
       </body>

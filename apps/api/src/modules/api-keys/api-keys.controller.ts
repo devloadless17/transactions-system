@@ -40,6 +40,7 @@ export class ApiKeysController {
     return this.apiKeys.create({ kind: 'company', companyId: user.companyId }, body);
   }
 
+  @Roles(UserRole.COMPANY_OWNER)
   @Post(':id/revoke')
   @Audited({ action: 'api_key.revoked', entityType: 'api_key', idFrom: 'params.id' })
   async revoke(@Param('id', new ParseUUIDPipe()) id: string, @CurrentUser() user: AuthPrincipal) {

@@ -6,6 +6,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Put,
   Query,
   UseGuards,
   UsePipes,
@@ -13,10 +14,12 @@ import {
 import {
   createSourceSchema,
   paginationSchema,
+  setSourceFeeRulesSchema,
   updateSourceSchema,
   UserRole,
   type CreateSourceInput,
   type Pagination,
+  type SetSourceFeeRulesInput,
   type UpdateSourceInput,
 } from '@app/shared';
 import { ZodPipe } from '../../common/pipes/zod-validation.pipe';
@@ -62,5 +65,24 @@ export class SourcesAdminController {
     @Body(new ZodPipe(updateSourceSchema)) body: UpdateSourceInput,
   ) {
     return this.sources.update(id, body);
+  }
+
+  // Source fee schedule = what the source charges THE PLATFORM per deposit
+  // (the platform's cost of funds, used for net-revenue reporting). This is
+  // sensitive system/internal data: unlike the source catalog above, these
+  // endpoints are gated to platform admins (never BACKOFFICE, never companies).
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR)
+  @Get(':id/fee-rules')
+  async feeRules(@Param('id', new ParseUUIDPipe()) id: string) {
+    return { data: await this.sources.listFeeRules(id) };
+  }
+
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR)
+  @Put(':id/fee-rules')
+  async setFeeRules(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body(new ZodPipe(setSourceFeeRulesSchema)) body: SetSourceFeeRulesInput,
+  ) {
+    return { data: await this.sources.setFeeRules(id, body) };
   }
 }

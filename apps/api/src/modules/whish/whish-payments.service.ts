@@ -7,16 +7,23 @@ import {
   type CreateWhishPaymentInput,
   type ListWhishPaymentsQuery,
   type PaginatedResponse,
+  type SetWhishRedirectConfigInput,
   type SupportedCurrency,
   type WhishClientConfig,
   type WhishPaymentResponse,
+  type WhishRedirectConfig,
   WhishPaymentStatus,
 } from '@app/shared';
 import { Prisma } from '@app/db';
 import type { WhishPayment } from '@app/db';
 import { PrismaService } from '../../database/prisma.service';
 import type { Env } from '../../config/env.schema';
-import { ForbiddenError, NotFoundError, ValidationError } from '../../common/errors/domain.error';
+import {
+  DuplicateTransactionError,
+  ForbiddenError,
+  NotFoundError,
+  ValidationError,
+} from '../../common/errors/domain.error';
 import { TransactionsService } from '../transactions/transactions.service';
 import { CommissionResolverService } from '../commissions/commission-resolver.service';
 import { CommissionsRepository } from '../commissions/commissions.repository';
@@ -61,6 +68,38 @@ export class WhishPaymentsService {
 
   clientConfig(): WhishClientConfig {
     return { enabledCurrencies: this.enabledCurrencies() };
+  }
+
+  /** A company's saved default redirect URLs (null = platform /pay pages). */
+  async getRedirectConfig(companyId: string): Promise<WhishRedirectConfig> {
+    const c = await this.prisma.runAsTenant(companyId, (tx) =>
+      tx.company.findUnique({
+        where: { id: companyId },
+        select: { whishSuccessRedirectUrl: true, whishFailureRedirectUrl: true },
+      }),
+    );
+    return {
+      successUrl: c?.whishSuccessRedirectUrl ?? null,
+      failureUrl: c?.whishFailureRedirectUrl ?? null,
+    };
+  }
+
+  /** Save (or clear, with nulls) a company's default Whish redirect URLs. */
+  async setRedirectConfig(
+    companyId: string,
+    input: SetWhishRedirectConfigInput,
+  ): Promise<WhishRedirectConfig> {
+    await this.prisma.runAsTenant(companyId, (tx) =>
+      tx.company.update({
+        where: { id: companyId },
+        data: {
+          whishSuccessRedirectUrl: input.successUrl,
+          whishFailureRedirectUrl: input.failureUrl,
+        },
+      }),
+    );
+    this.realtime.company(companyId, ['whish']);
+    return { successUrl: input.successUrl, failureUrl: input.failureUrl };
   }
 
   /**
@@ -138,6 +177,26 @@ export class WhishPaymentsService {
     const webBase = this.config.get('WEB_ORIGIN', { infer: true });
     const q = `token=${callbackToken}&externalId=${externalId}`;
 
+    // Where the PAYER lands after paying. Precedence: per-link override (input)
+    // → the company's saved default → the platform's /pay pages. Each carries
+    // ?ref=<externalId> so the destination can identify the payment. NOTE: only
+    // the customer-facing REDIRECT; the success/failure CALLBACK URLs above stay
+    // platform-controlled (they carry the settlement token).
+    const defaults = await this.prisma.runAsTenant(companyId, (tx) =>
+      tx.company.findUnique({
+        where: { id: companyId },
+        select: { whishSuccessRedirectUrl: true, whishFailureRedirectUrl: true },
+      }),
+    );
+    const successRedirectUrl = withRef(
+      input.successRedirectUrl ?? defaults?.whishSuccessRedirectUrl ?? `${webBase}/pay/success`,
+      externalId,
+    );
+    const failureRedirectUrl = withRef(
+      input.failureRedirectUrl ?? defaults?.whishFailureRedirectUrl ?? `${webBase}/pay/failure`,
+      externalId,
+    );
+
     try {
       const { collectUrl } = await this.whish.postPayment({
         amount: input.amount,
@@ -146,8 +205,8 @@ export class WhishPaymentsService {
         externalId,
         successCallbackUrl: `${apiBase}/whish/callback/success?${q}`,
         failureCallbackUrl: `${apiBase}/whish/callback/failure?${q}`,
-        successRedirectUrl: `${webBase}/pay/success?ref=${externalId}`,
-        failureRedirectUrl: `${webBase}/pay/failure?ref=${externalId}`,
+        successRedirectUrl,
+        failureRedirectUrl,
       });
 
       // Super-admin log: what we asked Whish for, and what Whish returned.
@@ -431,7 +490,12 @@ export class WhishPaymentsService {
       // (sourceId, externalTransactionId) unique constraint (P2002). That is NOT a
       // settlement failure — the winner already booked the money — so recover the
       // existing transaction and fall through to mark PAID, instead of flagging.
-      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+      // ingest() now translates that P2002 into a DuplicateTransactionError, so
+      // accept either form.
+      if (
+        err instanceof DuplicateTransactionError ||
+        (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002')
+      ) {
         const existing = await this.prisma.runAsAdmin((tx) =>
           tx.transaction.findFirst({
             where: { sourceId: source.id, externalTransactionId: String(payment.externalId) },
@@ -678,6 +742,12 @@ export class WhishPaymentsService {
     const { balance } = await this.whish.getBalance(currency);
     return { currency, balance };
   }
+}
+
+/** Append `ref=<externalId>` to a redirect URL, respecting any existing query. */
+function withRef(base: string, externalId: number): string {
+  const sep = base.includes('?') ? '&' : '?';
+  return `${base}${sep}ref=${externalId}`;
 }
 
 function mapWhishPayment(row: WhishPayment): WhishPaymentResponse {

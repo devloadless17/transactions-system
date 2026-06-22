@@ -10,11 +10,13 @@ import {
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Skeleton } from '@/components/ui/skeleton';
 import { DataTable, type Column } from '@/components/ui/data-table';
 import { apiFetch } from '@/lib/api.client';
 import { formatNumber as fmt } from '@/lib/format';
 import { KpiCard } from '@/features/analytics/kpi-card';
 import { VolumeChart } from '@/features/analytics/volume-chart.lazy';
+import { SourceFeeSchedule } from './source-fee-schedule';
 import {
   DateRangeControls,
   DEFAULT_RANGE,
@@ -88,30 +90,37 @@ export function SourceDetailView({ sourceId }: { sourceId: string }) {
           <Link href="/admin/sources" className="text-xs text-muted-foreground hover:underline">
             ← All sources
           </Link>
-          <h1 className="mt-1 text-2xl font-semibold">
-            {sourceQ.data?.name ?? 'Loading…'}
-            {sourceQ.data && (
-              <Badge
-                className="ml-3 align-middle"
-                variant={sourceQ.data.status === 'ACTIVE' ? 'success' : 'secondary'}
-              >
-                {sourceQ.data.status}
-              </Badge>
+          <h1 className="mt-1 flex items-center gap-3 text-2xl font-semibold">
+            {sourceQ.data ? (
+              <>
+                {sourceQ.data.name}
+                <Badge variant={sourceQ.data.status === 'ACTIVE' ? 'success' : 'secondary'}>
+                  {sourceQ.data.status}
+                </Badge>
+              </>
+            ) : sourceQ.isError ? null : (
+              // Reserve the H1's height while loading so the name doesn't pop in.
+              <Skeleton className="h-7 w-48" />
             )}
           </h1>
-          {sourceQ.data && (
+          {sourceQ.data ? (
             <p className="text-sm text-muted-foreground">
               code: <span className="font-mono">{sourceQ.data.code}</span> · created{' '}
               {new Date(sourceQ.data.createdAt).toLocaleDateString()}
             </p>
+          ) : sourceQ.isError ? null : (
+            <Skeleton className="mt-1 h-4 w-56" />
           )}
         </div>
-        <Button variant="outline" size="sm" asChild className="w-full sm:w-auto">
-          <Link href={`/admin/sources/${sourceId}/api-keys`}>API keys</Link>
-        </Button>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <DateRangeControls value={range} onChange={setRange} className="w-full sm:w-auto" />
+          <Button variant="outline" size="sm" asChild className="w-full sm:w-auto">
+            <Link href={`/admin/sources/${sourceId}/api-keys`}>API keys</Link>
+          </Button>
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <KpiCard
           label="Volume"
           value={overviewQ.data ? `${fmt(overviewQ.data.kpi.totalVolume)} ${currency}` : '—'}
@@ -120,7 +129,12 @@ export function SourceDetailView({ sourceId }: { sourceId: string }) {
         <KpiCard
           label="Fees earned"
           value={overviewQ.data ? `${fmt(overviewQ.data.kpi.totalFees ?? '0')} ${currency}` : '—'}
-          hint="Platform fees on this source"
+          hint="Platform fees on this source (revenue)"
+        />
+        <KpiCard
+          label="Source fees (cost)"
+          value={overviewQ.data ? `${fmt(overviewQ.data.sourceFees)} ${currency}` : '—'}
+          hint={`What ${sourceQ.data?.name ?? 'this source'} charges the platform on deposits`}
         />
         <KpiCard
           label="Transactions"
@@ -140,7 +154,6 @@ export function SourceDetailView({ sourceId }: { sourceId: string }) {
               <CardDescription>Daily completed volume through this source.</CardDescription>
             </div>
             <div className="flex flex-wrap gap-2">
-              <DateRangeControls value={range} onChange={setRange} />
               <select
                 value={currency}
                 onChange={(e) => setCurrency(e.target.value)}
@@ -186,6 +199,9 @@ export function SourceDetailView({ sourceId }: { sourceId: string }) {
           />
         </CardContent>
       </Card>
+
+      {/* What this source charges the platform per deposit (admin/system-only). */}
+      {sourceQ.data && <SourceFeeSchedule sourceId={sourceId} sourceCode={sourceQ.data.code} />}
     </div>
   );
 }

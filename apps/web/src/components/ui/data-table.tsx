@@ -87,14 +87,28 @@ export function DataTable<T>({
             ))}
           </TableRow>
         </TableHeader>
-        <TableBody>
-          {isLoading && (
-            <TableRow>
-              <TableCell colSpan={colSpan} className="py-8 text-center text-muted-foreground">
-                Loading…
-              </TableCell>
-            </TableRow>
-          )}
+        <TableBody aria-busy={isLoading}>
+          {/* Content-shaped skeleton rows: one cell per column with the same
+              alignment/width classes as real rows, so column widths are identical
+              and the swap to loaded data causes zero layout shift. */}
+          {isLoading &&
+            Array.from({ length: 8 }).map((_, i) => (
+              <TableRow key={`dt-skeleton-${i}`} aria-hidden>
+                {columns.map((col) => (
+                  <TableCell
+                    key={col.key}
+                    className={cn(col.align === 'right' && 'text-right', col.className)}
+                  >
+                    <div
+                      className={cn(
+                        'h-4 w-24 max-w-full animate-pulse rounded bg-muted',
+                        col.align === 'right' && 'ml-auto',
+                      )}
+                    />
+                  </TableCell>
+                ))}
+              </TableRow>
+            ))}
           {!isLoading && error != null && (rows == null || rows.length === 0) && (
             <TableRow>
               <TableCell colSpan={colSpan} className="py-8 text-center text-destructive">

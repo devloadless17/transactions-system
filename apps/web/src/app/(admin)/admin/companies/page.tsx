@@ -1,6 +1,7 @@
 import { getSession } from '@/lib/session';
 import { FULL_ADMIN_ROLES } from '@/features/admin/access';
 import { CompaniesView } from '@/features/admin/companies/companies-view';
+import { withListPrefetch } from '@/lib/prefetch';
 
 export const dynamic = 'force-dynamic';
 
@@ -9,5 +10,15 @@ export default async function CompaniesPage() {
   // list (no create, no drill-in); full admins manage companies.
   const session = await getSession();
   const canManage = !!session && FULL_ADMIN_ROLES.includes(session.role);
-  return <CompaniesView canManage={canManage} />;
+  // Server-prefetch the first page of companies so the table renders populated
+  // on first paint (deterministic default key: page 1, fixed pageSize).
+  return withListPrefetch(
+    [
+      {
+        queryKey: ['admin', 'companies', { page: 1 }],
+        path: '/admin/companies?page=1&pageSize=20',
+      },
+    ],
+    <CompaniesView canManage={canManage} />,
+  );
 }

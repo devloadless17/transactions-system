@@ -10,6 +10,7 @@ import {
 import { PrismaService } from '../../database/prisma.service';
 import { CacheService } from '../cache/cache.service';
 import { LedgerService } from '../ledger/ledger.service';
+import { sourceFeeForSource } from './source-fees';
 
 const DEFAULT_DAYS = 30;
 const DEFAULT_CURRENCY = 'USD';
@@ -235,6 +236,10 @@ export class AnalyticsService {
         count: r._count._all,
       }));
 
+      // What this source charged THE PLATFORM on its deposits (cost of funds).
+      // Admin-only endpoint — never surfaced to companies.
+      const sourceFees = await sourceFeeForSource(tx, p.sourceId, p.currency, p.from, p.to);
+
       return {
         range: { from: p.from.toISOString(), to: p.to.toISOString() },
         currency: p.currency,
@@ -243,6 +248,7 @@ export class AnalyticsService {
           code: source?.code ?? '',
           name: source?.name ?? p.sourceId.slice(0, 8),
         },
+        sourceFees,
         kpi: {
           // Volume = net + fee (money moved), consistent with the daily series,
           // the by-company rows, and every other volume surface. NOT SUM(amount)

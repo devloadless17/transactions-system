@@ -3,17 +3,19 @@ import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { ExternalLink } from 'lucide-react';
 import {
   createWhishPaymentSchema,
+  setWhishRedirectConfigSchema,
   type CreateWhishPaymentInput,
   type PaginatedResponse,
   type WhishClientConfig,
   type WhishPaymentResponse,
+  type WhishRedirectConfig,
 } from '@app/shared';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { DataTable, type Column } from '@/components/ui/data-table';
 import { Pagination } from '@/components/ui/pagination';
@@ -188,12 +190,90 @@ export function WhishView() {
         />
       )}
 
+      <WhishRedirectSettings />
+
       <CreatePaymentDialog
         open={createOpen}
         onOpenChange={setCreateOpen}
         onCreated={() => qc.invalidateQueries({ queryKey: ['company', 'whish'] })}
       />
     </div>
+  );
+}
+
+/** Company default redirect URLs: where the customer lands after paying. */
+function WhishRedirectSettings() {
+  const qc = useQueryClient();
+  const cfgQ = useQuery({
+    queryKey: ['company', 'whish', 'redirects'],
+    queryFn: () => apiFetch<WhishRedirectConfig>('/company/whish/redirects'),
+  });
+  const [success, setSuccess] = useState('');
+  const [failure, setFailure] = useState('');
+  useEffect(() => {
+    if (cfgQ.data) {
+      setSuccess(cfgQ.data.successUrl ?? '');
+      setFailure(cfgQ.data.failureUrl ?? '');
+    }
+  }, [cfgQ.data]);
+
+  const mu = useMutation({
+    mutationFn: (body: { successUrl: string | null; failureUrl: string | null }) =>
+      apiFetch<WhishRedirectConfig>('/company/whish/redirects', { method: 'PUT', body }),
+    onSuccess: () => {
+      toast.success('Redirect settings saved');
+      qc.invalidateQueries({ queryKey: ['company', 'whish', 'redirects'] });
+    },
+    onError: (err) => toast.error(err instanceof ApiClientError ? err.message : 'Failed'),
+  });
+
+  function save() {
+    const body = { successUrl: success.trim() || null, failureUrl: failure.trim() || null };
+    const parsed = setWhishRedirectConfigSchema.safeParse(body);
+    if (!parsed.success) {
+      toast.error(parsed.error.issues[0]?.message ?? 'Enter a valid URL');
+      return;
+    }
+    mu.mutate(parsed.data);
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Redirect after payment</CardTitle>
+        <CardDescription>
+          Where your customer is sent after they finish (or fail) a Whish payment. Leave blank to
+          use our default confirmation pages. We append <code className="font-mono">?ref=</code>{' '}
+          with the payment reference so your page can identify it. (You can also override these for
+          a single link when you create it.)
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="space-y-2">
+          <Label htmlFor="redir-success">Success URL</Label>
+          <Input
+            id="redir-success"
+            placeholder="https://yourstore.com/thank-you"
+            value={success}
+            onChange={(e) => setSuccess(e.target.value)}
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="redir-failure">Failure URL</Label>
+          <Input
+            id="redir-failure"
+            placeholder="https://yourstore.com/payment-failed"
+            value={failure}
+            onChange={(e) => setFailure(e.target.value)}
+          />
+        </div>
+        <div className="flex justify-end">
+          <Button type="button" disabled={mu.isPending || cfgQ.isLoading} onClick={save}>
+            {mu.isPending ? 'Saving…' : 'Save redirect settings'}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -220,9 +300,19 @@ function CreatePaymentDialog({
   });
   const currency = watch('currency');
 
+  // Optional per-link redirect override (kept outside the RHF form so an empty
+  // field stays "use my default" rather than failing URL validation).
+  const [ovSuccess, setOvSuccess] = useState('');
+  const [ovFailure, setOvFailure] = useState('');
+
   const cfgQ = useQuery({
     queryKey: ['company', 'whish', 'config'],
     queryFn: () => apiFetch<WhishClientConfig>('/company/whish/config'),
+  });
+  // Company defaults, shown as placeholders so it's clear what an empty field uses.
+  const redirQ = useQuery({
+    queryKey: ['company', 'whish', 'redirects'],
+    queryFn: () => apiFetch<WhishRedirectConfig>('/company/whish/redirects'),
   });
   const currencies = (cfgQ.data?.enabledCurrencies ?? [
     'USD',
@@ -250,6 +340,8 @@ function CreatePaymentDialog({
     if (!v) {
       setCreated(null);
       reset();
+      setOvSuccess('');
+      setOvFailure('');
     }
   }
 
@@ -296,7 +388,16 @@ function CreatePaymentDialog({
               <DialogTitle>New payment link</DialogTitle>
               <DialogDescription>The customer pays on Whish&apos;s hosted page.</DialogDescription>
             </DialogHeader>
-            <form onSubmit={handleSubmit((values) => mu.mutate(values))} className="space-y-4">
+            <form
+              onSubmit={handleSubmit((values) =>
+                mu.mutate({
+                  ...values,
+                  successRedirectUrl: ovSuccess.trim() || undefined,
+                  failureRedirectUrl: ovFailure.trim() || undefined,
+                }),
+              )}
+              className="space-y-4"
+            >
               <div className="space-y-2">
                 <Label htmlFor="amount">Amount</Label>
                 <Input id="amount" inputMode="decimal" placeholder="25" {...register('amount')} />
@@ -327,6 +428,34 @@ function CreatePaymentDialog({
                   <p className="text-sm text-destructive">{errors.invoice.message}</p>
                 )}
               </div>
+              <details className="rounded-md border bg-muted/20 p-3">
+                <summary className="cursor-pointer text-sm font-medium">
+                  Where to send the customer after paying (optional)
+                </summary>
+                <div className="mt-3 space-y-3">
+                  <p className="text-xs text-muted-foreground">
+                    Override your saved defaults for just this link. Leave blank to use them.
+                  </p>
+                  <div className="space-y-2">
+                    <Label htmlFor="ov-success">Success URL</Label>
+                    <Input
+                      id="ov-success"
+                      placeholder={redirQ.data?.successUrl ?? 'our default success page'}
+                      value={ovSuccess}
+                      onChange={(e) => setOvSuccess(e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="ov-failure">Failure URL</Label>
+                    <Input
+                      id="ov-failure"
+                      placeholder={redirQ.data?.failureUrl ?? 'our default failure page'}
+                      value={ovFailure}
+                      onChange={(e) => setOvFailure(e.target.value)}
+                    />
+                  </div>
+                </div>
+              </details>
               <DialogFooter>
                 <Button type="button" variant="outline" onClick={() => handleOpenChange(false)}>
                   Cancel

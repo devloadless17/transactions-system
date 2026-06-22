@@ -73,7 +73,7 @@ function toInternalInput(body: IngestSourceTransactionInput): IngestTransactionI
  * Deliberately OMITS `commissionAmount` and `netAmount`: sources must not see
  * the fee Rival takes (netAmount would also reveal it as `amount − netAmount`).
  */
-function toSourceTransaction(r: TransactionResponse) {
+function toSourceTransaction(r: TransactionResponse, replayed: boolean) {
   return {
     id: r.id,
     operatingId: r.companyId,
@@ -89,6 +89,10 @@ function toSourceTransaction(r: TransactionResponse) {
     note: r.note,
     processedAt: r.processedAt,
     createdAt: r.createdAt,
+    // True when this request matched an existing transaction (an idempotent
+    // replay of the same idempotencyKey, or the same externalTransactionId for
+    // this source) and booked NO new money; false for a newly-created one.
+    replayed,
   };
 }
 
@@ -142,7 +146,7 @@ export class IngestController {
       { kind: 'source', sourceId: principal.sourceId },
       toInternalInput(body),
     );
-    return toSourceTransaction(tx);
+    return toSourceTransaction(tx, tx.replayed);
   }
 
   /**

@@ -65,6 +65,16 @@ export class WithdrawalsController {
     return this.withdrawals.list({ companyId: user.companyId, query });
   }
 
+  @Roles(UserRole.COMPANY_OWNER, UserRole.COMPANY_MANAGER, UserRole.COMPANY_VIEWER)
+  @Get('company/withdrawals/:id')
+  async companyGet(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @CurrentUser() user: AuthPrincipal,
+  ) {
+    if (!user.companyId) throw new ForbiddenError('No company in session');
+    return this.withdrawals.getById(id, user.companyId);
+  }
+
   @Roles(UserRole.COMPANY_OWNER, UserRole.COMPANY_MANAGER)
   @Post('company/withdrawals/:id/cancel')
   @Audited({ action: 'withdrawal.cancelled', entityType: 'withdrawal', idFrom: 'params.id' })

@@ -14,6 +14,7 @@ import { APP_INTERCEPTOR } from '@nestjs/core';
  *   - http_requests_total       — labeled by method/route/status
  *   - http_request_duration_seconds — histogram of request latency
  *   - txn_ingest_total          — counter incremented inside the ingestion service
+ *   - txn_ingest_no_rule_total  — ingest blocked: company has no commission rule (alert)
  *
  * Marked @Global so typed metric providers can be injected anywhere
  * without each consumer module having to import MetricsModule.
@@ -33,6 +34,11 @@ const metricProviders = [
   makeCounterProvider({
     name: 'txn_ingest_total',
     help: 'Transactions ingested (successful)',
+    labelNames: ['source_code', 'currency'],
+  }),
+  makeCounterProvider({
+    name: 'txn_ingest_no_rule_total',
+    help: 'Ingest attempts BLOCKED because no commission rule matched (company has no pricing configured) — alert on any sustained rate',
     labelNames: ['source_code', 'currency'],
   }),
   makeGaugeProvider({

@@ -60,6 +60,18 @@ export const CommissionType = {
 } as const;
 export type CommissionType = (typeof CommissionType)[keyof typeof CommissionType];
 
+// Which deposit product of a source a source-fee rule applies to (what the
+// source charges the PLATFORM, per transaction). It is the SAME source either
+// way — only the per-transaction channel differs:
+//   INGEST    — a direct ingest-API deposit
+//   WHISH_PAY — a deposit settled from a Whish collect link the company generated
+// System/admin-only; never surfaced to companies.
+export const SourceFeeChannel = {
+  INGEST: 'INGEST',
+  WHISH_PAY: 'WHISH_PAY',
+} as const;
+export type SourceFeeChannel = (typeof SourceFeeChannel)[keyof typeof SourceFeeChannel];
+
 // Which operation a fee (commission) rule applies to. TRANSACTION is the
 // original behaviour (source ingestion); the others fee the money-movement
 // flows. Existing rules default to TRANSACTION.
@@ -145,6 +157,60 @@ export const WithdrawalStatus = {
   CANCELLED: 'CANCELLED',
 } as const;
 export type WithdrawalStatus = (typeof WithdrawalStatus)[keyof typeof WithdrawalStatus];
+
+// --------------------------- Activity feed -----------------------
+// The unified "all money operations" feed. Direction is derived, not stored:
+// deposits + loads are money IN; withdrawals + payouts are money OUT.
+export const ActivityKind = {
+  DEPOSIT: 'DEPOSIT',
+  LOAD: 'LOAD',
+  WITHDRAWAL: 'WITHDRAWAL',
+  PAYOUT: 'PAYOUT',
+} as const;
+export type ActivityKind = (typeof ActivityKind)[keyof typeof ActivityKind];
+
+export const ActivityDirection = {
+  IN: 'IN',
+  OUT: 'OUT',
+} as const;
+export type ActivityDirection = (typeof ActivityDirection)[keyof typeof ActivityDirection];
+
+/** IN = deposit + load, OUT = withdrawal + payout. */
+export const ACTIVITY_DIRECTION: Record<ActivityKind, ActivityDirection> = {
+  DEPOSIT: 'IN',
+  LOAD: 'IN',
+  WITHDRAWAL: 'OUT',
+  PAYOUT: 'OUT',
+};
+
+// --------------------------- Notifications -----------------------
+// Who a notification is for. ADMIN rows are visible only to platform admins
+// (persisted with company_id = NULL so RLS can never expose them to a tenant);
+// COMPANY rows belong to exactly one company.
+export const NotificationScope = {
+  ADMIN: 'ADMIN',
+  COMPANY: 'COMPANY',
+} as const;
+export type NotificationScope = (typeof NotificationScope)[keyof typeof NotificationScope];
+
+// The approvable money flow a notification is about.
+export const NotificationFlow = {
+  WITHDRAWAL: 'WITHDRAWAL',
+  PAYOUT: 'PAYOUT',
+  LOAD: 'LOAD',
+} as const;
+export type NotificationFlow = (typeof NotificationFlow)[keyof typeof NotificationFlow];
+
+// What happened. REQUESTED → admins must action it; the others are resolutions
+// the requesting company sees on its own request.
+export const NotificationEvent = {
+  REQUESTED: 'REQUESTED',
+  APPROVED: 'APPROVED',
+  REJECTED: 'REJECTED',
+  COMPLETED: 'COMPLETED',
+  CANCELLED: 'CANCELLED',
+} as const;
+export type NotificationEvent = (typeof NotificationEvent)[keyof typeof NotificationEvent];
 
 // ISO 4217 currency codes used by the platform. Expand as needed.
 export const SUPPORTED_CURRENCIES = ['USD'] as const;

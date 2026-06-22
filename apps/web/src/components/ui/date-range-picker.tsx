@@ -1,13 +1,23 @@
 'use client';
 import { useState } from 'react';
+import dynamic from 'next/dynamic';
 import { type DateRange as RdpRange } from 'react-day-picker';
 import { format } from 'date-fns';
 import { CalendarIcon, Clock, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Calendar } from '@/components/ui/calendar';
 import { Input } from '@/components/ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { cn } from '@/lib/cn';
+
+// Lazily load the react-day-picker Calendar so it (plus its date-math helpers,
+// ~22-27KB gz) stays off the initial JS of every date-filtered route. It only
+// ever renders inside the open Popover (client-side, open-gated), so it never
+// renders during SSR — no `ssr: false` needed (and ssr:false trips a Next 15
+// /404 prerender bug; see volume-chart.lazy.tsx). The fallback matches the
+// calendar's footprint so opening the popover doesn't shift layout.
+const Calendar = dynamic(() => import('@/components/ui/calendar').then((m) => m.Calendar), {
+  loading: () => <div className="h-[18rem] w-[16rem] animate-pulse rounded bg-muted" />,
+});
 
 // Dates are YYYY-MM-DD, times optional HH:mm. A whole-day window when no time.
 export interface PickedRange {

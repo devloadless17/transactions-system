@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { WebhookDelivery } from '@app/db';
@@ -101,12 +102,20 @@ export class CrmDeliveryService implements OnApplicationBootstrap, OnModuleDestr
     }
 
     const body = JSON.stringify(payload);
+    const timestamp = Math.floor(Date.now() / 1000).toString();
     const headers: Record<string, string> = {
       'content-type': 'application/json',
       'x-crm-event': payload.event,
-      'x-crm-timestamp': Math.floor(Date.now() / 1000).toString(),
+      'x-crm-timestamp': timestamp,
     };
-    if (company?.crmApiKey) headers.authorization = `Bearer ${company.crmApiKey}`;
+    if (company?.crmApiKey) {
+      headers.authorization = `Bearer ${company.crmApiKey}`;
+      // Additive HMAC-SHA256 signature so the receiver can verify the POST really
+      // came from us and reject tampered or replayed bodies — keyed by the
+      // company's CRM key, over `${timestamp}.${rawBody}`. Receivers that only
+      // check the Bearer key are unaffected (extra header, ignored).
+      headers['x-crm-signature'] = crmSignature(company.crmApiKey, timestamp, body);
+    }
 
     try {
       // safeFetch re-validates and pins the connection to the validated IP, so a
@@ -220,6 +229,17 @@ export class CrmDeliveryService implements OnApplicationBootstrap, OnModuleDestr
       this.running = false;
     }
   }
+}
+
+/**
+ * Signature for an outbound CRM webhook: `t=<unixSeconds>,sha256=<hex>`, an
+ * HMAC-SHA256 over `${timestamp}.${rawBody}` keyed by the company's CRM key.
+ * The receiver recomputes it with their own key and compares (and may reject a
+ * `t` that is too old to defeat replays). Mirrors the Whish outbound format.
+ */
+export function crmSignature(secret: string, timestamp: string, body: string): string {
+  const sig = createHmac('sha256', secret).update(`${timestamp}.${body}`).digest('hex');
+  return `t=${timestamp},sha256=${sig}`;
 }
 
 async function safeText(res: { text(): Promise<string> }): Promise<string> {

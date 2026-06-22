@@ -51,6 +51,34 @@ export class ValidationError extends DomainError {
   }
 }
 
+/** Per-API-key rate limit exceeded. Mapped to 429 with a clean, flat envelope. */
+export class RateLimitError extends DomainError {
+  constructor(d: { limit: number; windowSeconds: number }) {
+    super(
+      'RATE_LIMITED',
+      `Rate limit exceeded: ${d.limit} requests per ${d.windowSeconds}s`,
+      429,
+      d,
+    );
+  }
+}
+
+/**
+ * An `externalTransactionId` that is already used for this source (the
+ * `(source, externalTransactionId)` pair is globally unique). Distinct from a
+ * same-company idempotent replay, which returns the existing transaction.
+ */
+export class DuplicateTransactionError extends DomainError {
+  constructor(externalTransactionId: string) {
+    super(
+      'DUPLICATE_TRANSACTION',
+      `A transaction with externalTransactionId '${externalTransactionId}' already exists for this source.`,
+      409,
+      { externalTransactionId },
+    );
+  }
+}
+
 /** Not enough available balance to cover a request (amount, or amount+fee). */
 export class InsufficientBalanceError extends DomainError {
   constructor(d: { currency: string; required: string; available: string; shortfall: string }) {

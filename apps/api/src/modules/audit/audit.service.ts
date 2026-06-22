@@ -7,6 +7,11 @@ import {
 } from '@app/shared';
 import { PrismaService } from '../../database/prisma.service';
 import { RealtimeService } from '../realtime/realtime.service';
+import { ValidationError } from '../../common/errors/domain.error';
+
+// Reject offsets beyond this — deep paging should narrow with filters instead of
+// scanning, mirroring the transactions/activity lists.
+const MAX_LIST_OFFSET = 50_000;
 
 export interface AuditEntry {
   actorId?: string | null;
@@ -54,6 +59,11 @@ export class AuditService {
       if (query.action) where.action = query.action;
 
       const skip = (query.page - 1) * query.pageSize;
+      if (skip > MAX_LIST_OFFSET) {
+        throw new ValidationError(
+          'Page too deep to scan efficiently. Narrow the results with filters (company, action, entity type).',
+        );
+      }
       const [rows, total] = await Promise.all([
         tx.auditLog.findMany({
           where,

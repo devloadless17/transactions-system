@@ -11,12 +11,16 @@ import {
 import type { Prisma, PrismaClient } from '@app/db';
 import { PrismaService } from '../../database/prisma.service';
 import { CacheService } from '../cache/cache.service';
+import { ValidationError } from '../../common/errors/domain.error';
 
 // The per-(company,filter) ledger COUNT is cached briefly so paging reuses it and
 // a high-volume tenant's COUNT(*) over the (largest) ledger table doesn't re-run
 // on every page load. The total can lag by up to this window; the rows are always
 // live. Mirrors the transactions list — deliberately NOT invalidated on write.
 const LIST_COUNT_CACHE_TTL_SEC = 30;
+// Reject offsets beyond this — deep paging should narrow with filters instead of
+// scanning, mirroring the transactions/activity lists.
+const MAX_LIST_OFFSET = 50_000;
 
 // CSV export streams rows in keyset chunks — each chunk a short, RLS-scoped query
 // written straight to the response — so memory is bounded to one chunk and there
@@ -176,6 +180,11 @@ export class LedgerService {
       const where = this.buildWhere(companyId, query);
 
       const skip = (query.page - 1) * query.pageSize;
+      if (skip > MAX_LIST_OFFSET) {
+        throw new ValidationError(
+          'Page too deep to scan efficiently. Narrow the results with filters (currency, account type, date range).',
+        );
+      }
       const countKey =
         `list-count:ledger:${companyId}:${query.currency ?? ''}:${query.accountType ?? ''}` +
         `:${query.transactionId ?? ''}:${query.withdrawalId ?? ''}:${query.payoutId ?? ''}` +

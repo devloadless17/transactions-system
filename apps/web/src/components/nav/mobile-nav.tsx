@@ -12,9 +12,11 @@ import { SidebarNav, type NavItem } from './sidebar-nav';
 export function MobileNav({
   title,
   items,
+  badges,
 }: {
   title: string;
   items: readonly NavItem[];
+  badges?: Record<string, number>;
 }): React.JSX.Element {
   const [open, setOpen] = React.useState(false);
 
@@ -34,7 +36,7 @@ export function MobileNav({
         <SheetHeader className="h-14 justify-center border-b px-6">
           <SheetTitle>{title}</SheetTitle>
         </SheetHeader>
-        <SidebarNav items={items} onNavigate={() => setOpen(false)} />
+        <SidebarNav items={items} onNavigate={() => setOpen(false)} badges={badges} />
       </SheetContent>
     </Sheet>
   );

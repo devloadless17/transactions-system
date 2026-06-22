@@ -50,6 +50,9 @@ export function VolumeChart({ buckets, currency }: { buckets: DailyBucket[]; cur
             stroke="hsl(var(--primary))"
             strokeWidth={2}
             fill="url(#volumeFill)"
+            // No draw animation: live realtime refreshes re-render the chart, and
+            // the ~1.5s path-morph on every refresh reads as jank, not polish.
+            isAnimationActive={false}
           />
         </AreaChart>
       </ResponsiveContainer>

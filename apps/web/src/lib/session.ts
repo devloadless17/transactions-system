@@ -1,4 +1,5 @@
 import 'server-only';
+import { cache } from 'react';
 import { redirect } from 'next/navigation';
 import type { MeResponse, UserRole } from '@app/shared';
 import { ADMIN_ROLES, COMPANY_ROLES } from '@app/shared';
@@ -10,7 +11,7 @@ import { ApiClientError } from './api';
  * Return the current user, or null if not authenticated.
  * Server-component-safe (uses next/headers cookies under the hood).
  */
-export async function getSession(): Promise<MeResponse | null> {
+export const getSession = cache(async (): Promise<MeResponse | null> => {
   try {
     return await apiServer<MeResponse>('/auth/me');
   } catch (err) {
@@ -25,7 +26,7 @@ export async function getSession(): Promise<MeResponse | null> {
     }
     throw err;
   }
-}
+});
 
 /** Require an authenticated session, else redirect to /login. */
 export async function requireSession(redirectTo = '/login'): Promise<MeResponse> {

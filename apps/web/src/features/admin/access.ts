@@ -19,6 +19,7 @@ export const FULL_ADMIN_ROLES: ReadonlyArray<UserRole> = [
 const BACKOFFICE_HREFS: ReadonlyArray<string> = [
   '/admin/companies',
   '/admin/transactions',
+  '/admin/deposits',
   '/admin/withdrawals',
   '/admin/payouts',
   '/admin/loads',

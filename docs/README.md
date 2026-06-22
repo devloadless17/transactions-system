@@ -4,10 +4,12 @@ One place for all Rival Payments documentation. Start here.
 
 ## Partner integration (external)
 
-| Doc                                                                                                 | For                       | Covers                                                                                                                                                                                                                         |
-| --------------------------------------------------------------------------------------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **[Integration Guide](rival-integration-guide.md)** ([PDF](rival-integration-guide.pdf))            | **Everyone — start here** | The canonical reference. **Part A – Ingest API** (how transaction _sources_ like Whish push transactions in) and **Part B – CRM Webhooks** (how _companies_ receive transaction events in their own CRM). Generic, no secrets. |
-| [Whish onboarding sheet](rival-ingest-api-integration.md) ([PDF](rival-ingest-api-integration.pdf)) | The **Whish** team        | Partner-specific quick reference: Whish's issued source key + fixed `whish` URL, filled in for the Ingest API. A values-filled extract of the Guide's Part A. **Contains a live key — share privately.**                       |
+Two audience-scoped guides — give a partner only the one for their role.
+
+| Doc                                                              | For                                             | Covers                                                                                                                                                                                                                           |
+| ---------------------------------------------------------------- | ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **[Companies Integration Guide](companies-integration-docs.md)** | A **company's** developer team                  | The full **Company API** (company API key): transactions, loads, withdrawals & payouts, wallets/ledger/activity, Whish payment collection, plus the **CRM webhooks** Rival sends you. Does **not** expose the ingest/source API. |
+| **[Sources Integration Guide](sources-integration-docs.md)**     | A transaction **source** (Whish, OMT, banks, …) | The **Ingest API** (source API key): discover operating entities and submit transactions. Source-only — no company API or webhooks.                                                                                              |
 
 ## Reference & operations (internal)
 

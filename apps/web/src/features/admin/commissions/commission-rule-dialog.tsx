@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { ArrowRight, Plus, Trash2 } from 'lucide-react';
 import {
   createCommissionRuleGroupSchema,
@@ -239,14 +239,16 @@ export function CommissionRuleDialog({ open, onOpenChange, companies, group, onS
           <div className="space-y-2">
             <Label>Fee tiers</Label>
             <p className="text-xs text-muted-foreground">
-              Enter the amount each tier <span className="font-medium">starts at</span> and its fee.
-              Every tier applies up to the next tier&apos;s start — the highest tier covers
-              everything above it.
+              Enter the amount each tier{' '}
+              <span className="font-medium">starts at (that amount is included)</span> and its fee.
+              A tier runs from its start up to — but <span className="font-medium">not</span>{' '}
+              including — the next tier&apos;s start; the highest tier covers everything above. The
+              preview below spells out each band so there&apos;s no ambiguity.
             </p>
             <div className="space-y-2">
               {/* column hint */}
               <div className="grid grid-cols-[1fr_auto_1fr_2rem] items-center gap-2 px-1 text-[11px] uppercase tracking-wide text-muted-foreground">
-                <span>Starts at</span>
+                <span>Starts at (incl.)</span>
                 <span className="text-center">Fee</span>
                 <span />
                 <span />
@@ -364,14 +366,17 @@ function TierPreview({ tiers }: { tiers: TierForm[] }) {
       <ul className="space-y-1">
         {sorted.map((t, i) => {
           const next = sorted[i + 1];
+          // Unambiguous bands: a tier covers [start, nextStart) — the upper bound
+          // is NOT included (it opens the next tier). "under"/"and above" make
+          // that explicit so a shared boundary never reads as belonging to both.
           const range =
             !next && Number(t.minAmount) === 0 && sorted.length === 1
               ? 'Any amount'
               : !next
                 ? `${fmt(t.minAmount)} and above`
                 : Number(t.minAmount) === 0
-                  ? `Up to ${fmt(next.minAmount)}`
-                  : `${fmt(t.minAmount)} – ${fmt(next.minAmount)}`;
+                  ? `Under ${fmt(next.minAmount)}`
+                  : `${fmt(t.minAmount)} to under ${fmt(next.minAmount)}`;
           const fee =
             t.commissionType === CommissionType.PERCENTAGE
               ? `${fmt(t.commissionValue) || '0'}%`

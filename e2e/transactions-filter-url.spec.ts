@@ -7,7 +7,9 @@ test.describe('admin transactions: filters mirror to the URL', () => {
   test.setTimeout(90_000);
 
   test('applying a status filter updates the query string', async ({ page }) => {
-    await page.goto('/admin/transactions', { waitUntil: 'domcontentloaded' });
+    // The status-filtered list (old "Transactions") now lives at /admin/deposits;
+    // /admin/transactions is the new unified activity feed (no status select).
+    await page.goto('/admin/deposits', { waitUntil: 'domcontentloaded' });
     await expect(page.getByRole('heading', { name: 'Transactions' })).toBeVisible({
       timeout: 30_000,
     });
@@ -30,7 +32,7 @@ test.describe('admin transactions: filters mirror to the URL', () => {
     // (b) It composes without error: the select still reflects the choice and
     // the page is still on /admin/transactions (no crash / navigation away).
     await expect(statusSelect).toHaveValue('COMPLETED');
-    await expect(page).toHaveURL(/\/admin\/transactions(\?|$)/);
+    await expect(page).toHaveURL(/\/admin\/deposits(\?|$)/);
 
     // Changing the filter to another status keeps a single status param
     // (and never re-introduces a stale page param — page resets to 1).
@@ -42,7 +44,7 @@ test.describe('admin transactions: filters mirror to the URL', () => {
   test('changing a filter resets pagination to page 1', async ({ page }) => {
     // Land directly on page 2 via the URL, then change a filter and assert the
     // page param is dropped (page 1 is omitted from the URL by design).
-    await page.goto('/admin/transactions?page=2', { waitUntil: 'domcontentloaded' });
+    await page.goto('/admin/deposits?page=2', { waitUntil: 'domcontentloaded' });
     await expect(page.getByRole('heading', { name: 'Transactions' })).toBeVisible({
       timeout: 30_000,
     });

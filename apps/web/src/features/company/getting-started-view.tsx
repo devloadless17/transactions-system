@@ -150,7 +150,7 @@ export function GettingStartedView() {
         <CardHeader>
           <CardTitle>Rate limits</CardTitle>
           <CardDescription>
-            Ingestion and Whish integration endpoints allow{' '}
+            The Whish integration endpoints allow{' '}
             <strong>300 requests per 60 seconds, per key</strong>. Go over and you get a{' '}
             <code className="font-mono">429 RATE_LIMITED</code> with the limit echoed in{' '}
             <code className="font-mono">error.details</code>. The rest of the API sits behind a

@@ -25,20 +25,36 @@ const TOPIC_KEYS: Record<RealtimeTopic, KeysFor> = {
   transactions: (c) => [
     ['admin', 'transactions'],
     ['company', 'transactions'],
+    // The unified activity feed includes deposits — refresh it too.
+    ['admin', 'activity'],
+    ['company', 'activity'],
     ...(c ? [['admin', 'company', c, 'transactions']] : []),
   ],
   wallets: (c) => [['company', 'wallets'], ...(c ? [['admin', 'company', c, 'wallets']] : [])],
   withdrawals: () => [
     ['admin', 'withdrawals'],
     ['company', 'withdrawals'],
+    ['admin', 'activity'],
+    ['company', 'activity'],
+    // Sidebar PENDING-request badge.
+    ['company', 'operations', 'counts'],
+    ['admin', 'operations', 'counts'],
   ],
   payouts: () => [
     ['admin', 'payouts'],
     ['company', 'payouts'],
+    ['admin', 'activity'],
+    ['company', 'activity'],
+    ['company', 'operations', 'counts'],
+    ['admin', 'operations', 'counts'],
   ],
   loads: () => [
     ['admin', 'loads'],
     ['company', 'loads'],
+    ['admin', 'activity'],
+    ['company', 'activity'],
+    ['company', 'operations', 'counts'],
+    ['admin', 'operations', 'counts'],
   ],
   ledger: () => [['company', 'ledger']],
   analytics: (c) => [
@@ -61,6 +77,8 @@ const TOPIC_KEYS: Record<RealtimeTopic, KeysFor> = {
   ],
   audit: (c) => [['admin', 'audit-logs'], ...(c ? [['admin', 'company', c, 'audit']] : [])],
   crm: () => [['company', 'crm']],
+  // In-app notifications (the topbar bell). One key for both scopes.
+  notifications: () => [['notifications']],
 };
 
 /** Origin of the API (strip the `/v1` path) so we can reach the socket server. */
@@ -96,6 +114,11 @@ export function RealtimeBridge() {
     // reopen this socket after the effect has torn it down (fast unmount/remount).
     let active = true;
     let retry: ReturnType<typeof setTimeout> | undefined;
+    // Coalesces the connect-time catch-up: a connect → forced-disconnect →
+    // reconnect bounce (token rotation) or a wake/restore reconnect cycle can fire
+    // 'connect' several times in quick succession. A short trailing debounce
+    // collapses that burst into a single refetch instead of one storm per bounce.
+    let catchup: ReturnType<typeof setTimeout> | undefined;
     // Fires a few seconds after a connect; resets the auth-reconnect backoff only
     // if the connection actually SURVIVED that long (cleared on disconnect).
     let stableTimer: ReturnType<typeof setTimeout> | undefined;
@@ -120,7 +143,13 @@ export function RealtimeBridge() {
       stableTimer = setTimeout(() => {
         authReconnects = 0;
       }, 3000);
-      void qc.invalidateQueries();
+      // Refetch only ACTIVE (mounted-observer) queries — inactive/other-app keys
+      // are no-ops anyway, and this avoids waking background caches. Debounced so
+      // a reconnect bounce settles into one catch-up rather than a refetch storm.
+      if (catchup) clearTimeout(catchup);
+      catchup = setTimeout(() => {
+        void qc.invalidateQueries({ refetchType: 'active' });
+      }, 250);
     });
 
     socket.on('disconnect', (reason) => {
@@ -166,6 +195,7 @@ export function RealtimeBridge() {
       active = false;
       if (retry) clearTimeout(retry);
       if (stableTimer) clearTimeout(stableTimer);
+      if (catchup) clearTimeout(catchup);
       socket.off();
       socket.disconnect();
     };

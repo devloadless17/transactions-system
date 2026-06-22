@@ -2,9 +2,10 @@ import type { CanActivate, ExecutionContext } from '@nestjs/common';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import IORedis, { type Redis } from 'ioredis';
-import { HttpException } from '@nestjs/common';
+import type { Response } from 'express';
 import type { AuthenticatedRequest } from '../../../common/types/request.types';
 import type { Env } from '../../../config/env.schema';
+import { DomainError, RateLimitError } from '../../../common/errors/domain.error';
 
 const WINDOW_SECONDS = 60;
 const MAX_PER_WINDOW = 300; // 5 rps avg, burst friendly
@@ -41,26 +42,29 @@ export class ApiKeyRateLimitGuard implements CanActivate {
     const keyId = req.principal?.userId;
     if (!keyId) return true;
 
-    const bucket = Math.floor(Date.now() / 1000 / WINDOW_SECONDS);
+    const nowSec = Math.floor(Date.now() / 1000);
+    const bucket = Math.floor(nowSec / WINDOW_SECONDS);
     const k = `rl:ingest:${keyId}:${bucket}`;
     try {
       const count = await this.redis.incr(k);
       if (count === 1) await this.redis.expire(k, WINDOW_SECONDS + 5);
+
+      // Standard RateLimit headers (draft IETF naming) so clients can self-pace.
+      const resetSec = (bucket + 1) * WINDOW_SECONDS - nowSec;
+      const res = ctx.switchToHttp().getResponse<Response>();
+      res.setHeader('RateLimit-Limit', MAX_PER_WINDOW);
+      res.setHeader('RateLimit-Remaining', Math.max(0, MAX_PER_WINDOW - count));
+      res.setHeader('RateLimit-Reset', resetSec);
+
       if (count > MAX_PER_WINDOW) {
-        throw new HttpException(
-          {
-            error: {
-              code: 'RATE_LIMITED',
-              message: `Rate limit exceeded: ${MAX_PER_WINDOW} requests per ${WINDOW_SECONDS}s`,
-              details: { limit: MAX_PER_WINDOW, windowSeconds: WINDOW_SECONDS },
-            },
-          },
-          429,
-        );
+        res.setHeader('Retry-After', resetSec);
+        // A typed domain error → the GlobalExceptionFilter emits the clean, flat
+        // { success:false, statusCode:429, error:{ code:'RATE_LIMITED', message, details } }.
+        throw new RateLimitError({ limit: MAX_PER_WINDOW, windowSeconds: WINDOW_SECONDS });
       }
       return true;
     } catch (err) {
-      if (err instanceof HttpException) throw err;
+      if (err instanceof DomainError) throw err;
       this.logger.warn(`rate-limit Redis error, allowing: ${(err as Error).message}`);
       return true;
     }

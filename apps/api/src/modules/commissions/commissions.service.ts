@@ -147,8 +147,11 @@ async function assertCompaniesExist(tx: PrismaClient, companyIds: string[] | nul
   }
 }
 
-/** Expand a group spec into the per-(company × operation × tier) rows. */
-function expand(
+/**
+ * Expand a group spec into the per-(company × operation × tier) rows. Exported so
+ * company onboarding can create a starter rule atomically in the same transaction.
+ */
+export function expand(
   groupId: string,
   input: CreateCommissionRuleGroupInput,
 ): Prisma.CommissionRuleCreateManyInput[] {

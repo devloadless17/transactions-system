@@ -37,6 +37,7 @@ export const REALTIME_TOPICS = [
   'whish',
   'audit',
   'crm',
+  'notifications',
 ] as const;
 
 export type RealtimeTopic = (typeof REALTIME_TOPICS)[number];

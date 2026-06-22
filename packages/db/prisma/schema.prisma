@@ -50,6 +50,14 @@ enum CommissionType {
   PERCENTAGE
 }
 
+// Which deposit product of a source a SourceFeeRule applies to. INGEST = a direct
+// ingest-API deposit; WHISH_PAY = a deposit settled from a Whish collect link
+// (a whish_payments row references the transaction).
+enum SourceFeeChannel {
+  INGEST
+  WHISH_PAY
+}
+
 enum FeeOperationType {
   TRANSACTION
   WITHDRAWAL
@@ -188,6 +196,12 @@ model Company {
   // and the secret used to HMAC-sign the body. Configured by the company.
   webhookUrl      String?       @map("webhook_url")
   webhookSecret   String?       @map("webhook_secret")
+  // Per-company default redirect URLs for Whish collect links: where the PAYER is
+  // sent after a successful / failed payment. NULL → the platform's /pay pages.
+  // A create-payment request may override these per link. (Only the customer-facing
+  // redirect; the settlement callback URLs stay platform-controlled.)
+  whishSuccessRedirectUrl String? @map("whish_success_redirect_url")
+  whishFailureRedirectUrl String? @map("whish_failure_redirect_url")
   // Per-company CRM integration: we POST each transaction's status lifecycle
   // (pending → completed, failed/expired, reversed) to the company's own CRM
   // endpoint, authenticating with their API key in the Authorization header.
@@ -234,8 +248,32 @@ model Source {
   transactions    Transaction[]
   apiKeys         ApiKey[]
   companySources  CompanySource[]
+  feeRules        SourceFeeRule[]
 
   @@map("sources")
+}
+
+// What an upstream source charges THE PLATFORM on each incoming deposit — the
+// inverse of CommissionRule (which is what the platform charges its companies).
+// Used only to compute the platform's net revenue (platform revenue − source
+// fees); never exposed to companies. Tiered like commission rules: an amount
+// band per channel carrying a FIXED amount or a PERCENTAGE rate. Global/admin
+// config (no company_id, not under RLS) — same posture as Source.
+model SourceFeeRule {
+  id        String           @id @default(uuid()) @db.Uuid
+  sourceId  String           @map("source_id") @db.Uuid
+  source    Source           @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  channel   SourceFeeChannel @default(INGEST)
+  minAmount Decimal          @default(0) @map("min_amount") @db.Decimal(20, 8)
+  maxAmount Decimal?         @map("max_amount") @db.Decimal(20, 8)
+  feeType   CommissionType   @map("fee_type")
+  feeValue  Decimal          @map("fee_value") @db.Decimal(20, 8)
+  active    Boolean          @default(true)
+  createdAt DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([sourceId, channel, active])
+  @@map("source_fee_rules")
 }
 
 // ----------------------- Company ↔ Source pairing -----------------
@@ -364,6 +402,9 @@ model Transaction {
   // SQL) so `prisma migrate dev` tracks it and never drift-drops it again. Requires
   // the pg_trgm extension, created in the migration that adds this index.
   @@index([externalTransactionId(ops: raw("gin_trgm_ops"))], type: Gin, map: "transactions_external_id_trgm_idx")
+  // Partial index "transactions_completed_created_idx" (created_at DESC, id DESC)
+  // WHERE status='COMPLETED' backs the unified activity feed; not expressible in
+  // Prisma, lives in migration 20260622180000_activity_completed_created_indexes.
   @@map("transactions")
 }
 
@@ -458,6 +499,9 @@ model Withdrawal {
   // Admin cross-company list orders by created_at desc with no company filter,
   // which (company_id, created_at) can't serve (mirrors transaction_logs_created_at_idx).
   @@index([createdAt])
+  // Partial index "withdrawals_completed_created_idx" (created_at DESC, id DESC)
+  // WHERE status='COMPLETED' backs the unified activity feed; raw SQL in
+  // migration 20260622180000_activity_completed_created_indexes.
   @@map("withdrawals")
 }
 
@@ -492,6 +536,9 @@ model Payout {
   @@index([companyId, createdAt])
   // Admin cross-company list orders by created_at desc with no company filter.
   @@index([createdAt])
+  // Partial index "payouts_completed_created_idx" (created_at DESC, id DESC)
+  // WHERE status='COMPLETED' backs the unified activity feed; raw SQL in
+  // migration 20260622180000_activity_completed_created_indexes.
   @@map("payouts")
 }
 
@@ -526,6 +573,9 @@ model Load {
   @@index([companyId, createdAt])
   // Admin cross-company list orders by created_at desc with no company filter.
   @@index([createdAt])
+  // Partial index "loads_completed_created_idx" (created_at DESC, id DESC)
+  // WHERE status='COMPLETED' backs the unified activity feed; raw SQL in
+  // migration 20260622180000_activity_completed_created_indexes.
   @@map("loads")
 }
 
@@ -672,4 +722,51 @@ model TransactionLog {
   // serve its `order by createdAt desc`. This standalone index does.
   @@index([createdAt])
   @@map("transaction_logs")
+}
+
+// --------------------------- Notifications -----------------------
+// In-app notifications powering the topbar bell. ADMIN-scope rows (a new
+// withdrawal/payout/load request) are visible only to platform admins and are
+// stored with company_id = NULL so RLS can never expose them to a tenant; the
+// subject company is kept in `metadata` for display. COMPANY-scope rows (a
+// request approved/rejected/completed/cancelled) belong to one company and are
+// RLS-isolated by company_id. Read state is per-user via NotificationRead.
+// scope/flow/event are TEXT (validated by the shared zod enums), matching the
+// CRM table's string-column convention.
+model Notification {
+  id        String   @id @default(uuid()) @db.Uuid
+  scope     String // NotificationScope: ADMIN | COMPANY
+  companyId String?  @map("company_id") @db.Uuid // RLS tenant; NULL for ADMIN scope
+  flow      String // NotificationFlow: WITHDRAWAL | PAYOUT | LOAD
+  event     String // NotificationEvent: REQUESTED | APPROVED | REJECTED | COMPLETED | CANCELLED
+  title     String
+  body      String
+  link      String
+  entityId  String?  @map("entity_id") @db.Uuid
+  metadata  Json?    @db.JsonB
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  reads NotificationRead[]
+
+  @@index([scope, companyId, createdAt])
+  @@map("notifications")
+}
+
+// Per-user read marker. A notification is "unread" for a user until a row here
+// exists for (notificationId, userId). company_id is denormalised for RLS so a
+// tenant only ever sees its own read markers.
+model NotificationRead {
+  id             String       @id @default(uuid()) @db.Uuid
+  notificationId String       @map("notification_id") @db.Uuid
+  notification   Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  userId         String       @map("user_id") @db.Uuid
+  companyId      String?      @map("company_id") @db.Uuid
+  readAt         DateTime     @default(now()) @map("read_at") @db.Timestamptz(6)
+  // Per-user "clear": when set, the notification is hidden from the active list
+  // but kept under the "Cleared" filter for review.
+  dismissedAt    DateTime?    @map("dismissed_at") @db.Timestamptz(6)
+
+  @@unique([notificationId, userId])
+  @@index([userId])
+  @@map("notification_reads")
 }

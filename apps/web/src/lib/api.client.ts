@@ -1,5 +1,5 @@
 'use client';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { ApiClientError, publicApiBase, unwrapEnvelope, type ApiErrorBody } from './api';
 
 const CSRF_COOKIE_NAME = 'csrf-token';

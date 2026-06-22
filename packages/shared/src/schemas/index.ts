@@ -21,3 +21,6 @@ export * from './admin-user';
 export * from './whish';
 export * from './crm';
 export * from './transaction-log';
+export * from './activity';
+export * from './operations';
+export * from './notification';

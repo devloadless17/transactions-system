@@ -148,7 +148,9 @@ export class CommissionResolverService {
       throw new CommissionExceedsAmountError(rule.id, amount.toString(), commission.toString());
     }
 
-    const net = amount.sub(commission);
+    // ON_TOP: recipient gets the full amount (fee is added on top); DEDUCTED:
+    // recipient gets amount − fee. Mirror netOfFee() so this field can't drift.
+    const net = rule.feeApplication === 'ON_TOP' ? amount : amount.sub(commission);
 
     return {
       rule,

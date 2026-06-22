@@ -27,6 +27,23 @@ export const approveLoadSchema = z.object({
 });
 export type ApproveLoadInput = z.infer<typeof approveLoadSchema>;
 
+// Super-admin-only: load a company's wallet directly. For funds received
+// off-platform in real life (the company handed us money) without them filing a
+// request. It behaves exactly as if the company requested this load and we
+// accepted it — same commission rule, ledger entries, and wallet credit — done
+// in a single step. `payout` records how/where the money arrived (same field a
+// company-requested load uses); `externalReference` is our proof of receipt
+// (defaulted server-side when omitted).
+export const adminLoadSchema = z.object({
+  companyId: z.string().uuid(),
+  amount: decimalString,
+  currency: currencySchema,
+  notes: z.string().trim().max(500).optional(),
+  payout: createPayoutDetailsSchema,
+  externalReference: z.string().trim().min(2).max(200).optional(),
+});
+export type AdminLoadInput = z.infer<typeof adminLoadSchema>;
+
 export const rejectLoadSchema = z.object({
   notes: z.string().trim().max(500).optional(),
 });

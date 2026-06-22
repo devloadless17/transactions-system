@@ -35,8 +35,9 @@ function repoFile(rel: string): string {
 }
 const read = (rel: string): string => fs.readFileSync(repoFile(rel), 'utf8');
 
-const GUIDE = read('docs/rival-integration-guide.md');
-const INGEST_DOC = read('docs/rival-ingest-api-integration.md');
+// The integration guides were renamed from rival-* to the company/source split.
+const GUIDE = read('docs/companies-integration-docs.md');
+const INGEST_DOC = read('docs/sources-integration-docs.md');
 
 describe('docs ↔ API schema contract (anti-drift)', () => {
   describe('POST /company/whish/payments — create body (audit #1)', () => {
@@ -106,7 +107,7 @@ describe('docs ↔ API schema contract (anti-drift)', () => {
 
     it('the whish payments list is documented with real params, not phantom from/to (audit #12)', () => {
       const line = GUIDE.split('\n').find(
-        (l) => l.includes('/v1/company/whish/payments') && /List Whish/.test(l),
+        (l) => l.includes('/v1/company/whish/payments') && /List payments/.test(l),
       );
       expect(line, 'the whish payments list row should exist in the guide').toBeTruthy();
       expect(line).toContain('needsAttention');

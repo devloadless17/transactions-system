@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import {
   Money,
+  type AdminLoadInput,
   type ApproveLoadInput,
   type CancelRequestInput,
   type CreateLoadInput,
@@ -20,6 +21,7 @@ import { netOfFee, reservedTotal } from '../ledger/flow-ledger';
 import { WalletsService } from '../wallets/wallets.service';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { RealtimeService } from '../realtime/realtime.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { CacheService } from '../cache/cache.service';
 import { FeesService } from '../commissions/fees.service';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain.error';
@@ -53,6 +55,7 @@ export class LoadsService {
     private readonly wallets: WalletsService,
     private readonly analytics: AnalyticsService,
     private readonly realtime: RealtimeService,
+    private readonly notifications: NotificationsService,
     private readonly cache: CacheService,
     private readonly fees: FeesService,
   ) {}
@@ -73,6 +76,7 @@ export class LoadsService {
     requestedById: string | null,
     input: CreateLoadInput,
     requestedByKeyId?: string | null,
+    opts?: { silent?: boolean },
   ): Promise<LoadResponse> {
     const amount = Money.of(input.amount);
     if (!amount.round().isPositive())
@@ -109,7 +113,48 @@ export class LoadsService {
 
     await this.invalidateAnalytics();
     this.notify(row.companyId);
+    // Admin-initiated loads pass silent: the admin is doing it directly, so
+    // there's no incoming request for admins to action.
+    if (!opts?.silent) {
+      void this.notifications.requestSubmitted({
+        flow: 'LOAD',
+        companyId: row.companyId,
+        entityId: row.id,
+        amount: row.amount.toString(),
+        currency: row.currency,
+      });
+    }
     return mapLoad(row);
+  }
+
+  /**
+   * Super-admin direct load: credit a company's wallet for funds received
+   * off-platform, without the company filing a request. Implemented as
+   * request → approve so the commission resolution, ledger entries, and wallet
+   * credit are identical to accepting a company-requested load. The company is
+   * notified (their balance changed); admins are not (we did it ourselves).
+   */
+  async adminLoad(
+    companyId: string,
+    adminId: string,
+    input: AdminLoadInput,
+  ): Promise<LoadResponse> {
+    const pending = await this.request(
+      companyId,
+      adminId,
+      {
+        amount: input.amount,
+        currency: input.currency,
+        notes: input.notes,
+        payout: input.payout,
+      },
+      null,
+      { silent: true },
+    );
+    return this.approve(pending.id, adminId, {
+      externalReference: input.externalReference ?? 'Direct admin load',
+      notes: input.notes,
+    });
   }
 
   async approve(id: string, approvedById: string, input: ApproveLoadInput): Promise<LoadResponse> {
@@ -131,7 +176,22 @@ export class LoadsService {
       const externalDebit = reservedTotal(amount, fee, l.feeApplication);
       const availableCredit = netOfFee(amount, fee, l.feeApplication);
 
-      // Money in: DEBIT external, CREDIT available(net) + FEE(fee). Skip zero.
+      // Incoming funds settle any outstanding RECEIVABLE (debt the company owes
+      // the platform from a prior reversal clawback) FIRST; the remainder credits
+      // available. Money-out (withdrawals/payouts) is already blocked while owing,
+      // but the platform otherwise has NO settlement path — so a top-up is how a
+      // company clears its debt. Only fires when owed > 0; otherwise this is a
+      // no-op and the common load path is unchanged.
+      const owed = await this.ledger.outstandingReceivable(cTx, l.companyId, l.currency);
+      const settle = owed.isPositive()
+        ? owed.gt(availableCredit)
+          ? availableCredit
+          : owed
+        : Money.zero();
+      const creditToAvailable = availableCredit.sub(settle);
+
+      // Money in: DEBIT external; CREDIT receivable(settle) + available(remainder)
+      // + fee. Stays balanced: settle + remainder + fee == net + fee == external.
       const entries: Parameters<typeof this.ledger.writeEntries>[1] = [
         {
           companyId: l.companyId,
@@ -142,13 +202,24 @@ export class LoadsService {
           currency: l.currency,
         },
       ];
-      if (availableCredit.isPositive()) {
+      if (settle.isPositive()) {
+        entries.push({
+          companyId: l.companyId,
+          loadId: l.id,
+          accountType: 'RECEIVABLE',
+          direction: 'CREDIT',
+          amount: settle,
+          currency: l.currency,
+          metadata: { kind: 'receivable_settlement' },
+        });
+      }
+      if (creditToAvailable.isPositive()) {
         entries.push({
           companyId: l.companyId,
           loadId: l.id,
           accountType: 'AVAILABLE',
           direction: 'CREDIT',
-          amount: availableCredit,
+          amount: creditToAvailable,
           currency: l.currency,
         });
       }
@@ -166,8 +237,13 @@ export class LoadsService {
       await this.wallets.applyDelta(cTx, {
         companyId: l.companyId,
         currency: l.currency,
-        delta: { available: availableCredit },
+        delta: { available: creditToAvailable },
       });
+      if (settle.isPositive()) {
+        this.logger.log(
+          `load ${l.id} co=${l.companyId} settled RECEIVABLE=${settle.toString()} ${l.currency.trim()} from incoming funds`,
+        );
+      }
 
       return cTx.load.update({
         where: { id },
@@ -183,6 +259,14 @@ export class LoadsService {
 
     await this.invalidateAnalytics();
     this.notify(row.companyId);
+    void this.notifications.requestResolved({
+      flow: 'LOAD',
+      event: 'APPROVED',
+      companyId: row.companyId,
+      entityId: row.id,
+      amount: row.amount.toString(),
+      currency: row.currency,
+    });
     return mapLoad(row);
   }
 
@@ -245,6 +329,16 @@ export class LoadsService {
 
     await this.invalidateAnalytics();
     this.notify(row.companyId);
+    if (opts.status === 'REJECTED') {
+      void this.notifications.requestResolved({
+        flow: 'LOAD',
+        event: 'REJECTED',
+        companyId: row.companyId,
+        entityId: row.id,
+        amount: row.amount.toString(),
+        currency: row.currency,
+      });
+    }
     return mapLoad(row);
   }
 

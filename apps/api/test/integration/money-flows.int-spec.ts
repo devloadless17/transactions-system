@@ -13,6 +13,7 @@ import {
   createCompany,
   createEnabledSource,
   ingestInput,
+  loadInput,
   snapshot,
   type Harness,
 } from './harness';
@@ -256,5 +257,42 @@ describe('reversal', () => {
     const after = await snapshot(h, companyId);
     expect(after.balanced).toBe(true);
     expect(eq(after.reservedLedger, '90')).toBe(true);
+  });
+
+  it('settles an outstanding RECEIVABLE from an incoming load before crediting available', async () => {
+    const { companyId, userId } = await createCompany(h);
+    const sourceId = await createEnabledSource(h, companyId);
+    await addTransactionFee(h, companyId, '10');
+
+    // Book a 90 RECEIVABLE: ingest 100 → net 90, withdraw+approve 90, reverse.
+    const txn = await h.transactions.ingest(
+      { kind: 'source', sourceId },
+      ingestInput(companyId, '100'),
+    );
+    const w = await h.withdrawals.request(companyId, userId, cashWithdrawalInput('90'));
+    await h.withdrawals.approve(w.id, userId, { externalReference: 'pay-ref-004' });
+    await h.transactions.reverse(txn.id, { actorId: userId, reason: 'chargeback' });
+    expect(eq((await snapshot(h, companyId)).receivableLedger, '90')).toBe(true);
+
+    // Load 50 (no LOAD fee) → settles 50 of the debt; nothing reaches available.
+    const l1 = await h.loads.request(companyId, userId, loadInput('50'));
+    await h.loads.approve(l1.id, userId, { externalReference: 'load-ref-001' });
+    const partial = await snapshot(h, companyId);
+    expect(partial.balanced).toBe(true); // ledger still balances
+    expect(eq(partial.receivableLedger, '40')).toBe(true); // 90 − 50 settled
+    expect(eq(partial.wallet!.available, '0')).toBe(true); // all went to the debt
+
+    // Load 100 → settles the remaining 40, credits the 60 remainder to available.
+    const l2 = await h.loads.request(companyId, userId, loadInput('100'));
+    await h.loads.approve(l2.id, userId, { externalReference: 'load-ref-002' });
+    const full = await snapshot(h, companyId);
+    expect(full.balanced).toBe(true);
+    expect(eq(full.receivableLedger, '0')).toBe(true); // debt cleared
+    expect(eq(full.wallet!.available, '60')).toBe(true); // 100 − 40
+    expect(eq(full.wallet!.available, full.availableLedger)).toBe(true);
+
+    // Debt settled → money-out is unblocked again.
+    const w2 = await h.withdrawals.request(companyId, userId, cashWithdrawalInput('10'));
+    expect(w2.status).toBe('PENDING');
   });
 });

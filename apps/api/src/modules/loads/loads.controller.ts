@@ -9,12 +9,14 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import {
+  adminLoadSchema,
   approveLoadSchema,
   cancelRequestSchema,
   createLoadSchema,
   listLoadsQuerySchema,
   rejectLoadSchema,
   UserRole,
+  type AdminLoadInput,
   type ApproveLoadInput,
   type CancelRequestInput,
   type CreateLoadInput,
@@ -65,6 +67,16 @@ export class LoadsController {
     return this.loads.list({ companyId: user.companyId, query });
   }
 
+  @Roles(UserRole.COMPANY_OWNER, UserRole.COMPANY_MANAGER, UserRole.COMPANY_VIEWER)
+  @Get('company/loads/:id')
+  async companyGet(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @CurrentUser() user: AuthPrincipal,
+  ) {
+    if (!user.companyId) throw new ForbiddenError('No company in session');
+    return this.loads.getById(id, user.companyId);
+  }
+
   @Roles(UserRole.COMPANY_OWNER, UserRole.COMPANY_MANAGER)
   @Post('company/loads/:id/cancel')
   @Audited({ action: 'load.cancelled', entityType: 'load', idFrom: 'params.id' })
@@ -80,6 +92,19 @@ export class LoadsController {
   }
 
   // ---------------- Admin endpoints ----------------
+
+  // Super-admin only: directly load a company's wallet for funds received
+  // off-platform (no company request needed). Same commission + ledger + wallet
+  // effect as the company requesting a load and us accepting it.
+  @Roles(UserRole.SUPER_ADMIN)
+  @Post('admin/loads')
+  @Audited({ action: 'load.admin_loaded', entityType: 'load', idFrom: 'result.id' })
+  async adminCreate(
+    @Body(new ZodPipe(adminLoadSchema)) body: AdminLoadInput,
+    @CurrentUser() user: AuthPrincipal,
+  ) {
+    return this.loads.adminLoad(body.companyId, user.userId, body);
+  }
 
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
   @Get('admin/loads')

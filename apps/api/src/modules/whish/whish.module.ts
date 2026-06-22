@@ -13,6 +13,7 @@ import { WhishCallbackController } from './whish-callback.controller';
 import { WhishAdminController } from './whish-admin.controller';
 import { WhishWebhookController } from './whish-webhook.controller';
 import { WhishConfigController } from './whish-config.controller';
+import { WhishRedirectController } from './whish-redirect.controller';
 import { IntegrationsWhishController } from './integrations-whish.controller';
 
 @Module({
@@ -23,6 +24,7 @@ import { IntegrationsWhishController } from './integrations-whish.controller';
     WhishAdminController,
     WhishWebhookController,
     WhishConfigController,
+    WhishRedirectController,
     IntegrationsWhishController,
   ],
   providers: [WhishClient, WhishPaymentsService, WhishWebhookService, WhishReconciliationService],

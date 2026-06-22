@@ -198,6 +198,15 @@ export const createCommissionRuleGroupSchema = z
   .superRefine((v, ctx) => validateTierLadder(v.tiers, ctx));
 export type CreateCommissionRuleGroupInput = z.infer<typeof createCommissionRuleGroupSchema>;
 
+// The same rule spec WITHOUT `companyIds` — used to create a starter rule for a
+// single, just-created company (the server injects that company's id). Lets
+// company onboarding set pricing atomically so a company is never left unpriced.
+const { companyIds: _omitCompanyIds, ...companyScopedShape } = baseGroupShape;
+export const companyScopedCommissionRuleSchema = z
+  .object(companyScopedShape)
+  .superRefine((v, ctx) => validateTierLadder(v.tiers, ctx));
+export type CompanyScopedCommissionRuleInput = z.infer<typeof companyScopedCommissionRuleSchema>;
+
 // A group PATCH fully replaces the spec (re-expands the rows), so it mirrors create.
 export const updateCommissionRuleGroupSchema = createCommissionRuleGroupSchema;
 export type UpdateCommissionRuleGroupInput = CreateCommissionRuleGroupInput;
