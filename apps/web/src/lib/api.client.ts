@@ -87,6 +87,39 @@ function readCookie(name: string): string | null {
   return match ? decodeURIComponent(match.slice(name.length + 1)) : null;
 }
 
+/**
+ * Expire every `csrf-token` cookie the browser holds — the host-only one AND each
+ * parent-domain variant.
+ *
+ * A `csrf-token` minted under an OLD `COOKIE_DOMAIN` (a parent domain on a prior
+ * deploy, or a prod cookie with Domain=parent that bled into a staging subdomain)
+ * lingers as a DUPLICATE. The browser then sends two same-named cookies; the
+ * server's parser and the client's reader can pick different ones, so the
+ * double-submit `cookie === header` check fails — permanently, because the server
+ * only ever sets the host-only cookie and so can't delete the parent-domain one.
+ * That makes re-minting alone unable to recover (the user had to clear cookies by
+ * hand). Clearing every domain variant here lets the freshly-minted host-only
+ * token stand alone. Only invoked on a confirmed CSRF 403, so healthy sessions are
+ * never touched.
+ */
+function expireCsrfCookieVariants(): void {
+  if (typeof document === 'undefined') return;
+  const expire = (domain?: string) => {
+    const d = domain ? `; domain=${domain}` : '';
+    document.cookie = `${CSRF_COOKIE_NAME}=; path=/; max-age=0; samesite=lax${d}`;
+  };
+  expire(); // host-only (no Domain attribute)
+  const host = window.location.hostname;
+  const parts = host.split('.');
+  // Each registrable suffix (a.b.c, .a.b.c, b.c, .b.c, …), stopping before the
+  // bare TLD so we never poke an unrelated public-suffix cookie.
+  for (let i = 0; i < parts.length - 1; i++) {
+    const suffix = parts.slice(i).join('.');
+    expire(suffix);
+    expire(`.${suffix}`);
+  }
+}
+
 export async function apiFetch<T>(path: string, opts: ClientRequestOpts = {}): Promise<T> {
   return requestWithAuthRetry<T>(path, opts, false);
 }
@@ -140,6 +173,10 @@ async function requestWithAuthRetry<T>(
       MUTATING.has(method) &&
       body?.error?.message === 'CSRF token missing or invalid'
     ) {
+      // Drop any stale/duplicate csrf cookie (e.g. a parent-domain one shadowing
+      // the host-only token) BEFORE re-minting, so the fresh token isn't shadowed
+      // again — otherwise the retry resends the same bad cookie and 403s forever.
+      expireCsrfCookieVariants();
       const r = await fetch(`${publicApiBase()}/auth/csrf`, { credentials: 'include' });
       if (r.ok) return requestWithAuthRetry<T>(path, opts, true);
     }
