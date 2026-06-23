@@ -113,7 +113,10 @@ export class NotificationsService {
         entityId: p.entityId,
         title: `${label.charAt(0).toUpperCase()}${label.slice(1)} ${EVENT_PAST[p.event]}`,
         body: `Your ${label} of ${p.amount} ${p.currency} was ${EVENT_PAST[p.event]}.`,
-        link: `/app/${FLOW_PATH[p.flow]}`,
+        // Deep-link straight to the affected row so clicking the notification
+        // opens its detail panel (the view reads ?selected=<id>), instead of
+        // dropping the user on the unfiltered list to hunt for it.
+        link: `/app/${FLOW_PATH[p.flow]}?selected=${p.entityId}`,
       });
     } catch (e) {
       this.logger.warn(`notify requestResolved failed: ${(e as Error).message}`);

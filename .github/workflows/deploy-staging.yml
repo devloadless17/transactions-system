@@ -176,7 +176,14 @@ jobs:
 
           # Point the staging stack at this commit's immutable image tag, so `up`
           # reliably recreates api-staging/web-staging on a changed image ref.
-          sed -i "s|^IMAGE_TAG=.*|IMAGE_TAG=staging-$GITHUB_SHA|" .env.staging
+          # APPEND the line if .env.staging doesn't already have it — otherwise the
+          # sed silently matches nothing and the stack keeps running a stale
+          # `:latest` image (every deploy looks green but ships nothing).
+          if grep -q '^IMAGE_TAG=' .env.staging; then
+            sed -i "s|^IMAGE_TAG=.*|IMAGE_TAG=staging-$GITHUB_SHA|" .env.staging
+          else
+            printf '\nIMAGE_TAG=staging-%s\n' "$GITHUB_SHA" >> .env.staging
+          fi
 
           SC="docker compose -p staging --env-file .env.staging -f docker-compose.staging.yml"
 

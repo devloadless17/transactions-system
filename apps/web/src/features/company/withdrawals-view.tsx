@@ -1,5 +1,6 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -256,6 +257,25 @@ export function WithdrawalsView({ config }: { config: ProcessConfig }) {
     const tp = listQ.data?.meta.totalPages;
     if (tp && page > tp) setPage(tp);
   }, [listQ.data, page]);
+
+  // Deep-link from a notification (e.g. "Withdrawal approved" links to
+  // /app/withdrawals?selected=<id>): fetch that exact row by id and open its
+  // detail panel once, so the user lands directly on it instead of scanning the
+  // list. By-id fetch works even when the row isn't on the current page/filter.
+  const searchParams = useSearchParams();
+  const selectedId = searchParams.get('selected');
+  const selectedQ = useQuery({
+    queryKey: [...config.queryKey, 'detail', selectedId],
+    queryFn: () => apiFetch<WithdrawalResponse>(`${config.endpoint}/${selectedId}`),
+    enabled: !!selectedId,
+  });
+  const openedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (selectedId && selectedQ.data && openedRef.current !== selectedId) {
+      openedRef.current = selectedId;
+      setDetail(selectedQ.data);
+    }
+  }, [selectedId, selectedQ.data]);
 
   const cancelMu = useMutation({
     mutationFn: (id: string) =>

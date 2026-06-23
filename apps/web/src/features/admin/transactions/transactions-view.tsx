@@ -109,9 +109,13 @@ function isoBound(date: string, time: string | undefined, endOfDay: boolean): st
 export function TransactionsView({
   scope,
   canReverse = false,
+  backoffice = false,
 }: {
   scope: 'admin' | 'company';
   canReverse?: boolean;
+  // BACKOFFICE sees only the net amount (the money that actually settled), not
+  // the gross + platform fee. Full admins (and the company's own view) unchanged.
+  backoffice?: boolean;
 }) {
   const qc = useQueryClient();
   const pathname = usePathname();
@@ -287,27 +291,39 @@ export function TransactionsView({
           '—'
         ),
     },
-    {
-      key: 'amount',
-      header: 'Amount',
-      align: 'right',
-      className: 'font-mono text-xs',
-      cell: (t) => `${trimAmount(t.amount)} ${t.currency}`,
-    },
-    {
-      key: 'fee',
-      header: 'Fee',
-      align: 'right',
-      className: 'font-mono text-xs',
-      cell: (t) => trimAmount(t.commissionAmount),
-    },
-    {
-      key: 'net',
-      header: 'Net',
-      align: 'right',
-      className: 'font-mono text-xs',
-      cell: (t) => trimAmount(t.netAmount),
-    },
+    ...(backoffice
+      ? [
+          {
+            key: 'amount',
+            header: 'Amount',
+            align: 'right',
+            className: 'font-mono text-xs',
+            cell: (t: TransactionResponse) => `${trimAmount(t.netAmount)} ${t.currency}`,
+          } as Column<TransactionResponse>,
+        ]
+      : [
+          {
+            key: 'amount',
+            header: 'Amount',
+            align: 'right',
+            className: 'font-mono text-xs',
+            cell: (t: TransactionResponse) => `${trimAmount(t.amount)} ${t.currency}`,
+          } as Column<TransactionResponse>,
+          {
+            key: 'fee',
+            header: 'Fee',
+            align: 'right',
+            className: 'font-mono text-xs',
+            cell: (t: TransactionResponse) => trimAmount(t.commissionAmount),
+          } as Column<TransactionResponse>,
+          {
+            key: 'net',
+            header: 'Net',
+            align: 'right',
+            className: 'font-mono text-xs',
+            cell: (t: TransactionResponse) => trimAmount(t.netAmount),
+          } as Column<TransactionResponse>,
+        ]),
     {
       key: 'status',
       header: 'Status',

@@ -14,10 +14,12 @@ export default async function Page() {
   // Loading a company's wallet directly is a SUPER_ADMIN-only capability.
   const session = await getSession();
   const isSuperAdmin = session?.role === UserRole.SUPER_ADMIN;
+  const backoffice = session?.role === UserRole.BACKOFFICE;
   return withListPrefetch(
     [defaultListPrefetch(ADMIN_LOAD_CONFIG)],
     <AdminWithdrawalsView
       config={ADMIN_LOAD_CONFIG}
+      backoffice={backoffice}
       headerAction={isSuperAdmin ? <AdminLoadDialog /> : undefined}
     />,
   );

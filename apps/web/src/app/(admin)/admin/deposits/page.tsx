@@ -1,5 +1,5 @@
 import { dehydrate, HydrationBoundary } from '@tanstack/react-query';
-import type { PaginatedResponse, TransactionResponse } from '@app/shared';
+import { UserRole, type PaginatedResponse, type TransactionResponse } from '@app/shared';
 import { TransactionsView } from '@/features/admin/transactions/transactions-view';
 import { apiServer } from '@/lib/api.server';
 import { makeServerQueryClient } from '@/lib/server-query-client';
@@ -17,6 +17,7 @@ export default async function Page({
   // Back office views deposits but can't reverse them.
   const session = await getSession();
   const canReverse = !!session && FULL_ADMIN_ROLES.includes(session.role);
+  const backoffice = session?.role === UserRole.BACKOFFICE;
   const qc = makeServerQueryClient();
 
   // Only prefetch the hot first-paint case: a bare load with no filters/page.
@@ -40,7 +41,7 @@ export default async function Page({
 
   return (
     <HydrationBoundary state={dehydrate(qc)}>
-      <TransactionsView scope="admin" canReverse={canReverse} />
+      <TransactionsView scope="admin" canReverse={canReverse} backoffice={backoffice} />
     </HydrationBoundary>
   );
 }

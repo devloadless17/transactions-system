@@ -3,6 +3,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from '@/lib/toast';
 import {
+  PayoutMethod,
   type PaginatedResponse,
   type WithdrawalResponse,
   type WithdrawalStatus,
@@ -61,9 +62,14 @@ export interface AdminProcessConfig {
 export function AdminWithdrawalsView({
   config,
   headerAction,
+  backoffice = false,
 }: {
   config: AdminProcessConfig;
   headerAction?: ReactNode;
+  // BACKOFFICE operators settle the recipient out-of-band: they see only the NET
+  // (the money that actually leaves), never the platform fee or gross. Full
+  // admins (SUPER_ADMIN / ADMIN_OPERATOR) see Amount + Fee + Net unchanged.
+  backoffice?: boolean;
 }) {
   const qc = useQueryClient();
   // Operators land on the pending queue by default; all other filters start "any".
@@ -92,30 +98,55 @@ export function AdminWithdrawalsView({
   const companyNames = useCompanyNames(listQ.data?.data.map((w) => w.companyId) ?? []);
   const companyName = (id: string) => companyNames.get(id) ?? id.slice(0, 8);
 
+  // Money columns: full admins see Amount (gross = net+fee) / Fee / Net; back
+  // office sees only a single net "Amount" — the money that actually leaves to
+  // the recipient (what they must pay), with no fee/gross exposed.
+  const moneyColumns: Column<WithdrawalResponse>[] = backoffice
+    ? [
+        {
+          key: 'amount',
+          header: 'Amount',
+          align: 'right',
+          className: 'font-mono',
+          cell: (w) => trimAmount(w.netAmount),
+        },
+      ]
+    : [
+        {
+          key: 'amount',
+          header: 'Amount',
+          align: 'right',
+          className: 'font-mono',
+          // Total charged = net + fee (Amount = Net + Fee on every row; for an
+          // ON_TOP fee this exceeds the requested amount).
+          cell: (w) => trimAmount(w.totalAmount),
+        },
+        {
+          key: 'fee',
+          header: 'Fee',
+          align: 'right',
+          className: 'font-mono text-xs text-muted-foreground',
+          cell: (w) => (trimAmount(w.feeAmount) === '0' ? '—' : trimAmount(w.feeAmount)),
+        },
+        {
+          key: 'net',
+          header: 'Net',
+          align: 'right',
+          className: 'font-mono text-xs',
+          cell: (w) => trimAmount(w.netAmount),
+        },
+      ];
+
   const columns: Column<WithdrawalResponse>[] = [
     { key: 'company', header: 'Company', cell: (w) => companyName(w.companyId) },
+    ...moneyColumns,
     {
-      key: 'amount',
-      header: 'Amount',
-      align: 'right',
-      className: 'font-mono',
-      // Total charged = net + fee (Amount = Net + Fee on every row; for an
-      // ON_TOP fee this exceeds the requested amount).
-      cell: (w) => trimAmount(w.totalAmount),
-    },
-    {
-      key: 'fee',
-      header: 'Fee',
-      align: 'right',
-      className: 'font-mono text-xs text-muted-foreground',
-      cell: (w) => (trimAmount(w.feeAmount) === '0' ? '—' : trimAmount(w.feeAmount)),
-    },
-    {
-      key: 'net',
-      header: 'Net',
-      align: 'right',
-      className: 'font-mono text-xs',
-      cell: (w) => trimAmount(w.netAmount),
+      key: 'recipient',
+      header: 'Recipient',
+      className: 'text-xs',
+      // Surface who to pay (name + phone) directly in the row, so the operator
+      // doesn't have to open each request to see the recipient details.
+      cell: (w) => recipientSummary(w.payoutDetails),
     },
     { key: 'currency', header: 'Currency', cell: (w) => w.currency },
     {
@@ -205,6 +236,7 @@ export function AdminWithdrawalsView({
       <ReviewDialog
         review={review}
         config={config}
+        backoffice={backoffice}
         onClose={() => setReview(null)}
         onDone={() => {
           setReview(null);
@@ -218,11 +250,13 @@ export function AdminWithdrawalsView({
 function ReviewDialog({
   review,
   config,
+  backoffice = false,
   onClose,
   onDone,
 }: {
   review: ReviewState | null;
   config: AdminProcessConfig;
+  backoffice?: boolean;
   onClose: () => void;
   onDone: () => void;
 }) {
@@ -280,28 +314,48 @@ function ReviewDialog({
 
         {review && (
           <div className="space-y-1 rounded-md border bg-muted/30 p-3 text-sm">
-            <div className="flex items-center justify-between">
-              <span className="text-xs text-muted-foreground">Amount</span>
-              <span className="font-mono">
-                {trimAmount(review.withdrawal.totalAmount)} {review.withdrawal.currency}
-              </span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-xs text-muted-foreground">Fee (platform revenue)</span>
-              <span className="font-mono">
-                {trimAmount(review.withdrawal.feeAmount) === '0'
-                  ? '—'
-                  : `${trimAmount(review.withdrawal.feeAmount)} ${review.withdrawal.currency} (${feeApplicationLabel(
-                      review.withdrawal.feeApplication,
-                    )})`}
-              </span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-xs text-muted-foreground">Net</span>
-              <span className="font-mono">
-                {trimAmount(review.withdrawal.netAmount)} {review.withdrawal.currency}
-              </span>
-            </div>
+            {backoffice ? (
+              // Back office only sees the net amount to hand over — no fee/gross.
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-muted-foreground">Amount to pay</span>
+                <span className="font-mono">
+                  {trimAmount(review.withdrawal.netAmount)} {review.withdrawal.currency}
+                </span>
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-muted-foreground">Amount</span>
+                  <span className="font-mono">
+                    {trimAmount(review.withdrawal.totalAmount)} {review.withdrawal.currency}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-muted-foreground">Fee (platform revenue)</span>
+                  <span className="font-mono">
+                    {trimAmount(review.withdrawal.feeAmount) === '0'
+                      ? '—'
+                      : `${trimAmount(review.withdrawal.feeAmount)} ${review.withdrawal.currency} (${feeApplicationLabel(
+                          review.withdrawal.feeApplication,
+                        )})`}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-muted-foreground">Net</span>
+                  <span className="font-mono">
+                    {trimAmount(review.withdrawal.netAmount)} {review.withdrawal.currency}
+                  </span>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* The note the company left for the admin when they requested this. */}
+        {review && review.withdrawal.notes && (
+          <div className="space-y-1 rounded-md border bg-muted/30 p-3 text-sm">
+            <span className="text-xs font-medium text-muted-foreground">Note from company</span>
+            <p className="break-words whitespace-pre-wrap">{review.withdrawal.notes}</p>
           </div>
         )}
 
@@ -365,4 +419,24 @@ function statusVariant(s: WithdrawalStatus): 'success' | 'warning' | 'destructiv
 
 function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+// One-line "who to pay" for the list row. For cash/Whish that's name + phone
+// (what the operator usually needs); other methods fall back to their key
+// identifier. Returns '—' when there are no payout details.
+function recipientSummary(d: WithdrawalResponse['payoutDetails']): string {
+  if (!d) return '—';
+  switch (d.method) {
+    case PayoutMethod.CASH:
+    case PayoutMethod.WISH:
+      return d.recipientPhone ? `${d.recipientName} · ${d.recipientPhone}` : d.recipientName;
+    case PayoutMethod.CRYPTO:
+      return `${d.network}: ${d.walletAddress.slice(0, 12)}…`;
+    case PayoutMethod.BANK_TRANSFER:
+      return `${d.accountHolder} · ${d.bankName}`;
+    case PayoutMethod.OTHER:
+      return d.description;
+    default:
+      return '—';
+  }
 }
