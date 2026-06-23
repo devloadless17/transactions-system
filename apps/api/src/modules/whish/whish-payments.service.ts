@@ -25,6 +25,7 @@ import {
   NotFoundError,
   ValidationError,
 } from '../../common/errors/domain.error';
+import { assertListOffset } from '../../common/pagination';
 import { TransactionsService } from '../transactions/transactions.service';
 import { CommissionResolverService } from '../commissions/commission-resolver.service';
 import { CommissionsRepository } from '../commissions/commissions.repository';
@@ -255,8 +256,10 @@ export class WhishPaymentsService {
       return mapWhishPayment(updated);
     } catch (err) {
       // Super-admin log: what we asked Whish for, and what Whish returned on
-      // failure (the raw envelope is carried on WhishError.details.response).
+      // failure (the raw envelope is carried on WhishError.upstreamResponse,
+      // kept off `details` so it never reaches the API caller).
       const details = err instanceof WhishError ? err.details : undefined;
+      const upstreamResponse = err instanceof WhishError ? err.upstreamResponse : undefined;
       this.txLogs.record({
         kind: 'WHISH_LINK',
         companyId,
@@ -273,7 +276,7 @@ export class WhishPaymentsService {
         response: {
           code: err instanceof WhishError ? err.code : 'WHISH_ERROR',
           message: err instanceof Error ? err.message : 'unknown',
-          upstream: details?.response ?? details?.upstreamMessage ?? null,
+          upstream: upstreamResponse ?? details?.upstreamMessage ?? null,
         },
       });
       await this.prisma.runAsTenant(companyId, (tx) =>
@@ -308,6 +311,7 @@ export class WhishPaymentsService {
       if (query.needsAttention === 'true')
         where.metadata = { path: ['needsAttention'], equals: true };
       const skip = (query.page - 1) * query.pageSize;
+      assertListOffset(skip);
       const [rows, total] = await Promise.all([
         tx.whishPayment.findMany({
           where,
@@ -716,6 +720,7 @@ export class WhishPaymentsService {
       if (query.needsAttention === 'true')
         where.metadata = { path: ['needsAttention'], equals: true };
       const skip = (query.page - 1) * query.pageSize;
+      assertListOffset(skip);
       const [rows, total] = await Promise.all([
         tx.whishPayment.findMany({
           where,

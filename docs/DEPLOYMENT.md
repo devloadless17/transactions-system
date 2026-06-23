@@ -112,12 +112,13 @@ seeding stays off).
   API then connects as that non-superuser role so Postgres RLS is enforced.
 - **TLS:** Caddy (`Caddyfile`) terminates HTTPS and reverse-proxies by path.
 - **Config:** `.env.prod.example` is the template; the workflow renders it to
-  `/root/transactions-system/.env` on the server from the secrets above.
+  `/home/deploy/transactions-system/.env` on the server from the secrets above
+  (`DEPLOY_DIR` in the deploy workflow).
 
 ### Manual ops on the server
 
 ```bash
-cd /root/transactions-system
+cd /home/deploy/transactions-system
 docker compose -f docker-compose.prod.yml ps
 docker compose -f docker-compose.prod.yml logs -f api
 # re-run migrations only (-T so it doesn't eat piped stdin in scripts):
@@ -155,8 +156,14 @@ decisions):
   Socket.IO attaches the Redis adapter (`@socket.io/redis-adapter`) whenever
   `REDIS_URL` is set — see `CorsIoAdapter` in
   [apps/api/src/main.ts](../apps/api/src/main.ts) — so an event emitted on instance
-  A reaches clients connected to instance B across any number of replicas, no
-  sticky sessions required. It reuses the Redis you already run for
+  A reaches clients connected to instance B across any number of replicas. **No
+  sticky sessions are required, because the web client uses a WebSocket-only
+  transport** (`transports: ['websocket']` in
+  [apps/web/src/lib/realtime.tsx](../apps/web/src/lib/realtime.tsx)): there is no
+  HTTP long-polling handshake whose in-memory engine.io session would be pinned to
+  one instance and break under a round-robin LB. (The Redis adapter handles event
+  fan-out; the WebSocket-only client handles connection affinity — the two are
+  separate concerns.) It reuses the Redis you already run for
   cache/rate-limit. If Redis is unreachable the socket server falls back to the
   in-memory adapter (a startup warning is logged): the API keeps serving and the
   UI stays correct after a manual reload, but cross-instance live updates are

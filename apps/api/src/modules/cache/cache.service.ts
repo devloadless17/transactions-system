@@ -118,11 +118,27 @@ export class CacheService implements OnModuleDestroy {
    * the generation while `fn` runs, the store lands on the old (orphaned)
    * generation and future reads — using the new generation — recompute fresh.
    */
-  async wrap<T>(key: string, ttlSeconds: number, fn: () => Promise<T>): Promise<T> {
+  async wrap<T>(
+    key: string,
+    ttlSeconds: number,
+    fn: () => Promise<T>,
+    opts?: { singleFlight?: boolean },
+  ): Promise<T> {
     const gen = await this.generation(namespaceOf(key));
     const genKey = `${key}::g${gen}`;
     const cached = await this.get<T>(genKey);
     if (cached !== null) return cached;
+
+    // Opt out of single-flight for callers that run INSIDE a transaction (e.g. the
+    // commission-rule lookup on the money path): blocking up to
+    // SINGLE_FLIGHT_MAX_WAIT_MS while holding a SERIALIZABLE tx (and its wallet row
+    // locks) open is far worse than a brief stampede of a small, indexed read.
+    // Compute directly on a miss and cache the result.
+    if (opts?.singleFlight === false) {
+      const fresh = await fn();
+      await this.set(genKey, fresh, ttlSeconds);
+      return fresh;
+    }
 
     // Single-flight: on a miss, only one caller should run `fn` while the others
     // wait for its result, to avoid a stampede when many reads miss at once

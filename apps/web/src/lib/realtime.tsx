@@ -111,11 +111,20 @@ export function RealtimeBridge() {
     const origin = socketOrigin();
     if (!origin) return;
 
-    // Default transport order (polling → upgrade to websocket): the polling
-    // handshake reliably carries the auth cookie cross-origin, and the upgrade
-    // gives us a live socket once established. `withCredentials` sends the
-    // `txn_access` cookie on the handshake; reconnection is on by default.
-    const socket = io(origin + REALTIME_NAMESPACE, { withCredentials: true });
+    // WebSocket-only transport (no HTTP long-polling fallback). The polling
+    // handshake keeps its engine.io session in-memory on ONE instance, so behind a
+    // round-robin LB with >1 API replica the follow-up polls land on a different
+    // instance and fail ("Session ID unknown") — the Redis adapter fans out events
+    // but does NOT share handshake affinity. A single WebSocket upgrade has no such
+    // multi-request affinity, so this is multi-instance-safe with NO sticky sessions
+    // (the proxy already forwards WS upgrades). `withCredentials` sends the
+    // `txn_access` cookie on the upgrade handshake; reconnection is on by default.
+    // Realtime is an optimization (the UI is still correct on reload), so dropping
+    // the polling fallback is an acceptable trade for horizontal-scale correctness.
+    const socket = io(origin + REALTIME_NAMESPACE, {
+      withCredentials: true,
+      transports: ['websocket'],
+    });
 
     // Cleared on unmount so a refresh-then-reconnect already in flight can't
     // reopen this socket after the effect has torn it down (fast unmount/remount).

@@ -9,11 +9,13 @@ import type {
   UpdateSourceInput,
 } from '@app/shared';
 import { Prisma } from '@app/db';
+import { Money, SourceFeeChannel } from '@app/shared';
 import { PrismaService } from '../../database/prisma.service';
 import { RealtimeService } from '../realtime/realtime.service';
 import { CacheService } from '../cache/cache.service';
-import { recomputeSourceFeeAmounts } from '../analytics/source-fees';
+import { computeSourceFee, type SourceFeeRuleRow } from './source-fee.compute';
 import { ConflictError, NotFoundError } from '../../common/errors/domain.error';
+import { assertListOffset } from '../../common/pagination';
 
 @Injectable()
 export class SourcesService {
@@ -45,6 +47,7 @@ export class SourcesService {
   async list(query: Pagination): Promise<PaginatedResponse<SourceResponse>> {
     return this.prisma.runAsAdmin(async (tx) => {
       const skip = (query.page - 1) * query.pageSize;
+      assertListOffset(skip);
       const [rows, total] = await Promise.all([
         tx.source.findMany({ orderBy: { createdAt: 'desc' }, skip, take: query.pageSize }),
         tx.source.count(),
@@ -157,12 +160,6 @@ export class SourcesService {
           })),
         });
       }
-      // Apply the saved schedule to this source's EXISTING deposits too — the
-      // per-deposit source fee is frozen at settlement, so without this a newly
-      // configured (or edited) schedule would only affect future deposits and
-      // leave historical ones at their old/zero value. Same tx ⇒ atomic with the
-      // rule change; analytics then just SUM the refreshed column.
-      await recomputeSourceFeeAmounts(tx, sourceId);
       const rows = await tx.sourceFeeRule.findMany({
         where: { sourceId },
         orderBy: [{ channel: 'asc' }, { minAmount: 'asc' }],
@@ -170,13 +167,99 @@ export class SourcesService {
       return rows.map(mapFeeRule);
     });
     // The fee schedule just changed — bust the (source, channel) rule cache the
-    // ingest path reads from so new deposits price against the updated schedule
+    // ingest path reads from so NEW deposits price against the updated schedule
     // immediately instead of waiting out the short TTL.
     await this.cache.invalidate('sourcefee:rules:');
-    this.realtime.admin(['sources']);
+    // Apply the saved schedule to this source's EXISTING deposits too — the
+    // per-deposit source fee is frozen at settlement, so without this a newly
+    // configured (or edited) schedule would only affect future deposits and leave
+    // historical ones at their old/zero value. Done POST-COMMIT in batches (see
+    // repriceExistingDeposits) so the schedule save itself commits fast and can't
+    // hold a long lock / hit the 5s tx limit on a high-volume source.
+    await this.repriceExistingDeposits(sourceId);
+    // Net revenue and the source-fee breakdown on the admin platform overview
+    // derive from the (now-repriced) source_fee_amount column, so bust the
+    // analytics cache and refresh the analytics surface too — not just 'sources'.
+    // All admin-only; companies never receive these events or figures.
+    await this.cache.invalidate('analytics:');
+    this.realtime.admin(['sources', 'analytics']);
     return result;
   }
+
+  /**
+   * Re-price a source's already-settled (COMPLETED) deposits against its CURRENT
+   * schedule. The per-deposit source fee is frozen at settlement, so a schedule
+   * configured/edited afterwards wouldn't otherwise reach historical deposits.
+   *
+   * Runs in keyset-paginated batches, each in its OWN short admin transaction, so
+   * a source with millions of deposits can neither blow the 5s interactive-tx
+   * limit nor hold a long lock on the hot `transactions` table. Uses the shared
+   * `computeSourceFee` (ROUND_HALF_EVEN) — the SAME function and rounding ingest
+   * froze with — so reprice, settlement and the out-of-band backfill script all
+   * agree. Idempotent (it overwrites the frozen value) and resumable (a failed
+   * batch can simply be re-run). Channel is classified per deposit by the
+   * whish_payments link, identical to settlement.
+   */
+  private async repriceExistingDeposits(sourceId: string): Promise<void> {
+    const rules = await this.prisma.runAsAdmin((tx) =>
+      tx.sourceFeeRule.findMany({ where: { sourceId, active: true } }),
+    );
+    const ruleRows: SourceFeeRuleRow[] = rules.map((r) => ({
+      channel: r.channel,
+      minAmount: r.minAmount,
+      maxAmount: r.maxAmount,
+      feeType: r.feeType,
+      feeValue: r.feeValue,
+      active: r.active,
+    }));
+
+    // Keyset cursor over the uuid PK. Start at the zero-uuid (sorts before any
+    // real id) and cast the bound value so Postgres compares uuid-to-uuid.
+    let cursor = '00000000-0000-0000-0000-000000000000';
+    for (;;) {
+      const processed = await this.prisma.runAsAdmin(async (tx) => {
+        const batch = await tx.$queryRawUnsafe<
+          Array<{ id: string; amount: string; is_whish: boolean }>
+        >(
+          `SELECT t.id, t.amount::text AS amount,
+                  EXISTS (SELECT 1 FROM whish_payments wp WHERE wp.transaction_id = t.id) AS is_whish
+           FROM transactions t
+           WHERE t.source_id = $1::uuid AND t.status = 'COMPLETED' AND t.id > $2::uuid
+           ORDER BY t.id ASC
+           LIMIT $3`,
+          sourceId,
+          cursor,
+          REPRICE_BATCH_SIZE,
+        );
+        if (batch.length === 0) return 0;
+        // Group the batch by computed fee so each distinct value is a single
+        // updateMany, not one UPDATE per row.
+        const idsByFee = new Map<string, string[]>();
+        for (const row of batch) {
+          const channel = row.is_whish ? SourceFeeChannel.WHISH_PAY : SourceFeeChannel.INGEST;
+          const fee = computeSourceFee(ruleRows, channel, Money.of(row.amount)).toString();
+          const ids = idsByFee.get(fee);
+          if (ids) ids.push(row.id);
+          else idsByFee.set(fee, [row.id]);
+        }
+        for (const [fee, ids] of idsByFee) {
+          await tx.transaction.updateMany({
+            where: { id: { in: ids } },
+            data: { sourceFeeAmount: fee },
+          });
+        }
+        cursor = batch[batch.length - 1]!.id;
+        return batch.length;
+      });
+      if (processed < REPRICE_BATCH_SIZE) break;
+    }
+  }
 }
+
+// Batch size for the post-commit retroactive reprice. Small enough that each
+// batch's transaction stays well under the interactive-tx timeout and holds row
+// locks only briefly; large enough to keep round-trips low.
+const REPRICE_BATCH_SIZE = 1000;
 
 function mapFeeRule(row: {
   id: string;

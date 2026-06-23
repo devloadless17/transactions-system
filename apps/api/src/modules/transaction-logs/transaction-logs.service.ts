@@ -7,6 +7,7 @@ import type {
   TransactionLogResponse,
 } from '@app/shared';
 import { PrismaService } from '../../database/prisma.service';
+import { assertListOffset } from '../../common/pagination';
 
 export interface TransactionLogEntry {
   kind: TransactionLogKind;
@@ -65,6 +66,7 @@ export class TransactionLogsService {
       if (query.search) where.reference = { contains: query.search, mode: 'insensitive' };
 
       const skip = (query.page - 1) * query.pageSize;
+      assertListOffset(skip);
       const [rows, total] = await Promise.all([
         tx.transactionLog.findMany({
           where,

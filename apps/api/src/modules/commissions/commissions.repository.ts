@@ -28,39 +28,48 @@ export class CommissionsRepository {
   ): Promise<ResolvableRule[]> {
     const sourceKey = args.sourceId ?? 'null';
     const key = `commission:rules:${args.operationType}:${args.companyId}:${sourceKey}`;
-    return this.cache.wrap(key, RULE_CACHE_TTL_SEC, async () => {
-      const sourceFilter: Prisma.CommissionRuleWhereInput =
-        args.sourceId == null
-          ? { sourceId: null }
-          : { OR: [{ sourceId: null }, { sourceId: args.sourceId }] };
+    // singleFlight:false — this runs INSIDE the caller's SERIALIZABLE money tx, so
+    // it must never block on the cross-request single-flight poll (which could hold
+    // wallet row locks for up to ~3s under a contended miss). On a miss it just runs
+    // the small indexed read directly and caches it.
+    return this.cache.wrap(
+      key,
+      RULE_CACHE_TTL_SEC,
+      async () => {
+        const sourceFilter: Prisma.CommissionRuleWhereInput =
+          args.sourceId == null
+            ? { sourceId: null }
+            : { OR: [{ sourceId: null }, { sourceId: args.sourceId }] };
 
-      const rows = await tx.commissionRule.findMany({
-        where: {
-          active: true,
-          operationType: args.operationType,
-          AND: [{ OR: [{ companyId: null }, { companyId: args.companyId }] }, sourceFilter],
-        },
-        orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }],
-      });
+        const rows = await tx.commissionRule.findMany({
+          where: {
+            active: true,
+            operationType: args.operationType,
+            AND: [{ OR: [{ companyId: null }, { companyId: args.companyId }] }, sourceFilter],
+          },
+          orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }, { id: 'asc' }],
+        });
 
-      return rows.map((r) => ({
-        id: r.id,
-        companyId: r.companyId,
-        sourceId: r.sourceId,
-        operationType: r.operationType,
-        feeApplication: r.feeApplication,
-        minAmount: r.minAmount.toString(),
-        maxAmount: r.maxAmount === null ? null : r.maxAmount.toString(),
-        commissionType: r.commissionType,
-        commissionValue: r.commissionValue.toString(),
-        priority: r.priority,
-        active: r.active,
-        // createdAt is serialized as a string in JSON — re-hydrate so the
-        // resolver's stable tie-break still works.
-        createdAt:
-          r.createdAt instanceof Date ? r.createdAt : new Date(r.createdAt as unknown as string),
-      }));
-    });
+        return rows.map((r) => ({
+          id: r.id,
+          companyId: r.companyId,
+          sourceId: r.sourceId,
+          operationType: r.operationType,
+          feeApplication: r.feeApplication,
+          minAmount: r.minAmount.toString(),
+          maxAmount: r.maxAmount === null ? null : r.maxAmount.toString(),
+          commissionType: r.commissionType,
+          commissionValue: r.commissionValue.toString(),
+          priority: r.priority,
+          active: r.active,
+          // createdAt is serialized as a string in JSON — re-hydrate so the
+          // resolver's stable tie-break still works.
+          createdAt:
+            r.createdAt instanceof Date ? r.createdAt : new Date(r.createdAt as unknown as string),
+        }));
+      },
+      { singleFlight: false },
+    );
   }
 
   async invalidate(): Promise<void> {

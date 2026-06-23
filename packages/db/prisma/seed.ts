@@ -123,13 +123,34 @@ async function main() {
 
   // --- Sample global commission rules (company_id NULL = applies to all) ---
   // The spec example:
-  //   1 → 100     => fixed 1$
-  //   101 → 300   => fixed 5$
-  //   301 → 1000  => 2%
+  //   0 → 100     => fixed 1$
+  //   100 → 300   => fixed 5$
+  //   300 → ∞     => 2%
+  //
+  // MUST be a TOTAL, gap-free ladder: it starts at 0 and the top tier is
+  // open-ended (maxAmount = null), so EVERY deposit amount resolves to a tier.
+  // Ingest prices via the throwing resolver (commission-resolver.service.ts) and
+  // a 422 blocks the deposit, so any uncovered amount (a gap, a sub-minimum, or
+  // above a finite top) would reject real deposits out of the box. Boundaries are
+  // 8dp-adjacent (next.min = prev.max + 1e-8) — exactly what the admin UI emits —
+  // so the validator (which forbids touching/overlap) accepts them and no
+  // representable amount falls between tiers.
   const sampleRules = [
-    { minAmount: '1', maxAmount: '100', type: 'FIXED' as const, value: '1', priority: 100 },
-    { minAmount: '101', maxAmount: '300', type: 'FIXED' as const, value: '5', priority: 100 },
-    { minAmount: '301', maxAmount: '1000', type: 'PERCENTAGE' as const, value: '2', priority: 100 },
+    { minAmount: '0', maxAmount: '100', type: 'FIXED' as const, value: '1', priority: 100 },
+    {
+      minAmount: '100.00000001',
+      maxAmount: '300',
+      type: 'FIXED' as const,
+      value: '5',
+      priority: 100,
+    },
+    {
+      minAmount: '300.00000001',
+      maxAmount: null,
+      type: 'PERCENTAGE' as const,
+      value: '2',
+      priority: 100,
+    },
   ];
   // Skip if any global rule already exists (idempotent enough for a sample).
   const existingGlobal = await prisma.commissionRule.count({

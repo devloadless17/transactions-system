@@ -203,4 +203,36 @@ describe('source fees & net revenue', () => {
     const overview = await analytics.sourceOverview({ sourceId, range: { currency: 'USD' } });
     expect(eq(overview.sourceFees, '1')).toBe(true);
   });
+
+  it("keeps a REVERSED deposit's source-fee cost counted (reversal symmetry)", async () => {
+    const { companyId, userId } = await createCompany(h);
+    const sourceId = await createEnabledSource(h, companyId);
+    await addTransactionFee(h, companyId, '10'); // 10% platform commission
+    await setSourceFeeRules(sourceId, [
+      {
+        channel: SourceFeeChannel.INGEST,
+        minAmount: '0',
+        maxAmount: null,
+        feeType: 'PERCENTAGE',
+        feeValue: '2', // source charges the platform 2% per deposit
+      },
+    ]);
+    const t = await h.transactions.ingest(
+      { kind: 'source', sourceId },
+      ingestInput(companyId, '100'),
+    );
+    // 2% of $100 = $2 source-fee cost, frozen on the deposit.
+    const before = await analytics.sourceOverview({ sourceId, range: { currency: 'USD' } });
+    expect(eq(before.sourceFees, '2')).toBe(true);
+
+    // Reverse (claw back) the deposit. The upstream source already charged the
+    // platform its $2 and does NOT refund it on OUR clawback, so the cost must
+    // stay counted (status IN COMPLETED|REVERSED), symmetric with the realized-
+    // time FEE-revenue side. Counting only COMPLETED would silently erase a real
+    // cost and overstate net revenue.
+    await h.transactions.reverse(t.id, { actorId: userId, reason: 'chargeback' });
+
+    const after = await analytics.sourceOverview({ sourceId, range: { currency: 'USD' } });
+    expect(eq(after.sourceFees, '2')).toBe(true); // unchanged across the reversal
+  });
 });

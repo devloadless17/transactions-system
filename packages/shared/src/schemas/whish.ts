@@ -45,9 +45,12 @@ export const setWhishRedirectConfigSchema = z.object({
 });
 export type SetWhishRedirectConfigInput = z.infer<typeof setWhishRedirectConfigSchema>;
 
-// Per-company outbound webhook config.
+// Per-company outbound webhook config. The platform POSTs event data here
+// server-side, so bound the URL the same way as the payer redirect URLs: a real
+// http(s) URL of sane length (no `javascript:`/`data:`/garbage). Connection-level
+// SSRF (private/loopback targets) is still enforced separately at dispatch time.
 export const setWhishWebhookSchema = z.object({
-  url: z.string().url(),
+  url: redirectUrlSchema,
 });
 export type SetWhishWebhookInput = z.infer<typeof setWhishWebhookSchema>;
 

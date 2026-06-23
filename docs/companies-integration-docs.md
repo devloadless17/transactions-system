@@ -1655,12 +1655,12 @@ The platform pushes every transaction's status lifecycle to **your own CRM** via
 
 There are **two independent outbound channels** — do not confuse them:
 
-| Channel                                       | Configured at           | Events                                     | Signed?                                    |
-| --------------------------------------------- | ----------------------- | ------------------------------------------ | ------------------------------------------ |
-| **CRM events** (this section, the main one)   | `company/crm/config`    | full transaction lifecycle (5 event types) | **No** — auth is the Bearer key you supply |
-| **Whish payment webhook** (legacy, paid-only) | `company/whish/webhook` | only `whish.payment.paid`                  | **Yes** — HMAC-SHA256, `x-whish-signature` |
+| Channel                                       | Configured at           | Events                                     | Signed?                                             |
+| --------------------------------------------- | ----------------------- | ------------------------------------------ | --------------------------------------------------- |
+| **CRM events** (this section, the main one)   | `company/crm/config`    | full transaction lifecycle (5 event types) | **Yes** — HMAC-SHA256, `x-crm-signature` (additive) |
+| **Whish payment webhook** (legacy, paid-only) | `company/whish/webhook` | only `whish.payment.paid`                  | **Yes** — HMAC-SHA256, `x-whish-signature`          |
 
-> Security note for integrators: the **CRM events channel is NOT HMAC-signed.** The only thing that proves an inbound `POST` came from us is the `Authorization: Bearer <your CRM key>` header you configured. Keep that key secret and reject any request whose Bearer token does not match. See the audit issues below.
+> Security note for integrators: the **CRM events channel IS HMAC-signed.** Every POST carries `x-crm-signature` (HMAC-SHA256 over `${x-crm-timestamp}.${rawBody}`, keyed by your CRM key) **in addition to** the `Authorization: Bearer <your CRM key>` header. For the strongest verification, check **both**: confirm the Bearer token matches the key you configured, and verify the `x-crm-signature` (which also makes replays detectable via the timestamp). See the verification example below.
 
 ---
 

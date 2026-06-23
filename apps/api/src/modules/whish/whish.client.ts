@@ -10,8 +10,16 @@ const WHISH_TIMEOUT_MS = 10_000;
 
 /** Upstream Whish failure (network error or `status: false` envelope). */
 export class WhishError extends DomainError {
-  constructor(message: string, details?: Record<string, unknown>) {
+  /**
+   * The RAW upstream Whish envelope — carried for the super-admin transaction log
+   * ONLY. Deliberately kept OFF `details` (which the global exception filter
+   * returns to the API caller) so a company integrator never receives the
+   * payment provider's internal response body.
+   */
+  readonly upstreamResponse?: unknown;
+  constructor(message: string, details?: Record<string, unknown>, upstreamResponse?: unknown) {
     super('WHISH_ERROR', message, 502, details);
+    this.upstreamResponse = upstreamResponse;
   }
 }
 
@@ -165,14 +173,12 @@ export class WhishClient {
       const message = isAuthFailure
         ? 'Whish rejected the request — the payment provider is not configured correctly (invalid or expired credentials). Please contact support.'
         : upstreamMessage;
-      throw new WhishError(message, {
-        path,
-        code,
-        httpStatus: res.status,
-        upstreamMessage,
-        // The raw Whish envelope, surfaced for the super-admin transaction log.
-        response: json,
-      });
+      throw new WhishError(
+        message,
+        { path, code, httpStatus: res.status, upstreamMessage },
+        // The raw Whish envelope: log-only, never returned to the API caller.
+        json,
+      );
     }
 
     return json.data as T;

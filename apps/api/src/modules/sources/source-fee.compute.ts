@@ -35,7 +35,15 @@ export function computeSourceFee(
       const withinMax = r.maxAmount === null || amount.lte(Money.of(r.maxAmount.toString()));
       return amount.gte(min) && withinMax;
     })
-    .sort((a, b) => Money.of(a.minAmount.toString()).cmp(Money.of(b.minAmount.toString())))[0];
+    .sort((a, b) => {
+      const byMin = Money.of(a.minAmount.toString()).cmp(Money.of(b.minAmount.toString()));
+      if (byMin !== 0) return byMin;
+      // Deterministic tie-break for a (mis)configured equal-`min` pair: the HIGHER
+      // fee wins, so an ambiguous schedule can never silently UNDERSTATE the
+      // platform's cost — and the same input always yields the same fee regardless
+      // of row order (the normal non-overlapping ladder never reaches this).
+      return Money.of(b.feeValue.toString()).cmp(Money.of(a.feeValue.toString()));
+    })[0];
 
   if (!tier) return Money.zero();
   const fee =

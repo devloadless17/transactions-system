@@ -124,4 +124,19 @@ describe('computeSourceFee', () => {
     ];
     expect(computeSourceFee(rules, SourceFeeChannel.INGEST, Money.of('50')).toString()).toBe('0');
   });
+
+  it('is DETERMINISTIC for a (mis)configured equal-min pair, regardless of row order', () => {
+    // Two active INGEST tiers sharing the same min ($0) — an overlap the schema
+    // should reject, but the pricing function must still be deterministic if it
+    // ever occurs. The higher fee wins so cost is never understated, and the
+    // result is independent of the order the rows arrive in.
+    const lo = rule({ minAmount: '0', maxAmount: '100', feeType: 'FIXED', feeValue: '1' });
+    const hi = rule({ minAmount: '0', maxAmount: '100', feeType: 'FIXED', feeValue: '5' });
+    expect(computeSourceFee([lo, hi], SourceFeeChannel.INGEST, Money.of('50')).toString()).toBe(
+      '5',
+    );
+    expect(computeSourceFee([hi, lo], SourceFeeChannel.INGEST, Money.of('50')).toString()).toBe(
+      '5',
+    );
+  });
 });

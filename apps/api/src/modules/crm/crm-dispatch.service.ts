@@ -146,7 +146,16 @@ export class CrmDispatchService {
         select: { id: true },
       }),
     );
-    // Immediate best-effort attempt; the sweep retries on failure.
-    void this.delivery.deliver(row.id);
+    // Immediate best-effort attempt; the sweep retries on failure. Guard the
+    // detached promise so an early throw inside deliver() (e.g. its first DB read,
+    // before deliver()'s own try/catch) can't surface as an unhandled rejection —
+    // the row is already queued, so the retry sweep picks it up regardless.
+    void this.delivery
+      .deliver(row.id)
+      .catch((err) =>
+        this.logger.warn(
+          `CRM immediate deliver ${row.id} failed (sweep will retry): ${(err as Error).message}`,
+        ),
+      );
   }
 }

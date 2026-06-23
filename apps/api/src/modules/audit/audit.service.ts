@@ -7,11 +7,17 @@ import {
 } from '@app/shared';
 import { PrismaService } from '../../database/prisma.service';
 import { RealtimeService } from '../realtime/realtime.service';
+import { CacheService } from '../cache/cache.service';
 import { ValidationError } from '../../common/errors/domain.error';
 
 // Reject offsets beyond this — deep paging should narrow with filters instead of
 // scanning, mirroring the transactions/activity lists.
 const MAX_LIST_OFFSET = 50_000;
+// Cache the (filtered) row COUNT briefly so paging the audit log doesn't re-run a
+// COUNT(*) over an ever-growing table on every page load — same tradeoff the
+// transactions/ledger lists already make. Rows are always live; only the total
+// can lag by this window.
+const LIST_COUNT_CACHE_TTL_SEC = 30;
 
 export interface AuditEntry {
   actorId?: string | null;
@@ -29,6 +35,7 @@ export class AuditService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly realtime: RealtimeService,
+    private readonly cache: CacheService,
   ) {}
 
   async record(entry: AuditEntry): Promise<void> {
@@ -64,6 +71,9 @@ export class AuditService {
           'Page too deep to scan efficiently. Narrow the results with filters (company, action, entity type).',
         );
       }
+      const countKey =
+        `list-count:audit:${query.companyId ?? 'all'}` +
+        `:${query.entityType ?? ''}:${query.action ?? ''}`;
       const [rows, total] = await Promise.all([
         tx.auditLog.findMany({
           where,
@@ -72,7 +82,7 @@ export class AuditService {
           take: query.pageSize,
           include: { actor: { select: { email: true } } },
         }),
-        tx.auditLog.count({ where }),
+        this.cache.wrap(countKey, LIST_COUNT_CACHE_TTL_SEC, () => tx.auditLog.count({ where })),
       ]);
       return {
         data: rows.map((r) => ({

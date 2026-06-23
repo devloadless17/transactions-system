@@ -20,6 +20,8 @@ import { DomainError } from '../../common/errors/domain.error';
  *   1. specificity score (3 = both set, 2 = company set, 1 = source set, 0 = global)
  *   2. priority DESC
  *   3. createdAt ASC (stable tie-break — set by caller if needed)
+ *   4. id ASC (final tie-break so selection is FULLY deterministic even when
+ *      specificity, priority and createdAt all tie)
  */
 export interface ResolvableRule {
   id: string;
@@ -134,7 +136,11 @@ export class CommissionResolverService {
       if (a.priority !== b.priority) return b.priority - a.priority;
       const ta = a.createdAt?.getTime() ?? 0;
       const tb = b.createdAt?.getTime() ?? 0;
-      return ta - tb;
+      if (ta !== tb) return ta - tb;
+      // Final deterministic tie-break: equal specificity, priority AND createdAt
+      // (e.g. two rules created in the same tick, or createdAt unset) must still
+      // resolve to ONE rule, never an unspecified DB/array order. Lowest id wins.
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
     });
 
     const rule = candidates[0]!;

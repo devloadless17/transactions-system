@@ -31,6 +31,7 @@ import {
   settleEntries,
 } from '../ledger/flow-ledger';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain.error';
+import { assertListOffset } from '../../common/pagination';
 
 const REQUESTABLE_STATUS: WithdrawalStatus = 'PENDING';
 
@@ -334,6 +335,7 @@ export class PayoutsService {
       }
 
       const skip = (args.query.page - 1) * args.query.pageSize;
+      assertListOffset(skip);
       const countKey =
         `list-count:po:${args.companyId ?? args.query.companyId ?? 'all'}` +
         `:${args.query.status ?? ''}:${args.query.currency ?? ''}:${args.query.payoutMethod ?? ''}` +

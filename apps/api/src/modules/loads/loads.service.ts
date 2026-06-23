@@ -25,6 +25,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { CacheService } from '../cache/cache.service';
 import { FeesService } from '../commissions/fees.service';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain.error';
+import { assertListOffset } from '../../common/pagination';
 
 const REQUESTABLE_STATUS: WithdrawalStatus = 'PENDING';
 
@@ -361,6 +362,7 @@ export class LoadsService {
       }
 
       const skip = (args.query.page - 1) * args.query.pageSize;
+      assertListOffset(skip);
       const countKey =
         `list-count:ld:${args.companyId ?? args.query.companyId ?? 'all'}` +
         `:${args.query.status ?? ''}:${args.query.currency ?? ''}:${args.query.payoutMethod ?? ''}` +

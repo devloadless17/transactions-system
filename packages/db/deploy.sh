@@ -25,9 +25,22 @@ RLS_USER="${POSTGRES_USER_RLS:-txn_app_rls}"
 cd "$(dirname "$0")"
 
 # Prisma CLI + the seed connect as the migrations (superuser) role.
-export DATABASE_URL="$DATABASE_MIGRATIONS_URL"
+#
+# Bound how long any migration statement WAITS to acquire a lock (lock_timeout).
+# `migrate deploy` runs while the OLD api is still serving money writes, so a
+# plain CREATE INDEX / backfill UPDATE that can't get its lock should error out
+# fast rather than queue behind a writer and then block every INSERT/UPDATE on the
+# table for the whole build. Large-table indexes should STILL be built CONCURRENTLY
+# out-of-band first (see docs/DEPLOYMENT.md) — the `IF NOT EXISTS` migrations then
+# no-op. (If the connector ignores the `options` param this is simply a no-op, so
+# it can never break a deploy.)
+case "$DATABASE_MIGRATIONS_URL" in
+  *\?*) _opt_sep='&' ;;
+  *)    _opt_sep='?' ;;
+esac
+export DATABASE_URL="${DATABASE_MIGRATIONS_URL}${_opt_sep}options=-c%20lock_timeout%3D5000"
 
-echo "==> Applying migrations (prisma migrate deploy)"
+echo "==> Applying migrations (prisma migrate deploy, lock_timeout=5s)"
 pnpm exec prisma migrate deploy
 
 # Migration 0003 creates the runtime RLS role with a committed dev password.

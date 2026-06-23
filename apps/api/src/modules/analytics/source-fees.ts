@@ -12,10 +12,25 @@ import type { Prisma } from '@app/db';
  * aggregate, with NO per-deposit subquery — so the admin dashboard stays fast at
  * millions of deposits. (Previously this re-priced every deposit on each call via a
  * correlated subquery, which did not scale.)
+ *
+ * REVERSAL SYMMETRY: every SUM counts deposits that SETTLED — `status IN
+ * ('COMPLETED','REVERSED')` — anchored at the settlement `created_at`. A source
+ * fee is a real cost the platform paid the upstream when the deposit settled, and
+ * the upstream does NOT refund it when WE later reverse/claw back the deposit, so
+ * the cost must stay counted in its original window. This mirrors the realized-time
+ * FEE-revenue side (a reversal books a dated FEE DEBIT at reversal time, it does
+ * not erase the original CREDIT from its window). Counting only COMPLETED would let
+ * a reversal silently delete a real cost from every window and overstate net revenue.
+ * (If a source ever DID refund its fee on reversal, book a compensating reduction at
+ * reversal time instead of changing this filter.)
  */
 type Tx = Prisma.TransactionClient;
 
-/** Total source fees per currency over [from, to] (COMPLETED deposits). */
+// Deposits whose source fee was actually incurred = those that settled, even if
+// later reversed (the upstream fee is not refunded on our clawback).
+const SETTLED = `status IN ('COMPLETED', 'REVERSED')`;
+
+/** Total source fees per currency over [from, to] (settled deposits). */
 export async function sourceFeesByCurrency(
   tx: Tx,
   from: Date,
@@ -25,7 +40,7 @@ export async function sourceFeesByCurrency(
     `
     SELECT currency, COALESCE(SUM(source_fee_amount), 0)::text AS fees
     FROM transactions
-    WHERE status = 'COMPLETED'
+    WHERE ${SETTLED}
       AND created_at >= $1 AND created_at <= $2
     GROUP BY currency
     `,
@@ -57,7 +72,7 @@ export async function sourceFeesBreakdown(
       COALESCE(SUM(t.source_fee_amount), 0)::text AS fees
     FROM transactions t
     JOIN sources s ON s.id = t.source_id
-    WHERE t.status = 'COMPLETED'
+    WHERE t.${SETTLED}
       AND t.created_at >= $1 AND t.created_at <= $2
     GROUP BY t.source_id, s.code, s.name, t.currency
     HAVING COALESCE(SUM(t.source_fee_amount), 0) > 0
@@ -87,7 +102,7 @@ export async function sourceFeeForSource(
     `
     SELECT COALESCE(SUM(source_fee_amount), 0)::text AS fees
     FROM transactions
-    WHERE status = 'COMPLETED'
+    WHERE ${SETTLED}
       AND source_id = $1::uuid
       AND currency = $2
       AND created_at >= $3 AND created_at <= $4
@@ -100,40 +115,9 @@ export async function sourceFeeForSource(
   return rows[0]?.fees ?? '0';
 }
 
-/**
- * Recompute & persist `source_fee_amount` for ONE source's COMPLETED deposits from
- * its CURRENT schedule. Per-deposit source fee is frozen at settlement, so a
- * schedule that's edited — or configured AFTER deposits already settled — wouldn't
- * otherwise apply to those deposits. Call this when a source's schedule is saved
- * so the change is reflected retroactively (and net-revenue analytics, which just
- * SUM the column, stay fast). One UPDATE; must run in an admin-scoped (bypass-RLS)
- * tx. Picks the lowest-min matching tier per deposit, classifying channel by the
- * whish_payments link — identical logic to the settlement-time computation and the
- * migration backfill.
- *
- * Cost is O(deposits for this source); fine for a rare admin action. For a source
- * with millions of deposits, batch/async it (mirror the migration's backfill note).
- */
-export async function recomputeSourceFeeAmounts(tx: Tx, sourceId: string): Promise<void> {
-  await tx.$executeRawUnsafe(
-    `
-    UPDATE transactions t SET source_fee_amount = COALESCE((
-      SELECT round(
-        CASE r.fee_type WHEN 'FIXED' THEN r.fee_value ELSE t.amount * r.fee_value / 100 END, 8)
-      FROM source_fee_rules r
-      WHERE r.source_id = t.source_id
-        AND r.active
-        AND r.channel = (
-          CASE WHEN EXISTS (SELECT 1 FROM whish_payments wp WHERE wp.transaction_id = t.id)
-               THEN 'WHISH_PAY'::"SourceFeeChannel"
-               ELSE 'INGEST'::"SourceFeeChannel" END)
-        AND t.amount >= r.min_amount
-        AND (r.max_amount IS NULL OR t.amount <= r.max_amount)
-      ORDER BY r.min_amount ASC
-      LIMIT 1
-    ), 0)
-    WHERE t.source_id = $1::uuid AND t.status = 'COMPLETED'
-    `,
-    sourceId,
-  );
-}
+// Retroactive re-pricing of a source's already-settled deposits now lives in
+// SourcesService.repriceExistingDeposits — it runs POST-COMMIT in keyset-batched
+// short transactions using the shared computeSourceFee (ROUND_HALF_EVEN), so a
+// high-volume source can't blow the 5s tx limit / hold a long lock and the value
+// matches what ingest froze. (This module stays read-only: it only SUMs the
+// frozen column.)

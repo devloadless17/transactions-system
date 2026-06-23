@@ -20,6 +20,7 @@ import {
   NotFoundError,
   ValidationError,
 } from '../../common/errors/domain.error';
+import { assertListOffset } from '../../common/pagination';
 import type { Prisma } from '@app/db';
 
 /**
@@ -74,6 +75,7 @@ export class AdminUsersService {
         where.email = { contains: query.search.toLowerCase() };
       }
       const skip = (query.page - 1) * query.pageSize;
+      assertListOffset(skip);
       const [rows, total] = await Promise.all([
         tx.user.findMany({
           where,

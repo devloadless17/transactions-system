@@ -216,6 +216,7 @@ export class NotificationsService {
         update: {},
       });
     });
+    this.emitNotificationsChanged(user);
   }
 
   async markAllRead(user: AuthPrincipal): Promise<void> {
@@ -235,6 +236,7 @@ export class NotificationsService {
         skipDuplicates: true,
       });
     });
+    this.emitNotificationsChanged(user);
   }
 
   /** Clear (dismiss) a single notification for this user — hidden from active. */
@@ -255,6 +257,7 @@ export class NotificationsService {
         update: { dismissedAt: now },
       });
     });
+    this.emitNotificationsChanged(user);
   }
 
   /** Clear all of this user's notifications in one shot (idempotent upsert). */
@@ -281,6 +284,19 @@ export class NotificationsService {
         );
       }
     });
+    this.emitNotificationsChanged(user);
+  }
+
+  /**
+   * Nudge this user's OTHER open tabs/devices to refresh the unread bell after a
+   * read-state change (mark/dismiss/clear). Realtime rooms are admin/company-level
+   * (not per-user), so this asks everyone in scope to recompute their OWN unread
+   * count — cheap, and never leaks another tenant's data (company scope → company
+   * room only). The acting tab already updates via its own query invalidation.
+   */
+  private emitNotificationsChanged(user: AuthPrincipal): void {
+    if (isAdminRole(user.role)) this.realtime.admin(['notifications']);
+    else if (user.companyId) this.realtime.company(user.companyId, ['notifications']);
   }
 
   private map(r: {

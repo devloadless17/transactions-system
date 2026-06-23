@@ -15,6 +15,7 @@ import {
 import { PrismaService } from '../../database/prisma.service';
 import { RealtimeService } from '../realtime/realtime.service';
 import { ConflictError, NotFoundError } from '../../common/errors/domain.error';
+import { assertListOffset } from '../../common/pagination';
 import { expand } from '../commissions/commissions.service';
 import type { Prisma } from '@app/db';
 
@@ -112,6 +113,7 @@ export class CompaniesService {
         .filter((s) => /^[0-9a-f-]{36}$/i.test(s));
       if (idList?.length) where.id = { in: idList };
       const skip = (query.page - 1) * query.pageSize;
+      assertListOffset(skip);
       const [rows, total] = await Promise.all([
         tx.company.findMany({
           where,
