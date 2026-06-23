@@ -59,4 +59,30 @@ else
   echo "==> Skipping seed (set SEED_DATABASE=true for the first deploy)"
 fi
 
+# Whish SANDBOX shares ONE upstream account across environments (dev, staging,
+# manual Postman tests). Whish treats externalId as a PERMANENT idempotency key —
+# it remembers every id ever used, even after we WIPE our DB. A per-DB autoincrement
+# (or the seed's epoch base, which manual `date +%s` tests also occupy) then
+# re-issues ids already burned on the account, so Whish returns the existing empty
+# record and the app reports "Whish did not return a collect URL". Push the
+# externalId sequence into a high, time-advancing band (now-epoch + 7e9): manual
+# epoch tests never reach it (epoch hits 7e9 in ~2192), and because it climbs with
+# wall-clock it always lands above anything used before a DB wipe — so sandbox links
+# always mint fresh. GREATEST(.., current max) keeps it monotonic within a DB.
+# Gated on WHISH_ALLOW_SANDBOX, so the LIVE prod account (flag false, ids not
+# shared) is NEVER touched. Best-effort: a failure here can't fail the deploy and
+# self-heals on the next one.
+if [ "${WHISH_ALLOW_SANDBOX:-false}" = "true" ]; then
+  echo "==> Whish sandbox: raising whish_payments_external_id_seq above the shared-account / wiped-DB collision range"
+  pnpm exec prisma db execute --url "$DATABASE_MIGRATIONS_URL" --stdin <<'SQL' || echo "WARN: whish externalId seq bump failed (non-fatal); will retry next deploy"
+DO $$ BEGIN
+  PERFORM setval('public.whish_payments_external_id_seq',
+    GREATEST(
+      (SELECT floor(extract(epoch from now()))::bigint + 7000000000),
+      (SELECT COALESCE(MAX(external_id), 0) FROM whish_payments)
+    ), true);
+END $$;
+SQL
+fi
+
 echo "==> Deploy migrate step complete."
