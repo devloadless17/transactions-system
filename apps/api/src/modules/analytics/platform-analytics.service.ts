@@ -16,6 +16,8 @@ import { sourceFeesByCurrency, sourceFeesBreakdown } from './source-fees';
 
 const DEFAULT_DAYS = 30;
 const PENDING_OPS_LIMIT = 20;
+// Top sources shown on the admin overview "By source" tile.
+const TOP_SOURCES_LIMIT = 5;
 
 /**
  * System-admin oriented analytics that span all companies and currencies.
@@ -297,11 +299,53 @@ export class PlatformAnalyticsService {
           to,
         );
 
+        // Top sources by volume for this currency+window — for the admin overview
+        // "By source" tile. One indexed GROUP BY source_id (backed by the partial
+        // transactions_completed_source_created_idx). Lives here, on the per-currency
+        // endpoint the admin overview already fetches, so the dashboard no longer
+        // pays for the full overview() compute (~11 queries incl. a cross-tenant
+        // GROUP BY) just to render this 5-row table.
+        const topSrcRows = await tx.$queryRawUnsafe<
+          Array<{ sourceId: string; volume: string; fees: string; count: bigint }>
+        >(
+          `
+          SELECT source_id                                 AS "sourceId",
+                 SUM(net_amount + commission_amount)::text AS volume,
+                 SUM(commission_amount)::text              AS fees,
+                 COUNT(*)::bigint                          AS count
+          FROM transactions
+          WHERE status = 'COMPLETED' AND currency = $1
+            AND created_at >= $2 AND created_at <= $3
+          GROUP BY source_id
+          ORDER BY SUM(net_amount + commission_amount) DESC
+          LIMIT ${TOP_SOURCES_LIMIT}
+          `,
+          currency,
+          from,
+          to,
+        );
+        const srcIds = topSrcRows.map((r) => r.sourceId);
+        const srcRows = srcIds.length
+          ? await tx.source.findMany({
+              where: { id: { in: srcIds } },
+              select: { id: true, code: true },
+            })
+          : [];
+        const srcCode = new Map(srcRows.map((s) => [s.id, s.code]));
+        const topSources = topSrcRows.map((r) => ({
+          sourceId: r.sourceId,
+          sourceCode: srcCode.get(r.sourceId) ?? '',
+          volume: r.volume,
+          fees: r.fees,
+          count: Number(r.count),
+        }));
+
         const buckets = mergeDailyBuckets(from, to, [txRows, loadRows], [wdRows, poRows], feeRows);
         return {
           currency,
           range: { from: from.toISOString(), to: to.toISOString() },
           buckets,
+          topSources,
         };
       });
     });

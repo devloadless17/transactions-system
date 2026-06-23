@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { assertSaneDateRange, currencySchema } from './common';
+import { topSourceSchema } from './analytics';
 
 // ---------------- shared range ----------------
 // Plain shape kept separate so derived schemas (flows) can reuse the fields;
@@ -76,6 +77,10 @@ export const flowsResponseSchema = z.object({
   currency: z.string(),
   range: z.object({ from: z.string(), to: z.string() }),
   buckets: z.array(flowsBucketSchema),
+  // Top sources by volume for THIS currency+window. Carried here (the per-currency
+  // endpoint the admin overview already fetches) so the admin dashboard's
+  // "By source" tile doesn't need the heavy full overview() compute just for this.
+  topSources: z.array(topSourceSchema),
 });
 export type FlowsResponse = z.infer<typeof flowsResponseSchema>;
 

@@ -141,6 +141,14 @@ export function RealtimeBridge() {
     // Bounded backoff for forced (auth) disconnects — see the disconnect handler.
     let authReconnects = 0;
     const MAX_AUTH_RECONNECTS = 5;
+    // Coalesce steady-state event invalidations: a burst of N domain events in a
+    // short window (e.g. many ingests/sec while an admin watches a live list) must
+    // trigger ONE refetch round per affected query, not N. Buffer the unique query
+    // keys and flush on a short trailing timer — same idea as the connect catch-up
+    // debounce above. The ≤200ms delay is imperceptible vs. a refetch storm.
+    const INVALIDATE_COALESCE_MS = 200;
+    let invalidateTimer: ReturnType<typeof setTimeout> | undefined;
+    const pendingKeys = new Map<string, unknown[]>();
 
     socket.on('connect', () => {
       // The socket only delivers events received WHILE connected. Anything that
@@ -198,13 +206,22 @@ export function RealtimeBridge() {
 
     socket.on(REALTIME_EVENT, (payload: RealtimeInvalidate) => {
       if (!payload?.topics?.length) return;
+      // Accumulate the affected query keys (deduped by serialized key) instead of
+      // invalidating per event, then flush once on a trailing window.
       for (const topic of payload.topics) {
         const keysFor = TOPIC_KEYS[topic as RealtimeTopic];
         if (!keysFor) continue;
         for (const queryKey of keysFor(payload.companyId)) {
-          void qc.invalidateQueries({ queryKey });
+          pendingKeys.set(JSON.stringify(queryKey), queryKey);
         }
       }
+      if (invalidateTimer) clearTimeout(invalidateTimer);
+      invalidateTimer = setTimeout(() => {
+        const keys = [...pendingKeys.values()];
+        pendingKeys.clear();
+        // refetchType defaults to 'active' → unmounted/other-app keys are no-ops.
+        for (const queryKey of keys) void qc.invalidateQueries({ queryKey });
+      }, INVALIDATE_COALESCE_MS);
     });
 
     return () => {
@@ -212,6 +229,7 @@ export function RealtimeBridge() {
       if (retry) clearTimeout(retry);
       if (stableTimer) clearTimeout(stableTimer);
       if (catchup) clearTimeout(catchup);
+      if (invalidateTimer) clearTimeout(invalidateTimer);
       socket.off();
       socket.disconnect();
     };

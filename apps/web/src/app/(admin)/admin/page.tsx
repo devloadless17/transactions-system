@@ -1,10 +1,5 @@
 import { dehydrate, HydrationBoundary } from '@tanstack/react-query';
-import type {
-  FlowsResponse,
-  OperationsResponse,
-  OverviewResponse,
-  PlatformAnalyticsResponse,
-} from '@app/shared';
+import type { FlowsResponse, OperationsResponse, PlatformAnalyticsResponse } from '@app/shared';
 import { AdminOverview } from '@/features/admin/overview-view';
 import { apiServer } from '@/lib/api.server';
 import { makeServerQueryClient } from '@/lib/server-query-client';
@@ -38,10 +33,10 @@ export default async function Page() {
   const rp = defaultRangeParams();
   const flowsParams = new URLSearchParams(rp);
   flowsParams.set('currency', CURRENCY);
-  const overviewParams = new URLSearchParams(rp);
-  overviewParams.set('currency', CURRENCY);
 
   // Prefetch the above-the-fold queries. Each key mirrors the client useQuery.
+  // The admin "By source" tile now reads topSources from the per-currency flows
+  // response, so the heavy full overview() compute is no longer fetched here.
   await Promise.all([
     qc.prefetchQuery({
       queryKey: ['admin', 'analytics', 'platform', RANGE_KEY],
@@ -51,11 +46,6 @@ export default async function Page() {
     qc.prefetchQuery({
       queryKey: ['admin', 'analytics', 'operations'],
       queryFn: () => apiServer<OperationsResponse>('/admin/analytics/operations'),
-    }),
-    qc.prefetchQuery({
-      queryKey: ['admin', 'analytics', 'overview', CURRENCY, RANGE_KEY],
-      queryFn: () =>
-        apiServer<OverviewResponse>(`/admin/analytics/overview?${overviewParams.toString()}`),
     }),
     qc.prefetchQuery({
       queryKey: ['admin', 'analytics', 'flows', RANGE_KEY, CURRENCY],

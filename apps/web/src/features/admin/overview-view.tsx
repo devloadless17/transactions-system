@@ -12,7 +12,6 @@ import { apiFetch } from '@/lib/api.client';
 import { formatNumber as fmt } from '@/lib/format';
 import { KpiCard } from '@/features/analytics/kpi-card';
 import { FlowsChart } from '@/features/analytics/flows-chart.lazy';
-import { useOverview } from '@/features/analytics/use-overview';
 import {
   DateRangeControls,
   DEFAULT_RANGE,
@@ -68,8 +67,6 @@ export function AdminOverview() {
     refetchIntervalInBackground: false,
   });
 
-  const overviewQ = useOverview({ scope: 'admin', currency: flowsCurrency, range });
-
   const currencies = platformQ.data?.byCurrency.map((c) => c.currency) ?? [];
   // Hero KPIs pick the "primary" currency: first with any fees, else first in the list.
   const primary =
@@ -86,7 +83,7 @@ export function AdminOverview() {
   );
 
   type CurrencyRow = PlatformAnalyticsResponse['byCurrency'][number];
-  type SourceRow = NonNullable<typeof overviewQ.data>['topSources'][number];
+  type SourceRow = FlowsResponse['topSources'][number];
 
   const currencyColumns: Column<CurrencyRow>[] = [
     { key: 'currency', header: 'Currency', className: 'font-medium', cell: (c) => c.currency },
@@ -297,9 +294,9 @@ export function AdminOverview() {
         <CardContent className="p-0">
           <DataTable<SourceRow>
             columns={sourceColumns}
-            rows={overviewQ.data?.topSources}
-            isLoading={overviewQ.isLoading}
-            error={overviewQ.error}
+            rows={flowsQ.data?.topSources}
+            isLoading={flowsQ.isLoading}
+            error={flowsQ.error}
             rowKey={(s) => s.sourceId}
             empty={
               <div className="py-6 text-center text-muted-foreground">

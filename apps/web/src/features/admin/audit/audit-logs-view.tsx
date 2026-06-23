@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { usePathname, useSearchParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import type { AuditLogResponse, PaginatedResponse } from '@app/shared';
 import { Card, CardContent } from '@/components/ui/card';
@@ -42,7 +42,6 @@ function paramsFromState(s: State): string {
 }
 
 export function AuditLogsView() {
-  const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const urlString = searchParams.toString();
@@ -57,7 +56,11 @@ export function AuditLogsView() {
     const next = { ...state, ...patch };
     setState(next);
     const qs = paramsFromState(next);
-    router.replace(pathname + (qs ? `?${qs}` : ''), { scroll: false });
+    // Native replaceState (Next integrates it with useSearchParams) instead of
+    // router.replace: on a force-dynamic page router.replace re-runs the whole RSC
+    // tree per keystroke. State already drives the (debounced) query; the URL is
+    // only for share/Back-Forward, so it never needs a server roundtrip.
+    window.history.replaceState(null, '', pathname + (qs ? `?${qs}` : ''));
   }
 
   // Read-back: when the URL changes externally (Back/Forward), adopt it into
