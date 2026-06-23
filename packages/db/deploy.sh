@@ -72,7 +72,8 @@ fi
 # Gated on WHISH_ALLOW_SANDBOX, so the LIVE prod account (flag false, ids not
 # shared) is NEVER touched. Best-effort: a failure here can't fail the deploy and
 # self-heals on the next one.
-if [ "${WHISH_ALLOW_SANDBOX:-false}" = "true" ]; then
+echo "==> whish seq-fix gate: WHISH_SANDBOX_SEQ_FIX=[${WHISH_SANDBOX_SEQ_FIX:-unset}]"
+if [ "${WHISH_SANDBOX_SEQ_FIX:-false}" = "true" ]; then
   echo "==> Whish sandbox: raising whish_payments_external_id_seq above the shared-account / wiped-DB collision range"
   pnpm exec prisma db execute --url "$DATABASE_MIGRATIONS_URL" --stdin <<'SQL' || echo "WARN: whish externalId seq bump failed (non-fatal); will retry next deploy"
 DO $$ BEGIN

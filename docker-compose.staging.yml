@@ -77,9 +77,11 @@ services:
       SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL}
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD}
       # Lets deploy.sh raise the Whish externalId sequence out of the shared-
-      # sandbox collision range (see deploy.sh). Sandbox-only — prod's migrate
-      # service omits this, so its gate stays off and the live account is untouched.
-      WHISH_ALLOW_SANDBOX: ${WHISH_ALLOW_SANDBOX:-true}
+      # sandbox collision range (see deploy.sh). A LITERAL 'true' (not a masked
+      # secret) so the gate fires deterministically on every staging deploy.
+      # Sandbox-only — prod's migrate service omits this, so its gate stays off
+      # and the live Whish account is never touched.
+      WHISH_SANDBOX_SEQ_FIX: 'true'
     command: ['sh', '/repo/packages/db/deploy.sh']
 
   api-staging:
