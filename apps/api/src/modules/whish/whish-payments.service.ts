@@ -39,6 +39,13 @@ const WHISH_SOURCE_CODE = 'whish';
 // Stale-payment reconciliation window.
 const RECONCILE_MIN_AGE_MS = 60_000; // don't poll links younger than this
 const EXPIRE_AGE_MS = 24 * 3600_000; // give up (EXPIRED) after this
+// Max stale-pending links polled per reconciliation tick. Whish never pushes a
+// failure (only a success callback), so polling is the ONLY way failed/abandoned
+// links reach the CRM live. A small cap let a backlog of still-pending links
+// starve newer ones (oldest-first), so a genuinely-failed payment could wait
+// until a manual refresh. This drains the whole stale-pending set each tick;
+// the cap is just a safety bound on Whish API calls per minute.
+const RECONCILE_MAX_PER_TICK = 250;
 
 @Injectable()
 export class WhishPaymentsService {
@@ -654,16 +661,24 @@ export class WhishPaymentsService {
           createdAt: { lt: youngerThan },
           // Exclude paid-but-unsettled / paid-after-expiry rows: they are kept
           // PENDING deliberately and need an OPERATOR (re-add a commission rule),
-          // not re-polling. Left in, they are the oldest rows and would
-          // permanently occupy all 50 slots, starving newer PENDING payments whose
-          // callback was genuinely missed. Operators act on them via the admin
-          // "needs attention" filter instead.
+          // not re-polling. Operators act on them via the admin "needs attention"
+          // filter instead.
           NOT: { metadata: { path: ['needsAttention'], equals: true } },
         },
         orderBy: { createdAt: 'asc' },
-        take: 50,
+        // Poll the whole stale-pending set (bounded), not just the oldest 50 —
+        // otherwise a backlog starves newer links and a failed payment can't reach
+        // the CRM until a manual refresh.
+        take: RECONCILE_MAX_PER_TICK,
       }),
     );
+    if (rows.length === RECONCILE_MAX_PER_TICK) {
+      // Hit the per-tick safety cap — a real backlog. We still drain the rest on
+      // subsequent ticks (oldest first), but flag it so the cap can be raised.
+      this.logger.warn(
+        `Reconciliation hit the ${RECONCILE_MAX_PER_TICK}-link cap this tick; remaining stale links roll to the next tick.`,
+      );
+    }
 
     let expired = 0;
     for (const p of rows) {

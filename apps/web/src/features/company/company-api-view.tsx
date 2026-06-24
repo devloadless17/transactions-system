@@ -83,6 +83,26 @@ const WITHDRAWAL_RESPONSE = `{
   }
 }`;
 
+const STATUS_CURL = `curl ${API_BASE}/company/withdrawals/<id> \\
+  -H "Authorization: Bearer tsk_<company-key>"
+
+# Response — the live status, plus the admin's reason if it was rejected.
+# (Same path shape for payouts and loads: /company/payouts/<id>, /company/loads/<id>.)
+{
+  "success": true,
+  "statusCode": 200,
+  "data": {
+    "id": "d4f2a1c0-...",
+    "status": "REJECTED",
+    "amount": "500.00",
+    "currency": "USD",
+    "notes": "Weekly settlement",                // your original request note (never overwritten)
+    "adminNotes": "Beneficiary name mismatch",   // the reason — set when REJECTED
+    "createdAt": "2026-06-10T10:00:00.000Z",
+    "processedAt": "2026-06-10T11:30:00.000Z"
+  }
+}`;
+
 const CANCEL_CURL = `curl -X POST ${API_BASE}/company/withdrawals/<id>/cancel \\
   -H "Authorization: Bearer tsk_<company-key>" \\
   -H "Content-Type: application/json" \\
@@ -199,7 +219,23 @@ export function CompanyApiView() {
               desc="You cancelled it (only possible while PENDING). Reserved funds released."
             />
           </div>
-          <p className="mt-3 text-xs text-muted-foreground">
+          <p className="mt-4 text-xs font-medium text-foreground">Check a request&apos;s status</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Fetch a single request by id anytime to read its current{' '}
+            <code className="font-mono">status</code>:{' '}
+            <code className="font-mono font-semibold text-foreground">
+              GET /company/withdrawals/:id
+            </code>{' '}
+            (same shape for <code className="font-mono">payouts</code> and{' '}
+            <code className="font-mono">loads</code>). For a rejected request the reason is in{' '}
+            <code className="font-mono">adminNotes</code>; your original request note stays in{' '}
+            <code className="font-mono">notes</code>. You can also list and filter by status, e.g.{' '}
+            <code className="font-mono">GET /company/withdrawals?status=PENDING</code>.
+          </p>
+          <div className="mt-3">
+            <CodeBlock code={STATUS_CURL} />
+          </div>
+          <p className="mt-4 text-xs text-muted-foreground">
             Cancel while still PENDING:{' '}
             <code className="font-mono font-semibold text-foreground">
               POST /company/withdrawals/:id/cancel
@@ -247,14 +283,21 @@ export function CompanyApiView() {
               endpoints="GET /company/analytics/overview · /wallet-summary"
             />
             <EndpointGroup
+              label="Activity"
+              endpoints="GET /company/activity · /operations/counts"
+            />
+            <EndpointGroup
               label="Withdrawals"
-              endpoints="GET · POST /company/withdrawals · POST /:id/cancel"
+              endpoints="GET /company/withdrawals · GET /:id · POST · POST /:id/cancel"
             />
             <EndpointGroup
               label="Payouts"
-              endpoints="GET · POST /company/payouts · POST /:id/cancel"
+              endpoints="GET /company/payouts · GET /:id · POST · POST /:id/cancel"
             />
-            <EndpointGroup label="Loads" endpoints="GET · POST /company/loads · POST /:id/cancel" />
+            <EndpointGroup
+              label="Loads"
+              endpoints="GET /company/loads · GET /:id · POST · POST /:id/cancel"
+            />
             <EndpointGroup
               label="API keys"
               endpoints="GET · POST /company/api-keys · POST /:id/rotate · /:id/revoke"
