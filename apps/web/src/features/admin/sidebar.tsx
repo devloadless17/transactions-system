@@ -13,6 +13,7 @@ import {
   ShieldCheck,
   Link2,
   ScrollText,
+  Send,
   Settings,
 } from 'lucide-react';
 import type { UserRole } from '@app/shared';
@@ -32,6 +33,7 @@ export const adminNavItems: NavItem[] = [
   { href: '/admin/payouts', label: 'Payouts', icon: HandCoins, badgeKey: 'payouts' },
   { href: '/admin/commissions', label: 'Commission Rules', icon: Percent },
   { href: '/admin/whish', label: 'Whish Pay', icon: Link2 },
+  { href: '/admin/transfer-money', label: 'Transfer Money', icon: Send },
   { href: '/admin/transaction-logs', label: 'Transaction Logs', icon: ScrollText },
   { href: '/admin/audit', label: 'Audit Logs', icon: ClipboardList },
   { href: '/admin/users', label: 'Platform Admins', icon: ShieldCheck },

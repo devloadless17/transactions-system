@@ -8,6 +8,9 @@ import { WhishClient } from './whish.client';
 import { WhishPaymentsService } from './whish-payments.service';
 import { WhishWebhookService } from './whish-webhook.service';
 import { WhishReconciliationService } from './whish-reconciliation.service';
+import { WhishW2WClient } from './whish-w2w.client';
+import { WhishSessionStore } from './whish-session.store';
+import { WhishTransfersService } from './whish-transfers.service';
 import { WhishPaymentsController } from './whish-payments.controller';
 import { WhishCallbackController } from './whish-callback.controller';
 import { WhishAdminController } from './whish-admin.controller';
@@ -15,6 +18,7 @@ import { WhishWebhookController } from './whish-webhook.controller';
 import { WhishConfigController } from './whish-config.controller';
 import { WhishRedirectController } from './whish-redirect.controller';
 import { IntegrationsWhishController } from './integrations-whish.controller';
+import { WhishTransfersController } from './whish-transfers.controller';
 
 @Module({
   imports: [AuthModule, TransactionsModule, ApiKeysModule, CommissionsModule, CrmModule],
@@ -26,8 +30,19 @@ import { IntegrationsWhishController } from './integrations-whish.controller';
     WhishConfigController,
     WhishRedirectController,
     IntegrationsWhishController,
+    WhishTransfersController,
   ],
-  providers: [WhishClient, WhishPaymentsService, WhishWebhookService, WhishReconciliationService],
-  exports: [WhishClient, WhishPaymentsService],
+  providers: [
+    WhishClient,
+    WhishPaymentsService,
+    WhishWebhookService,
+    WhishReconciliationService,
+    WhishW2WClient,
+    WhishSessionStore,
+    WhishTransfersService,
+  ],
+  // WhishTransfersService is exported so the withdrawals module can call it for
+  // auto-transfer-on-approval later.
+  exports: [WhishClient, WhishPaymentsService, WhishTransfersService],
 })
 export class WhishModule {}

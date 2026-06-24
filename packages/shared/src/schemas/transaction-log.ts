@@ -10,7 +10,7 @@ import { z } from 'zod';
 //                including rejected/4xx attempts)
 // =================================================================
 
-export const TRANSACTION_LOG_KINDS = ['WHISH_LINK', 'INGEST'] as const;
+export const TRANSACTION_LOG_KINDS = ['WHISH_LINK', 'INGEST', 'WHISH_TRANSFER'] as const;
 export const transactionLogKindSchema = z.enum(TRANSACTION_LOG_KINDS);
 export type TransactionLogKind = z.infer<typeof transactionLogKindSchema>;
 

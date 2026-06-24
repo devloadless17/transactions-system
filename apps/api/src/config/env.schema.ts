@@ -83,6 +83,26 @@ export const envSchema = z
       .union([z.literal('true'), z.literal('false')])
       .default('false')
       .transform((v) => v === 'true'),
+
+    // ---- Whish W2W (consumer-app) transfers ----
+    // A DIFFERENT Whish surface from the merchant collect API above: the
+    // consumer mobile-app endpoint (POST {base}/application/submit) used to send
+    // whish-to-whish transfers. The session creds (token/uid/sessionid/…) are a
+    // captured logged-in app session that EXPIRES, so they live in an encrypted,
+    // admin-editable DB row — NOT here. Only the non-secret base/flags + the
+    // encryption key live in env.
+    WHISH_W2W_ENABLED: z
+      .union([z.literal('true'), z.literal('false')])
+      .default('false')
+      .transform((v) => v === 'true'),
+    WHISH_W2W_BASE_URL: z.string().url().default('https://api.whish.money/itel-service'),
+    // AES-256-GCM key (base64 of 32 bytes) that encrypts the session creds at
+    // rest. Required when W2W is enabled. Generate: `openssl rand -base64 32`.
+    WHISH_W2W_ENC_KEY: z.string().default(''),
+    // Static non-secret headers Whish expects on the consumer-app call.
+    WHISH_W2W_LANGUAGE: z.string().default('en'),
+    WHISH_W2W_TIMEZONE: z.string().default('Asia/Beirut'),
+    WHISH_W2W_THEME: z.string().default('light'),
   })
   // Fail closed in production: the dev-friendly defaults above (insecure
   // cookies, the committed "change_me" secrets, http origins) must never reach
@@ -188,6 +208,26 @@ export const envSchema = z
         fail(
           'WHISH_WEBSITE_URL',
           'must be your registered https domain in production (not localhost)',
+        );
+      }
+    }
+
+    // W2W transfers move real money out of the platform's Whish account. When
+    // enabled, fail closed unless the upstream is a public https host and the
+    // at-rest encryption key for the session creds is present (a missing/short
+    // key would otherwise leave the captured session unencrypted or unreadable).
+    if (env.WHISH_W2W_ENABLED) {
+      if (!env.WHISH_W2W_BASE_URL.startsWith('https://')) {
+        fail('WHISH_W2W_BASE_URL', 'must use https in production');
+      }
+      if (/localhost|127\.0\.0\.1/.test(env.WHISH_W2W_BASE_URL)) {
+        fail('WHISH_W2W_BASE_URL', 'must be a publicly reachable host, not localhost');
+      }
+      // 32 raw bytes, base64-encoded, is 44 chars; require at least that.
+      if (env.WHISH_W2W_ENC_KEY.trim().length < 44) {
+        fail(
+          'WHISH_W2W_ENC_KEY',
+          'must be set to a base64 32-byte key when WHISH_W2W_ENABLED (run: openssl rand -base64 32)',
         );
       }
     }

@@ -245,3 +245,17 @@ export type WhishPaymentStatus = (typeof WhishPaymentStatus)[keyof typeof WhishP
 // Whish can support LBP + USD, but the platform only operates in USD.
 export const WHISH_CURRENCIES = ['USD'] as const;
 export type WhishCurrency = (typeof WHISH_CURRENCIES)[number];
+
+// Lifecycle of an outbound whish-to-whish (W2W) transfer. Whish returns no
+// transfer id, so we record every attempt and reconcile by our own reference.
+//   PENDING — row committed, the upstream call hasn't resolved yet
+//   SUCCESS — Whish answered status:true (money moved)
+//   FAILED  — definite business/validation/auth failure (money did NOT move)
+//   UNKNOWN — network/timeout/5xx: money MAY have moved; needs operator reconcile
+export const WhishTransferStatus = {
+  PENDING: 'PENDING',
+  SUCCESS: 'SUCCESS',
+  FAILED: 'FAILED',
+  UNKNOWN: 'UNKNOWN',
+} as const;
+export type WhishTransferStatus = (typeof WhishTransferStatus)[keyof typeof WhishTransferStatus];

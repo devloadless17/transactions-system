@@ -652,6 +652,88 @@ model WhishPayment {
   @@map("whish_payments")
 }
 
+// ----------------------- Whish W2W transfers --------------------
+// Outbound whish-to-whish transfers sent from the platform's Whish account to a
+// recipient phone, via Whish's CONSUMER mobile-app API (POST application/submit)
+// — a different surface from the merchant collect API the WhishPayment model
+// uses. Admin-driven now (a SUPER_ADMIN "Transfer Money" tool); the same path
+// will later auto-fire on withdrawal approval (hence the nullable company/
+// withdrawal linkage). Whish returns NO transfer id (only an X-Trace-Id header),
+// so `reference` is OUR idempotency key — we also send it upstream as the `note`
+// so a Whish-app transaction can be tied back to a row here. Platform-level, so
+// admin-only RLS (like transaction_logs), not tenant-scoped.
+//   PENDING — row committed, upstream call not yet resolved
+//   SUCCESS — Whish answered status:true (money moved)
+//   FAILED  — definite business/validation/auth failure (money did NOT move)
+//   UNKNOWN — network/timeout/5xx: money MAY have moved; needs operator reconcile
+enum WhishTransferStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  UNKNOWN
+}
+
+model WhishTransfer {
+  id              String              @id @default(uuid()) @db.Uuid
+  // Our idempotency key; also sent upstream as the Whish `note` (fieldId 140).
+  reference       String              @unique
+  recipientPhone  String              @map("recipient_phone")
+  amount          Decimal             @db.Decimal(20, 8)
+  currency        String              @default("USD") @db.Char(3)
+  status          WhishTransferStatus @default(PENDING)
+  // X-Trace-Id response header — the only upstream correlation id we get.
+  traceId         String?             @map("trace_id")
+  // The sessionCounter consumed by this attempt (forensics / replay debugging).
+  sessionCounter  Int?                @map("session_counter")
+  upstreamCode    String?             @map("upstream_code")
+  upstreamMessage String?             @map("upstream_message")
+  // Request/response bodies for the admin detail drawer. Session headers/creds
+  // are REDACTED before persisting — never store token/uid/sessionid here.
+  requestBody     Json?               @map("request_body") @db.JsonB
+  responseBody    Json?               @map("response_body") @db.JsonB
+  // SUPER_ADMIN who triggered it; null when fired by the withdrawal flow/system.
+  actorId         String?             @map("actor_id") @db.Uuid
+  source          String              @default("ADMIN")
+  // Set only when triggered by a withdrawal (future auto-transfer linkage).
+  companyId       String?             @map("company_id") @db.Uuid
+  withdrawalId    String?             @unique @map("withdrawal_id") @db.Uuid
+  errorDetail     String?             @map("error_detail")
+  createdAt       DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([status, createdAt])
+  @@index([recipientPhone, createdAt])
+  // Default admin list orders by created_at desc, unfiltered.
+  @@index([createdAt])
+  @@map("whish_transfers")
+}
+
+// Single-row store for the captured Whish consumer-app SESSION used to sign W2W
+// transfers. These creds (token/uid/sessionid/deviceId/serverid) are a logged-in
+// mobile-app session and EXPIRE often, so they're editable from the SUPER_ADMIN
+// UI (no redeploy) rather than living in env. The secret fields are encrypted at
+// rest (AES-256-GCM, key from WHISH_W2W_ENC_KEY). `sessionCounter` is the
+// monotonic per-request counter Whish expects; it's incremented atomically
+// (UPDATE ... RETURNING) so concurrent sends never reuse a value. Admin-only RLS.
+model WhishSessionCredential {
+  id                String    @id @default("default")
+  encToken          String    @map("enc_token")
+  encUid            String    @map("enc_uid")
+  encSessionId      String    @map("enc_session_id")
+  deviceId          String    @map("device_id")
+  serverId          String    @map("server_id")
+  itelVersion       String    @map("itel_version")
+  osVersion         String    @map("os_version")
+  operatingSystem   String    @map("operating_system")
+  userAgent         String    @map("user_agent")
+  sessionCounter    Int       @default(0) @map("session_counter")
+  lastRotatedAt     DateTime? @map("last_rotated_at") @db.Timestamptz(6)
+  lastAuthFailureAt DateTime? @map("last_auth_failure_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("whish_session_credentials")
+}
+
 // -------------------------- Webhook Deliveries -------------------
 // Durable log/queue of outbound webhook attempts. Created in 0001 and protected
 // by RLS (0002). NOTE: not yet wired — the current Whish webhook delivery is
@@ -714,6 +796,7 @@ model CrmDemoEvent {
 enum TransactionLogKind {
   WHISH_LINK
   INGEST
+  WHISH_TRANSFER
 }
 
 model TransactionLog {

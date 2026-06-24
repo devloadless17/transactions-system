@@ -31,7 +31,10 @@ const BACKOFFICE_HREFS: ReadonlyArray<string> = [
 // SUPER_ADMIN-only at the API (`@Roles(SUPER_ADMIN)` on AdminUsersController), so
 // ADMIN_OPERATOR must not even see the link — otherwise they land on a fully
 // interactive page where every request 403s.
-const SUPER_ADMIN_ONLY_HREFS: ReadonlyArray<string> = ['/admin/users'];
+// Transfer Money sends real money out of the platform's Whish account; it's
+// SUPER_ADMIN-only at the API (`@Roles(SUPER_ADMIN)` on WhishTransfersController),
+// so ADMIN_OPERATOR/BACKOFFICE must not even see the link.
+const SUPER_ADMIN_ONLY_HREFS: ReadonlyArray<string> = ['/admin/users', '/admin/transfer-money'];
 
 /** Whether `role` may see/open the given admin sidebar section (exact href). */
 export function canSeeAdminSection(role: UserRole, href: string): boolean {

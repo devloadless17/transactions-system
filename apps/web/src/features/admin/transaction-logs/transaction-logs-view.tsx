@@ -54,6 +54,7 @@ function paramsFromState(s: State): string {
 const KIND_LABEL: Record<TransactionLogKind, string> = {
   WHISH_LINK: 'Whish link',
   INGEST: 'Ingest',
+  WHISH_TRANSFER: 'Whish transfer',
 };
 
 export function TransactionLogsView() {

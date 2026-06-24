@@ -1,0 +1,282 @@
+import { Injectable, Logger } from '@nestjs/common';
+import crypto from 'node:crypto';
+import {
+  Money,
+  WHISH_CURRENCIES,
+  WhishTransferStatus,
+  type ListWhishTransfersQuery,
+  type PaginatedResponse,
+  type SendWhishTransferInput,
+  type WhishTransferResponse,
+} from '@app/shared';
+import { Prisma } from '@app/db';
+import type { WhishTransfer } from '@app/db';
+import { PrismaService } from '../../database/prisma.service';
+import { ValidationError } from '../../common/errors/domain.error';
+import { assertListOffset } from '../../common/pagination';
+import { TransactionLogsService } from '../transaction-logs/transaction-logs.service';
+import { WhishSessionStore } from './whish-session.store';
+import { WhishW2WClient, WhishSessionExpiredError } from './whish-w2w.client';
+
+/** Where a transfer originated — admin tool now, withdrawal auto-transfer later. */
+export interface TransferOrigin {
+  source: 'ADMIN' | 'WITHDRAWAL';
+  actorId: string | null;
+  companyId?: string | null;
+  withdrawalId?: string | null;
+}
+
+/**
+ * Sends outbound whish-to-whish transfers and records every attempt. The single
+ * entry point `sendTransfer()` is used by the SUPER_ADMIN "Transfer Money" tool
+ * now and is built to be called from `withdrawals.service.approve()` later (the
+ * `origin` carries the actor + the withdrawal linkage / idempotency key).
+ *
+ * Whish gives us no transfer id and no idempotency key, so the safety model is
+ * ours: a PENDING row is committed (unique on `reference` and `withdrawalId`)
+ * BEFORE the upstream call, which makes a duplicate physically unable to reach a
+ * second submit. A network/timeout leaves the row UNKNOWN (money may have moved)
+ * for an operator to reconcile — never auto-retried.
+ */
+@Injectable()
+export class WhishTransfersService {
+  private readonly logger = new Logger(WhishTransfersService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly client: WhishW2WClient,
+    private readonly session: WhishSessionStore,
+    private readonly txLogs: TransactionLogsService,
+  ) {}
+
+  async sendTransfer(
+    input: SendWhishTransferInput,
+    origin: TransferOrigin,
+  ): Promise<WhishTransferResponse> {
+    // 1. Validate. The typed amount is transferred as-is (no fee math).
+    const money = Money.of(input.amount);
+    if (!money.round().isPositive()) {
+      throw new ValidationError('amount must be greater than zero');
+    }
+    if (!(WHISH_CURRENCIES as readonly string[]).includes(input.currency)) {
+      throw new ValidationError(`currency must be one of ${WHISH_CURRENCIES.join(', ')}`);
+    }
+    if (!this.client.isEnabled()) {
+      throw new ValidationError('Whish W2W transfers are not enabled (set WHISH_W2W_ENABLED=true)');
+    }
+
+    const reference = input.reference ?? `wt_${crypto.randomBytes(16).toString('base64url')}`;
+    // Whish wants a bare msisdn; keep the operator-entered formatting minimal.
+    const phone = input.recipientPhone.replace(/[\s-]/g, '').replace(/^\+/, '');
+    const amount2dp = money.toFixed(2);
+    const amountFull = money.toString();
+
+    // 2. Idempotency pre-check (fast path; the unique index is the real guard).
+    const existing = await this.prisma.runAsAdmin((tx) =>
+      origin.withdrawalId
+        ? tx.whishTransfer.findUnique({ where: { withdrawalId: origin.withdrawalId } })
+        : tx.whishTransfer.findUnique({ where: { reference } }),
+    );
+    if (existing) return this.map(existing);
+
+    // 3. Commit a PENDING row BEFORE calling Whish. A racing duplicate hits the
+    //    unique constraint (P2002) and returns the already-created row.
+    let row: WhishTransfer;
+    try {
+      row = await this.prisma.runAsAdmin((tx) =>
+        tx.whishTransfer.create({
+          data: {
+            reference,
+            recipientPhone: phone,
+            amount: new Prisma.Decimal(amountFull),
+            currency: input.currency,
+            status: WhishTransferStatus.PENDING,
+            actorId: origin.actorId,
+            source: origin.source,
+            companyId: origin.companyId ?? null,
+            withdrawalId: origin.withdrawalId ?? null,
+          },
+        }),
+      );
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        const dup = await this.prisma.runAsAdmin((tx) =>
+          origin.withdrawalId
+            ? tx.whishTransfer.findUnique({ where: { withdrawalId: origin.withdrawalId } })
+            : tx.whishTransfer.findUnique({ where: { reference } }),
+        );
+        if (dup) return this.map(dup);
+      }
+      throw err;
+    }
+
+    // 4. Acquire the session + the next monotonic counter.
+    const session = await this.session.nextRequest();
+    if (!session) {
+      await this.fail(row.id, 'session_not_configured', null, null);
+      throw new ValidationError(
+        'Whish W2W session credentials are not configured. A SUPER_ADMIN must add them first.',
+      );
+    }
+    await this.prisma.runAsAdmin((tx) =>
+      tx.whishTransfer.update({
+        where: { id: row.id },
+        data: { sessionCounter: session.sessionCounter },
+      }),
+    );
+
+    const redactedRequest = this.client.buildRedactedRequest({
+      phone,
+      amount: amount2dp,
+      note: reference,
+    });
+
+    // 5. Call Whish and interpret the outcome.
+    let result;
+    try {
+      result = await this.client.submit({ phone, amount: amount2dp, note: reference, session });
+    } catch (err) {
+      if (err instanceof WhishSessionExpiredError) {
+        await this.session.markAuthFailure();
+        await this.fail(row.id, 'session_expired', err.message, redactedRequest);
+        this.txLogs.record({
+          kind: 'WHISH_TRANSFER',
+          reference,
+          statusCode: 502,
+          success: false,
+          request: redactedRequest,
+          response: { error: 'session_expired' },
+        });
+      }
+      throw err;
+    }
+
+    if (result.outcome === 'unreachable') {
+      // Money MAY have moved — never FAILED (would invite a dangerous resend).
+      const updated = await this.prisma.runAsAdmin((tx) =>
+        tx.whishTransfer.update({
+          where: { id: row.id },
+          data: {
+            status: WhishTransferStatus.UNKNOWN,
+            errorDetail: result.detail,
+            requestBody: redactedRequest as Prisma.InputJsonValue,
+            responseBody: { error: result.detail } as Prisma.InputJsonValue,
+          },
+        }),
+      );
+      this.txLogs.record({
+        kind: 'WHISH_TRANSFER',
+        reference,
+        statusCode: 0,
+        success: false,
+        request: redactedRequest,
+        response: { error: result.detail },
+      });
+      this.logger.warn(`Whish W2W transfer ${reference} is UNKNOWN: ${result.detail}`);
+      return this.map(updated);
+    }
+
+    const success = result.outcome === 'success';
+    const updated = await this.prisma.runAsAdmin((tx) =>
+      tx.whishTransfer.update({
+        where: { id: row.id },
+        data: {
+          status: success ? WhishTransferStatus.SUCCESS : WhishTransferStatus.FAILED,
+          traceId: result.traceId,
+          upstreamCode: result.code,
+          upstreamMessage: result.message,
+          errorDetail: success ? null : (result.message ?? result.code ?? 'transfer_failed'),
+          requestBody: redactedRequest as Prisma.InputJsonValue,
+          responseBody: (result.response ?? null) as Prisma.InputJsonValue,
+        },
+      }),
+    );
+    this.txLogs.record({
+      kind: 'WHISH_TRANSFER',
+      reference,
+      transactionId: null,
+      statusCode: result.httpStatus,
+      success,
+      request: redactedRequest,
+      response: result.response,
+    });
+    return this.map(updated);
+  }
+
+  async listTransfers(
+    query: ListWhishTransfersQuery,
+  ): Promise<PaginatedResponse<WhishTransferResponse>> {
+    return this.prisma.runAsAdmin(async (tx) => {
+      const where: Prisma.WhishTransferWhereInput = {};
+      if (query.status) where.status = query.status;
+      if (query.search) {
+        where.OR = [
+          { reference: { contains: query.search, mode: 'insensitive' } },
+          { recipientPhone: { contains: query.search, mode: 'insensitive' } },
+        ];
+      }
+      const skip = (query.page - 1) * query.pageSize;
+      assertListOffset(skip);
+      const [rows, total] = await Promise.all([
+        tx.whishTransfer.findMany({
+          where,
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+          skip,
+          take: query.pageSize,
+        }),
+        tx.whishTransfer.count({ where }),
+      ]);
+      return {
+        data: rows.map((r) => this.map(r)),
+        meta: {
+          page: query.page,
+          pageSize: query.pageSize,
+          total,
+          totalPages: Math.max(1, Math.ceil(total / query.pageSize)),
+        },
+      };
+    });
+  }
+
+  async getById(id: string): Promise<WhishTransferResponse | null> {
+    const row = await this.prisma.runAsAdmin((tx) =>
+      tx.whishTransfer.findUnique({ where: { id } }),
+    );
+    return row ? this.map(row) : null;
+  }
+
+  /** Mark a not-yet-sent (or session-rejected) row FAILED. Money did not move. */
+  private async fail(
+    id: string,
+    detail: string,
+    message: string | null,
+    request: unknown,
+  ): Promise<void> {
+    await this.prisma.runAsAdmin((tx) =>
+      tx.whishTransfer.update({
+        where: { id },
+        data: {
+          status: WhishTransferStatus.FAILED,
+          errorDetail: detail,
+          upstreamMessage: message,
+          requestBody: (request ?? null) as Prisma.InputJsonValue,
+        },
+      }),
+    );
+  }
+
+  private map(r: WhishTransfer): WhishTransferResponse {
+    return {
+      id: r.id,
+      reference: r.reference,
+      recipientPhone: r.recipientPhone,
+      amount: r.amount.toString(),
+      currency: r.currency.trim(),
+      status: r.status,
+      traceId: r.traceId,
+      upstreamMessage: r.upstreamMessage,
+      source: r.source,
+      createdAt: r.createdAt.toISOString(),
+    };
+  }
+}
