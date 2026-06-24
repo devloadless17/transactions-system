@@ -1,9 +1,17 @@
 'use client';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { toast } from '@/lib/toast';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import {
   setCrmConfigSchema,
   type CrmConfigResponse,
@@ -91,16 +99,29 @@ function ConfigCard() {
     onError: (err) => toast.error(err instanceof ApiClientError ? err.message : 'Failed'),
   });
 
+  // Type-to-confirm guard for "Try the demo CRM": enabling the demo OVERWRITES
+  // the company's real CRM URL + key, which is unrecoverable. Companies were
+  // doing this by accident and silently losing their live CRM connection.
+  const [demoOpen, setDemoOpen] = useState(false);
+  const [confirmText, setConfirmText] = useState('');
+
   const demoMu = useMutation({
     mutationFn: () => apiFetch<CrmConfigResponse>('/company/crm/demo/enable', { method: 'POST' }),
     onSuccess: () => {
       toast.success('Demo CRM connected — trigger a transaction to see it land below');
+      setDemoOpen(false);
+      setConfirmText('');
       qc.invalidateQueries({ queryKey: INBOX_KEY });
+      qc.invalidateQueries({ queryKey: CONFIG_KEY });
     },
     onError: (err) => toast.error(err instanceof ApiClientError ? err.message : 'Failed'),
   });
 
   const usingDemo = !!cfg?.demoUrl && cfg.apiUrl === cfg.demoUrl;
+  // A real (non-demo) CRM is configured and would be destroyed by enabling demo.
+  const hasRealCrm = !usingDemo && (!!cfg?.apiUrl || !!cfg?.hasApiKey);
+  const CONFIRM_WORD = 'REPLACE';
+  const confirmOk = !hasRealCrm || confirmText.trim().toUpperCase() === CONFIRM_WORD;
 
   return (
     <Card>
@@ -159,12 +180,86 @@ function ConfigCard() {
               type="button"
               variant="secondary"
               disabled={demoMu.isPending}
-              onClick={() => demoMu.mutate()}
+              onClick={() => {
+                setConfirmText('');
+                setDemoOpen(true);
+              }}
             >
               {demoMu.isPending ? 'Enabling…' : 'Try the demo CRM'}
             </Button>
           </div>
         </form>
+
+        <Dialog
+          open={demoOpen}
+          onOpenChange={(v) => {
+            setDemoOpen(v);
+            if (!v) setConfirmText('');
+          }}
+        >
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>
+                {hasRealCrm ? 'Replace your CRM with the demo?' : 'Enable the demo CRM?'}
+              </DialogTitle>
+              <DialogDescription>
+                The demo CRM is a built-in preview that receives your events so you can see the
+                integration live.
+              </DialogDescription>
+            </DialogHeader>
+
+            {hasRealCrm ? (
+              <div className="space-y-3">
+                <div className="space-y-1 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+                  <p className="font-semibold">This overwrites your real CRM connection.</p>
+                  <p>
+                    Your current CRM URL{cfg?.hasApiKey ? ' and API key' : ''} will be replaced by
+                    the demo and <strong>cannot be recovered</strong> — your live CRM stops
+                    receiving events until you re-enter and save its details.
+                  </p>
+                  {cfg?.apiUrl && (
+                    <p className="break-all font-mono text-xs">Current: {cfg.apiUrl}</p>
+                  )}
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="demoConfirm">
+                    Type <span className="font-mono font-semibold">{CONFIRM_WORD}</span> to confirm
+                  </Label>
+                  <Input
+                    id="demoConfirm"
+                    autoComplete="off"
+                    value={confirmText}
+                    onChange={(e) => setConfirmText(e.target.value)}
+                    placeholder={CONFIRM_WORD}
+                  />
+                </div>
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                You don&apos;t have a CRM connected, so nothing will be lost. You can switch to your
+                own CRM anytime by entering its URL and key above.
+              </p>
+            )}
+
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setDemoOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                variant={hasRealCrm ? 'destructive' : 'default'}
+                disabled={!confirmOk || demoMu.isPending}
+                onClick={() => demoMu.mutate()}
+              >
+                {demoMu.isPending
+                  ? 'Enabling…'
+                  : hasRealCrm
+                    ? 'Replace with demo CRM'
+                    : 'Enable demo CRM'}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
         {usingDemo && (
           <p className="text-xs text-muted-foreground">
             You&apos;re pointed at the built-in demo CRM. Trigger a transaction (e.g. create a Whish

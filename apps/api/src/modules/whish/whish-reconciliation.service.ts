@@ -19,9 +19,13 @@ export class WhishReconciliationService implements OnApplicationBootstrap, OnMod
   constructor(private readonly payments: WhishPaymentsService) {}
 
   onApplicationBootstrap(): void {
+    this.logger.log(`Whish reconciliation poller STARTED (every ${INTERVAL_MS / 1000}s)`);
     this.timer = setInterval(() => void this.tick(), INTERVAL_MS);
     // Don't keep the event loop alive just for this ticker.
     this.timer.unref?.();
+    // Run once promptly at boot so a just-deployed instance doesn't wait a full
+    // interval before its first reconcile.
+    void this.tick();
   }
 
   onModuleDestroy(): void {
@@ -33,9 +37,10 @@ export class WhishReconciliationService implements OnApplicationBootstrap, OnMod
     this.running = true;
     try {
       const r = await this.payments.reconcileStalePayments();
-      if (r.checked || r.expired) {
-        this.logger.log(`Reconciliation: checked ${r.checked}, expired ${r.expired}`);
-      }
+      // Heartbeat: log EVERY tick (even when it finds nothing) so we can confirm
+      // the poller is actually running in each environment — a silent poller was
+      // indistinguishable from a missing one.
+      this.logger.log(`Reconciliation tick: checked ${r.checked}, expired ${r.expired}`);
     } catch (err) {
       this.logger.warn(`Reconciliation tick failed: ${(err as Error).message}`);
     } finally {
