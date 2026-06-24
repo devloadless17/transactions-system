@@ -121,6 +121,45 @@ export class NotificationsService {
     } catch (e) {
       this.logger.warn(`notify requestResolved failed: ${(e as Error).message}`);
     }
+    // The request is now handled, so the admin "new request" notification is no
+    // longer actionable — clear it for every admin. Independent of the company
+    // notify above (own try/catch) so a company-notify hiccup can't leave a
+    // stale, already-handled request sitting in the admin queue.
+    await this.clearAdminRequest({ flow: p.flow, entityId: p.entityId });
+  }
+
+  /**
+   * A request was resolved (approved / rejected / cancelled) → its ADMIN "new
+   * request" notification is no longer something any admin must action. Dismiss
+   * it for EVERY admin so it leaves all of their active lists and unread badges,
+   * while staying reviewable under the "Cleared" filter. Best-effort, post-commit:
+   * a failure here never blocks or rolls back the money operation.
+   */
+  async clearAdminRequest(p: { flow: NotificationFlow; entityId: string }): Promise<void> {
+    try {
+      await this.prisma.runAsAdmin(async (tx) => {
+        const notif = await tx.notification.findFirst({
+          where: { scope: 'ADMIN', flow: p.flow, event: 'REQUESTED', entityId: p.entityId },
+          select: { id: true },
+        });
+        if (!notif) return;
+        // Upsert a dismissed read marker for every platform admin (company_id IS
+        // NULL). ON CONFLICT updates an existing read row so an admin who had
+        // merely opened (read, not cleared) it also gets it cleared.
+        await tx.$executeRawUnsafe(
+          `INSERT INTO notification_reads (id, notification_id, user_id, company_id, dismissed_at)
+           SELECT gen_random_uuid(), $1::uuid, u.id, NULL, now()
+           FROM users u
+           WHERE u.company_id IS NULL AND u.role IN ('SUPER_ADMIN', 'ADMIN_OPERATOR', 'BACKOFFICE')
+           ON CONFLICT (notification_id, user_id) DO UPDATE SET dismissed_at = now()`,
+          notif.id,
+        );
+      });
+      // Nudge every admin tab to recompute its bell.
+      this.realtime.admin(['notifications']);
+    } catch (e) {
+      this.logger.warn(`notify clearAdminRequest failed: ${(e as Error).message}`);
+    }
   }
 
   private async create(input: CreateInput): Promise<void> {

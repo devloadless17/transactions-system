@@ -492,6 +492,7 @@ model Withdrawal {
   cancelledById     String?          @map("cancelled_by_id") @db.Uuid
   cancelledBy       User?            @relation("WithdrawalCancelledBy", fields: [cancelledById], references: [id], onDelete: Restrict)
   notes             String?
+  adminNotes        String?          @map("admin_notes")
   metadata          Json?            @db.JsonB
   processedAt       DateTime?        @map("processed_at") @db.Timestamptz(6)
   createdAt         DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -530,6 +531,7 @@ model Payout {
   cancelledById     String?          @map("cancelled_by_id") @db.Uuid
   cancelledBy       User?            @relation("PayoutCancelledBy", fields: [cancelledById], references: [id], onDelete: Restrict)
   notes             String?
+  adminNotes        String?          @map("admin_notes")
   metadata          Json?            @db.JsonB
   processedAt       DateTime?        @map("processed_at") @db.Timestamptz(6)
   createdAt         DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -567,6 +569,7 @@ model Load {
   cancelledById     String?          @map("cancelled_by_id") @db.Uuid
   cancelledBy       User?            @relation("LoadCancelledBy", fields: [cancelledById], references: [id], onDelete: Restrict)
   notes             String?
+  adminNotes        String?          @map("admin_notes")
   metadata          Json?            @db.JsonB
   processedAt       DateTime?        @map("processed_at") @db.Timestamptz(6)
   createdAt         DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)

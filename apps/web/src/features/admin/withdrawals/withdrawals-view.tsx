@@ -13,6 +13,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { DataTable, type Column } from '@/components/ui/data-table';
 import { Pagination } from '@/components/ui/pagination';
+import { CopyText } from '@/components/copy-text';
 import {
   Dialog,
   DialogContent,
@@ -99,8 +100,12 @@ export function AdminWithdrawalsView({
   const companyName = (id: string) => companyNames.get(id) ?? id.slice(0, 8);
 
   // Money columns: full admins see Amount (gross = net+fee) / Fee / Net; back
-  // office sees only a single net "Amount" — the money that actually leaves to
-  // the recipient (what they must pay), with no fee/gross exposed.
+  // office sees only a single "Amount" — the money they physically handle — with
+  // no fee/gross breakdown. For OUTbound flows (withdrawal/payout) that's the NET
+  // they pay the recipient (platform keeps the fee). For INbound LOADS the company
+  // hands them the GROSS (net + fee) to credit the wallet — back office collects
+  // the fee too — so they must see the full total, not the net.
+  const isLoad = config.noun === 'load';
   const moneyColumns: Column<WithdrawalResponse>[] = backoffice
     ? [
         {
@@ -108,17 +113,19 @@ export function AdminWithdrawalsView({
           header: 'Amount',
           align: 'right',
           className: 'font-mono',
-          cell: (w) => trimAmount(w.netAmount),
+          cell: (w) => trimAmount(isLoad ? w.totalAmount : w.netAmount),
         },
       ]
     : [
         {
-          key: 'amount',
-          header: 'Amount',
+          key: 'gross',
+          // Gross = net + fee (the full amount; an ON_TOP fee makes it exceed the
+          // requested amount). For a LOAD this is what the operator collects from
+          // the company (fee included) — the actionable figure — so emphasise it;
+          // for a withdrawal/payout it's just the wallet charge, so de-emphasise.
+          header: isLoad ? 'To collect' : 'Gross',
           align: 'right',
-          className: 'font-mono',
-          // Total charged = net + fee (Amount = Net + Fee on every row; for an
-          // ON_TOP fee this exceeds the requested amount).
+          className: isLoad ? 'font-mono font-semibold' : 'font-mono text-xs text-muted-foreground',
           cell: (w) => trimAmount(w.totalAmount),
         },
         {
@@ -130,9 +137,13 @@ export function AdminWithdrawalsView({
         },
         {
           key: 'net',
-          header: 'Net',
+          // Net = what the wallet nets out. For a withdrawal/payout this is what
+          // the operator pays the recipient (the system already deducted the fee)
+          // — the actionable figure — so emphasise it; for a LOAD it's just what
+          // gets credited to the wallet, so de-emphasise.
+          header: isLoad ? 'Credited' : 'To pay',
           align: 'right',
-          className: 'font-mono text-xs',
+          className: isLoad ? 'font-mono text-xs text-muted-foreground' : 'font-mono font-semibold',
           cell: (w) => trimAmount(w.netAmount),
         },
       ];
@@ -141,12 +152,25 @@ export function AdminWithdrawalsView({
     { key: 'company', header: 'Company', cell: (w) => companyName(w.companyId) },
     ...moneyColumns,
     {
-      key: 'recipient',
+      // Recipient name + phone as their own columns, surfaced directly in the row
+      // so the operator never has to open a request to see who to pay. Each is
+      // click-to-copy (stops row-click so it won't open the review dialog).
+      key: 'recipientName',
       header: 'Recipient',
       className: 'text-xs',
-      // Surface who to pay (name + phone) directly in the row, so the operator
-      // doesn't have to open each request to see the recipient details.
-      cell: (w) => recipientSummary(w.payoutDetails),
+      cell: (w) => <CopyText value={recipientName(w.payoutDetails)} label="Name" />,
+    },
+    {
+      key: 'recipientPhone',
+      header: 'Phone',
+      className: 'text-xs',
+      cell: (w) => (
+        <CopyText
+          value={recipientContact(w.payoutDetails)}
+          label="Phone"
+          className="max-w-[20ch] font-mono"
+        />
+      ),
     },
     { key: 'currency', header: 'Currency', cell: (w) => w.currency },
     {
@@ -297,6 +321,10 @@ function ReviewDialog({
     review?.action === 'reject' ||
     (review?.action === 'approve' && externalReference.trim().length >= 2);
 
+  // Loads are INbound (collect gross from the company, credit net); withdrawals
+  // and payouts are OUTbound (pay net to the recipient, fee already taken).
+  const isLoad = config.noun === 'load';
+
   return (
     <Dialog open={!!review} onOpenChange={(v) => !v && onClose()}>
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
@@ -307,7 +335,13 @@ function ReviewDialog({
           <DialogDescription>
             {review &&
               (review.action === 'approve'
-                ? `Send ${trimAmount(review.withdrawal.netAmount)} ${review.withdrawal.currency} to the recipient out-of-band, then record the reference here.`
+                ? isLoad
+                  ? // INbound: the operator collects the gross (incl. fee) from the
+                    // company, then approves to credit the wallet with the net.
+                    `Confirm you received ${trimAmount(review.withdrawal.totalAmount)} ${review.withdrawal.currency} (fee included) from the company, then approve to credit their wallet with ${trimAmount(review.withdrawal.netAmount)} ${review.withdrawal.currency}.`
+                  : // OUTbound: the operator pays the recipient the net; the system
+                    // already deducted the fee from the wallet.
+                    `Pay the recipient ${trimAmount(review.withdrawal.netAmount)} ${review.withdrawal.currency} out-of-band (the fee is already deducted), then record the reference here.`
                 : `Reserved ${trimAmount(review.withdrawal.totalAmount)} ${review.withdrawal.currency} returns to available.`)}
           </DialogDescription>
         </DialogHeader>
@@ -315,18 +349,39 @@ function ReviewDialog({
         {review && (
           <div className="space-y-1 rounded-md border bg-muted/30 p-3 text-sm">
             {backoffice ? (
-              // Back office only sees the net amount to hand over — no fee/gross.
+              // Back office sees a single amount, no fee/gross breakdown. Loads are
+              // INbound: they COLLECT the gross (net + fee) from the company to
+              // credit the wallet. Withdrawals/payouts are OUTbound: they PAY the
+              // net to the recipient (the platform keeps the fee).
               <div className="flex items-center justify-between">
-                <span className="text-xs text-muted-foreground">Amount to pay</span>
+                <span className="text-xs text-muted-foreground">
+                  {config.noun === 'load' ? 'Amount to collect' : 'Amount to pay'}
+                </span>
                 <span className="font-mono">
-                  {trimAmount(review.withdrawal.netAmount)} {review.withdrawal.currency}
+                  {trimAmount(
+                    config.noun === 'load'
+                      ? review.withdrawal.totalAmount
+                      : review.withdrawal.netAmount,
+                  )}{' '}
+                  {review.withdrawal.currency}
                 </span>
               </div>
             ) : (
               <>
+                {/* Directional labels + emphasis so the operator sees at a glance
+                    WHAT to physically handle: gross for a load (collect), net for
+                    a withdrawal/payout (pay). The other figures stay for context. */}
                 <div className="flex items-center justify-between">
-                  <span className="text-xs text-muted-foreground">Amount</span>
-                  <span className="font-mono">
+                  <span
+                    className={
+                      isLoad
+                        ? 'text-xs font-medium text-foreground'
+                        : 'text-xs text-muted-foreground'
+                    }
+                  >
+                    {isLoad ? 'To collect from company' : 'Charged to wallet'}
+                  </span>
+                  <span className={isLoad ? 'font-mono font-semibold' : 'font-mono'}>
                     {trimAmount(review.withdrawal.totalAmount)} {review.withdrawal.currency}
                   </span>
                 </div>
@@ -341,8 +396,16 @@ function ReviewDialog({
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-xs text-muted-foreground">Net</span>
-                  <span className="font-mono">
+                  <span
+                    className={
+                      isLoad
+                        ? 'text-xs text-muted-foreground'
+                        : 'text-xs font-medium text-foreground'
+                    }
+                  >
+                    {isLoad ? 'Credited to wallet' : 'To pay recipient'}
+                  </span>
+                  <span className={isLoad ? 'font-mono' : 'font-mono font-semibold'}>
                     {trimAmount(review.withdrawal.netAmount)} {review.withdrawal.currency}
                   </span>
                 </div>
@@ -355,7 +418,7 @@ function ReviewDialog({
         {review && review.withdrawal.notes && (
           <div className="space-y-1 rounded-md border bg-muted/30 p-3 text-sm">
             <span className="text-xs font-medium text-muted-foreground">Note from company</span>
-            <p className="break-words whitespace-pre-wrap">{review.withdrawal.notes}</p>
+            <CopyText value={review.withdrawal.notes} label="Note" multiline className="text-sm" />
           </div>
         )}
 
@@ -424,19 +487,37 @@ function capitalize(s: string): string {
 // One-line "who to pay" for the list row. For cash/Whish that's name + phone
 // (what the operator usually needs); other methods fall back to their key
 // identifier. Returns '—' when there are no payout details.
-function recipientSummary(d: WithdrawalResponse['payoutDetails']): string {
-  if (!d) return '—';
+// The recipient's NAME (primary identifier), per payout method.
+function recipientName(d: WithdrawalResponse['payoutDetails']): string {
+  if (!d) return '';
   switch (d.method) {
     case PayoutMethod.CASH:
     case PayoutMethod.WISH:
-      return d.recipientPhone ? `${d.recipientName} · ${d.recipientPhone}` : d.recipientName;
+      return d.recipientName;
     case PayoutMethod.CRYPTO:
-      return `${d.network}: ${d.walletAddress.slice(0, 12)}…`;
+      return d.network;
     case PayoutMethod.BANK_TRANSFER:
-      return `${d.accountHolder} · ${d.bankName}`;
+      return d.accountHolder;
     case PayoutMethod.OTHER:
       return d.description;
     default:
-      return '—';
+      return '';
+  }
+}
+
+// The recipient's CONTACT detail (phone for cash/Whish; the wallet/bank for the
+// other methods). Shown in the "Phone" column and copied whole on click.
+function recipientContact(d: WithdrawalResponse['payoutDetails']): string {
+  if (!d) return '';
+  switch (d.method) {
+    case PayoutMethod.CASH:
+    case PayoutMethod.WISH:
+      return d.recipientPhone ?? '';
+    case PayoutMethod.CRYPTO:
+      return d.walletAddress;
+    case PayoutMethod.BANK_TRANSFER:
+      return d.bankName;
+    default:
+      return '';
   }
 }

@@ -208,7 +208,8 @@ export class WithdrawalsService {
           status: 'COMPLETED',
           approvedById,
           processedAt: new Date(),
-          notes: input.notes ?? w.notes,
+          // Admin's note → admin_notes; NEVER overwrite the company's request note.
+          adminNotes: input.notes ?? undefined,
           externalReference: input.externalReference,
         },
       });
@@ -306,7 +307,10 @@ export class WithdrawalsService {
           approvedById: opts.approvedById ?? undefined,
           cancelledById: opts.cancelledById ?? undefined,
           processedAt: new Date(),
-          notes: notes ?? w.notes,
+          // An admin REJECT records its reason in admin_notes (shown to the
+          // company); a company self-cancel leaves it untouched. The company's
+          // original request note in `notes` is never overwritten.
+          adminNotes: opts.status === 'REJECTED' ? (notes ?? undefined) : undefined,
         },
       });
     });
@@ -314,6 +318,8 @@ export class WithdrawalsService {
     await this.invalidateAnalytics();
     this.notify(row.companyId);
     // Only an admin reject notifies the company; a company self-cancel doesn't.
+    // Either way the request is resolved, so clear the admin queue notification
+    // (requestResolved does this for REJECTED; do it directly for CANCELLED).
     if (opts.status === 'REJECTED') {
       void this.notifications.requestResolved({
         flow: 'WITHDRAWAL',
@@ -323,6 +329,8 @@ export class WithdrawalsService {
         amount: row.amount.toString(),
         currency: row.currency,
       });
+    } else {
+      void this.notifications.clearAdminRequest({ flow: 'WITHDRAWAL', entityId: row.id });
     }
     return mapWithdrawal(row);
   }
@@ -398,6 +406,7 @@ function mapWithdrawal(row: {
   requestedById: string | null;
   approvedById: string | null;
   notes: string | null;
+  adminNotes: string | null;
   processedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
@@ -420,6 +429,7 @@ function mapWithdrawal(row: {
     requestedById: row.requestedById,
     approvedById: row.approvedById,
     notes: row.notes,
+    adminNotes: row.adminNotes,
     processedAt: row.processedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),

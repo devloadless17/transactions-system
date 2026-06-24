@@ -45,7 +45,10 @@ export const payoutResponseSchema = z.object({
   externalReference: z.string().nullable(),
   requestedById: z.string().uuid().nullable(),
   approvedById: z.string().uuid().nullable(),
+  // Company's own request note (immutable) vs the admin's action note (e.g. the
+  // rejection reason shown to the company) — kept separate, neither overwrites.
   notes: z.string().nullable(),
+  adminNotes: z.string().nullable(),
   processedAt: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),

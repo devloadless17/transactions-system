@@ -68,7 +68,11 @@ export function NotificationsView({ scope }: { scope: 'admin' | 'company' }) {
     setPage(1);
   }
   function openItem(n: NotificationResponse) {
-    if (!n.read) markRead.mutate(n.id);
+    // Company notifications are informational — opening one means it's been seen,
+    // so clear it (unless we're already viewing the Cleared tab). Admin items are
+    // work items: opening only marks read; they clear when handled server-side.
+    if (scope === 'company' && filter !== 'cleared') dismiss.mutate(n.id);
+    else if (!n.read) markRead.mutate(n.id);
     router.push(n.link);
   }
 

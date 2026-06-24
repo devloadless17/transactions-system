@@ -53,6 +53,11 @@ import type { Env } from './config/env.schema';
             limit: cfg.get('RATE_LIMIT_MAX', { infer: true }),
           },
         ],
+        // Escape hatch for the e2e suite ONLY: a serial run does dozens of real
+        // logins and would trip the strict per-IP login limit. Off by default —
+        // prod/staging never set THROTTLE_DISABLED, so the limiter is always live
+        // there. (Skips both the global and the per-route @Throttle limits.)
+        skipIf: () => process.env.THROTTLE_DISABLED === 'true',
         // Shared across instances + restart-durable (the in-memory default
         // makes the login/refresh limits per-process — `limit × instances`).
         storage: new RedisThrottlerStorage(cfg.get('REDIS_URL', { infer: true })),

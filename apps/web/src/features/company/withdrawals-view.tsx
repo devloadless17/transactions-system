@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -22,6 +22,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { DataTable, type Column } from '@/components/ui/data-table';
 import { Pagination } from '@/components/ui/pagination';
+import { CopyText } from '@/components/copy-text';
 import {
   Dialog,
   DialogContent,
@@ -262,6 +263,8 @@ export function WithdrawalsView({ config }: { config: ProcessConfig }) {
   // /app/withdrawals?selected=<id>): fetch that exact row by id and open its
   // detail panel once, so the user lands directly on it instead of scanning the
   // list. By-id fetch works even when the row isn't on the current page/filter.
+  const router = useRouter();
+  const pathname = usePathname();
   const searchParams = useSearchParams();
   const selectedId = searchParams.get('selected');
   const selectedQ = useQuery({
@@ -277,12 +280,25 @@ export function WithdrawalsView({ config }: { config: ProcessConfig }) {
     }
   }, [selectedId, selectedQ.data]);
 
+  // Close the detail drawer cleanly: drop the row AND strip ?selected from the
+  // URL, so a refresh won't re-pop the drawer and re-clicking the SAME
+  // notification re-opens it (the deep-link effect keys off `selected` changing).
+  function closeDetail() {
+    setDetail(null);
+    openedRef.current = null;
+    if (searchParams.get('selected')) {
+      const sp = new URLSearchParams(searchParams.toString());
+      sp.delete('selected');
+      router.replace(`${pathname}${sp.toString() ? `?${sp.toString()}` : ''}`, { scroll: false });
+    }
+  }
+
   const cancelMu = useMutation({
     mutationFn: (id: string) =>
       apiFetch<WithdrawalResponse>(`${config.endpoint}/${id}/cancel`, { method: 'POST', body: {} }),
     onSuccess: () => {
       toast.success(`${capitalize(config.noun)} cancelled`);
-      setDetail(null);
+      closeDetail();
       qc.invalidateQueries({ queryKey: config.queryKey });
       qc.invalidateQueries({ queryKey: ['company', 'wallets'] });
     },
@@ -291,6 +307,11 @@ export function WithdrawalsView({ config }: { config: ProcessConfig }) {
 
   const rows = listQ.data?.data ?? [];
 
+  // A load is money coming INTO the wallet (the company pays in, the wallet is
+  // credited the net); a withdrawal/payout is money going OUT (the wallet is
+  // debited, the recipient gets the net). Directional column labels keep the
+  // figures unambiguous instead of a bare "Amount".
+  const isLoad = config.noun === 'load';
   const columns: Column<WithdrawalResponse>[] = [
     {
       key: 'created',
@@ -300,11 +321,11 @@ export function WithdrawalsView({ config }: { config: ProcessConfig }) {
     },
     {
       key: 'amount',
-      header: 'Amount',
+      // Gross = net + fee. For a load it's what the company pays in; for a
+      // withdrawal/payout it's what's debited from the wallet.
+      header: isLoad ? 'You pay' : 'Debited',
       align: 'right',
       className: 'font-mono',
-      // Total charged = net + fee (so Amount = Net + Fee on every row). For an
-      // ON_TOP fee this exceeds the requested amount.
       cell: (w) => trimAmount(w.totalAmount),
     },
     {
@@ -316,7 +337,9 @@ export function WithdrawalsView({ config }: { config: ProcessConfig }) {
     },
     {
       key: 'net',
-      header: 'Net',
+      // Net = gross − fee. For a load it's what lands in the wallet; for a
+      // withdrawal/payout it's what the recipient receives.
+      header: isLoad ? 'Credited' : 'Recipient gets',
       align: 'right',
       className: 'font-mono text-xs',
       cell: (w) => trimAmount(w.netAmount),
@@ -414,7 +437,7 @@ export function WithdrawalsView({ config }: { config: ProcessConfig }) {
         }}
       />
 
-      <DetailDrawer withdrawal={detail} onClose={() => setDetail(null)} />
+      <DetailDrawer withdrawal={detail} noun={config.noun} onClose={closeDetail} />
     </div>
   );
 }
@@ -709,21 +732,55 @@ function Field({
 // ============================================================
 function DetailDrawer({
   withdrawal,
+  noun,
   onClose,
 }: {
   withdrawal: WithdrawalResponse | null;
+  noun: string;
   onClose: () => void;
 }) {
+  // A load is money coming INTO the wallet (you pay in, the wallet is credited);
+  // a withdrawal/payout is money going OUT (the wallet is debited, the recipient
+  // receives the net). Directional labels avoid a bare, ambiguous "Amount".
+  const isLoad = noun === 'load';
+  const rejected = withdrawal?.status === 'REJECTED';
   return (
     <Sheet open={!!withdrawal} onOpenChange={(v) => !v && onClose()}>
       <SheetContent className="overflow-y-auto">
         <SheetHeader>
           <SheetTitle>Detail</SheetTitle>
-          <SheetDescription className="font-mono text-xs">{withdrawal?.id}</SheetDescription>
+          <SheetDescription className="font-mono text-xs">
+            {withdrawal && <CopyText value={withdrawal.id} label="ID" />}
+          </SheetDescription>
         </SheetHeader>
 
         {withdrawal && (
           <div className="space-y-6 text-sm">
+            {/* The admin's note (admin_notes) — ALWAYS surfaced first so the
+                company sees it immediately, whatever the outcome. Destructive
+                colour + "rejection reason" wording when declined; a neutral
+                accent for any other note (e.g. recorded on approval). Kept
+                separate from the company's own note shown in the summary below. */}
+            {withdrawal.adminNotes && (
+              <div
+                className={
+                  rejected
+                    ? 'space-y-1 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-destructive'
+                    : 'space-y-1 rounded-md border border-primary/30 bg-primary/5 p-3'
+                }
+              >
+                <span className="text-xs font-semibold uppercase">
+                  {rejected ? `Reason for ${capitalize(noun)} rejection` : 'Note from admin'}
+                </span>
+                <CopyText
+                  value={withdrawal.adminNotes}
+                  label="Note"
+                  multiline
+                  className="text-sm"
+                />
+              </div>
+            )}
+
             <section className="space-y-2">
               <h3 className="text-xs font-medium uppercase text-muted-foreground">Summary</h3>
               <DetailRow
@@ -733,7 +790,7 @@ function DetailDrawer({
                 }
               />
               <DetailRow
-                label="Amount"
+                label={isLoad ? 'You pay' : 'Debited from wallet'}
                 value={`${trimAmount(withdrawal.totalAmount)} ${withdrawal.currency}`}
                 mono
               />
@@ -747,7 +804,7 @@ function DetailDrawer({
                 />
               )}
               <DetailRow
-                label="Net"
+                label={isLoad ? 'Credited to wallet' : 'Recipient receives'}
                 value={`${trimAmount(withdrawal.netAmount)} ${withdrawal.currency}`}
                 mono
               />
@@ -763,9 +820,21 @@ function DetailDrawer({
                 }
               />
               {withdrawal.externalReference && (
-                <DetailRow label="External reference" value={withdrawal.externalReference} mono />
+                <DetailRow
+                  label="External reference"
+                  value={<CopyText value={withdrawal.externalReference} label="Reference" />}
+                  mono
+                />
               )}
-              {withdrawal.notes && <DetailRow label="Notes" value={withdrawal.notes} />}
+              {/* The company's own request note — always shown (kept intact even
+                  after an admin actions the request). The admin's note is shown in
+                  the prominent callout at the top, not repeated here. */}
+              {withdrawal.notes && (
+                <DetailRow
+                  label="Your note"
+                  value={<CopyText value={withdrawal.notes} label="Note" multiline />}
+                />
+              )}
             </section>
 
             <PayoutInstructions w={withdrawal} />
@@ -830,8 +899,15 @@ export function PayoutInstructions({ w }: { w: WithdrawalResponse }) {
 function KV({ k, v, mono }: { k: string; v: string; mono?: boolean }) {
   return (
     <div className="flex items-start justify-between gap-3">
-      <span className="text-xs text-muted-foreground">{k}</span>
-      <span className={`text-right text-sm ${mono ? 'font-mono break-all' : ''}`}>{v}</span>
+      <span className="shrink-0 text-xs text-muted-foreground">{k}</span>
+      {/* Every payout-instruction field is click-to-copy (recipient, phone,
+          wallet, IBAN, …) in both the admin review dialog and the company drawer. */}
+      <CopyText
+        value={v}
+        label={k}
+        multiline
+        className={`text-sm ${mono ? 'font-mono break-all' : ''}`}
+      />
     </div>
   );
 }

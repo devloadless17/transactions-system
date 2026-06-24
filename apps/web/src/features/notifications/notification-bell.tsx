@@ -127,7 +127,12 @@ export function NotificationBell({ scope }: { scope: 'admin' | 'company' }) {
   });
 
   function openItem(n: NotificationResponse) {
-    if (!n.read) markRead.mutate(n.id);
+    // Company notifications are purely informational: opening one means the user
+    // has now seen it, so clear it (it deep-links to the item's detail panel).
+    // Admin notifications are work items — opening one only marks it read; it's
+    // cleared when the request is actually handled (approve/reject) server-side.
+    if (scope === 'company') dismiss.mutate(n.id);
+    else if (!n.read) markRead.mutate(n.id);
     setOpen(false);
     router.push(n.link);
   }

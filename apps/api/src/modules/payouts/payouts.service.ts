@@ -200,7 +200,8 @@ export class PayoutsService {
           status: 'COMPLETED',
           approvedById,
           processedAt: new Date(),
-          notes: input.notes ?? p.notes,
+          // Admin's note → admin_notes; NEVER overwrite the company's request note.
+          adminNotes: input.notes ?? undefined,
           externalReference: input.externalReference,
         },
       });
@@ -296,13 +297,19 @@ export class PayoutsService {
           approvedById: opts.approvedById ?? undefined,
           cancelledById: opts.cancelledById ?? undefined,
           processedAt: new Date(),
-          notes: notes ?? p.notes,
+          // An admin REJECT records its reason in admin_notes (shown to the
+          // company); a company self-cancel leaves it untouched. The company's
+          // original request note in `notes` is never overwritten.
+          adminNotes: opts.status === 'REJECTED' ? (notes ?? undefined) : undefined,
         },
       });
     });
 
     await this.invalidateAnalytics();
     this.notify(row.companyId);
+    // Admin reject notifies the company; a company self-cancel doesn't. Either
+    // way the request is resolved, so clear the admin queue notification
+    // (requestResolved handles REJECTED; clear directly for CANCELLED).
     if (opts.status === 'REJECTED') {
       void this.notifications.requestResolved({
         flow: 'PAYOUT',
@@ -312,6 +319,8 @@ export class PayoutsService {
         amount: row.amount.toString(),
         currency: row.currency,
       });
+    } else {
+      void this.notifications.clearAdminRequest({ flow: 'PAYOUT', entityId: row.id });
     }
     return mapPayout(row);
   }
@@ -387,6 +396,7 @@ function mapPayout(row: {
   requestedById: string | null;
   approvedById: string | null;
   notes: string | null;
+  adminNotes: string | null;
   processedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
@@ -409,6 +419,7 @@ function mapPayout(row: {
     requestedById: row.requestedById,
     approvedById: row.approvedById,
     notes: row.notes,
+    adminNotes: row.adminNotes,
     processedAt: row.processedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),

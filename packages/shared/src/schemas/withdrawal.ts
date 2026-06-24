@@ -65,7 +65,11 @@ export const withdrawalResponseSchema = z.object({
   externalReference: z.string().nullable(),
   requestedById: z.string().uuid().nullable(),
   approvedById: z.string().uuid().nullable(),
+  // The company's own request note (set once, immutable).
   notes: z.string().nullable(),
+  // The admin's note recorded when actioning the request (e.g. the rejection
+  // reason shown to the company). Kept separate so neither overwrites the other.
+  adminNotes: z.string().nullable(),
   processedAt: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
