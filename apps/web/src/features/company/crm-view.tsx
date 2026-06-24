@@ -44,9 +44,9 @@ export function CrmView() {
         <h1 className="text-2xl font-semibold">CRM integration</h1>
         <p className="text-sm text-muted-foreground">
           We POST every transaction to your CRM as its status changes — pending when it starts, then
-          completed once it settles (and failed / expired / reversed). Records are matched by a
-          stable <span className="font-mono">reference</span>, so your CRM updates the same row in
-          place.
+          completed once it settles (or failed if it doesn&apos;t go through / lapses, and
+          reversed). Records are matched by a stable <span className="font-mono">reference</span>,
+          so your CRM updates the same row in place.
         </p>
       </div>
 
@@ -301,8 +301,10 @@ x-crm-event: transaction.completed
   const events: [string, string][] = [
     ['transaction.pending', 'A transaction was created and is awaiting settlement.'],
     ['transaction.completed', 'It settled — funds credited.'],
-    ['transaction.failed', 'The transaction did not go through.'],
-    ['transaction.expired', 'A pending collection lapsed unpaid.'],
+    [
+      'transaction.failed',
+      'The collection did not go through — declined, or the payment link lapsed unpaid. (Whish reports no separate “expired”, so both arrive as failed.)',
+    ],
     ['transaction.reversed', 'A settled transaction was reversed.'],
   ];
   return (

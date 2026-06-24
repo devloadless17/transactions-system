@@ -646,11 +646,12 @@ export class WhishPaymentsService {
 
   /**
    * Background reconciliation: pull status for stale PENDING payments (a
-   * callback may have been missed), and give up on very old ones (EXPIRED).
+   * callback may have been missed), and give up on very old ones (→ FAILED,
+   * since Whish has no "expired" status to distinguish a lapse from a decline).
    * No-op when Whish isn't configured. Returns a small summary for logging.
    */
-  async reconcileStalePayments(): Promise<{ checked: number; expired: number }> {
-    if (!this.whish.isConfigured()) return { checked: 0, expired: 0 };
+  async reconcileStalePayments(): Promise<{ checked: number; timedOut: number }> {
+    if (!this.whish.isConfigured()) return { checked: 0, timedOut: 0 };
 
     const now = Date.now();
     const youngerThan = new Date(now - RECONCILE_MIN_AGE_MS);
@@ -680,28 +681,29 @@ export class WhishPaymentsService {
       );
     }
 
-    let expired = 0;
+    let timedOut = 0;
     for (const p of rows) {
       const tooOld = now - p.createdAt.getTime() > EXPIRE_AGE_MS;
       try {
-        // Always ask Whish for the authoritative status first — never expire a
+        // Always ask Whish for the authoritative status first — never time out a
         // payment that actually settled just before the cutoff.
         const result = await this.reconcile(p);
-        // Never EXPIRE a paid-but-unsettled payment: Whish HAS the customer's
-        // money but we couldn't book it (e.g. its commission rule changed). It
-        // stays PENDING + needsAttention for an operator; aging it out to EXPIRED
-        // would silently hide real collected money. Only expire truly-abandoned
-        // links.
+        // Whish only ever reports success | failed | pending — it has NO "expired"
+        // status, so we can't tell a decline from a lapsed link. A link still
+        // PENDING past our cutoff is one Whish never resolved; we collapse it into
+        // the same terminal as a Whish 'failed' (one non-success signal for the
+        // CRM). Never do this to a paid-but-unsettled link (needsAttention): Whish
+        // HAS the money but we couldn't book it — that needs an operator, not a
+        // silent fail.
         if (tooOld && result.status === WhishPaymentStatus.PENDING && !result.needsAttention) {
-          // Guard the EXPIRE on the row STILL being PENDING. reconcile() acted on a
-          // stale snapshot; a success callback may have settled this payment to PAID
-          // in the meantime. Without the status guard (and there is no DB
-          // status-transition trigger on whish_payments) we would overwrite a real
-          // PAID payment to EXPIRED — a self-contradictory, corrupt record.
+          // Guard on the row STILL being PENDING. reconcile() acted on a stale
+          // snapshot; a success callback may have settled it to PAID meanwhile.
+          // Without the status guard we'd overwrite a real PAID payment — a
+          // self-contradictory, corrupt record.
           const res = await this.prisma.runAsAdmin((tx) =>
             tx.whishPayment.updateMany({
               where: { id: p.id, status: WhishPaymentStatus.PENDING },
-              data: { status: WhishPaymentStatus.EXPIRED },
+              data: { status: WhishPaymentStatus.FAILED },
             }),
           );
           if (res.count === 1) {
@@ -712,9 +714,9 @@ export class WhishPaymentsService {
               amount: p.amount.toString(),
               currency: p.currency.trim(),
               invoice: p.invoice,
-              event: 'transaction.expired',
+              event: 'transaction.failed',
             });
-            expired++;
+            timedOut++;
           }
         }
       } catch (err) {
@@ -723,7 +725,7 @@ export class WhishPaymentsService {
         this.logger.warn(`Reconcile failed for payment ${p.externalId}: ${(err as Error).message}`);
       }
     }
-    return { checked: rows.length, expired };
+    return { checked: rows.length, timedOut };
   }
 
   /** Admin: list Whish payments across all companies. */

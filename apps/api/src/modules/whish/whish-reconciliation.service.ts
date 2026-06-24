@@ -40,7 +40,7 @@ export class WhishReconciliationService implements OnApplicationBootstrap, OnMod
       // Heartbeat: log EVERY tick (even when it finds nothing) so we can confirm
       // the poller is actually running in each environment — a silent poller was
       // indistinguishable from a missing one.
-      this.logger.log(`Reconciliation tick: checked ${r.checked}, expired ${r.expired}`);
+      this.logger.log(`Reconciliation tick: checked ${r.checked}, timed-out→failed ${r.timedOut}`);
     } catch (err) {
       this.logger.warn(`Reconciliation tick failed: ${(err as Error).message}`);
     } finally {
