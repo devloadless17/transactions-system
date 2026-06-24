@@ -18,17 +18,23 @@ const CREATE_RESPONSE = `{
   "success": true,
   "statusCode": 201,
   "data": {
+    "id": "6729acd0-16c4-40ff-8474-4ef864538587",
+    "companyId": "b3f1c2d4-...-e9",
     "externalId": "1781018591",
     "status": "PENDING",
     "amount": "25.00",
     "currency": "USD",
     "invoice": "Order #4821",
     "collectUrl": "https://whish.money/collect/7kEo2a7",
+    "payerPhoneNumber": null,
     "transactionId": null,
+    "needsAttention": false,
     "paidAt": null,
     "createdAt": "2026-06-04T12:00:00.000Z"
   }
-}`;
+}
+# needsAttention=true means Whish took the money but settlement into your wallet
+# failed (e.g. a commission rule changed) — contact support if you see it.`;
 
 const STATUS_CURL = `curl ${API_BASE}/integrations/whish/payments/1781018591 \\
   -H "Authorization: Bearer tsk_<company-key>"
@@ -137,7 +143,6 @@ function ApiSection() {
       'FAILED',
       'The payment did not go through — declined, or the link lapsed unpaid. (Whish reports no separate “expired”, so both arrive as FAILED.)',
     ],
-    ['EXPIRED', '(Legacy) older lapsed links. New lapsed links report as FAILED.'],
   ];
   return (
     <Card>

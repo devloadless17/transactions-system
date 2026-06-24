@@ -132,5 +132,6 @@ We are the _outbound_ caller (the inverse of source-key ingest).
   examples, webhook config) pages; **admin → Whish Pay** (balance + all payments).
 
 **Partner integration docs:** see [`docs/`](docs/README.md) — the
-[Integration Guide](docs/rival-integration-guide.md) covers both the Ingest API (for
-sources) and the CRM webhooks (for companies).
+[Companies Integration Guide](docs/companies-integration-docs.md) (company API + CRM
+webhooks, for companies) and the [Sources Integration Guide](docs/sources-integration-docs.md)
+(the Ingest API, for sources).

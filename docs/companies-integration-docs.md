@@ -1381,7 +1381,7 @@ Returned (under the `data` envelope) by every create / get / refresh call.
 | `id`               | string (UUID)             | Internal payment id. URL reference for the `company/whish/payments/*` family.                                                                                                                                                                                                   |
 | `companyId`        | string (UUID)             | Your company id.                                                                                                                                                                                                                                                                |
 | `externalId`       | string (numeric)          | The **reference**. Serialized as a string (DB bigint). URL reference for the `integrations/whish/*` family. Also the `whish:<externalId>` transaction reference once settled.                                                                                                   |
-| `status`           | enum                      | `PENDING` \| `PAID` \| `FAILED` \| `EXPIRED`. See lifecycle below.                                                                                                                                                                                                              |
+| `status`           | enum                      | `PENDING` \| `PAID` \| `FAILED`. See lifecycle below. (`EXPIRED` is a legacy value retained only for old records; lapsed links now report as `FAILED`.)                                                                                                                         |
 | `amount`           | string (decimal)          | The amount to collect, as a decimal string.                                                                                                                                                                                                                                     |
 | `currency`         | string                    | Always `USD` by default.                                                                                                                                                                                                                                                        |
 | `invoice`          | string                    | Your free-text invoice/description (1–200 chars).                                                                                                                                                                                                                               |
@@ -1396,12 +1396,11 @@ Returned (under the `data` envelope) by every create / get / refresh call.
 
 #### Status lifecycle
 
-| Status    | Meaning                                                                                                                                                            |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `PENDING` | Link created; customer has not completed payment yet. (Also the transient state while a paid-but-unsettled payment awaits operator action — see `needsAttention`.) |
-| `PAID`    | Confirmed by Whish; a ledger transaction was written and your wallet credited. Terminal.                                                                           |
-| `FAILED`  | Whish reported failure, or the link could not be created. Terminal.                                                                                                |
-| `EXPIRED` | Never paid; closed out by background reconciliation after ~24h. Terminal.                                                                                          |
+| Status    | Meaning                                                                                                                                                             |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PENDING` | Link created; customer has not completed payment yet. (Also the transient state while a paid-but-unsettled payment awaits operator action — see `needsAttention`.)  |
+| `PAID`    | Confirmed by Whish; a ledger transaction was written and your wallet credited. Terminal.                                                                            |
+| `FAILED`  | Whish reported failure, the link lapsed unpaid, or the link could not be created. Terminal. (Whish reports no separate "expired" — a lapsed link is also `FAILED`.) |
 
 ---
 
@@ -1651,7 +1650,7 @@ curl "https://portal.rivalpayments.com/v1/company/whish/payments?status=PAID&pag
 
 ## Outbound CRM Notifications (Webhooks)
 
-The platform pushes every transaction's status lifecycle to **your own CRM** via an outbound HTTP `POST`, so you never have to poll. You configure one callback URL + the API key your CRM expects; we then `POST` a small JSON event each time a transaction changes state (`PENDING → COMPLETED`, or `FAILED / EXPIRED / REVERSED`). Delivery is **durable and retried** — an outage on your side cannot silently drop an event.
+The platform pushes every transaction's status lifecycle to **your own CRM** via an outbound HTTP `POST`, so you never have to poll. You configure one callback URL + the API key your CRM expects; we then `POST` a small JSON event each time a transaction changes state (`PENDING → COMPLETED`, or `FAILED / REVERSED`). Delivery is **durable and retried** — an outage on your side cannot silently drop an event.
 
 There are **two independent outbound channels** — do not confuse them:
 
@@ -1797,7 +1796,7 @@ x-crm-signature: t=1750579200,sha256=9f86d0818...e3b0c44298fc1c149afbf4c8996fb
 
 | Field         | Type              | Notes                                                                                                                                                                                                                                                             |
 | ------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `event`       | enum              | One of `transaction.pending`, `transaction.completed`, `transaction.failed`, `transaction.expired`, `transaction.reversed`.                                                                                                                                       |
+| `event`       | enum              | One of `transaction.pending`, `transaction.completed`, `transaction.failed`, `transaction.reversed`. (A lapsed/expired Whish link arrives as `transaction.failed` — there is no separate `expired` event.)                                                        |
 | `reference`   | string            | **Stable idempotency/correlation key**, identical across the whole lifecycle of one logical transaction. Format `"<source>:<externalTransactionId>"` (e.g. `whish:184523`). **Upsert your CRM record on this** — the same reference moves PENDING → COMPLETED → … |
 | `sentAt`      | string (ISO-8601) | When we built this delivery attempt's payload.                                                                                                                                                                                                                    |
 | `transaction` | object            | See below.                                                                                                                                                                                                                                                        |
@@ -1806,13 +1805,13 @@ x-crm-signature: t=1750579200,sha256=9f86d0818...e3b0c44298fc1c149afbf4c8996fb
 
 | Field                   | Type                     | Notes                                                                                                                                                              |
 | ----------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `id`                    | string (uuid) \| null    | Ledger transaction id. **`null`** for Whish `PENDING`/`FAILED`/`EXPIRED` events (no ledger row exists yet); populated on `COMPLETED`/`REVERSED`.                   |
-| `status`                | enum                     | `PENDING` \| `COMPLETED` \| `FAILED` \| `EXPIRED` \| `REVERSED` — derived from `event`.                                                                            |
+| `id`                    | string (uuid) \| null    | Ledger transaction id. **`null`** for Whish `PENDING`/`FAILED` events (no ledger row exists yet); populated on `COMPLETED`/`REVERSED`.                             |
+| `status`                | enum                     | `PENDING` \| `COMPLETED` \| `FAILED` \| `REVERSED` — derived from `event`.                                                                                         |
 | `source`                | string                   | Source code (e.g. `whish`, or your source's code).                                                                                                                 |
 | `externalTransactionId` | string                   | Your/the provider's id for this transaction.                                                                                                                       |
 | `amount`                | string (decimal)         | Gross amount, decimal string (never a float).                                                                                                                      |
 | `currency`              | string                   | ISO currency code.                                                                                                                                                 |
-| `netAmount`             | string (decimal) \| null | Amount after platform fee. **`null` until `COMPLETED`** (fee unknown earlier; always null for Whish PENDING/FAILED/EXPIRED).                                       |
+| `netAmount`             | string (decimal) \| null | Amount after platform fee. **`null` until `COMPLETED`** (fee unknown earlier; always null for Whish PENDING/FAILED).                                               |
 | `commissionAmount`      | string (decimal) \| null | Platform fee. Same null rule as `netAmount`. NOTE: unlike the source-facing _ingest_ response, CRM events to the **company** intentionally **do** include fee/net. |
 | `customer`              | string \| null           | Customer name/label, if known.                                                                                                                                     |
 | `tradingAccount`        | string \| null           | The trading account (internally `target`). Null for Whish lifecycle events.                                                                                        |
@@ -1822,13 +1821,12 @@ x-crm-signature: t=1750579200,sha256=9f86d0818...e3b0c44298fc1c149afbf4c8996fb
 
 #### Which events fire, and when
 
-| Event                   | Trigger (verified in code)                                                                                             | `id` | net/commission |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------------------- | ---- | -------------- |
-| `transaction.pending`   | A Whish payment link is minted (`POST /integrations/whish/payments`).                                                  | null | null           |
-| `transaction.completed` | Any transaction is ingested/settled into the ledger (incl. Whish settlement, same `reference` as its earlier pending). | uuid | present        |
-| `transaction.failed`    | Whish link creation fails, or a Whish payment is marked FAILED via callback.                                           | null | null           |
-| `transaction.expired`   | A PENDING Whish link expires (background reconciler).                                                                  | null | null           |
-| `transaction.reversed`  | A ledger transaction is reversed.                                                                                      | uuid | present        |
+| Event                   | Trigger (verified in code)                                                                                                                                                  | `id` | net/commission |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- | -------------- |
+| `transaction.pending`   | A Whish payment link is minted (`POST /integrations/whish/payments`).                                                                                                       | null | null           |
+| `transaction.completed` | Any transaction is ingested/settled into the ledger (incl. Whish settlement, same `reference` as its earlier pending).                                                      | uuid | present        |
+| `transaction.failed`    | Whish link creation fails, or a Whish payment is marked FAILED — via the failure callback or the background reconciler (Whish reported failure, or the link lapsed unpaid). | null | null           |
+| `transaction.reversed`  | A ledger transaction is reversed.                                                                                                                                           | uuid | present        |
 
 > A Whish payment therefore typically produces two events with the **same `reference`** (`whish:<externalId>`): `transaction.pending` then `transaction.completed`. Upsert on `reference` so it becomes one evolving record, not two.
 

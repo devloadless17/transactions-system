@@ -115,10 +115,10 @@ export function GettingStartedView() {
                 is at <code className="font-mono">data.data</code> alongside a total count.
               </li>
               <li>
-                <strong className="text-foreground">Two exceptions</strong> return raw bodies (no
+                <strong className="text-foreground">A few endpoints</strong> return raw bodies (no
                 envelope): CSV exports (
-                <code className="font-mono font-semibold text-foreground">/export.csv</code>) and
-                the health check.
+                <code className="font-mono font-semibold text-foreground">/export.csv</code>), the
+                health check, and inbound webhook/callback acknowledgements.
               </li>
             </ul>
           </div>
@@ -150,7 +150,7 @@ export function GettingStartedView() {
         <CardHeader>
           <CardTitle>Rate limits</CardTitle>
           <CardDescription>
-            The Whish integration endpoints allow{' '}
+            The per-key integration endpoints (Whish Pay and transaction ingest) allow{' '}
             <strong>300 requests per 60 seconds, per key</strong>. Go over and you get a{' '}
             <code className="font-mono">429 RATE_LIMITED</code> with the limit echoed in{' '}
             <code className="font-mono">error.details</code>. The rest of the API sits behind a

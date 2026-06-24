@@ -277,6 +277,8 @@ function ContractCard() {
 Authorization: Bearer <your-api-key>
 Content-Type: application/json
 x-crm-event: transaction.completed
+x-crm-timestamp: 1781018591
+x-crm-signature: t=1781018591,sha256=<hex>
 
 {
   "event": "transaction.completed",
@@ -315,8 +317,15 @@ x-crm-event: transaction.completed
           Each event is a POST carrying the full transaction and a stable{' '}
           <span className="font-mono">reference</span>. Upsert by reference so one record moves
           PENDING → COMPLETED in place. We send your saved key as{' '}
-          <span className="font-mono">Authorization: Bearer &lt;key&gt;</span> and name the event in
-          the <span className="font-mono">x-crm-event</span> header.
+          <span className="font-mono">Authorization: Bearer &lt;key&gt;</span>, name the event in
+          the <span className="font-mono">x-crm-event</span> header, and sign every request:{' '}
+          <span className="font-mono">
+            x-crm-signature: t=&lt;unixSeconds&gt;,sha256=&lt;hex&gt;
+          </span>{' '}
+          is an HMAC-SHA256 of{' '}
+          <span className="font-mono">&#123;timestamp&#125;.&#123;rawBody&#125;</span> keyed by your
+          API key (timestamp also in <span className="font-mono">x-crm-timestamp</span>) — recompute
+          and compare it, and reject stale timestamps, to verify the call came from us.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
