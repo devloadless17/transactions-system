@@ -16,7 +16,11 @@ import { ValidationError } from '../../common/errors/domain.error';
 import { assertListOffset } from '../../common/pagination';
 import { TransactionLogsService } from '../transaction-logs/transaction-logs.service';
 import { WhishSessionStore } from './whish-session.store';
-import { WhishW2WClient, WhishSessionExpiredError } from './whish-w2w.client';
+import { WhishW2WClient, WhishSessionExpiredError, type W2WSubmitResult } from './whish-w2w.client';
+
+// One submit + at most one drift-corrected retry. The retry only ever fires on a
+// clean `failed` (money did not move), so this can never double-send.
+const MAX_TRANSFER_ATTEMPTS = 2;
 
 /** Where a transfer originated — admin tool now, withdrawal auto-transfer later. */
 export interface TransferOrigin {
@@ -131,25 +135,72 @@ export class WhishTransfersService {
       note: reference,
     });
 
-    // 5. Call Whish and interpret the outcome.
-    let result;
-    try {
-      result = await this.client.submit({ phone, amount: amount2dp, note: reference, session });
-    } catch (err) {
-      if (err instanceof WhishSessionExpiredError) {
-        await this.session.markAuthFailure();
-        await this.fail(row.id, 'session_expired', err.message, redactedRequest);
-        this.txLogs.record({
-          kind: 'WHISH_TRANSFER',
-          reference,
-          statusCode: 502,
-          success: false,
-          request: redactedRequest,
-          response: { error: 'session_expired' },
+    // 5. Call Whish, self-healing the (possibly phone-shared) session counter.
+    //    Whish echoes its expected next counter in the response header; we sync
+    //    to it after every call. If that value is well ahead of what we sent —
+    //    the signature of the phone advancing the session between our calls — we
+    //    retry ONCE with the corrected counter. The retry is gated to a clean
+    //    `failed` (money did NOT move), so it can never double-send.
+    let activeSession = session;
+    let result: W2WSubmitResult | undefined;
+    for (let attempt = 1; attempt <= MAX_TRANSFER_ATTEMPTS; attempt++) {
+      let r: W2WSubmitResult;
+      try {
+        r = await this.client.submit({
+          phone,
+          amount: amount2dp,
+          note: reference,
+          session: activeSession,
         });
+      } catch (err) {
+        if (err instanceof WhishSessionExpiredError) {
+          await this.session.markAuthFailure();
+          await this.fail(row.id, 'session_expired', err.message, redactedRequest);
+          this.txLogs.record({
+            kind: 'WHISH_TRANSFER',
+            reference,
+            statusCode: 502,
+            success: false,
+            request: redactedRequest,
+            response: { error: 'session_expired' },
+          });
+        }
+        throw err;
       }
-      throw err;
+      result = r;
+      const nextCounter = r.outcome === 'unreachable' ? null : r.nextCounter;
+
+      // Sync our stored counter to Whish's authoritative next value.
+      if (nextCounter != null) {
+        await this.session.healCounter(nextCounter);
+      }
+
+      // Retry once on counter drift (Whish wants a counter > sent + 1).
+      const counterDrift =
+        r.outcome === 'failed' &&
+        nextCounter != null &&
+        nextCounter > activeSession.sessionCounter + 1;
+      if (counterDrift && attempt < MAX_TRANSFER_ATTEMPTS) {
+        const healed = await this.session.nextRequest();
+        if (healed) {
+          this.logger.warn(
+            `Whish W2W ${reference}: counter drift (sent ${activeSession.sessionCounter}, ` +
+              `Whish next ${nextCounter}) — retrying once with corrected counter`,
+          );
+          activeSession = healed;
+          await this.prisma.runAsAdmin((tx) =>
+            tx.whishTransfer.update({
+              where: { id: row.id },
+              data: { sessionCounter: healed.sessionCounter },
+            }),
+          );
+          continue;
+        }
+      }
+      break;
     }
+    // The bounded loop always assigns `result` on its first iteration.
+    if (!result) throw new ValidationError('Whish W2W transfer produced no result');
 
     if (result.outcome === 'unreachable') {
       // Money MAY have moved — never FAILED (would invite a dangerous resend).

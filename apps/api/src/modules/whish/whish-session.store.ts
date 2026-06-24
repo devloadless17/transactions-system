@@ -96,6 +96,29 @@ export class WhishSessionStore {
     };
   }
 
+  /**
+   * Sync the stored counter to the value Whish just reported in its response
+   * header. `reportedNext` is Whish's view of the NEXT counter to send, so the
+   * value last accepted is `reportedNext - 1` — that's what we store, because
+   * `nextRequest()` sends the post-increment value (stored + 1).
+   *
+   * Authoritative (set, not max): Whish's number is the source of truth, so this
+   * also pulls us BACK down if a stale/too-high local counter ever drifted ahead
+   * — without that a single bad seed could wedge the session permanently. Any
+   * resulting collision with a concurrent send is caught by the drift retry.
+   * Best-effort: a heal write must never fail the transfer it just completed.
+   */
+  async healCounter(reportedNext: number): Promise<void> {
+    const lastAccepted = reportedNext - 1;
+    if (!Number.isFinite(lastAccepted) || lastAccepted < 0) return;
+    await this.prisma
+      .runAsAdmin(
+        (tx) =>
+          tx.$executeRaw`UPDATE "whish_session_credentials" SET "session_counter" = ${lastAccepted}, "updated_at" = now() WHERE "id" = ${ROW_ID}`,
+      )
+      .catch((err) => this.logger.warn(`Whish W2W counter heal failed: ${(err as Error).message}`));
+  }
+
   /** Replace the captured session (rotate creds, reseed the counter). */
   async updateCredentials(input: UpdateWhishSessionInput): Promise<WhishSessionStatus> {
     const key = this.requireKey();

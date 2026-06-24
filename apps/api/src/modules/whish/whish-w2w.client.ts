@@ -49,6 +49,10 @@ export type W2WSubmitResult =
       outcome: 'success' | 'failed';
       httpStatus: number;
       traceId: string | null;
+      // The `sessionCounter` Whish echoes in the response header — its view of the
+      // NEXT counter to send. We sync our stored counter to this so a session
+      // shared with the phone self-corrects instead of drifting. null if absent.
+      nextCounter: number | null;
       code: string | null;
       message: string | null;
       response: unknown;
@@ -118,6 +122,7 @@ export class WhishW2WClient {
 
     const code = json.code ?? null;
     const message = json.dialog?.message ?? null;
+    const nextCounter = this.parseCounter(res.headers.get('sessionCounter'));
 
     // Expired/invalid session — Whish answers 401/403 or a "signed out" dialog.
     if (this.isAuthFailure(res.status, code, message)) {
@@ -129,7 +134,13 @@ export class WhishW2WClient {
     }
 
     const outcome: 'success' | 'failed' = res.ok && json.status === true ? 'success' : 'failed';
-    return { outcome, httpStatus: res.status, traceId, code, message, response: json };
+    return { outcome, httpStatus: res.status, traceId, nextCounter, code, message, response: json };
+  }
+
+  private parseCounter(raw: string | null): number | null {
+    if (raw == null) return null;
+    const n = Number.parseInt(raw, 10);
+    return Number.isFinite(n) ? n : null;
   }
 
   /** The non-secret request body, safe to persist in the admin log. */
