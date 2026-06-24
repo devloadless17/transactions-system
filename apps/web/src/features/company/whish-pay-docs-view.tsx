@@ -61,7 +61,7 @@ export function WhishPayDocsView() {
 
       <p className="rounded-md border-l-4 border-primary bg-primary/5 p-3 text-xs text-muted-foreground">
         <strong className="text-foreground">No need to poll:</strong> every payment — pending, paid,
-        failed, or expired — is pushed to your CRM automatically (see the{' '}
+        or failed — is pushed to your CRM automatically (see the{' '}
         <Link href="/app/documentation?tab=crm" className="text-primary hover:underline">
           CRM
         </Link>{' '}
@@ -84,7 +84,7 @@ function HowItWorks() {
     ],
     [
       'Stay in sync',
-      'The transaction is pushed to your CRM at every step (pending, then paid / failed / expired), so your records update on their own.',
+      'The transaction is pushed to your CRM at every step (pending, then paid or failed), so your records update on their own.',
     ],
   ];
   return (
@@ -133,8 +133,11 @@ function ApiSection() {
   const statuses: [string, string][] = [
     ['PENDING', 'Link created, waiting for the customer to pay.'],
     ['PAID', 'Customer paid — settled into your wallet (net of commission); transactionId is set.'],
-    ['FAILED', 'The payment did not go through.'],
-    ['EXPIRED', 'The link lapsed unpaid.'],
+    [
+      'FAILED',
+      'The payment did not go through — declined, or the link lapsed unpaid. (Whish reports no separate “expired”, so both arrive as FAILED.)',
+    ],
+    ['EXPIRED', '(Legacy) older lapsed links. New lapsed links report as FAILED.'],
   ];
   return (
     <Card>
