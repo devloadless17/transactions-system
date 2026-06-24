@@ -660,11 +660,11 @@ export class WhishPaymentsService {
         where: {
           status: WhishPaymentStatus.PENDING,
           createdAt: { lt: youngerThan },
-          // Exclude paid-but-unsettled / paid-after-expiry rows: they are kept
-          // PENDING deliberately and need an OPERATOR (re-add a commission rule),
-          // not re-polling. Operators act on them via the admin "needs attention"
-          // filter instead.
-          NOT: { metadata: { path: ['needsAttention'], equals: true } },
+          // NOTE: the needs-attention exclusion is done in JS below, NOT here.
+          // A SQL `NOT (metadata->needsAttention = true)` silently DROPS every row
+          // whose metadata is NULL — which is every normal pending payment — so
+          // this query was returning nothing and the poller never reconciled
+          // anything (failed/expired only ever resolved on a manual refresh).
         },
         orderBy: { createdAt: 'asc' },
         // Poll the whole stale-pending set (bounded), not just the oldest 50 —
@@ -683,6 +683,12 @@ export class WhishPaymentsService {
 
     let timedOut = 0;
     for (const p of rows) {
+      // Skip paid-but-unsettled rows: Whish HAS the customer's money but we
+      // couldn't book it (e.g. its commission rule changed) — they stay PENDING +
+      // needsAttention for an operator, not for re-polling. (Done here, not in the
+      // SQL WHERE, so a NULL metadata — every normal pending payment — is NOT
+      // dropped; that bug is what kept the poller from selecting anything.)
+      if ((p.metadata as { needsAttention?: boolean } | null)?.needsAttention === true) continue;
       const tooOld = now - p.createdAt.getTime() > EXPIRE_AGE_MS;
       try {
         // Always ask Whish for the authoritative status first — never time out a
