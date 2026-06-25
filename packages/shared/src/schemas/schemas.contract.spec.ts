@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { CommissionType, FeeApplication, FeeOperationType, SourceFeeChannel } from '../enums';
 import { setSourceFeeRulesSchema } from './source';
 import { createCommissionRuleGroupSchema } from './commission';
+import { crmEventPayloadSchema } from './crm';
 
 // These specs lock the DELIBERATELY-OPPOSITE boundary conventions of the two
 // tier ladders so a future refactor can't silently flip one to match the other:
@@ -172,5 +173,90 @@ describe('createCommissionRuleGroupSchema (commission tier ladder)', () => {
     if (!result.success) {
       expect(result.error.issues.some((i) => /PERCENTAGE value/.test(i.message))).toBe(true);
     }
+  });
+});
+
+// The CRM webhook body carries EXACTLY ONE of `transaction` (deposit events) or
+// `withdrawal` (withdrawal events), selected by the event family. Lock that
+// invariant so a future change can't let a body go out empty or double-bodied.
+describe('crmEventPayloadSchema (deposit vs withdrawal body)', () => {
+  const depositBody = {
+    id: '0f8d2c4e-1a2b-4c3d-9e8f-7a6b5c4d3e2f',
+    status: 'COMPLETED',
+    source: 'whish',
+    externalTransactionId: '184523',
+    amount: '100.00',
+    currency: 'USD',
+    netAmount: '97.50',
+    commissionAmount: '2.50',
+    customer: 'John Doe',
+    tradingAccount: null,
+    phone: '+9613000000',
+    note: 'Invoice #5512',
+    occurredAt: '2026-06-22T09:19:58.000Z',
+  };
+  const withdrawalBody = {
+    id: 'd4f2a1c0-5e6f-4a7b-8c9d-0e1f2a3b4c5d',
+    status: 'COMPLETED',
+    totalAmount: '500.00',
+    feeAmount: '5.00',
+    netAmount: '495.00',
+    currency: 'USD',
+    payoutMethod: 'CASH',
+    recipient: 'Acme Ltd',
+    externalReference: 'WIRE-88231',
+    note: 'Weekly settlement',
+    adminNote: null,
+    occurredAt: '2026-06-22T09:19:58.000Z',
+  };
+
+  it('ACCEPTS a deposit event carrying only `transaction`', () => {
+    const result = crmEventPayloadSchema.safeParse({
+      event: 'transaction.completed',
+      reference: 'whish:184523',
+      sentAt: '2026-06-22T09:20:00.123Z',
+      transaction: depositBody,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('ACCEPTS a withdrawal event carrying only `withdrawal`', () => {
+    const result = crmEventPayloadSchema.safeParse({
+      event: 'withdrawal.completed',
+      reference: 'withdrawal:d4f2a1c0-5e6f-4a7b-8c9d-0e1f2a3b4c5d',
+      sentAt: '2026-06-22T09:20:00.123Z',
+      withdrawal: withdrawalBody,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('REJECTS an event carrying BOTH `transaction` and `withdrawal`', () => {
+    const result = crmEventPayloadSchema.safeParse({
+      event: 'withdrawal.completed',
+      reference: 'withdrawal:d4f2a1c0-5e6f-4a7b-8c9d-0e1f2a3b4c5d',
+      sentAt: '2026-06-22T09:20:00.123Z',
+      transaction: depositBody,
+      withdrawal: withdrawalBody,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('REJECTS an event carrying NEITHER body', () => {
+    const result = crmEventPayloadSchema.safeParse({
+      event: 'transaction.pending',
+      reference: 'whish:184523',
+      sentAt: '2026-06-22T09:20:00.123Z',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('REJECTS an unknown event type', () => {
+    const result = crmEventPayloadSchema.safeParse({
+      event: 'payout.completed',
+      reference: 'payout:1',
+      sentAt: '2026-06-22T09:20:00.123Z',
+      withdrawal: withdrawalBody,
+    });
+    expect(result.success).toBe(false);
   });
 });

@@ -78,26 +78,38 @@ const WITHDRAWAL_RESPONSE = `{
     "status": "PENDING",
     "amount": "500.00",
     "currency": "USD",
+    "feeAmount": "5.00",            // the platform fee on this payout
+    "feeApplication": "DEDUCTED",   // DEDUCTED or ON_TOP (see below)
+    "netAmount": "495.00",          // what the recipient receives
+    "totalAmount": "500.00",        // what leaves your wallet (net + fee)
     "payoutMethod": "CASH",
     "createdAt": "2026-06-10T10:00:00.000Z"
   }
-}`;
+}
+# Fees are returned up front. DEDUCTED → recipient gets netAmount (amount − fee).
+# ON_TOP → recipient gets the full amount and the fee is added, so totalAmount = amount + fee.`;
 
 const STATUS_CURL = `curl ${API_BASE}/company/withdrawals/<id> \\
   -H "Authorization: Bearer tsk_<company-key>"
 
-# Response — the live status, plus the admin's reason if it was rejected.
+# Response — the live status and the full fee breakdown.
 # (Same path shape for payouts and loads: /company/payouts/<id>, /company/loads/<id>.)
 {
   "success": true,
   "statusCode": 200,
   "data": {
     "id": "d4f2a1c0-...",
-    "status": "REJECTED",
+    "status": "COMPLETED",
     "amount": "500.00",
     "currency": "USD",
-    "notes": "Weekly settlement",                // your original request note (never overwritten)
-    "adminNotes": "Beneficiary name mismatch",   // the reason — set when REJECTED
+    "feeAmount": "5.00",                 // the platform fee we charged
+    "feeApplication": "DEDUCTED",
+    "netAmount": "495.00",               // what the recipient received
+    "totalAmount": "500.00",             // what left your wallet (net + fee)
+    "payoutMethod": "CASH",
+    "externalReference": "WIRE-88231",   // our proof we sent it (set on approval)
+    "notes": "Weekly settlement",        // your original request note (never overwritten)
+    "adminNotes": null,                  // set to the reason if a request is REJECTED
     "createdAt": "2026-06-10T10:00:00.000Z",
     "processedAt": "2026-06-10T11:30:00.000Z"
   }
@@ -219,6 +231,18 @@ export function CompanyApiView() {
               desc="You cancelled it (only possible while PENDING). Reserved funds released."
             />
           </div>
+          <p className="mt-4 rounded-md border-l-4 border-primary bg-primary/5 p-3 text-xs text-muted-foreground">
+            <strong className="text-foreground">Withdrawals push to your CRM.</strong> Every
+            withdrawal status change — pending, completed, rejected, cancelled — is delivered to
+            your{' '}
+            <Link href="/app/documentation?tab=crm" className="text-primary hover:underline">
+              CRM webhook
+            </Link>{' '}
+            in real time, carrying the same <code className="font-mono">feeAmount</code> /{' '}
+            <code className="font-mono">netAmount</code> /{' '}
+            <code className="font-mono">totalAmount</code> breakdown, so you never have to poll.
+            Payouts and loads are managed over this API only — read their status with the GET below.
+          </p>
           <p className="mt-4 text-xs font-medium text-foreground">Check a request&apos;s status</p>
           <p className="mt-1 text-xs text-muted-foreground">
             Fetch a single request by id anytime to read its current{' '}

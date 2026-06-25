@@ -16,7 +16,7 @@ import {
   setCrmConfigSchema,
   type CrmConfigResponse,
   type CrmDemoEventResponse,
-  type CrmTransactionStatus,
+  type CrmEventStatus,
   type SetCrmConfigInput,
 } from '@app/shared';
 import { Button } from '@/components/ui/button';
@@ -31,10 +31,11 @@ import { ApiClientError } from '@/lib/api';
 const CONFIG_KEY = ['company', 'crm', 'config'] as const;
 const INBOX_KEY = ['company', 'crm'] as const;
 
-function statusVariant(s: CrmTransactionStatus) {
+function statusVariant(s: CrmEventStatus) {
   if (s === 'COMPLETED') return 'success' as const;
-  if (s === 'FAILED' || s === 'EXPIRED' || s === 'REVERSED') return 'destructive' as const;
-  return 'secondary' as const;
+  if (s === 'FAILED' || s === 'EXPIRED' || s === 'REVERSED' || s === 'REJECTED')
+    return 'destructive' as const;
+  return 'secondary' as const; // PENDING, CANCELLED
 }
 
 export function CrmView() {
@@ -43,10 +44,11 @@ export function CrmView() {
       <div>
         <h1 className="text-2xl font-semibold">CRM integration</h1>
         <p className="text-sm text-muted-foreground">
-          We POST every transaction to your CRM as its status changes — pending when it starts, then
-          completed once it settles (or failed if it doesn&apos;t go through / lapses, and
-          reversed). Records are matched by a stable <span className="font-mono">reference</span>,
-          so your CRM updates the same row in place.
+          We POST every deposit and withdrawal to your CRM as its status changes — a deposit moves
+          pending → completed (or failed if it doesn&apos;t go through / lapses, and reversed); a
+          withdrawal moves pending → completed, rejected, or cancelled. Records are matched by a
+          stable <span className="font-mono">reference</span>, so your CRM updates the same row in
+          place. (Payouts and loads are managed over the API only — they are not pushed here.)
         </p>
       </div>
 
@@ -273,7 +275,7 @@ function ConfigCard() {
 }
 
 function ContractCard() {
-  const example = `POST https://your-crm.com/api/transactions
+  const depositExample = `POST https://your-crm.com/api/transactions
 Authorization: Bearer <your-api-key>
 Content-Type: application/json
 x-crm-event: transaction.completed
@@ -300,23 +302,63 @@ x-crm-signature: t=1781018591,sha256=<hex>
     "occurredAt": "2026-06-04T12:00:00.000Z"
   }
 }`;
-  const events: [string, string][] = [
-    ['transaction.pending', 'A transaction was created and is awaiting settlement.'],
+  const withdrawalExample = `x-crm-event: withdrawal.completed
+(same Authorization / x-crm-timestamp / x-crm-signature headers as above)
+
+{
+  "event": "withdrawal.completed",
+  "reference": "withdrawal:d4f2a1c0-…",
+  "sentAt": "2026-06-10T11:30:00.000Z",
+  "withdrawal": {
+    "id": "d4f2a1c0-…",
+    "status": "COMPLETED",
+    "totalAmount": "500.00",            // what left your wallet (net + fee)
+    "feeAmount": "5.00",                // the platform fee we charged
+    "netAmount": "495.00",              // what the recipient received
+    "currency": "USD",
+    "payoutMethod": "CASH",
+    "recipient": "Acme Ltd",
+    "externalReference": "WIRE-88231",  // our proof we sent it
+    "note": "Weekly settlement",        // your request note (immutable)
+    "adminNote": null,                  // the reason, when status is REJECTED
+    "occurredAt": "2026-06-10T11:30:00.000Z"
+  }
+}`;
+  const depositEvents: [string, string][] = [
+    ['transaction.pending', 'A deposit was created and is awaiting settlement.'],
     ['transaction.completed', 'It settled — funds credited.'],
     [
       'transaction.failed',
       'The collection did not go through — declined, or the payment link lapsed unpaid. (Whish reports no separate “expired”, so both arrive as failed.)',
     ],
-    ['transaction.reversed', 'A settled transaction was reversed.'],
+    ['transaction.reversed', 'A settled deposit was reversed.'],
+  ];
+  const withdrawalEvents: [string, string][] = [
+    ['withdrawal.pending', 'A withdrawal was requested and is awaiting admin approval.'],
+    [
+      'withdrawal.completed',
+      'Approved and paid out — carries the fee / net breakdown and the externalReference proof.',
+    ],
+    [
+      'withdrawal.rejected',
+      'An admin declined it — the reason is in adminNote. Reserved funds released.',
+    ],
+    [
+      'withdrawal.cancelled',
+      'The company cancelled its own pending request. Reserved funds released.',
+    ],
   ];
   return (
     <Card>
       <CardHeader>
         <CardTitle>What we send</CardTitle>
         <CardDescription>
-          Each event is a POST carrying the full transaction and a stable{' '}
-          <span className="font-mono">reference</span>. Upsert by reference so one record moves
-          PENDING → COMPLETED in place. We send your saved key as{' '}
+          Each event is a POST carrying a stable <span className="font-mono">reference</span> and
+          one body — <span className="font-mono">transaction</span> for deposit events (
+          <span className="font-mono">transaction.*</span>) or{' '}
+          <span className="font-mono">withdrawal</span> for withdrawal events (
+          <span className="font-mono">withdrawal.*</span>). Upsert by reference so one record moves
+          through its lifecycle in place. We send your saved key as{' '}
           <span className="font-mono">Authorization: Bearer &lt;key&gt;</span>, name the event in
           the <span className="font-mono">x-crm-event</span> header, and sign every request:{' '}
           <span className="font-mono">
@@ -329,20 +371,47 @@ x-crm-signature: t=1781018591,sha256=<hex>
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <CodeBlock code={example} />
         <div>
-          <p className="mb-1 text-xs font-medium uppercase text-muted-foreground">Events</p>
+          <p className="mb-1 text-xs font-medium uppercase text-muted-foreground">
+            Deposit event — body: <span className="font-mono lowercase">transaction</span>
+          </p>
+          <CodeBlock code={depositExample} />
+        </div>
+        <div>
+          <p className="mb-1 text-xs font-medium uppercase text-muted-foreground">
+            Withdrawal event — body: <span className="font-mono lowercase">withdrawal</span>
+          </p>
+          <CodeBlock code={withdrawalExample} />
+          <p className="mt-2 text-xs text-muted-foreground">
+            The withdrawal body mirrors the{' '}
+            <code className="font-mono">GET /company/withdrawals/:id</code> resource:{' '}
+            <code className="font-mono">totalAmount</code> is what left your wallet,{' '}
+            <code className="font-mono">feeAmount</code> the platform fee, and{' '}
+            <code className="font-mono">netAmount</code> what the recipient received —{' '}
+            <code className="font-mono">totalAmount − feeAmount = netAmount</code>.
+          </p>
+        </div>
+        <div>
+          <p className="mb-1 text-xs font-medium uppercase text-muted-foreground">Deposit events</p>
           <div className="space-y-1">
-            {events.map(([e, d]) => (
-              <div
-                key={e}
-                className="grid grid-cols-12 gap-2 border-b py-1.5 text-xs last:border-0"
-              >
-                <code className="col-span-4 font-mono">{e}</code>
-                <span className="col-span-8 text-muted-foreground">{d}</span>
-              </div>
+            {depositEvents.map(([e, d]) => (
+              <EventRow key={e} event={e} desc={d} />
             ))}
           </div>
+        </div>
+        <div>
+          <p className="mb-1 text-xs font-medium uppercase text-muted-foreground">
+            Withdrawal events
+          </p>
+          <div className="space-y-1">
+            {withdrawalEvents.map(([e, d]) => (
+              <EventRow key={e} event={e} desc={d} />
+            ))}
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Payouts and loads are <strong>not</strong> pushed to your CRM — manage those over the
+            REST API.
+          </p>
         </div>
         <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
           <p className="mb-1 font-medium text-foreground">Delivery &amp; retries</p>
@@ -352,6 +421,15 @@ x-crm-signature: t=1781018591,sha256=<hex>
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+function EventRow({ event, desc }: { event: string; desc: string }) {
+  return (
+    <div className="grid grid-cols-12 gap-2 border-b py-1.5 text-xs last:border-0">
+      <code className="col-span-5 font-mono">{event}</code>
+      <span className="col-span-7 text-muted-foreground">{desc}</span>
+    </div>
   );
 }
 
@@ -379,31 +457,41 @@ function DemoInbox() {
           </div>
         ) : (
           <ul className="space-y-2">
-            {events.map((e) => (
-              <li
-                key={e.reference}
-                className="flex items-center justify-between gap-3 rounded-md border p-3"
-              >
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-xs text-muted-foreground">{e.reference}</span>
-                    <Badge variant={statusVariant(e.status)}>{e.status}</Badge>
+            {events.map((e) => {
+              // Each event carries exactly one body — a deposit `transaction` or
+              // a `withdrawal`. Normalize both to a single display row.
+              const t = e.transaction;
+              const w = e.withdrawal;
+              const label = t ? (t.customer ?? t.note ?? '—') : (w?.recipient ?? w?.note ?? '—');
+              const kind = t ? t.source : `withdrawal · ${w?.payoutMethod ?? ''}`;
+              const amount = t ? t.amount : (w?.totalAmount ?? '');
+              const currency = t ? t.currency : (w?.currency ?? '');
+              return (
+                <li
+                  key={e.reference}
+                  className="flex items-center justify-between gap-3 rounded-md border p-3"
+                >
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-xs text-muted-foreground">{e.reference}</span>
+                      <Badge variant={statusVariant(e.status)}>{e.status}</Badge>
+                    </div>
+                    <div className="mt-1 truncate text-sm">
+                      {label}
+                      <span className="text-muted-foreground"> · {kind}</span>
+                    </div>
                   </div>
-                  <div className="mt-1 truncate text-sm">
-                    {e.transaction.customer ?? e.transaction.note ?? '—'}
-                    <span className="text-muted-foreground"> · {e.transaction.source}</span>
+                  <div className="shrink-0 text-right">
+                    <div className="font-mono text-sm">
+                      {amount} {currency}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {new Date(e.receivedAt).toLocaleTimeString()}
+                    </div>
                   </div>
-                </div>
-                <div className="shrink-0 text-right">
-                  <div className="font-mono text-sm">
-                    {e.transaction.amount} {e.transaction.currency}
-                  </div>
-                  <div className="text-xs text-muted-foreground">
-                    {new Date(e.receivedAt).toLocaleTimeString()}
-                  </div>
-                </div>
-              </li>
-            ))}
+                </li>
+              );
+            })}
           </ul>
         )}
       </CardContent>

@@ -5,6 +5,7 @@ import { LedgerModule } from '../ledger/ledger.module';
 import { WalletsModule } from '../wallets/wallets.module';
 import { AnalyticsModule } from '../analytics/analytics.module';
 import { CommissionsModule } from '../commissions/commissions.module';
+import { CrmModule } from '../crm/crm.module';
 import { WithdrawalsService } from './withdrawals.service';
 import { WithdrawalsController } from './withdrawals.controller';
 
@@ -16,6 +17,7 @@ import { WithdrawalsController } from './withdrawals.controller';
     WalletsModule,
     AnalyticsModule,
     CommissionsModule,
+    CrmModule,
   ],
   controllers: [WithdrawalsController],
   providers: [WithdrawalsService],

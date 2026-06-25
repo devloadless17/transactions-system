@@ -69,8 +69,12 @@ export function WhishPayDocsView() {
       <ApiSection />
 
       <p className="rounded-md border-l-4 border-primary bg-primary/5 p-3 text-xs text-muted-foreground">
-        <strong className="text-foreground">No need to poll:</strong> every payment — pending, paid,
-        or failed — is pushed to your CRM automatically (see the{' '}
+        <strong className="text-foreground">No need to poll:</strong> every payment is pushed to
+        your CRM automatically — <code className="font-mono">transaction.pending</code> when the
+        link is created, then <code className="font-mono">transaction.completed</code> once it
+        settles (or <code className="font-mono">transaction.failed</code> if it is declined or
+        lapses), all under the same <code className="font-mono">whish:&lt;externalId&gt;</code>{' '}
+        reference (see the{' '}
         <Link href="/app/documentation?tab=crm" className="text-primary hover:underline">
           CRM
         </Link>{' '}

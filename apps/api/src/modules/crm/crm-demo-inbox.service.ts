@@ -3,8 +3,8 @@ import type { CrmDemoEvent, Prisma } from '@app/db';
 import type {
   CrmDemoEventResponse,
   CrmEventPayload,
+  CrmEventStatus,
   CrmEventType,
-  CrmTransactionStatus,
 } from '@app/shared';
 import { PrismaService } from '../../database/prisma.service';
 import { RealtimeService } from '../realtime/realtime.service';
@@ -29,6 +29,9 @@ export class CrmDemoInboxService {
   ) {}
 
   async receive(companyId: string, payload: CrmEventPayload): Promise<void> {
+    // Exactly one body is present (transaction.* vs withdrawal.*); read the
+    // status from whichever it is.
+    const status = payload.transaction?.status ?? payload.withdrawal?.status ?? 'PENDING';
     await this.prisma.runAsAdmin((tx) =>
       tx.crmDemoEvent.upsert({
         where: { companyId_reference: { companyId, reference: payload.reference } },
@@ -36,12 +39,12 @@ export class CrmDemoInboxService {
           companyId,
           reference: payload.reference,
           eventType: payload.event,
-          status: payload.transaction.status,
+          status,
           payload: payload as unknown as Prisma.InputJsonValue,
         },
         update: {
           eventType: payload.event,
-          status: payload.transaction.status,
+          status,
           payload: payload as unknown as Prisma.InputJsonValue,
           receivedAt: new Date(),
         },
@@ -83,8 +86,9 @@ function mapDemoEvent(row: CrmDemoEvent): CrmDemoEventResponse {
   return {
     reference: row.reference,
     event: row.eventType as CrmEventType,
-    status: row.status as CrmTransactionStatus,
-    transaction: payload.transaction,
+    status: row.status as CrmEventStatus,
+    transaction: payload.transaction ?? null,
+    withdrawal: payload.withdrawal ?? null,
     receivedAt: row.receivedAt.toISOString(),
   };
 }

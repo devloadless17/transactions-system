@@ -98,6 +98,7 @@ const fakeCounter = { inc: () => undefined } as unknown as Counter<string>;
 const fakeCrm = {
   emitFromTransaction: () => undefined,
   emitWhish: () => undefined,
+  emitWithdrawal: () => undefined,
 } as unknown as CrmDispatchService;
 
 // Whish settlement side-effects not under test here (webhook delivery, tx logs),
@@ -146,6 +147,7 @@ export function buildHarness(): Harness {
     fakeNotifications,
     fakeCache,
     fees,
+    fakeCrm,
   );
   const payouts = new PayoutsService(
     prisma,

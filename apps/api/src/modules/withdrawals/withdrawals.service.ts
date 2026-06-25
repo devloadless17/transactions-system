@@ -22,6 +22,7 @@ import { RealtimeService } from '../realtime/realtime.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { CacheService } from '../cache/cache.service';
 import { FeesService } from '../commissions/fees.service';
+import { CrmDispatchService } from '../crm/crm-dispatch.service';
 import {
   assertSufficient,
   netOfFee,
@@ -62,6 +63,7 @@ export class WithdrawalsService {
     private readonly notifications: NotificationsService,
     private readonly cache: CacheService,
     private readonly fees: FeesService,
+    private readonly crm: CrmDispatchService,
   ) {}
 
   private async invalidateAnalytics(): Promise<void> {
@@ -152,7 +154,10 @@ export class WithdrawalsService {
       amount: row.amount.toString(),
       currency: row.currency,
     });
-    return mapWithdrawal(row);
+    const response = mapWithdrawal(row);
+    // Push the new withdrawal to the company's CRM (guarded, fire-and-forget).
+    this.crm.emitWithdrawal(response, 'withdrawal.pending');
+    return response;
   }
 
   async approve(
@@ -225,7 +230,11 @@ export class WithdrawalsService {
       amount: row.amount.toString(),
       currency: row.currency,
     });
-    return mapWithdrawal(row);
+    const response = mapWithdrawal(row);
+    // Approval settles in one step → the CRM sees the completed payout, now
+    // carrying the fee/net breakdown and the off-platform externalReference.
+    this.crm.emitWithdrawal(response, 'withdrawal.completed');
+    return response;
   }
 
   async reject(
@@ -332,7 +341,14 @@ export class WithdrawalsService {
     } else {
       void this.notifications.clearAdminRequest({ flow: 'WITHDRAWAL', entityId: row.id });
     }
-    return mapWithdrawal(row);
+    const response = mapWithdrawal(row);
+    // Tell the CRM the request closed without paying out — the admin's reason is
+    // carried on a rejection so the company's CRM can record why.
+    this.crm.emitWithdrawal(
+      response,
+      opts.status === 'REJECTED' ? 'withdrawal.rejected' : 'withdrawal.cancelled',
+    );
+    return response;
   }
 
   async list(args: {

@@ -2,7 +2,7 @@
 
 **Audience:** the technical / developer team of a company on the Rival Payments platform.
 
-This is the single reference for integrating your own systems (CRM, back office, reconciliation) with Rival Payments using a **company API key**. It covers everything you can do programmatically — query transactions, manage loads / withdrawals / payouts, read balances and the ledger, and collect Whish payments — plus the **CRM webhooks** Rival pushes to you when a transaction's status changes.
+This is the single reference for integrating your own systems (CRM, back office, reconciliation) with Rival Payments using a **company API key**. It covers everything you can do programmatically — query transactions, manage loads / withdrawals / payouts, read balances and the ledger, and collect Whish payments — plus the **CRM webhooks** Rival pushes to you when a deposit or withdrawal's status changes.
 
 > **Sources, read elsewhere.** If you are a transaction _source_ (a provider such as Whish, OMT, or a bank) that pushes transactions _into_ the platform, this document is not for you — see the separate **Sources Integration Guide** (`sources-integration-docs.md`). The ingest API is intentionally out of scope here.
 
@@ -1087,6 +1087,7 @@ Your CRM cannot call these (company keys get 403). They are listed so you unders
 - **Two key types:** these endpoints take a **company** key (`tsk_...` bound to your company). Source/ingest keys are rejected (`401`).
 - **CSRF:** API-key requests skip CSRF. Session (dashboard) requests need the CSRF token.
 - **Rate limits:** company endpoints use the global per-IP throttler (`RATE_LIMIT_MAX`, default 100/60s); a `429 RATE_LIMITED` is returned when exceeded.
+- **CRM webhooks (withdrawals only):** every withdrawal status change is also pushed to your CRM — `withdrawal.pending` then `withdrawal.completed` / `rejected` / `cancelled`, carrying the same `feeAmount` / `netAmount` / `totalAmount` breakdown — so you needn't poll. See [Outbound CRM Notifications](#outbound-crm-notifications-webhooks). **Payouts and loads are not pushed** — read their status over the REST API.
 
 ---
 
@@ -1650,14 +1651,16 @@ curl "https://portal.rivalpayments.com/v1/company/whish/payments?status=PAID&pag
 
 ## Outbound CRM Notifications (Webhooks)
 
-The platform pushes every transaction's status lifecycle to **your own CRM** via an outbound HTTP `POST`, so you never have to poll. You configure one callback URL + the API key your CRM expects; we then `POST` a small JSON event each time a transaction changes state (`PENDING → COMPLETED`, or `FAILED / REVERSED`). Delivery is **durable and retried** — an outage on your side cannot silently drop an event.
+The platform pushes the status lifecycle of every **deposit** (transaction) and **withdrawal** to **your own CRM** via an outbound HTTP `POST`, so you never have to poll. You configure one callback URL + the API key your CRM expects; we then `POST` a small JSON event each time a record changes state — a deposit moves `PENDING → COMPLETED` (or `FAILED / REVERSED`), a withdrawal moves `PENDING → COMPLETED / REJECTED / CANCELLED`. Delivery is **durable and retried** — an outage on your side cannot silently drop an event.
+
+> **Payouts and loads are not pushed here.** Only deposits (transaction events) and withdrawals (withdrawal events) emit CRM webhooks. Manage payouts and loads over the REST API (poll their `GET /company/{flow}/:id` status).
 
 There are **two independent outbound channels** — do not confuse them:
 
-| Channel                                       | Configured at           | Events                                     | Signed?                                             |
-| --------------------------------------------- | ----------------------- | ------------------------------------------ | --------------------------------------------------- |
-| **CRM events** (this section, the main one)   | `company/crm/config`    | full transaction lifecycle (5 event types) | **Yes** — HMAC-SHA256, `x-crm-signature` (additive) |
-| **Whish payment webhook** (legacy, paid-only) | `company/whish/webhook` | only `whish.payment.paid`                  | **Yes** — HMAC-SHA256, `x-whish-signature`          |
+| Channel                                       | Configured at           | Events                                                       | Signed?                                             |
+| --------------------------------------------- | ----------------------- | ------------------------------------------------------------ | --------------------------------------------------- |
+| **CRM events** (this section, the main one)   | `company/crm/config`    | deposit lifecycle (5 event types) + withdrawal lifecycle (4) | **Yes** — HMAC-SHA256, `x-crm-signature` (additive) |
+| **Whish payment webhook** (legacy, paid-only) | `company/whish/webhook` | only `whish.payment.paid`                                    | **Yes** — HMAC-SHA256, `x-whish-signature`          |
 
 > Security note for integrators: the **CRM events channel IS HMAC-signed.** Every POST carries `x-crm-signature` (HMAC-SHA256 over `${x-crm-timestamp}.${rawBody}`, keyed by your CRM key) **in addition to** the `Authorization: Bearer <your CRM key>` header. For the strongest verification, check **both**: confirm the Bearer token matches the key you configured, and verify the `x-crm-signature` (which also makes replays detectable via the timestamp). See the verification example below.
 
@@ -1751,7 +1754,7 @@ One-line: wires the config to a built-in demo inbox (a first-party endpoint) so 
 
 #### `GET /company/crm/demo/inbox` — read the demo feed
 
-One-line: returns the most recent demo events (max 50), newest first — byte-identical to what a real CRM would receive. Each item: `{ reference, event, status, transaction, receivedAt }` (see payload below).
+One-line: returns the most recent demo events (max 50), newest first — byte-identical to what a real CRM would receive. Each item: `{ reference, event, status, transaction, withdrawal, receivedAt }` — exactly one of `transaction` / `withdrawal` is populated, the other is `null` (see payload below).
 
 ---
 
@@ -1794,14 +1797,17 @@ x-crm-signature: t=1750579200,sha256=9f86d0818...e3b0c44298fc1c149afbf4c8996fb
 
 **Top-level fields:**
 
-| Field         | Type              | Notes                                                                                                                                                                                                                                                             |
-| ------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `event`       | enum              | One of `transaction.pending`, `transaction.completed`, `transaction.failed`, `transaction.reversed`. (A lapsed/expired Whish link arrives as `transaction.failed` — there is no separate `expired` event.)                                                        |
-| `reference`   | string            | **Stable idempotency/correlation key**, identical across the whole lifecycle of one logical transaction. Format `"<source>:<externalTransactionId>"` (e.g. `whish:184523`). **Upsert your CRM record on this** — the same reference moves PENDING → COMPLETED → … |
-| `sentAt`      | string (ISO-8601) | When we built this delivery attempt's payload.                                                                                                                                                                                                                    |
-| `transaction` | object            | See below.                                                                                                                                                                                                                                                        |
+| Field         | Type              | Notes                                                                                                                                                                                                                                                                                                                                                 |
+| ------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `event`       | enum              | A **deposit** event — `transaction.pending`, `transaction.completed`, `transaction.failed`, `transaction.reversed` (a lapsed/expired Whish link arrives as `transaction.failed`; there is no separate `expired` event) — **or** a **withdrawal** event — `withdrawal.pending`, `withdrawal.completed`, `withdrawal.rejected`, `withdrawal.cancelled`. |
+| `reference`   | string            | **Stable idempotency/correlation key**, identical across the whole lifecycle of one record. Deposits: `"<source>:<externalTransactionId>"` (e.g. `whish:184523`). Withdrawals: `"withdrawal:<id>"`. **Upsert your CRM record on this** — the same reference moves through its lifecycle in place.                                                     |
+| `sentAt`      | string (ISO-8601) | When we built this delivery attempt's payload.                                                                                                                                                                                                                                                                                                        |
+| `transaction` | object \| absent  | The deposit body — present on `transaction.*` events, absent on withdrawal events. See **`transaction` fields** below.                                                                                                                                                                                                                                |
+| `withdrawal`  | object \| absent  | The withdrawal body — present on `withdrawal.*` events, absent on deposit events. See **Withdrawal events** below.                                                                                                                                                                                                                                    |
 
-**`transaction` fields** (`crmEventTransactionSchema`):
+> Exactly one of `transaction` / `withdrawal` is present on any event, selected by the event family. Branch on the `event` prefix (or on which body is present).
+
+**`transaction` fields** (`crmEventTransactionSchema`) — deposit events only:
 
 | Field                   | Type                     | Notes                                                                                                                                                              |
 | ----------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -1819,7 +1825,62 @@ x-crm-signature: t=1750579200,sha256=9f86d0818...e3b0c44298fc1c149afbf4c8996fb
 | `note`                  | string \| null           | Free-text note / invoice.                                                                                                                                          |
 | `occurredAt`            | string (ISO-8601)        | When the underlying status change happened (`processedAt` if present, else `createdAt`; for Whish lifecycle, the emit time).                                       |
 
+#### Withdrawal events
+
+A `withdrawal.*` event carries a `withdrawal` body **instead of** `transaction`. It mirrors the [`GET /company/withdrawals/:id`](#get-one-request) resource field-for-field, so the webhook and the REST API speak the same language. Example:
+
+```http
+POST /hooks/loadless HTTP/1.1
+Host: crm.acme.example
+Content-Type: application/json
+Authorization: Bearer acme_crm_secret_123
+x-crm-event: withdrawal.completed
+x-crm-timestamp: 1750579200
+x-crm-signature: t=1750579200,sha256=…
+```
+
+```json
+{
+  "event": "withdrawal.completed",
+  "reference": "withdrawal:d4f2a1c0-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+  "sentAt": "2026-06-22T09:20:00.123Z",
+  "withdrawal": {
+    "id": "d4f2a1c0-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+    "status": "COMPLETED",
+    "totalAmount": "500.00",
+    "feeAmount": "5.00",
+    "netAmount": "495.00",
+    "currency": "USD",
+    "payoutMethod": "CASH",
+    "recipient": "Acme Ltd",
+    "externalReference": "WIRE-88231",
+    "note": "Weekly settlement",
+    "adminNote": null,
+    "occurredAt": "2026-06-22T09:19:58.000Z"
+  }
+}
+```
+
+**`withdrawal` fields** (`crmEventWithdrawalSchema`):
+
+| Field               | Type              | Notes                                                                                                            |
+| ------------------- | ----------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `id`                | string (uuid)     | The withdrawal id. Stable across the lifecycle; `reference` is `"withdrawal:<id>"`.                              |
+| `status`            | enum              | `PENDING` \| `COMPLETED` \| `REJECTED` \| `CANCELLED` — derived from `event`.                                    |
+| `totalAmount`       | string (decimal)  | What left your wallet = `netAmount + feeAmount`.                                                                 |
+| `feeAmount`         | string (decimal)  | The platform fee we charged on this payout (`"0"` if no rule).                                                   |
+| `netAmount`         | string (decimal)  | What the recipient receives. **`totalAmount − feeAmount = netAmount`.**                                          |
+| `currency`          | string            | ISO currency code.                                                                                               |
+| `payoutMethod`      | string            | `CASH` \| `WISH` \| `CRYPTO` \| `BANK_TRANSFER` \| `OTHER`.                                                      |
+| `recipient`         | string \| null    | Destination label — recipient name, account holder, or wallet address, by method. Null when none applies.        |
+| `externalReference` | string \| null    | Your off-platform proof the money moved (wire id, tx hash, receipt…). Set on `COMPLETED`; null before.           |
+| `note`              | string \| null    | The company's own request note (immutable).                                                                      |
+| `adminNote`         | string \| null    | The admin's note — e.g. the reason a request was `REJECTED`. Kept separate so neither note overwrites the other. |
+| `occurredAt`        | string (ISO-8601) | When the status change happened (`processedAt` if present, else `createdAt`).                                    |
+
 #### Which events fire, and when
+
+**Deposit events** (`transaction.*`):
 
 | Event                   | Trigger (verified in code)                                                                                                                                                  | `id` | net/commission |
 | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- | -------------- |
@@ -1829,6 +1890,17 @@ x-crm-signature: t=1750579200,sha256=9f86d0818...e3b0c44298fc1c149afbf4c8996fb
 | `transaction.reversed`  | A ledger transaction is reversed.                                                                                                                                           | uuid | present        |
 
 > A Whish payment therefore typically produces two events with the **same `reference`** (`whish:<externalId>`): `transaction.pending` then `transaction.completed`. Upsert on `reference` so it becomes one evolving record, not two.
+
+**Withdrawal events** (`withdrawal.*`):
+
+| Event                  | Trigger (verified in code)                                                                          | `status`  |
+| ---------------------- | --------------------------------------------------------------------------------------------------- | --------- |
+| `withdrawal.pending`   | A withdrawal is requested (`POST /company/withdrawals`).                                            | PENDING   |
+| `withdrawal.completed` | An operator approves it — funds paid out, the fee is realized, and `externalReference` is recorded. | COMPLETED |
+| `withdrawal.rejected`  | An operator rejects it — reserved funds are released; the reason is in `adminNote`.                 | REJECTED  |
+| `withdrawal.cancelled` | The company cancels its own still-pending request (`POST /company/withdrawals/:id/cancel`).         | CANCELLED |
+
+> A withdrawal produces a `withdrawal.pending` then exactly one terminal event (`completed` / `rejected` / `cancelled`), all sharing the `reference` `withdrawal:<id>`. **Payouts and loads emit no CRM events** — read their status over the REST API.
 
 ---
 

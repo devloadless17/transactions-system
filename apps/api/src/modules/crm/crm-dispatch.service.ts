@@ -1,16 +1,22 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { Prisma } from '@app/db';
-import type {
-  CrmEventPayload,
-  CrmEventTransaction,
-  CrmEventType,
-  CrmTransactionStatus,
-  TransactionResponse,
+import {
+  PayoutMethod,
+  type CrmEventPayload,
+  type CrmEventTransaction,
+  type CrmEventWithdrawal,
+  type CrmTransactionEvent,
+  type CrmTransactionStatus,
+  type CrmWithdrawalEvent,
+  type CrmWithdrawalStatus,
+  type PayoutDetails,
+  type TransactionResponse,
+  type WithdrawalResponse,
 } from '@app/shared';
 import { PrismaService } from '../../database/prisma.service';
 import { CrmDeliveryService } from './crm-delivery.service';
 
-const STATUS_FOR_EVENT: Record<CrmEventType, CrmTransactionStatus> = {
+const STATUS_FOR_TRANSACTION_EVENT: Record<CrmTransactionEvent, CrmTransactionStatus> = {
   'transaction.pending': 'PENDING',
   'transaction.completed': 'COMPLETED',
   'transaction.failed': 'FAILED',
@@ -18,20 +24,29 @@ const STATUS_FOR_EVENT: Record<CrmEventType, CrmTransactionStatus> = {
   'transaction.reversed': 'REVERSED',
 };
 
+const STATUS_FOR_WITHDRAWAL_EVENT: Record<CrmWithdrawalEvent, CrmWithdrawalStatus> = {
+  'withdrawal.pending': 'PENDING',
+  'withdrawal.completed': 'COMPLETED',
+  'withdrawal.rejected': 'REJECTED',
+  'withdrawal.cancelled': 'CANCELLED',
+};
+
 // How long a freshly-enqueued delivery is withheld from the retry sweep so the
 // inline immediate attempt (≤5s) can finish first and we don't double-POST.
 const DISPATCH_SWEEP_HEADSTART_MS = 60_000;
 
 /**
- * The single entry point other modules call to push a transaction's status to a
+ * The single entry point other modules call to push a money event's status to a
  * company's CRM. Every method is fire-and-forget and fully guarded — a CRM
  * delivery must NEVER break the money path. We enqueue a durable
  * `webhook_deliveries` row (so an outage can't drop the event) and fire one
  * immediate best-effort attempt; the delivery service's sweep retries the rest.
  *
- * The stable `reference` is `${source}:${externalTransactionId}`, identical
- * across a Whish payment's whole lifecycle (PENDING link → COMPLETED settlement
- * → FAILED/EXPIRED), so the CRM upserts one evolving record.
+ * Two event families share this machinery:
+ *   • transaction.* (deposits) — reference `${source}:${externalTransactionId}`.
+ *   • withdrawal.*  (money out) — reference `withdrawal:${id}`.
+ * Each reference is stable across its record's whole lifecycle, so the CRM
+ * upserts one evolving row. Payouts and loads are deliberately NOT emitted.
  */
 @Injectable()
 export class CrmDispatchService {
@@ -43,10 +58,10 @@ export class CrmDispatchService {
   ) {}
 
   /** Emit from a fully-mapped transaction (ingest = completed, reverse = reversed). */
-  emitFromTransaction(tr: TransactionResponse, event: CrmEventType): void {
+  emitFromTransaction(tr: TransactionResponse, event: CrmTransactionEvent): void {
     const transaction: CrmEventTransaction = {
       id: tr.id,
-      status: STATUS_FOR_EVENT[event],
+      status: STATUS_FOR_TRANSACTION_EVENT[event],
       source: tr.sourceCode,
       externalTransactionId: tr.externalTransactionId,
       amount: tr.amount,
@@ -59,7 +74,9 @@ export class CrmDispatchService {
       note: tr.note,
       occurredAt: tr.processedAt ?? tr.createdAt,
     };
-    this.enqueue(tr.companyId, event, `${tr.sourceCode}:${tr.externalTransactionId}`, transaction);
+    this.enqueue(tr.companyId, event, `${tr.sourceCode}:${tr.externalTransactionId}`, {
+      transaction,
+    });
   }
 
   /**
@@ -75,14 +92,14 @@ export class CrmDispatchService {
     invoice?: string | null;
     payerPhoneNumber?: string | null;
     event: Extract<
-      CrmEventType,
+      CrmTransactionEvent,
       'transaction.pending' | 'transaction.failed' | 'transaction.expired'
     >;
   }): void {
     const externalTransactionId = input.externalId.toString();
     const transaction: CrmEventTransaction = {
       id: null,
-      status: STATUS_FOR_EVENT[input.event],
+      status: STATUS_FOR_TRANSACTION_EVENT[input.event],
       source: 'whish',
       externalTransactionId,
       amount: input.amount,
@@ -95,25 +112,51 @@ export class CrmDispatchService {
       note: input.invoice ?? null,
       occurredAt: new Date().toISOString(),
     };
-    this.enqueue(input.companyId, input.event, `whish:${externalTransactionId}`, transaction);
+    this.enqueue(input.companyId, input.event, `whish:${externalTransactionId}`, { transaction });
+  }
+
+  /**
+   * Emit a withdrawal lifecycle event (money out). The body mirrors the
+   * withdrawal REST resource field-for-field (totalAmount / feeAmount /
+   * netAmount / payoutMethod / status), so a CRM sees the same shape over the
+   * webhook as over GET /company/withdrawals/:id. Reference `withdrawal:<id>` is
+   * stable PENDING → COMPLETED / REJECTED / CANCELLED, so the CRM upserts one
+   * record. Payouts and loads are deliberately NOT emitted — API only.
+   */
+  emitWithdrawal(wr: WithdrawalResponse, event: CrmWithdrawalEvent): void {
+    const withdrawal: CrmEventWithdrawal = {
+      id: wr.id,
+      status: STATUS_FOR_WITHDRAWAL_EVENT[event],
+      totalAmount: wr.totalAmount,
+      feeAmount: wr.feeAmount,
+      netAmount: wr.netAmount,
+      currency: wr.currency,
+      payoutMethod: wr.payoutMethod,
+      recipient: recipientLabel(wr.payoutDetails),
+      externalReference: wr.externalReference,
+      note: wr.notes,
+      adminNote: wr.adminNotes,
+      occurredAt: wr.processedAt ?? wr.createdAt,
+    };
+    this.enqueue(wr.companyId, event, `withdrawal:${wr.id}`, { withdrawal });
   }
 
   private enqueue(
     companyId: string,
-    event: CrmEventType,
+    event: CrmEventPayload['event'],
     reference: string,
-    transaction: CrmEventTransaction,
+    body: Pick<CrmEventPayload, 'transaction' | 'withdrawal'>,
   ): void {
-    void this.run(companyId, event, reference, transaction).catch((err) =>
+    void this.run(companyId, event, reference, body).catch((err) =>
       this.logger.warn(`CRM dispatch for ${reference} failed: ${(err as Error).message}`),
     );
   }
 
   private async run(
     companyId: string,
-    event: CrmEventType,
+    event: CrmEventPayload['event'],
     reference: string,
-    transaction: CrmEventTransaction,
+    body: Pick<CrmEventPayload, 'transaction' | 'withdrawal'>,
   ): Promise<void> {
     const company = await this.prisma.runAsAdmin((tx) =>
       tx.company.findUnique({
@@ -127,7 +170,7 @@ export class CrmDispatchService {
       event,
       reference,
       sentAt: new Date().toISOString(),
-      transaction,
+      ...body,
     };
     const row = await this.prisma.runAsAdmin((tx) =>
       tx.webhookDelivery.create({
@@ -157,5 +200,27 @@ export class CrmDispatchService {
           `CRM immediate deliver ${row.id} failed (sweep will retry): ${(err as Error).message}`,
         ),
       );
+  }
+}
+
+/**
+ * A human label for a withdrawal's destination, by method: the recipient name
+ * (cash/wish), the account holder (bank), the wallet address (crypto), or the
+ * free-text description (other). Null when the row has no payout details.
+ */
+function recipientLabel(details: PayoutDetails | null): string | null {
+  if (!details) return null;
+  switch (details.method) {
+    case PayoutMethod.CASH:
+    case PayoutMethod.WISH:
+      return details.recipientName;
+    case PayoutMethod.BANK_TRANSFER:
+      return details.accountHolder;
+    case PayoutMethod.CRYPTO:
+      return details.walletAddress;
+    case PayoutMethod.OTHER:
+      return details.description;
+    default:
+      return null;
   }
 }
