@@ -116,19 +116,12 @@ export const crmEventWithdrawalSchema = z.object({
   feeApplication: z.string(),
   currency: z.string(),
   payoutMethod: z.string(),
-  // A human label for the destination — recipient name, account holder, or
-  // wallet address, depending on the method. Null when none applies.
-  recipient: z.string().nullable(),
-  // The recipient's phone number, for the methods that carry one (cash / Whish).
-  // This is the destination the money is sent to. Null for crypto / bank / other.
-  recipientPhone: z.string().nullable(),
-  // The COMPLETE payout instructions you submitted — every method-specific field,
-  // identical to the REST resource: e.g. CASH → recipientName, recipientPhone,
-  // pickupLocation, instructions; WISH → recipientName, recipientPhone,
-  // instructions; CRYPTO → network, walletAddress, memo, instructions; bank →
-  // accountHolder, accountNumber, bankName, swiftBic, routingNumber. `recipient`
-  // and `recipientPhone` above are convenience summaries pulled from this. Null
-  // only for legacy rows that have no stored details.
+  // The COMPLETE payout instructions you submitted — the single source for the
+  // destination, identical to the REST resource. Every method-specific field is
+  // here: CASH → recipientName, recipientPhone, pickupLocation, instructions;
+  // WISH → recipientName, recipientPhone, instructions; CRYPTO → network,
+  // walletAddress, memo, instructions; bank → accountHolder, accountNumber,
+  // bankName, swiftBic, routingNumber. Null only for legacy rows with no details.
   payoutDetails: payoutDetailsSchema.nullable(),
   // The company's own request note (set once, immutable).
   note: z.string().nullable(),

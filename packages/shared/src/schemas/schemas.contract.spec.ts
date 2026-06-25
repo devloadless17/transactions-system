@@ -205,8 +205,6 @@ describe('crmEventPayloadSchema (deposit vs withdrawal body)', () => {
     feeApplication: 'DEDUCTED',
     currency: 'USD',
     payoutMethod: 'CASH',
-    recipient: 'Acme Ltd',
-    recipientPhone: '+9613000000',
     payoutDetails: {
       method: 'CASH',
       recipientName: 'Acme Ltd',

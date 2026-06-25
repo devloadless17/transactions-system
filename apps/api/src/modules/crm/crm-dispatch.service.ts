@@ -1,17 +1,15 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { Prisma } from '@app/db';
-import {
-  PayoutMethod,
-  type CrmEventPayload,
-  type CrmEventTransaction,
-  type CrmEventWithdrawal,
-  type CrmTransactionEvent,
-  type CrmTransactionStatus,
-  type CrmWithdrawalEvent,
-  type CrmWithdrawalStatus,
-  type PayoutDetails,
-  type TransactionResponse,
-  type WithdrawalResponse,
+import type {
+  CrmEventPayload,
+  CrmEventTransaction,
+  CrmEventWithdrawal,
+  CrmTransactionEvent,
+  CrmTransactionStatus,
+  CrmWithdrawalEvent,
+  CrmWithdrawalStatus,
+  TransactionResponse,
+  WithdrawalResponse,
 } from '@app/shared';
 import { PrismaService } from '../../database/prisma.service';
 import { CrmDeliveryService } from './crm-delivery.service';
@@ -134,8 +132,6 @@ export class CrmDispatchService {
       feeApplication: wr.feeApplication,
       currency: wr.currency,
       payoutMethod: wr.payoutMethod,
-      recipient: recipientLabel(wr.payoutDetails),
-      recipientPhone: recipientPhoneOf(wr.payoutDetails),
       payoutDetails: wr.payoutDetails,
       note: wr.notes,
       adminNote: wr.adminNotes,
@@ -206,43 +202,5 @@ export class CrmDispatchService {
           `CRM immediate deliver ${row.id} failed (sweep will retry): ${(err as Error).message}`,
         ),
       );
-  }
-}
-
-/**
- * A human label for a withdrawal's destination, by method: the recipient name
- * (cash/wish), the account holder (bank), the wallet address (crypto), or the
- * free-text description (other). Null when the row has no payout details.
- */
-function recipientLabel(details: PayoutDetails | null): string | null {
-  if (!details) return null;
-  switch (details.method) {
-    case PayoutMethod.CASH:
-    case PayoutMethod.WISH:
-      return details.recipientName;
-    case PayoutMethod.BANK_TRANSFER:
-      return details.accountHolder;
-    case PayoutMethod.CRYPTO:
-      return details.walletAddress;
-    case PayoutMethod.OTHER:
-      return details.description;
-    default:
-      return null;
-  }
-}
-
-/**
- * The recipient's phone number, for the payout methods that carry one (cash /
- * Whish — where the phone IS the destination). Null for methods without a phone
- * (crypto / bank / other).
- */
-function recipientPhoneOf(details: PayoutDetails | null): string | null {
-  if (!details) return null;
-  switch (details.method) {
-    case PayoutMethod.CASH:
-    case PayoutMethod.WISH:
-      return details.recipientPhone;
-    default:
-      return null;
   }
 }

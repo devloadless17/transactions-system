@@ -221,6 +221,11 @@ jobs:
           WHISH_BASE_URL: ${{ secrets.WHISH_BASE_URL || 'https://api.whish.money/itel-service/api' }}
           WHISH_WEBSITE_URL: ${{ secrets.WHISH_WEBSITE_URL || format('https://{0}', secrets.DOMAIN) }}
           WHISH_ALLOW_SANDBOX: ${{ secrets.WHISH_ALLOW_SANDBOX || 'false' }}
+          # Whish W2W (consumer-app) outbound transfers. OFF unless the secret is
+          # explicitly 'true'. The session creds are entered in the UI (encrypted
+          # at rest); only the flag + the AES-256-GCM key flow through here.
+          WHISH_W2W_ENABLED: ${{ secrets.WHISH_W2W_ENABLED || 'false' }}
+          WHISH_W2W_ENC_KEY: ${{ secrets.WHISH_W2W_ENC_KEY }}
           SEED_DATABASE: ${{ github.event.inputs.seed_database || 'false' }}
         run: |
           cp .env.prod.example .env.rendered
@@ -248,6 +253,8 @@ jobs:
           sed -i "s|__WHISH_BASE_URL__|$WHISH_BASE_URL|g" .env.rendered
           sed -i "s|__WHISH_WEBSITE_URL__|$WHISH_WEBSITE_URL|g" .env.rendered
           sed -i "s|__WHISH_ALLOW_SANDBOX__|$WHISH_ALLOW_SANDBOX|g" .env.rendered
+          sed -i "s|__WHISH_W2W_ENABLED__|$WHISH_W2W_ENABLED|g" .env.rendered
+          sed -i "s|__WHISH_W2W_ENC_KEY__|$(esc "$WHISH_W2W_ENC_KEY")|g" .env.rendered
           sed -i "s|^SEED_DATABASE=false|SEED_DATABASE=$SEED_DATABASE|g" .env.rendered
 
       - name: Ship & deploy

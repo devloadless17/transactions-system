@@ -17,6 +17,7 @@ import {
   type CrmConfigResponse,
   type CrmDemoEventResponse,
   type CrmEventStatus,
+  type PayoutDetails,
   type SetCrmConfigInput,
 } from '@app/shared';
 import { Button } from '@/components/ui/button';
@@ -36,6 +37,26 @@ function statusVariant(s: CrmEventStatus) {
   if (s === 'FAILED' || s === 'EXPIRED' || s === 'REVERSED' || s === 'REJECTED')
     return 'destructive' as const;
   return 'secondary' as const; // PENDING, CANCELLED
+}
+
+// The human-readable destination label for a withdrawal, derived from its
+// payoutDetails (the payload's single source of truth): recipient name for
+// cash / Whish, account holder for a bank transfer, wallet address for crypto.
+function payoutName(d: PayoutDetails | null): string | null {
+  if (!d) return null;
+  switch (d.method) {
+    case 'CASH':
+    case 'WISH':
+      return d.recipientName;
+    case 'BANK_TRANSFER':
+      return d.accountHolder;
+    case 'CRYPTO':
+      return d.walletAddress;
+    case 'OTHER':
+      return d.description;
+    default:
+      return null;
+  }
 }
 
 export function CrmView() {
@@ -319,9 +340,7 @@ x-crm-signature: t=1781018591,sha256=<hex>
     "feeApplication": "DEDUCTED",       // DEDUCTED or ON_TOP
     "currency": "USD",
     "payoutMethod": "CASH",
-    "recipient": "Acme Ltd",            // convenience label
-    "recipientPhone": "+961-3-000-000", // convenience: destination phone
-    "payoutDetails": {                  // the FULL instructions you submitted
+    "payoutDetails": {                  // recipient + all instructions, one place
       "method": "CASH",
       "recipientName": "Acme Ltd",
       "recipientPhone": "+961-3-000-000",
@@ -483,7 +502,9 @@ function DemoInbox() {
               // a `withdrawal`. Normalize both to a single display row.
               const t = e.transaction;
               const w = e.withdrawal;
-              const label = t ? (t.customer ?? t.note ?? '—') : (w?.recipient ?? w?.note ?? '—');
+              const label = t
+                ? (t.customer ?? t.note ?? '—')
+                : (payoutName(w?.payoutDetails ?? null) ?? w?.note ?? '—');
               const kind = t ? t.source : `withdrawal · ${w?.payoutMethod ?? ''}`;
               const amount = t ? t.amount : (w?.totalAmount ?? '');
               const currency = t ? t.currency : (w?.currency ?? '');

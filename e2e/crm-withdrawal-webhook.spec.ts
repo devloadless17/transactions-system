@@ -39,8 +39,6 @@ type DemoEvent = {
     feeApplication: string;
     currency: string;
     payoutMethod: string;
-    recipient: string | null;
-    recipientPhone: string | null;
     payoutDetails: {
       method: string;
       recipientName?: string;
@@ -157,9 +155,8 @@ test.describe('withdrawal CRM webhooks (demo inbox)', () => {
     expect(Number(pending.withdrawal!.netAmount)).toBeCloseTo(98, 2);
     expect(pending.withdrawal!.feeApplication).toBe('DEDUCTED');
     expect(pending.withdrawal!.payoutMethod).toBe('CASH');
-    // Convenience summaries + the COMPLETE payout instructions.
-    expect(pending.withdrawal!.recipient).toBe('Acme Ltd');
-    expect(pending.withdrawal!.recipientPhone).toBe('+961-3-000-000');
+    // The COMPLETE payout instructions — the single source for the destination.
+    expect(pending.withdrawal!.payoutDetails?.recipientName).toBe('Acme Ltd');
     expect(pending.withdrawal!.payoutDetails?.recipientPhone).toBe('+961-3-000-000');
     expect(pending.withdrawal!.payoutDetails?.pickupLocation).toBe('Beirut – Hamra');
     expect(pending.withdrawal!.payoutDetails?.instructions).toBe('Call on arrival');
