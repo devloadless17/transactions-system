@@ -1847,36 +1847,56 @@ x-crm-signature: t=1750579200,sha256=…
   "withdrawal": {
     "id": "d4f2a1c0-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
     "status": "COMPLETED",
+    "amount": "500.00",
     "totalAmount": "500.00",
     "feeAmount": "5.00",
     "netAmount": "495.00",
+    "feeApplication": "DEDUCTED",
     "currency": "USD",
     "payoutMethod": "CASH",
     "recipient": "Acme Ltd",
-    "externalReference": "WIRE-88231",
+    "recipientPhone": "+9613000000",
+    "payoutDetails": {
+      "method": "CASH",
+      "recipientName": "Acme Ltd",
+      "recipientPhone": "+9613000000",
+      "pickupLocation": "Beirut – Hamra",
+      "instructions": "Call on arrival"
+    },
     "note": "Weekly settlement",
-    "adminNote": null,
+    "adminNote": "Verified",
+    "externalReference": "WIRE-88231",
+    "createdAt": "2026-06-22T09:00:00.000Z",
+    "processedAt": "2026-06-22T09:19:58.000Z",
     "occurredAt": "2026-06-22T09:19:58.000Z"
   }
 }
 ```
 
+> **Reading the decision:** `status` (and the event name) tells you the outcome — `COMPLETED` = an admin **approved** it and it was paid out (`externalReference` is the proof), `REJECTED` = an admin **rejected** it (`adminNote` carries the reason), `CANCELLED` = the company cancelled it before review. `processedAt` is when that decision was made (`null` while still `PENDING`). Approval settles in one step, so an approved withdrawal goes straight to `COMPLETED` — there is no separate "approved-but-unpaid" state.
+
 **`withdrawal` fields** (`crmEventWithdrawalSchema`):
 
-| Field               | Type              | Notes                                                                                                            |
-| ------------------- | ----------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `id`                | string (uuid)     | The withdrawal id. Stable across the lifecycle; `reference` is `"withdrawal:<id>"`.                              |
-| `status`            | enum              | `PENDING` \| `COMPLETED` \| `REJECTED` \| `CANCELLED` — derived from `event`.                                    |
-| `totalAmount`       | string (decimal)  | What left your wallet = `netAmount + feeAmount`.                                                                 |
-| `feeAmount`         | string (decimal)  | The platform fee we charged on this payout (`"0"` if no rule).                                                   |
-| `netAmount`         | string (decimal)  | What the recipient receives. **`totalAmount − feeAmount = netAmount`.**                                          |
-| `currency`          | string            | ISO currency code.                                                                                               |
-| `payoutMethod`      | string            | `CASH` \| `WISH` \| `CRYPTO` \| `BANK_TRANSFER` \| `OTHER`.                                                      |
-| `recipient`         | string \| null    | Destination label — recipient name, account holder, or wallet address, by method. Null when none applies.        |
-| `externalReference` | string \| null    | Your off-platform proof the money moved (wire id, tx hash, receipt…). Set on `COMPLETED`; null before.           |
-| `note`              | string \| null    | The company's own request note (immutable).                                                                      |
-| `adminNote`         | string \| null    | The admin's note — e.g. the reason a request was `REJECTED`. Kept separate so neither note overwrites the other. |
-| `occurredAt`        | string (ISO-8601) | When the status change happened (`processedAt` if present, else `createdAt`).                                    |
+| Field               | Type              | Notes                                                                                                                                                                                                                                                                     |
+| ------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                | string (uuid)     | The withdrawal id. Stable across the lifecycle; `reference` is `"withdrawal:<id>"`.                                                                                                                                                                                       |
+| `status`            | enum              | `PENDING` \| `COMPLETED` \| `REJECTED` \| `CANCELLED`. **The decision:** `COMPLETED` = approved & paid, `REJECTED` = rejected, `CANCELLED` = cancelled by you.                                                                                                            |
+| `amount`            | string (decimal)  | The payout amount you requested. For an `ON_TOP` fee this is less than `totalAmount`; for `DEDUCTED` they are equal.                                                                                                                                                      |
+| `totalAmount`       | string (decimal)  | What left your wallet = `netAmount + feeAmount`.                                                                                                                                                                                                                          |
+| `feeAmount`         | string (decimal)  | The platform fee we charged on this payout (`"0"` if no rule).                                                                                                                                                                                                            |
+| `netAmount`         | string (decimal)  | What the recipient receives. **`totalAmount − feeAmount = netAmount`.**                                                                                                                                                                                                   |
+| `feeApplication`    | string            | `DEDUCTED` (recipient gets `amount − fee`) or `ON_TOP` (recipient gets the full `amount`; the fee is charged on top).                                                                                                                                                     |
+| `currency`          | string            | ISO currency code.                                                                                                                                                                                                                                                        |
+| `payoutMethod`      | string            | `CASH` \| `WISH` \| `CRYPTO` \| `BANK_TRANSFER` \| `OTHER`.                                                                                                                                                                                                               |
+| `recipient`         | string \| null    | Convenience label — recipient name, account holder, or wallet address, by method. Null when none applies.                                                                                                                                                                 |
+| `recipientPhone`    | string \| null    | Convenience — the recipient's phone (the destination for `CASH` / `WISH`). Null for `CRYPTO` / `BANK_TRANSFER` / `OTHER`.                                                                                                                                                 |
+| `payoutDetails`     | object \| null    | **The complete instructions you submitted** — every method-specific field (e.g. `pickupLocation` + `instructions` for `CASH`; `network` + `walletAddress` for `CRYPTO`; `accountHolder`/`accountNumber`/`bankName` for a bank transfer). Same shape as the REST resource. |
+| `note`              | string \| null    | The company's own request note (immutable).                                                                                                                                                                                                                               |
+| `adminNote`         | string \| null    | The admin's note — e.g. the reason a request was `REJECTED`. Kept separate so neither note overwrites the other.                                                                                                                                                          |
+| `externalReference` | string \| null    | Your off-platform proof the money moved (wire id, tx hash, receipt…). Set on `COMPLETED` (approval); null before.                                                                                                                                                         |
+| `createdAt`         | string (ISO-8601) | When the company requested the withdrawal.                                                                                                                                                                                                                                |
+| `processedAt`       | string \| null    | The decision timestamp — when an admin approved/rejected (or the company cancelled) it. `null` while still `PENDING`.                                                                                                                                                     |
+| `occurredAt`        | string (ISO-8601) | When this event fired (`processedAt` if present, else `createdAt`).                                                                                                                                                                                                       |
 
 #### Which events fire, and when
 

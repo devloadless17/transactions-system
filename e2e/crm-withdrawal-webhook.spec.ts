@@ -32,15 +32,27 @@ type DemoEvent = {
   withdrawal: {
     id: string;
     status: string;
+    amount: string;
     totalAmount: string;
     feeAmount: string;
     netAmount: string;
+    feeApplication: string;
     currency: string;
     payoutMethod: string;
     recipient: string | null;
-    externalReference: string | null;
+    recipientPhone: string | null;
+    payoutDetails: {
+      method: string;
+      recipientName?: string;
+      recipientPhone?: string;
+      pickupLocation?: string;
+      instructions?: string;
+    } | null;
     note: string | null;
     adminNote: string | null;
+    externalReference: string | null;
+    createdAt: string;
+    processedAt: string | null;
   } | null;
 };
 
@@ -121,7 +133,13 @@ test.describe('withdrawal CRM webhooks (demo inbox)', () => {
         amount: '100',
         currency: 'USD',
         notes: 'CRM webhook e2e',
-        payout: { method: 'CASH', recipientName: 'Acme Ltd', recipientPhone: '+961-3-000-000' },
+        payout: {
+          method: 'CASH',
+          recipientName: 'Acme Ltd',
+          recipientPhone: '+961-3-000-000',
+          pickupLocation: 'Beirut – Hamra',
+          instructions: 'Call on arrival',
+        },
       },
     });
     expect(reqRes.status(), await reqRes.text()).toBe(201);
@@ -132,13 +150,24 @@ test.describe('withdrawal CRM webhooks (demo inbox)', () => {
     expect(pending.status).toBe('PENDING');
     expect(pending.withdrawal, 'withdrawal body present').toBeTruthy();
     expect(pending.transaction, 'no transaction body on a withdrawal event').toBeFalsy();
+    // Money breakdown (100 DEDUCTED 2% → fee 2, net 98, total 100).
+    expect(Number(pending.withdrawal!.amount)).toBeCloseTo(100, 2);
     expect(Number(pending.withdrawal!.totalAmount)).toBeCloseTo(100, 2);
     expect(Number(pending.withdrawal!.feeAmount)).toBeCloseTo(2, 2);
     expect(Number(pending.withdrawal!.netAmount)).toBeCloseTo(98, 2);
+    expect(pending.withdrawal!.feeApplication).toBe('DEDUCTED');
     expect(pending.withdrawal!.payoutMethod).toBe('CASH');
+    // Convenience summaries + the COMPLETE payout instructions.
     expect(pending.withdrawal!.recipient).toBe('Acme Ltd');
+    expect(pending.withdrawal!.recipientPhone).toBe('+961-3-000-000');
+    expect(pending.withdrawal!.payoutDetails?.recipientPhone).toBe('+961-3-000-000');
+    expect(pending.withdrawal!.payoutDetails?.pickupLocation).toBe('Beirut – Hamra');
+    expect(pending.withdrawal!.payoutDetails?.instructions).toBe('Call on arrival');
     expect(pending.withdrawal!.note).toBe('CRM webhook e2e');
+    // Decision state: still pending → no decision yet, no proof yet.
     expect(pending.withdrawal!.externalReference).toBeNull();
+    expect(pending.withdrawal!.processedAt, 'processedAt is null while PENDING').toBeNull();
+    expect(pending.withdrawal!.createdAt, 'createdAt is always set').toBeTruthy();
 
     // --- Approve (admin) → SAME reference flips to withdrawal.completed ---
     const extRef = `E2E-CRM-REF-${Date.now()}`;
@@ -149,8 +178,10 @@ test.describe('withdrawal CRM webhooks (demo inbox)', () => {
     expect(approve.ok(), `approve: ${approve.status()} ${await approve.text()}`).toBeTruthy();
 
     const completed = await waitForDemoEvent(owner, reference, 'withdrawal.completed');
+    // Approved & paid: status COMPLETED, the decision timestamp + proof are set.
     expect(completed.status).toBe('COMPLETED');
     expect(completed.withdrawal!.externalReference).toBe(extRef);
+    expect(completed.withdrawal!.processedAt, 'processedAt set once approved').toBeTruthy();
     expect(Number(completed.withdrawal!.feeAmount)).toBeCloseTo(2, 2);
     expect(Number(completed.withdrawal!.netAmount)).toBeCloseTo(98, 2);
 
@@ -175,8 +206,10 @@ test.describe('withdrawal CRM webhooks (demo inbox)', () => {
     expect(reject.ok(), `reject: ${reject.status()} ${await reject.text()}`).toBeTruthy();
 
     const rejected = await waitForDemoEvent(owner, reference2, 'withdrawal.rejected');
+    // Rejected: status REJECTED, the reason in adminNote, decision timestamp set.
     expect(rejected.status).toBe('REJECTED');
     expect(rejected.withdrawal!.adminNote).toBe('Beneficiary name mismatch');
+    expect(rejected.withdrawal!.processedAt, 'processedAt set on rejection').toBeTruthy();
 
     // --- Payout + load on the SAME company must emit NOTHING (API-only) ---
     const payoutRes = await owner.post('/v1/company/payouts', {

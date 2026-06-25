@@ -522,6 +522,13 @@ export class WhishPaymentsService {
           amount: payment.amount.toString(),
           currency: currency as SupportedCurrency,
           payload: {
+            // Lift the payer phone + invoice to the TOP LEVEL so mapTxRow surfaces
+            // them on the settled TransactionResponse AND the transaction.completed
+            // CRM event — matching the transaction.pending event (emitWhish), which
+            // already carries them. Without this the COMPLETED event (which upserts
+            // the same whish:<externalId> record) would blank them back to null.
+            ...(payerPhoneNumber ? { phone: payerPhoneNumber } : {}),
+            ...(payment.invoice ? { note: payment.invoice } : {}),
             whish: {
               externalId: payment.externalId.toString(),
               invoice: payment.invoice,

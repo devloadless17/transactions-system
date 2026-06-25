@@ -127,15 +127,21 @@ export class CrmDispatchService {
     const withdrawal: CrmEventWithdrawal = {
       id: wr.id,
       status: STATUS_FOR_WITHDRAWAL_EVENT[event],
+      amount: wr.amount,
       totalAmount: wr.totalAmount,
       feeAmount: wr.feeAmount,
       netAmount: wr.netAmount,
+      feeApplication: wr.feeApplication,
       currency: wr.currency,
       payoutMethod: wr.payoutMethod,
       recipient: recipientLabel(wr.payoutDetails),
-      externalReference: wr.externalReference,
+      recipientPhone: recipientPhoneOf(wr.payoutDetails),
+      payoutDetails: wr.payoutDetails,
       note: wr.notes,
       adminNote: wr.adminNotes,
+      externalReference: wr.externalReference,
+      createdAt: wr.createdAt,
+      processedAt: wr.processedAt,
       occurredAt: wr.processedAt ?? wr.createdAt,
     };
     this.enqueue(wr.companyId, event, `withdrawal:${wr.id}`, { withdrawal });
@@ -220,6 +226,22 @@ function recipientLabel(details: PayoutDetails | null): string | null {
       return details.walletAddress;
     case PayoutMethod.OTHER:
       return details.description;
+    default:
+      return null;
+  }
+}
+
+/**
+ * The recipient's phone number, for the payout methods that carry one (cash /
+ * Whish — where the phone IS the destination). Null for methods without a phone
+ * (crypto / bank / other).
+ */
+function recipientPhoneOf(details: PayoutDetails | null): string | null {
+  if (!details) return null;
+  switch (details.method) {
+    case PayoutMethod.CASH:
+    case PayoutMethod.WISH:
+      return details.recipientPhone;
     default:
       return null;
   }

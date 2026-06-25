@@ -311,16 +311,28 @@ x-crm-signature: t=1781018591,sha256=<hex>
   "sentAt": "2026-06-10T11:30:00.000Z",
   "withdrawal": {
     "id": "d4f2a1c0-…",
-    "status": "COMPLETED",
+    "status": "COMPLETED",              // approved by an admin & paid out
+    "amount": "500.00",                 // the amount you requested
     "totalAmount": "500.00",            // what left your wallet (net + fee)
     "feeAmount": "5.00",                // the platform fee we charged
     "netAmount": "495.00",              // what the recipient received
+    "feeApplication": "DEDUCTED",       // DEDUCTED or ON_TOP
     "currency": "USD",
     "payoutMethod": "CASH",
-    "recipient": "Acme Ltd",
-    "externalReference": "WIRE-88231",  // our proof we sent it
+    "recipient": "Acme Ltd",            // convenience label
+    "recipientPhone": "+961-3-000-000", // convenience: destination phone
+    "payoutDetails": {                  // the FULL instructions you submitted
+      "method": "CASH",
+      "recipientName": "Acme Ltd",
+      "recipientPhone": "+961-3-000-000",
+      "pickupLocation": "Beirut – Hamra",
+      "instructions": "Call on arrival"
+    },
     "note": "Weekly settlement",        // your request note (immutable)
-    "adminNote": null,                  // the reason, when status is REJECTED
+    "adminNote": "Verified",            // admin's note (the reason if REJECTED)
+    "externalReference": "WIRE-88231",  // proof of payment (set once approved)
+    "createdAt": "2026-06-10T10:00:00.000Z",  // when you requested it
+    "processedAt": "2026-06-10T11:30:00.000Z", // when the admin decided (null if PENDING)
     "occurredAt": "2026-06-10T11:30:00.000Z"
   }
 }`;
@@ -334,18 +346,18 @@ x-crm-signature: t=1781018591,sha256=<hex>
     ['transaction.reversed', 'A settled deposit was reversed.'],
   ];
   const withdrawalEvents: [string, string][] = [
-    ['withdrawal.pending', 'A withdrawal was requested and is awaiting admin approval.'],
+    ['withdrawal.pending', 'Requested — status PENDING, awaiting an admin’s decision.'],
     [
       'withdrawal.completed',
-      'Approved and paid out — carries the fee / net breakdown and the externalReference proof.',
+      'Approved by an admin and paid out — status COMPLETED, with externalReference as proof.',
     ],
     [
       'withdrawal.rejected',
-      'An admin declined it — the reason is in adminNote. Reserved funds released.',
+      'Rejected by an admin — status REJECTED, the reason in adminNote. Reserved funds released.',
     ],
     [
       'withdrawal.cancelled',
-      'The company cancelled its own pending request. Reserved funds released.',
+      'Cancelled by the company while still pending — status CANCELLED. Reserved funds released.',
     ],
   ];
   return (
@@ -384,11 +396,20 @@ x-crm-signature: t=1781018591,sha256=<hex>
           <CodeBlock code={withdrawalExample} />
           <p className="mt-2 text-xs text-muted-foreground">
             The withdrawal body mirrors the{' '}
-            <code className="font-mono">GET /company/withdrawals/:id</code> resource:{' '}
-            <code className="font-mono">totalAmount</code> is what left your wallet,{' '}
-            <code className="font-mono">feeAmount</code> the platform fee, and{' '}
-            <code className="font-mono">netAmount</code> what the recipient received —{' '}
-            <code className="font-mono">totalAmount − feeAmount = netAmount</code>.
+            <code className="font-mono">GET /company/withdrawals/:id</code> resource
+            field-for-field.{' '}
+            <strong className="text-foreground">
+              The decision is in <code className="font-mono">status</code>:
+            </strong>{' '}
+            <code className="font-mono">COMPLETED</code> = approved &amp; paid (proof in{' '}
+            <code className="font-mono">externalReference</code>),{' '}
+            <code className="font-mono">REJECTED</code> = declined (reason in{' '}
+            <code className="font-mono">adminNote</code>),{' '}
+            <code className="font-mono">CANCELLED</code> = you cancelled it — and{' '}
+            <code className="font-mono">processedAt</code> is when it was decided (null while{' '}
+            <code className="font-mono">PENDING</code>). The full payout instructions — phone,
+            pickup, wallet / bank details — are in <code className="font-mono">payoutDetails</code>.
+            Money: <code className="font-mono">totalAmount − feeAmount = netAmount</code>.
           </p>
         </div>
         <div>

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { payoutDetailsSchema } from './payout-method';
 
 // =================================================================
 // CRM integration contract.
@@ -88,28 +89,61 @@ export type CrmEventTransaction = z.infer<typeof crmEventTransactionSchema>;
 
 // The withdrawal body inside a `withdrawal.*` CRM event. Mirrors the withdrawal
 // REST resource (GET /company/withdrawals/:id) field-for-field so the webhook
-// and the API speak the same language. Money is shown three consistent ways:
-//   totalAmount = what left your wallet,  feeAmount = the platform fee we charged,
-//   netAmount   = what the recipient gets   (totalAmount − feeAmount = netAmount).
+// and the API speak the same language.
+//
+// The admin's decision is fully described by `status` (and the matching event):
+//   PENDING   = requested, awaiting admin review        (processedAt = null)
+//   COMPLETED = APPROVED by an admin and paid out        (externalReference = the proof)
+//   REJECTED  = REJECTED by an admin                      (adminNote = the reason)
+//   CANCELLED = cancelled by the company before review
+// (Approval settles in one step, so an approved withdrawal is COMPLETED — there
+// is no separate "approved-but-unpaid" state.)
+//
+// Money (always consistent): amount = the requested payout; totalAmount = what
+// left your wallet (= amount for a DEDUCTED fee; amount + fee for ON_TOP);
+// feeAmount = the platform fee; netAmount = what the recipient receives
+// (totalAmount − feeAmount = netAmount).
 export const crmEventWithdrawalSchema = z.object({
   id: z.string().uuid(),
+  // PENDING → COMPLETED (approved + paid) / REJECTED / CANCELLED. From the event.
   status: crmWithdrawalStatusSchema,
+  amount: z.string(),
   totalAmount: z.string(),
   feeAmount: z.string(),
   netAmount: z.string(),
+  // How the fee was applied: "DEDUCTED" (recipient gets amount − fee) or
+  // "ON_TOP" (recipient gets the full amount; the fee is charged on top).
+  feeApplication: z.string(),
   currency: z.string(),
   payoutMethod: z.string(),
   // A human label for the destination — recipient name, account holder, or
   // wallet address, depending on the method. Null when none applies.
   recipient: z.string().nullable(),
-  // Your off-platform proof the money moved (wire id, tx hash, receipt…). Set
-  // once the withdrawal is COMPLETED; null beforehand.
-  externalReference: z.string().nullable(),
+  // The recipient's phone number, for the methods that carry one (cash / Whish).
+  // This is the destination the money is sent to. Null for crypto / bank / other.
+  recipientPhone: z.string().nullable(),
+  // The COMPLETE payout instructions you submitted — every method-specific field,
+  // identical to the REST resource: e.g. CASH → recipientName, recipientPhone,
+  // pickupLocation, instructions; WISH → recipientName, recipientPhone,
+  // instructions; CRYPTO → network, walletAddress, memo, instructions; bank →
+  // accountHolder, accountNumber, bankName, swiftBic, routingNumber. `recipient`
+  // and `recipientPhone` above are convenience summaries pulled from this. Null
+  // only for legacy rows that have no stored details.
+  payoutDetails: payoutDetailsSchema.nullable(),
   // The company's own request note (set once, immutable).
   note: z.string().nullable(),
   // The admin's note — e.g. the reason a request was REJECTED. Kept separate so
   // neither note overwrites the other.
   adminNote: z.string().nullable(),
+  // Your off-platform proof the money moved (wire id, tx hash, receipt…). Set
+  // once the withdrawal is COMPLETED (approved); null beforehand.
+  externalReference: z.string().nullable(),
+  // When the company requested the withdrawal.
+  createdAt: z.string(),
+  // The decision timestamp — when an admin approved/rejected (or the company
+  // cancelled) it. Null while still PENDING.
+  processedAt: z.string().nullable(),
+  // When THIS event fired.
   occurredAt: z.string(),
 });
 export type CrmEventWithdrawal = z.infer<typeof crmEventWithdrawalSchema>;

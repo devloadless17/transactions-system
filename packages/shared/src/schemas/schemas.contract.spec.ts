@@ -198,15 +198,27 @@ describe('crmEventPayloadSchema (deposit vs withdrawal body)', () => {
   const withdrawalBody = {
     id: 'd4f2a1c0-5e6f-4a7b-8c9d-0e1f2a3b4c5d',
     status: 'COMPLETED',
+    amount: '500.00',
     totalAmount: '500.00',
     feeAmount: '5.00',
     netAmount: '495.00',
+    feeApplication: 'DEDUCTED',
     currency: 'USD',
     payoutMethod: 'CASH',
     recipient: 'Acme Ltd',
-    externalReference: 'WIRE-88231',
+    recipientPhone: '+9613000000',
+    payoutDetails: {
+      method: 'CASH',
+      recipientName: 'Acme Ltd',
+      recipientPhone: '+9613000000',
+      pickupLocation: 'Beirut',
+      instructions: 'Call on arrival',
+    },
     note: 'Weekly settlement',
     adminNote: null,
+    externalReference: 'WIRE-88231',
+    createdAt: '2026-06-22T09:00:00.000Z',
+    processedAt: '2026-06-22T09:19:58.000Z',
     occurredAt: '2026-06-22T09:19:58.000Z',
   };
 
