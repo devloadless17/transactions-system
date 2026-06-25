@@ -7,6 +7,7 @@ import { AutoApprovalConfigStore } from './auto-approval-config.store';
 import { WhishTransfersService } from '../whish/whish-transfers.service';
 import { WhishSessionExpiredError } from '../whish/whish-w2w.client';
 import { AuditService } from '../audit/audit.service';
+import { ValidationError } from '../../common/errors/domain.error';
 
 const INTERVAL_MS = 15_000;
 // Cap rows touched per tick so a backlog can't make one tick run unbounded.
@@ -149,12 +150,29 @@ export class WithdrawalAutoApprovalService implements OnApplicationBootstrap, On
         await this.config.trip('session_expired');
         return true; // stop the tick — nothing else can transfer until re-seeded
       }
-      // ValidationError etc. (e.g. not enabled / bad amount) — back to manual.
-      await this.withdrawals.revertFromProcessing(w.id, w.companyId, {
-        status: 'FAILED',
-        terminal: true,
-        errorDetail: (err as Error).message,
+      if (err instanceof ValidationError) {
+        // Thrown BEFORE the upstream call (bad amount / not configured) — money
+        // definitively did NOT move, so it's safe to drop back to manual.
+        await this.withdrawals.revertFromProcessing(w.id, w.companyId, {
+          status: 'FAILED',
+          terminal: true,
+          errorDetail: err.message,
+        });
+        return false;
+      }
+      // Any other unexpected error could have fired AFTER the Whish call (e.g. a DB
+      // hiccup persisting the result) — money MAY have moved. Never auto-revert (a
+      // later manual reject would then double-pay); hold PROCESSING + flag for the
+      // operator to reconcile, exactly like an UNKNOWN.
+      await this.withdrawals.setAutoMeta(w.id, w.companyId, {
+        status: 'UNKNOWN',
+        needsReconcile: true,
+        errorDetail: `unexpected: ${(err as Error).message}`,
       });
+      await this.config.recordFailure();
+      this.logger.error(
+        `Withdrawal ${w.id} auto-transfer errored unexpectedly — held for reconcile: ${(err as Error).message}`,
+      );
       return false;
     }
 

@@ -395,6 +395,12 @@ export class WithdrawalsService {
       const cTx = tx as unknown as PrismaClient;
       const w = await cTx.withdrawal.findUnique({ where: { id } });
       if (!w || w.companyId !== companyId || w.status !== 'PENDING') return false;
+      // Never auto-pay a company that owes the platform (e.g. a reversal clawback
+      // booked a RECEIVABLE after the request). Leave it PENDING for manual review
+      // — approve() enforces the same block, but the auto transfer fires BEFORE
+      // approve(), so we must re-assert it here or money could leave despite the debt.
+      const owed = await this.ledger.outstandingReceivable(cTx, w.companyId, w.currency);
+      if (owed.isPositive()) return false;
       await cTx.withdrawal.update({
         where: { id },
         data: {

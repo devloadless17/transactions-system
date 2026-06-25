@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { WithdrawalAutoApprovalService } from './withdrawal-auto-approval.service';
+import { ValidationError } from '../../common/errors/domain.error';
 
 // Safety guarantee under test: when auto-approval is OFF (or the toggle is flipped
 // OFF mid-run), the processor must NEVER claim a withdrawal or send a transfer.
@@ -31,11 +32,17 @@ function build(opts: {
     findStuckProcessing: vi.fn().mockResolvedValue([]),
     findAutoApprovalCandidates: vi.fn().mockResolvedValue(opts.candidates ?? []),
     claimForProcessing: vi.fn().mockResolvedValue(true),
+    revertFromProcessing: vi.fn().mockResolvedValue(undefined),
+    setAutoMeta: vi.fn().mockResolvedValue(undefined),
+    approve: vi.fn().mockResolvedValue(undefined),
   };
   const config = {
     getState: vi.fn().mockResolvedValue(opts.state),
     isEnabled: vi.fn().mockResolvedValue(opts.isEnabled ?? true),
     maybeAutoResume: vi.fn().mockResolvedValue(false),
+    recordFailure: vi.fn().mockResolvedValue(undefined),
+    recordSuccess: vi.fn().mockResolvedValue(undefined),
+    trip: vi.fn().mockResolvedValue(undefined),
   };
   const transfers = {
     isW2WEnabled: vi.fn().mockReturnValue(opts.w2wEnabled ?? true),
@@ -110,5 +117,39 @@ describe('WithdrawalAutoApprovalService — disabled never transfers', () => {
     expect(withdrawals.findAutoApprovalCandidates).toHaveBeenCalled();
     expect(withdrawals.claimForProcessing).not.toHaveBeenCalled();
     expect(transfers.sendTransfer).not.toHaveBeenCalled();
+  });
+});
+
+describe('WithdrawalAutoApprovalService — error handling never double-pays', () => {
+  it('an UNEXPECTED error (may be post-transfer) holds the row for reconcile, never reverts', async () => {
+    const { service, withdrawals, config, transfers } = build({
+      state: makeState(),
+      candidates: [candidate],
+    });
+    transfers.sendTransfer.mockRejectedValue(new Error('db hiccup after the call'));
+    await runTick(service);
+    // Money may have moved → flag needsReconcile, keep PROCESSING (no revert).
+    expect(withdrawals.setAutoMeta).toHaveBeenCalledWith(
+      candidate.id,
+      candidate.companyId,
+      expect.objectContaining({ needsReconcile: true }),
+    );
+    expect(withdrawals.revertFromProcessing).not.toHaveBeenCalled();
+    expect(config.recordFailure).toHaveBeenCalled();
+  });
+
+  it('a pre-call ValidationError (money did NOT move) reverts to manual', async () => {
+    const { service, withdrawals, transfers } = build({
+      state: makeState(),
+      candidates: [candidate],
+    });
+    transfers.sendTransfer.mockRejectedValue(new ValidationError('bad amount'));
+    await runTick(service);
+    expect(withdrawals.revertFromProcessing).toHaveBeenCalledWith(
+      candidate.id,
+      candidate.companyId,
+      expect.objectContaining({ status: 'FAILED', terminal: true }),
+    );
+    expect(withdrawals.setAutoMeta).not.toHaveBeenCalled();
   });
 });
