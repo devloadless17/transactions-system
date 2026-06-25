@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { usePathname, useSearchParams } from 'next/navigation';
-import { useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import type { PaginatedResponse, TransactionLogKind, TransactionLogResponse } from '@app/shared';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -97,6 +97,7 @@ export function TransactionLogsView() {
       apiFetch<PaginatedResponse<TransactionLogResponse>>(
         `/admin/transaction-logs?${params.toString()}`,
       ),
+    placeholderData: keepPreviousData,
   });
 
   const companyNames = useCompanyNames(listQ.data?.data.map((r) => r.companyId) ?? []);

@@ -19,6 +19,7 @@ import {
   type DateRange,
 } from '@/features/analytics/date-range';
 import { CompanyFilter } from '@/features/admin/company-filter';
+import { ExportCsvButton } from '@/components/export-csv-button';
 import { ActivityDetailDrawer } from './activity-detail-drawer';
 
 const PAGE_SIZE = 20;
@@ -80,11 +81,18 @@ export function ActivityView({ scope }: { scope: 'admin' | 'company' }) {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold">Transactions</h1>
-        <p className="text-sm text-muted-foreground">
-          Every completed operation — deposits and loads in, withdrawals and payouts out.
-        </p>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold">Transactions</h1>
+          <p className="text-sm text-muted-foreground">
+            Every completed operation — deposits and loads in, withdrawals and payouts out.
+          </p>
+        </div>
+        <ExportCsvButton
+          path={`/${scope}/activity/export.csv`}
+          params={params}
+          filename="transactions"
+        />
       </div>
 
       <Card>
@@ -130,7 +138,7 @@ export function ActivityView({ scope }: { scope: 'admin' | 'company' }) {
             <Input
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
-              placeholder="Search name, reference…"
+              placeholder="Search name, reference, id…"
               className="h-9 w-full pl-8 sm:w-60"
             />
           </div>

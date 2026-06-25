@@ -1,14 +1,13 @@
 'use client';
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { toast } from '@/lib/toast';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import {
   LedgerAccountType,
   SUPPORTED_CURRENCIES,
+  type ActivityKind,
   type LedgerEntryResponse,
   type PaginatedResponse,
 } from '@app/shared';
-import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Label } from '@/components/ui/label';
@@ -20,8 +19,9 @@ import {
   type RangePreset,
 } from '@/components/ui/date-range-picker';
 import { apiFetch } from '@/lib/api.client';
-import { publicApiBase } from '@/lib/api';
 import { trimAmount } from '@/lib/format';
+import { ExportCsvButton } from '@/components/export-csv-button';
+import { EntityDetailDrawer } from '@/features/activity/activity-detail-drawer';
 
 const PAGE_SIZE = 50;
 
@@ -45,6 +45,8 @@ export function LedgerView() {
   const [currency, setCurrency] = useState<string>('');
   const [accountType, setAccountType] = useState<LedgerAccountType | ''>('');
   const [range, setRange] = useState<PickedRange>({});
+  // The operation whose detail drawer is open (clicked from a "Linked" cell).
+  const [entityTarget, setEntityTarget] = useState<{ kind: ActivityKind; id: string } | null>(null);
 
   const params = new URLSearchParams({ page: String(page), pageSize: String(PAGE_SIZE) });
   if (currency) params.set('currency', currency);
@@ -76,35 +78,8 @@ export function LedgerView() {
     queryKey: ['company', 'ledger', params.toString()],
     queryFn: () =>
       apiFetch<PaginatedResponse<LedgerEntryResponse>>(`/company/ledger?${params.toString()}`),
+    placeholderData: keepPreviousData,
   });
-
-  const [exporting, setExporting] = useState(false);
-  async function downloadCsv() {
-    const exportParams = new URLSearchParams(params);
-    exportParams.delete('page');
-    exportParams.delete('pageSize');
-    const base = publicApiBase();
-    setExporting(true);
-    try {
-      // A failed request returns an error body, not a CSV, so check `ok` before
-      // saving — otherwise the user silently downloads a file full of error JSON.
-      const r = await fetch(`${base}/company/ledger/export.csv?${exportParams.toString()}`, {
-        credentials: 'include',
-      });
-      if (!r.ok) throw new Error(`Export failed (${r.status})`);
-      const blob = await r.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `ledger-${Date.now()}.csv`;
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Export failed. Please try again.');
-    } finally {
-      setExporting(false);
-    }
-  }
 
   const columns: Column<LedgerEntryResponse>[] = [
     {
@@ -137,7 +112,25 @@ export function LedgerView() {
       key: 'linked',
       header: 'Linked',
       className: 'font-mono text-xs break-all',
-      cell: (e) => linkedLabel(e) ?? '—',
+      cell: (e) => {
+        const label = linkedLabel(e);
+        const target = linkedTarget(e);
+        if (!label) return '—';
+        // Click a linked reference to open the originating operation's full
+        // detail — trace any ledger line back to its transaction in one click.
+        return target ? (
+          <button
+            type="button"
+            onClick={() => setEntityTarget(target)}
+            className="text-primary underline-offset-2 hover:underline"
+            title="View full details"
+          >
+            {label}
+          </button>
+        ) : (
+          label
+        );
+      },
     },
   ];
 
@@ -150,14 +143,7 @@ export function LedgerView() {
             Append-only record of every financial event. Reconcile against your wallets.
           </p>
         </div>
-        <Button
-          className="w-full sm:w-auto"
-          variant="outline"
-          onClick={downloadCsv}
-          disabled={exporting}
-        >
-          {exporting ? 'Exporting…' : 'Export CSV'}
-        </Button>
+        <ExportCsvButton path="/company/ledger/export.csv" params={params} filename="ledger" />
       </div>
 
       <Card>
@@ -237,6 +223,12 @@ export function LedgerView() {
           onPageChange={setPage}
         />
       )}
+
+      <EntityDetailDrawer
+        scope="company"
+        target={entityTarget}
+        onClose={() => setEntityTarget(null)}
+      />
     </div>
   );
 }
@@ -248,5 +240,15 @@ function linkedLabel(e: LedgerEntryResponse): string | null {
   if (e.withdrawalId) return `wd:${e.withdrawalId.slice(0, 8)}`;
   if (e.payoutId) return `po:${e.payoutId.slice(0, 8)}`;
   if (e.loadId) return `ld:${e.loadId.slice(0, 8)}`;
+  return null;
+}
+
+// The originating operation (kind + id) a ledger entry is tied to, for the
+// click-through detail drawer. Exactly one id is set per linked entry.
+function linkedTarget(e: LedgerEntryResponse): { kind: ActivityKind; id: string } | null {
+  if (e.transactionId) return { kind: 'DEPOSIT', id: e.transactionId };
+  if (e.withdrawalId) return { kind: 'WITHDRAWAL', id: e.withdrawalId };
+  if (e.payoutId) return { kind: 'PAYOUT', id: e.payoutId };
+  if (e.loadId) return { kind: 'LOAD', id: e.loadId };
   return null;
 }

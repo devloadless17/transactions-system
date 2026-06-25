@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState, type ReactNode } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from '@/lib/toast';
 import {
   PayoutMethod,
@@ -37,6 +37,7 @@ import {
   type FlowFilters,
 } from '@/features/company/withdrawals-view';
 import { useCompanyNames } from '@/features/admin/company-filter';
+import { ExportCsvButton } from '@/components/export-csv-button';
 
 interface ReviewState {
   withdrawal: WithdrawalResponse;
@@ -86,6 +87,7 @@ export function AdminWithdrawalsView({
       apiFetch<PaginatedResponse<WithdrawalResponse>>(
         `${config.listEndpoint}?${params.toString()}`,
       ),
+    placeholderData: keepPreviousData,
   });
 
   // Clamp back if the result set shrinks below the current page (e.g. a queue of
@@ -222,7 +224,14 @@ export function AdminWithdrawalsView({
           <h1 className="text-2xl font-semibold">{config.heading}</h1>
           <p className="text-sm text-muted-foreground">{config.subhead}</p>
         </div>
-        {headerAction}
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <ExportCsvButton
+            path={`${config.listEndpoint}/export.csv`}
+            params={params}
+            filename={config.noun}
+          />
+          {headerAction}
+        </div>
       </div>
 
       <FlowFilterBar

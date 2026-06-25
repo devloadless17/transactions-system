@@ -6,6 +6,7 @@ import {
   ParseUUIDPipe,
   Post,
   Query,
+  StreamableFile,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -31,6 +32,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Audited } from '../audit/audit.decorator';
 import type { AuthPrincipal } from '../../common/types/request.types';
+import { SkipResponseEnvelope } from '../../common/decorators/skip-response-envelope.decorator';
 import { ForbiddenError } from '../../common/errors/domain.error';
 import { LoadsService } from './loads.service';
 
@@ -65,6 +67,17 @@ export class LoadsController {
   ) {
     if (!user.companyId) throw new ForbiddenError('No company in session');
     return this.loads.list({ companyId: user.companyId, query });
+  }
+
+  @Roles(UserRole.COMPANY_OWNER, UserRole.COMPANY_MANAGER, UserRole.COMPANY_VIEWER)
+  @Get('company/loads/export.csv')
+  @SkipResponseEnvelope()
+  companyExport(
+    @Query(new ZodPipe(listLoadsQuerySchema)) query: ListLoadsQuery,
+    @CurrentUser() user: AuthPrincipal,
+  ): StreamableFile {
+    if (!user.companyId) throw new ForbiddenError('No company in session');
+    return this.loads.streamCsv({ companyId: user.companyId, query });
   }
 
   @Roles(UserRole.COMPANY_OWNER, UserRole.COMPANY_MANAGER, UserRole.COMPANY_VIEWER)
@@ -110,6 +123,13 @@ export class LoadsController {
   @Get('admin/loads')
   async adminList(@Query(new ZodPipe(listLoadsQuerySchema)) query: ListLoadsQuery) {
     return this.loads.list({ query });
+  }
+
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
+  @Get('admin/loads/export.csv')
+  @SkipResponseEnvelope()
+  adminExport(@Query(new ZodPipe(listLoadsQuerySchema)) query: ListLoadsQuery): StreamableFile {
+    return this.loads.streamCsv({ query });
   }
 
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)

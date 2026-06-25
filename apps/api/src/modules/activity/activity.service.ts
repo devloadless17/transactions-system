@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, StreamableFile } from '@nestjs/common';
 import {
   ACTIVITY_DIRECTION,
   SUPPORTED_CURRENCIES,
@@ -12,6 +12,7 @@ import type { PrismaClient } from '@app/db';
 import { PrismaService } from '../../database/prisma.service';
 import { CacheService } from '../cache/cache.service';
 import { ValidationError } from '../../common/errors/domain.error';
+import { streamCsvKeyset } from '../../common/csv';
 
 // Cache the list COUNT briefly so paging reuses it (same tradeoff as the
 // per-type lists). Rows are always live; only the total can lag by this window.
@@ -115,6 +116,90 @@ export class ActivityService {
           balanceMode: useBalance,
         },
       };
+    });
+  }
+
+  /**
+   * Stream the unified activity feed (all four COMPLETED operations) matching
+   * the filters as CSV, walked in keyset chunks over (created_at desc, id desc).
+   * Mirrors the list filters (incl. the id/reference search) so the export
+   * matches what the user sees. Each chunk is its own short RLS-scoped query.
+   */
+  streamCsv(args: { companyId?: string; query: ListActivityQuery }): StreamableFile {
+    const scope = args.companyId ?? null;
+    // Admins may narrow to one company; company callers are already RLS-scoped.
+    const adminCompanyId = args.companyId ? null : (args.query.companyId ?? null);
+    const q = args.query;
+    const prisma = this.prisma;
+    const unionSql = this.unionSql();
+    const kindsFor = this.kindsFor.bind(this);
+
+    return streamCsvKeyset<ActivityRow>({
+      filename: `transactions-${Date.now()}.csv`,
+      header: [
+        'id',
+        'kind',
+        'direction',
+        'created_at',
+        'completed_at',
+        'company_id',
+        'company_name',
+        'description',
+        'details',
+        'reference',
+        'amount',
+        'currency',
+        'fee',
+        'net',
+      ],
+      fetchPage: (cursor, take) =>
+        prisma.runAsScoped(scope, (tx) => {
+          const params: unknown[] = [];
+          const p = (v: unknown) => (params.push(v), `$${params.length}`);
+          const cl: string[] = [];
+          if (adminCompanyId) cl.push(`u.company_id = ${p(adminCompanyId)}::uuid`);
+          if (q.direction) cl.push(`u.kind IN (${kindsFor(q.direction, p)})`);
+          if (q.kind) cl.push(`u.kind = ${p(q.kind)}`);
+          if (q.currency) cl.push(`u.currency = ${p(q.currency)}`);
+          if (q.from) cl.push(`u.created_at >= ${p(new Date(q.from))}`);
+          if (q.to) cl.push(`u.created_at <= ${p(new Date(q.to))}`);
+          if (q.search) {
+            const like = p(`%${q.search}%`);
+            // Match the human reference/name fields AND the internal id, so a
+            // code copied from an audit log finds its row.
+            cl.push(
+              `(u.reference ILIKE ${like} OR u.description ILIKE ${like} OR u.details ILIKE ${like} OR u.id::text ILIKE ${like})`,
+            );
+          }
+          if (cursor) {
+            const c = p(cursor.createdAt);
+            const cid = p(cursor.id);
+            cl.push(`(u.created_at < ${c} OR (u.created_at = ${c} AND u.id < ${cid}))`);
+          }
+          const where = cl.length ? `WHERE ${cl.join(' AND ')}` : '';
+          const lim = p(take);
+          return tx.$queryRawUnsafe<ActivityRow[]>(
+            `SELECT * FROM (${unionSql}) u ${where} ORDER BY u.created_at DESC, u.id DESC LIMIT ${lim}`,
+            ...params,
+          );
+        }),
+      cursorOf: (r) => ({ createdAt: r.created_at, id: r.id }),
+      toCells: (r) => [
+        r.id,
+        r.kind,
+        ACTIVITY_DIRECTION[r.kind],
+        r.created_at.toISOString(),
+        r.processed_at ? r.processed_at.toISOString() : '',
+        r.company_id,
+        r.company_name ?? '',
+        r.description ?? '',
+        r.details ?? '',
+        r.reference ?? '',
+        r.amount,
+        r.currency.trim(),
+        r.fee,
+        r.net,
+      ],
     });
   }
 
@@ -275,8 +360,10 @@ export class ActivityService {
       if (fromPh) cl.push(`o.created_at >= ${fromPh}`);
       if (toPh) cl.push(`o.created_at <= ${toPh}`);
       if (likePh) {
+        // Also match the internal id so a code copied from an audit log (or any
+        // detail panel) is findable straight from the search box.
         cl.push(
-          `(${ref} ILIKE ${likePh} OR ${desc} ILIKE ${likePh} OR ${details} ILIKE ${likePh})`,
+          `(${ref} ILIKE ${likePh} OR ${desc} ILIKE ${likePh} OR ${details} ILIKE ${likePh} OR o.id::text ILIKE ${likePh})`,
         );
       }
       return cl.join(' AND ');
@@ -350,7 +437,7 @@ export class ActivityService {
       if (a.query.search) {
         const like = p(`%${a.query.search}%`);
         cl.push(
-          `(u.reference ILIKE ${like} OR u.description ILIKE ${like} OR u.details ILIKE ${like})`,
+          `(u.reference ILIKE ${like} OR u.description ILIKE ${like} OR u.details ILIKE ${like} OR u.id::text ILIKE ${like})`,
         );
       }
       return cl.length ? `WHERE ${cl.join(' AND ')}` : '';

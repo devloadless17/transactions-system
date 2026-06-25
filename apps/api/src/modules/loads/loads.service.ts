@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, StreamableFile } from '@nestjs/common';
 import {
   Money,
   type AdminLoadInput,
@@ -26,6 +26,7 @@ import { CacheService } from '../cache/cache.service';
 import { FeesService } from '../commissions/fees.service';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain.error';
 import { assertListOffset } from '../../common/pagination';
+import { streamFlowCsv } from '../../common/flow-csv';
 
 const REQUESTABLE_STATUS: WithdrawalStatus = 'PENDING';
 
@@ -407,6 +408,46 @@ export class LoadsService {
     if (!row) throw new NotFoundError('Load', id);
     if (companyId && row.companyId !== companyId) throw new NotFoundError('Load', id);
     return mapLoad(row);
+  }
+
+  /**
+   * Stream ALL loads matching the filters as CSV (no row cap), walked in keyset
+   * chunks. Mirrors the list query's filters; each chunk is its own short
+   * RLS-scoped query.
+   */
+  streamCsv(args: { companyId?: string; query: ListLoadsQuery }): StreamableFile {
+    const where = this.exportWhere(args);
+    const scope = args.companyId ?? null;
+    const prisma = this.prisma;
+    return streamFlowCsv({
+      noun: 'loads',
+      now: Date.now(),
+      baseWhere: where as Record<string, unknown>,
+      findPage: (pageWhere, take) =>
+        prisma.runAsScoped(scope, (tx) =>
+          tx.load.findMany({
+            where: pageWhere as Prisma.LoadWhereInput,
+            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+            take,
+          }),
+        ),
+    });
+  }
+
+  private exportWhere(args: { companyId?: string; query: ListLoadsQuery }): Prisma.LoadWhereInput {
+    const where: Prisma.LoadWhereInput = {};
+    if (args.companyId) where.companyId = args.companyId;
+    else if (args.query.companyId) where.companyId = args.query.companyId;
+    if (args.query.status) where.status = args.query.status;
+    if (args.query.currency) where.currency = args.query.currency;
+    if (args.query.payoutMethod) where.payoutMethod = args.query.payoutMethod;
+    if (args.query.from || args.query.to) {
+      where.createdAt = {
+        ...(args.query.from ? { gte: new Date(args.query.from) } : {}),
+        ...(args.query.to ? { lte: new Date(args.query.to) } : {}),
+      };
+    }
+    return where;
   }
 }
 

@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { toast } from '@/lib/toast';
@@ -42,6 +42,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { DateRangePicker, type RangePreset } from '@/components/ui/date-range-picker';
 import { CompanyFilter } from '@/features/admin/company-filter';
+import { ExportCsvButton } from '@/components/export-csv-button';
 import { apiFetch } from '@/lib/api.client';
 import { ApiClientError } from '@/lib/api';
 import { trimAmount } from '@/lib/format';
@@ -249,6 +250,7 @@ export function WithdrawalsView({ config }: { config: ProcessConfig }) {
     queryKey: [...config.queryKey, 'list', params.toString()],
     queryFn: () =>
       apiFetch<PaginatedResponse<WithdrawalResponse>>(`${config.endpoint}?${params.toString()}`),
+    placeholderData: keepPreviousData,
   });
 
   // If the result set shrinks (rows cancelled/approved out of the current filter)
@@ -390,7 +392,16 @@ export function WithdrawalsView({ config }: { config: ProcessConfig }) {
           <h1 className="text-2xl font-semibold">{config.heading}</h1>
           <p className="text-sm text-muted-foreground">{config.subhead}</p>
         </div>
-        <Button onClick={() => setOpen(true)}>{config.newButton}</Button>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <ExportCsvButton
+            path={`${config.endpoint}/export.csv`}
+            params={params}
+            filename={config.noun}
+          />
+          <Button className="w-full sm:w-auto" onClick={() => setOpen(true)}>
+            {config.newButton}
+          </Button>
+        </div>
       </div>
 
       <FlowFilterBar

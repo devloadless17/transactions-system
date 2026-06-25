@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, StreamableFile } from '@nestjs/common';
 import {
   Money,
   type ApproveWithdrawalInput,
@@ -33,6 +33,7 @@ import {
 } from '../ledger/flow-ledger';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain.error';
 import { assertListOffset } from '../../common/pagination';
+import { streamFlowCsv } from '../../common/flow-csv';
 
 const REQUESTABLE_STATUS: WithdrawalStatus = 'PENDING';
 
@@ -404,6 +405,49 @@ export class WithdrawalsService {
     if (!row) throw new NotFoundError('Withdrawal', id);
     if (companyId && row.companyId !== companyId) throw new NotFoundError('Withdrawal', id);
     return mapWithdrawal(row);
+  }
+
+  /**
+   * Stream ALL withdrawals matching the filters as CSV (no row cap), walked in
+   * keyset chunks. Mirrors the list query's filters so the export matches what
+   * the user sees. Each chunk is its own short RLS-scoped query.
+   */
+  streamCsv(args: { companyId?: string; query: ListWithdrawalsQuery }): StreamableFile {
+    const where = this.exportWhere(args);
+    const scope = args.companyId ?? null;
+    const prisma = this.prisma;
+    return streamFlowCsv({
+      noun: 'withdrawals',
+      now: Date.now(),
+      baseWhere: where as Record<string, unknown>,
+      findPage: (pageWhere, take) =>
+        prisma.runAsScoped(scope, (tx) =>
+          tx.withdrawal.findMany({
+            where: pageWhere as Prisma.WithdrawalWhereInput,
+            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+            take,
+          }),
+        ),
+    });
+  }
+
+  private exportWhere(args: {
+    companyId?: string;
+    query: ListWithdrawalsQuery;
+  }): Prisma.WithdrawalWhereInput {
+    const where: Prisma.WithdrawalWhereInput = {};
+    if (args.companyId) where.companyId = args.companyId;
+    else if (args.query.companyId) where.companyId = args.query.companyId;
+    if (args.query.status) where.status = args.query.status;
+    if (args.query.currency) where.currency = args.query.currency;
+    if (args.query.payoutMethod) where.payoutMethod = args.query.payoutMethod;
+    if (args.query.from || args.query.to) {
+      where.createdAt = {
+        ...(args.query.from ? { gte: new Date(args.query.from) } : {}),
+        ...(args.query.to ? { lte: new Date(args.query.to) } : {}),
+      };
+    }
+    return where;
   }
 }
 

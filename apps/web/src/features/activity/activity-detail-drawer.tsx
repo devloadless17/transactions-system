@@ -50,6 +50,50 @@ type FlowRecord = WithdrawalResponse | PayoutResponse | LoadResponse;
  * dedicated pages show — so the unified feed has every detail the per-type
  * pages have.
  */
+// Fetch full detail for one operation by kind + id: deposits pull the rich
+// transaction detail (with ledger entries); withdrawals/payouts/loads pull their
+// record. Shared by the activity-feed drawer AND the audit-log entity drawer, so
+// any operation is one click from "everything about it".
+export function useEntityDetailQuery(
+  scope: 'admin' | 'company',
+  kind: ActivityKind | undefined,
+  id: string | undefined,
+  enabled: boolean,
+) {
+  return useQuery<TransactionDetailResponse | FlowRecord>({
+    queryKey: [scope, 'entity-detail', kind, id],
+    enabled: enabled && !!kind && !!id,
+    queryFn: () => {
+      if (!kind || !id) throw new Error('no entity');
+      if (kind === 'DEPOSIT') {
+        return apiFetch<TransactionDetailResponse>(`/${scope}/transactions/${id}/detail`);
+      }
+      return apiFetch<FlowRecord>(`/${scope}/${KIND_PATH[kind]}/${id}`);
+    },
+  });
+}
+
+function EntityDetailBody({
+  kind,
+  q,
+}: {
+  kind: ActivityKind;
+  q: ReturnType<typeof useEntityDetailQuery>;
+}) {
+  return (
+    <>
+      {q.isLoading && <div className="h-40 w-full animate-pulse rounded bg-muted" />}
+      {q.isError && <p className="text-destructive">Couldn&apos;t load details — try again.</p>}
+      {q.data &&
+        (kind === 'DEPOSIT' ? (
+          <DepositDetail d={q.data as TransactionDetailResponse} />
+        ) : (
+          <FlowDetail r={q.data as FlowRecord} />
+        ))}
+    </>
+  );
+}
+
 export function ActivityDetailDrawer({
   scope,
   item,
@@ -59,17 +103,7 @@ export function ActivityDetailDrawer({
   item: ActivityItem | null;
   onClose: () => void;
 }) {
-  const q = useQuery<TransactionDetailResponse | FlowRecord>({
-    queryKey: [scope, 'activity', 'detail', item?.kind, item?.id],
-    enabled: !!item,
-    queryFn: () => {
-      if (!item) throw new Error('no item');
-      if (item.kind === 'DEPOSIT') {
-        return apiFetch<TransactionDetailResponse>(`/${scope}/transactions/${item.id}/detail`);
-      }
-      return apiFetch<FlowRecord>(`/${scope}/${KIND_PATH[item.kind]}/${item.id}`);
-    },
-  });
+  const q = useEntityDetailQuery(scope, item?.kind, item?.id, !!item);
 
   const isIn = item?.direction === 'IN';
 
@@ -101,22 +135,64 @@ export function ActivityDetailDrawer({
               {formatMoney(item.amount)} {item.currency}
             </div>
 
-            {q.isLoading && <div className="h-40 w-full animate-pulse rounded bg-muted" />}
-            {q.isError && (
-              <p className="text-destructive">Couldn&apos;t load details — try again.</p>
-            )}
-            {q.data &&
-              (item.kind === 'DEPOSIT' ? (
-                <DepositDetail d={q.data as TransactionDetailResponse} />
-              ) : (
-                <FlowDetail r={q.data as FlowRecord} />
-              ))}
+            <EntityDetailBody kind={item.kind} q={q} />
 
             {scope === 'admin' && item.companyName && (
               <Section title="Company">
                 <Row label="Name" value={item.companyName} />
               </Section>
             )}
+          </div>
+        )}
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+// Audit-log entity types that map to a viewable money operation. Anything else
+// (company, user, commission, …) has no transaction detail to open.
+const AUDIT_ENTITY_KIND: Record<string, ActivityKind> = {
+  transaction: 'DEPOSIT',
+  load: 'LOAD',
+  withdrawal: 'WITHDRAWAL',
+  payout: 'PAYOUT',
+};
+
+/** Map an audit-log (entityType, entityId) to a viewable operation, or null. */
+export function auditEntityTarget(
+  entityType: string,
+  entityId: string | null,
+): { kind: ActivityKind; id: string } | null {
+  const kind = AUDIT_ENTITY_KIND[entityType];
+  return kind && entityId ? { kind, id: entityId } : null;
+}
+
+/**
+ * Standalone detail drawer for a money operation referenced elsewhere (e.g. an
+ * audit-log entity). Given a kind + id it shows the full record — the same body
+ * the activity feed uses — so an operator can jump from an audit entry straight
+ * to everything about that transaction.
+ */
+export function EntityDetailDrawer({
+  scope,
+  target,
+  onClose,
+}: {
+  scope: 'admin' | 'company';
+  target: { kind: ActivityKind; id: string } | null;
+  onClose: () => void;
+}) {
+  const q = useEntityDetailQuery(scope, target?.kind, target?.id, !!target);
+  return (
+    <Sheet open={!!target} onOpenChange={(v) => !v && onClose()}>
+      <SheetContent className="overflow-y-auto">
+        <SheetHeader>
+          <SheetTitle>{target ? KIND_LABEL[target.kind] : 'Detail'}</SheetTitle>
+          <SheetDescription className="font-mono text-xs break-all">{target?.id}</SheetDescription>
+        </SheetHeader>
+        {target && (
+          <div className="mt-4 space-y-6 text-sm">
+            <EntityDetailBody kind={target.kind} q={q} />
           </div>
         )}
       </SheetContent>

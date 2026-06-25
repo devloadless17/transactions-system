@@ -1,8 +1,8 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { usePathname, useSearchParams } from 'next/navigation';
-import { useQuery } from '@tanstack/react-query';
-import type { AuditLogResponse, PaginatedResponse } from '@app/shared';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import type { ActivityKind, AuditLogResponse, PaginatedResponse } from '@app/shared';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -11,6 +11,7 @@ import { Pagination } from '@/components/ui/pagination';
 import { apiFetch } from '@/lib/api.client';
 import { useDebouncedValue } from '@/lib/use-debounced-value';
 import { CompanyFilter, useCompanyNames } from '@/features/admin/company-filter';
+import { auditEntityTarget, EntityDetailDrawer } from '@/features/activity/activity-detail-drawer';
 
 const PAGE_SIZE = 50;
 
@@ -48,6 +49,8 @@ export function AuditLogsView() {
 
   // State is initialised from the URL on mount (shareable/bookmarkable links).
   const [state, setState] = useState<State>(() => stateFromParams(searchParams));
+  // The money operation whose detail drawer is open (clicked from an entity cell).
+  const [entityTarget, setEntityTarget] = useState<{ kind: ActivityKind; id: string } | null>(null);
 
   // Single writer: update state AND push it to the URL together (replace, so we
   // don't pollute history on every keystroke). Because state and URL end up in
@@ -86,6 +89,7 @@ export function AuditLogsView() {
     queryKey: ['admin', 'audit-logs', params.toString()],
     queryFn: () =>
       apiFetch<PaginatedResponse<AuditLogResponse>>(`/admin/audit-logs?${params.toString()}`),
+    placeholderData: keepPreviousData,
   });
 
   const companyNames = useCompanyNames(listQ.data?.data.map((r) => r.companyId) ?? []);
@@ -110,12 +114,24 @@ export function AuditLogsView() {
       key: 'entity',
       header: 'Entity',
       className: 'font-mono text-xs',
-      cell: (a) => (
-        <>
-          {a.entityType}
-          {a.entityId ? `:${a.entityId.slice(0, 8)}` : ''}
-        </>
-      ),
+      cell: (a) => {
+        const label = `${a.entityType}${a.entityId ? `:${a.entityId.slice(0, 8)}` : ''}`;
+        // Deposits/withdrawals/payouts/loads open their full detail in place, so
+        // an operator can jump from an audit entry straight to the transaction.
+        const target = auditEntityTarget(a.entityType, a.entityId);
+        return target ? (
+          <button
+            type="button"
+            onClick={() => setEntityTarget(target)}
+            className="text-primary underline-offset-2 hover:underline"
+            title="View full details"
+          >
+            {label}
+          </button>
+        ) : (
+          <span>{label}</span>
+        );
+      },
     },
     {
       key: 'ip',
@@ -184,6 +200,12 @@ export function AuditLogsView() {
           onPageChange={(p) => update({ page: p })}
         />
       )}
+
+      <EntityDetailDrawer
+        scope="admin"
+        target={entityTarget}
+        onClose={() => setEntityTarget(null)}
+      />
     </div>
   );
 }

@@ -6,6 +6,7 @@ import {
   ParseUUIDPipe,
   Post,
   Query,
+  StreamableFile,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -29,6 +30,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Audited } from '../audit/audit.decorator';
 import type { AuthPrincipal } from '../../common/types/request.types';
+import { SkipResponseEnvelope } from '../../common/decorators/skip-response-envelope.decorator';
 import { ForbiddenError } from '../../common/errors/domain.error';
 import { PayoutsService } from './payouts.service';
 
@@ -66,6 +68,17 @@ export class PayoutsController {
   }
 
   @Roles(UserRole.COMPANY_OWNER, UserRole.COMPANY_MANAGER, UserRole.COMPANY_VIEWER)
+  @Get('company/payouts/export.csv')
+  @SkipResponseEnvelope()
+  companyExport(
+    @Query(new ZodPipe(listPayoutsQuerySchema)) query: ListPayoutsQuery,
+    @CurrentUser() user: AuthPrincipal,
+  ): StreamableFile {
+    if (!user.companyId) throw new ForbiddenError('No company in session');
+    return this.payouts.streamCsv({ companyId: user.companyId, query });
+  }
+
+  @Roles(UserRole.COMPANY_OWNER, UserRole.COMPANY_MANAGER, UserRole.COMPANY_VIEWER)
   @Get('company/payouts/:id')
   async companyGet(
     @Param('id', new ParseUUIDPipe()) id: string,
@@ -95,6 +108,13 @@ export class PayoutsController {
   @Get('admin/payouts')
   async adminList(@Query(new ZodPipe(listPayoutsQuerySchema)) query: ListPayoutsQuery) {
     return this.payouts.list({ query });
+  }
+
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
+  @Get('admin/payouts/export.csv')
+  @SkipResponseEnvelope()
+  adminExport(@Query(new ZodPipe(listPayoutsQuerySchema)) query: ListPayoutsQuery): StreamableFile {
+    return this.payouts.streamCsv({ query });
   }
 
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)

@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { usePathname, useSearchParams } from 'next/navigation';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from '@/lib/toast';
 import {
   TransactionStatus,
@@ -25,8 +25,9 @@ import {
 } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { apiFetch } from '@/lib/api.client';
-import { ApiClientError, publicApiBase } from '@/lib/api';
+import { ApiClientError } from '@/lib/api';
 import { trimAmount } from '@/lib/format';
+import { ExportCsvButton } from '@/components/export-csv-button';
 import { useDebouncedValue } from '@/lib/use-debounced-value';
 import { EmptyState } from '@/components/empty-state';
 import { Inbox } from 'lucide-react';
@@ -201,6 +202,7 @@ export function TransactionsView({
     queryKey: [scope, 'transactions', params.toString()],
     queryFn: () =>
       apiFetch<PaginatedResponse<TransactionResponse>>(`${basePath}?${params.toString()}`),
+    placeholderData: keepPreviousData,
   });
 
   const sourcesQ = useQuery({
@@ -212,37 +214,6 @@ export function TransactionsView({
   const companyNames = useCompanyNames(
     scope === 'admin' ? (data?.data.map((t) => t.companyId) ?? []) : [],
   );
-
-  const [exporting, setExporting] = useState(false);
-  async function downloadCsv() {
-    const exportParams = new URLSearchParams(params);
-    exportParams.delete('page');
-    exportParams.delete('pageSize');
-    const path =
-      scope === 'admin' ? '/admin/transactions/export.csv' : '/company/transactions/export.csv';
-    const base = publicApiBase();
-    setExporting(true);
-    try {
-      // Fetch with credentials, then download the blob. A failed request returns
-      // an error body, not a CSV, so check `ok` before saving — otherwise the
-      // user silently downloads a file full of error JSON.
-      const r = await fetch(`${base}${path}?${exportParams.toString()}`, {
-        credentials: 'include',
-      });
-      if (!r.ok) throw new Error(`Export failed (${r.status})`);
-      const blob = await r.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `transactions-${Date.now()}.csv`;
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Export failed. Please try again.');
-    } finally {
-      setExporting(false);
-    }
-  }
 
   const columns: Column<TransactionResponse>[] = [
     {
@@ -366,14 +337,15 @@ export function TransactionsView({
               : 'Transactions ingested via your API keys.'}
           </p>
         </div>
-        <Button
-          className="w-full sm:w-auto"
-          variant="outline"
-          onClick={downloadCsv}
-          disabled={exporting}
-        >
-          {exporting ? 'Exporting…' : 'Export CSV'}
-        </Button>
+        <ExportCsvButton
+          path={
+            scope === 'admin'
+              ? '/admin/transactions/export.csv'
+              : '/company/transactions/export.csv'
+          }
+          params={params}
+          filename="transactions"
+        />
       </div>
 
       <Card>

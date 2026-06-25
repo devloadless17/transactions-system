@@ -6,6 +6,7 @@ import {
   ParseUUIDPipe,
   Post,
   Query,
+  StreamableFile,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -29,6 +30,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Audited } from '../audit/audit.decorator';
 import type { AuthPrincipal } from '../../common/types/request.types';
+import { SkipResponseEnvelope } from '../../common/decorators/skip-response-envelope.decorator';
 import { ForbiddenError } from '../../common/errors/domain.error';
 import { WithdrawalsService } from './withdrawals.service';
 
@@ -66,6 +68,17 @@ export class WithdrawalsController {
   }
 
   @Roles(UserRole.COMPANY_OWNER, UserRole.COMPANY_MANAGER, UserRole.COMPANY_VIEWER)
+  @Get('company/withdrawals/export.csv')
+  @SkipResponseEnvelope()
+  companyExport(
+    @Query(new ZodPipe(listWithdrawalsQuerySchema)) query: ListWithdrawalsQuery,
+    @CurrentUser() user: AuthPrincipal,
+  ): StreamableFile {
+    if (!user.companyId) throw new ForbiddenError('No company in session');
+    return this.withdrawals.streamCsv({ companyId: user.companyId, query });
+  }
+
+  @Roles(UserRole.COMPANY_OWNER, UserRole.COMPANY_MANAGER, UserRole.COMPANY_VIEWER)
   @Get('company/withdrawals/:id')
   async companyGet(
     @Param('id', new ParseUUIDPipe()) id: string,
@@ -95,6 +108,15 @@ export class WithdrawalsController {
   @Get('admin/withdrawals')
   async adminList(@Query(new ZodPipe(listWithdrawalsQuerySchema)) query: ListWithdrawalsQuery) {
     return this.withdrawals.list({ query });
+  }
+
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
+  @Get('admin/withdrawals/export.csv')
+  @SkipResponseEnvelope()
+  adminExport(
+    @Query(new ZodPipe(listWithdrawalsQuerySchema)) query: ListWithdrawalsQuery,
+  ): StreamableFile {
+    return this.withdrawals.streamCsv({ query });
   }
 
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
