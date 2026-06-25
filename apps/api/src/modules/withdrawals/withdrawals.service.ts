@@ -467,7 +467,7 @@ export class WithdrawalsService {
     limit: number;
   }): Promise<Withdrawal[]> {
     const cutoff = new Date(Date.now() - opts.holdSeconds * 1000);
-    return this.prisma.runAsAdmin((tx) =>
+    const rows = await this.prisma.runAsAdmin((tx) =>
       tx.withdrawal.findMany({
         where: {
           status: 'PENDING',
@@ -475,13 +475,18 @@ export class WithdrawalsService {
           currency: 'USD',
           netAmount: { lte: new Prisma.Decimal(opts.maxAutoApproveAmount) },
           createdAt: { lte: cutoff, gte: opts.enabledAt },
-          // Exclude rows a prior auto attempt marked terminal (failed → manual).
-          NOT: { metadata: { path: ['autoApproval', 'terminal'], equals: true } },
         },
         orderBy: { createdAt: 'asc' },
-        take: opts.limit,
+        // Over-fetch so terminal rows (filtered in JS below) can't starve fresh
+        // ones, then slice to the batch.
+        take: Math.max(opts.limit * 4, 100),
       }),
     );
+    // Exclude rows a prior auto attempt marked terminal (failed → left for
+    // manual). MUST be done in JS, not SQL: a Postgres `NOT (json_path = true)`
+    // predicate is NULL for a row with NULL metadata — which is EVERY normal
+    // UI-created withdrawal — so it silently drops them and nothing is processed.
+    return rows.filter((r) => !autoMetaFlag(r.metadata, 'terminal')).slice(0, opts.limit);
   }
 
   /**
@@ -490,16 +495,16 @@ export class WithdrawalsService {
    * wait for the operator escape hatch, never auto-touched again.
    */
   async findStuckProcessing(limit: number): Promise<Withdrawal[]> {
-    return this.prisma.runAsAdmin((tx) =>
+    const rows = await this.prisma.runAsAdmin((tx) =>
       tx.withdrawal.findMany({
-        where: {
-          status: 'PROCESSING',
-          NOT: { metadata: { path: ['autoApproval', 'needsReconcile'], equals: true } },
-        },
+        where: { status: 'PROCESSING' },
         orderBy: { createdAt: 'asc' },
-        take: limit,
+        take: Math.max(limit * 4, 100),
       }),
     );
+    // Skip UNKNOWN rows already flagged for operator reconcile; resolve the rest.
+    // JS filter (not SQL) for the same NULL-metadata three-valued-logic reason.
+    return rows.filter((r) => !autoMetaFlag(r.metadata, 'needsReconcile')).slice(0, limit);
   }
 
   async list(args: {
@@ -673,6 +678,17 @@ export interface AutoApprovalMeta {
   needsAttention?: boolean;
   terminal?: boolean;
   attemptedAt?: string;
+}
+
+/** Read a boolean flag off `metadata.autoApproval` (null/absent → false). */
+function autoMetaFlag(
+  metadata: unknown,
+  flag: 'terminal' | 'needsReconcile' | 'needsAttention',
+): boolean {
+  if (!metadata || typeof metadata !== 'object') return false;
+  const a = (metadata as Record<string, unknown>).autoApproval;
+  if (!a || typeof a !== 'object') return false;
+  return (a as Record<string, unknown>)[flag] === true;
 }
 
 /** Merge an autoApproval patch into existing metadata (never drops apiKeyId etc.). */

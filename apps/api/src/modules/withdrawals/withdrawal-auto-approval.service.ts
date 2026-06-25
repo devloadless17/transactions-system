@@ -59,10 +59,16 @@ export class WithdrawalAutoApprovalService implements OnApplicationBootstrap, On
         if (!resumed) return;
       }
 
-      if (!state.enabled || !state.enabledAt) return;
-      if (!this.transfers.isW2WEnabled()) return;
+      if (!state.enabled || !state.enabledAt) return; // OFF → silent (the default)
+      if (!this.transfers.isW2WEnabled()) {
+        this.logger.warn('Auto-approval is ON but WHISH_W2W_ENABLED is false — skipping.');
+        return;
+      }
       const session = await this.transfers.sessionStatus();
-      if (!session.configured) return;
+      if (!session.configured) {
+        this.logger.warn('Auto-approval is ON but no Whish session is configured — skipping.');
+        return;
+      }
 
       // 1. Resolve rows already in PROCESSING (crash recovery / settle retries).
       const stuck = await this.withdrawals.findStuckProcessing(BATCH);
@@ -78,12 +84,19 @@ export class WithdrawalAutoApprovalService implements OnApplicationBootstrap, On
         maxAutoApproveAmount: state.maxAutoApproveAmount,
         limit: BATCH,
       });
+      let processed = 0;
       for (const w of candidates) {
         const claimed = await this.withdrawals.claimForProcessing(w.id, w.companyId);
         if (!claimed) continue; // cancelled / raced away — skip
+        processed++;
         const stop = await this.processClaimed(w);
         if (stop) return;
       }
+      // Heartbeat so the processor's decisions are visible in the logs.
+      this.logger.log(
+        `Auto-approval tick: ${candidates.length} candidate(s), ${stuck.length} stuck, ${processed} processed ` +
+          `(hold=${state.holdSeconds}s, cap=${state.maxAutoApproveAmount}).`,
+      );
     } catch (err) {
       this.logger.warn(`Auto-approval tick failed: ${(err as Error).message}`);
     } finally {
