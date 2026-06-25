@@ -257,8 +257,19 @@ export function CompanyApiView() {
             raw file.
           </CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-3">
           <CodeBlock code={TRANSACTIONS_CURL} />
+          <p className="rounded-md border-l-4 border-primary bg-primary/5 p-3 text-xs text-muted-foreground">
+            <strong className="text-foreground">Fees are transparent.</strong> Every transaction
+            returns <code className="font-mono">amount</code> (gross),{' '}
+            <code className="font-mono">commissionAmount</code> (the platform fee we took), and{' '}
+            <code className="font-mono">netAmount</code> (what you were credited). Withdrawals,
+            payouts and loads return the same breakdown as{' '}
+            <code className="font-mono">totalAmount</code> /{' '}
+            <code className="font-mono">feeAmount</code> /{' '}
+            <code className="font-mono">netAmount</code> — so after any completed transaction you
+            always know exactly what we charged.
+          </p>
         </CardContent>
       </Card>
 

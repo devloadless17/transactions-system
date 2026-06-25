@@ -1392,7 +1392,7 @@ Returned (under the `data` envelope) by every create / get / refresh call.
 | `createdAt`        | string (ISO-8601)         |                                                                                                                                                                                                                                                                                 |
 | `paidAt`           | string (ISO-8601) \| null | Set when settled.                                                                                                                                                                                                                                                               |
 
-> **No fee/net fields.** Like the ingest boundary, this object deliberately omits the platform commission and net amount — you see only the gross amount you asked to collect.
+> **No fee/net fields on this object.** Like the ingest boundary, the payment object deliberately omits the platform commission and net amount — you see only the gross amount you asked to collect. **To see the fee we took and the net you were credited**, read the **settled transaction** once `PAID` (reference `whish:<externalId>`): `GET /company/transactions` returns `commissionAmount` + `netAmount`, and the `transaction.completed` CRM event carries them too.
 
 #### Status lifecycle
 

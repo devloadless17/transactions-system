@@ -38,7 +38,10 @@ const CREATE_RESPONSE = `{
 
 const STATUS_CURL = `curl ${API_BASE}/integrations/whish/payments/1781018591 \\
   -H "Authorization: Bearer tsk_<company-key>"
-# Same shape as create. Watch \`status\` (and \`transactionId\` once PAID).`;
+# Same shape as create. Watch \`status\` (and \`transactionId\` once PAID).
+# This object shows only the GROSS amount. For the fee we took + your net, read the
+# settled transaction (reference whish:<externalId>): GET /company/transactions returns
+# commissionAmount + netAmount (also sent on the transaction.completed CRM event).`;
 
 /**
  * Whish Pay — what it is, how it flows, and how to create links from your
