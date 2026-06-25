@@ -119,6 +119,12 @@ services:
       WHISH_USER_AGENT: '${WHISH_USER_AGENT}'
       WHISH_ENABLED_CURRENCIES: ${WHISH_ENABLED_CURRENCIES:-USD}
       WHISH_ALLOW_SANDBOX: ${WHISH_ALLOW_SANDBOX:-true}
+      # Whish W2W (consumer-app) transfers. NO sandbox exists for W2W — these move
+      # REAL money even on staging. Set WHISH_W2W_ENABLED / WHISH_W2W_ENC_KEY in
+      # .env.staging on the server to use it; default OFF.
+      WHISH_W2W_ENABLED: ${WHISH_W2W_ENABLED:-false}
+      WHISH_W2W_ENC_KEY: ${WHISH_W2W_ENC_KEY:-}
+      WHISH_W2W_BASE_URL: ${WHISH_W2W_BASE_URL:-https://api.whish.money/itel-service}
     healthcheck:
       test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:3001/v1/health || exit 1']
       interval: 10s

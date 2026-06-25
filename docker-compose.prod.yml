@@ -103,6 +103,13 @@ services:
       # Must be forwarded too — without it the API never sees the sandbox opt-in
       # and prod env-validation rejects a sandbox base URL / non-https website URL.
       WHISH_ALLOW_SANDBOX: ${WHISH_ALLOW_SANDBOX:-false}
+      # Whish W2W (consumer-app) outbound transfers. Session creds are entered in
+      # the UI and encrypted at rest with WHISH_W2W_ENC_KEY; only the on/off flag +
+      # the key are forwarded here. Without this passthrough the API can't
+      # encrypt/save the session ("missing WHISH_W2W_ENC_KEY").
+      WHISH_W2W_ENABLED: ${WHISH_W2W_ENABLED:-false}
+      WHISH_W2W_ENC_KEY: ${WHISH_W2W_ENC_KEY:-}
+      WHISH_W2W_BASE_URL: ${WHISH_W2W_BASE_URL:-https://api.whish.money/itel-service}
     healthcheck:
       # 127.0.0.1 (not localhost): the API binds IPv4; busybox wget would hit
       # IPv6 ::1 first and get connection-refused. Pin IPv4.
