@@ -66,6 +66,17 @@ export class AutoApprovalConfigStore {
     return this.toResponse(await this.getState());
   }
 
+  /** Cheap master-switch read (enabled column only) for mid-run re-checks. */
+  async isEnabled(): Promise<boolean> {
+    const row = await this.prisma.runAsAdmin((tx) =>
+      tx.withdrawalAutoApprovalConfig.findUnique({
+        where: { id: ROW_ID },
+        select: { enabled: true },
+      }),
+    );
+    return row?.enabled ?? false;
+  }
+
   async update(input: UpdateWithdrawalAutoApprovalInput): Promise<WithdrawalAutoApprovalConfig> {
     const current = await this.getState();
     const data: Prisma.WithdrawalAutoApprovalConfigUncheckedUpdateInput = {};

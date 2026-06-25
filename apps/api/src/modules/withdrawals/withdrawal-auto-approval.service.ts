@@ -74,6 +74,9 @@ export class WithdrawalAutoApprovalService implements OnApplicationBootstrap, On
       // 1. Resolve rows already in PROCESSING (crash recovery / settle retries).
       const stuck = await this.withdrawals.findStuckProcessing(BATCH);
       for (const w of stuck) {
+        // Re-check the master switch every iteration: flipping it OFF stops the
+        // run immediately, so a disable can never let one more transfer through.
+        if (!(await this.config.isEnabled())) return;
         const stop = await this.processClaimed(w);
         if (stop) return;
       }
@@ -87,6 +90,7 @@ export class WithdrawalAutoApprovalService implements OnApplicationBootstrap, On
       });
       let processed = 0;
       for (const w of candidates) {
+        if (!(await this.config.isEnabled())) break; // disabled mid-run → stop, before claiming
         const claimed = await this.withdrawals.claimForProcessing(w.id, w.companyId);
         if (!claimed) continue; // cancelled / raced away — skip
         processed++;
