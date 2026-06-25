@@ -276,7 +276,14 @@ export function AdminWithdrawalsView({
             isLoading={listQ.isLoading}
             error={listQ.error}
             rowKey={(w) => w.id}
-            onRowClick={(w) => setReview({ withdrawal: w, action: 'approve' })}
+            onRowClick={(w) => {
+              // Only PENDING rows open the approve/reject dialog. A PROCESSING row is
+              // mid auto-transfer — never offer plain "approve" for it (that path is
+              // for the manual queue); route stuck ones to the Resolve escape hatch.
+              if (w.status === 'PENDING') setReview({ withdrawal: w, action: 'approve' });
+              else if (superAdmin && w.status === 'PROCESSING' && w.autoApproval?.needsReconcile)
+                setResolve(w);
+            }}
             empty={<div className="py-8 text-center text-muted-foreground">Nothing to review.</div>}
           />
         </CardContent>

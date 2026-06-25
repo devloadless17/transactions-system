@@ -45,6 +45,10 @@ export interface TransferOrigin {
 @Injectable()
 export class WhishTransfersService {
   private readonly logger = new Logger(WhishTransfersService.name);
+  // Serializes all sends in this process (admin tool + auto-poller) so the
+  // sessionCounter lifecycle (reserve → submit → heal) of one transfer completes
+  // before the next begins, preventing counter reuse under concurrency.
+  private sendQueue: Promise<unknown> = Promise.resolve();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -63,7 +67,24 @@ export class WhishTransfersService {
     return this.session.status();
   }
 
+  /** Public entry — serialized through `sendQueue` (see field) then runs executeSend. */
   async sendTransfer(
+    input: SendWhishTransferInput,
+    origin: TransferOrigin,
+  ): Promise<WhishTransferResponse> {
+    const result = this.sendQueue.then(
+      () => this.executeSend(input, origin),
+      () => this.executeSend(input, origin), // run even if the previous send rejected
+    );
+    // Keep the chain alive regardless of this send's outcome.
+    this.sendQueue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  private async executeSend(
     input: SendWhishTransferInput,
     origin: TransferOrigin,
   ): Promise<WhishTransferResponse> {
@@ -91,37 +112,58 @@ export class WhishTransfersService {
         ? tx.whishTransfer.findUnique({ where: { withdrawalId: origin.withdrawalId } })
         : tx.whishTransfer.findUnique({ where: { reference } }),
     );
-    if (existing) return this.map(existing);
+    // A clean session-expired failure means the money did NOT move; once the session
+    // is re-seeded the same withdrawal must be retryable. Reset that row and re-send
+    // rather than returning a stale FAILED (which would wedge it as un-retryable).
+    const resendable =
+      existing?.status === WhishTransferStatus.FAILED && existing.errorDetail === 'session_expired';
+    if (existing && !resendable) return this.map(existing);
 
-    // 3. Commit a PENDING row BEFORE calling Whish. A racing duplicate hits the
-    //    unique constraint (P2002) and returns the already-created row.
+    // 3. Obtain a PENDING row BEFORE calling Whish — reuse the resendable one, else
+    //    create (a racing duplicate hits the unique constraint, P2002, → return it).
     let row: WhishTransfer;
-    try {
+    if (existing) {
       row = await this.prisma.runAsAdmin((tx) =>
-        tx.whishTransfer.create({
+        tx.whishTransfer.update({
+          where: { id: existing.id },
           data: {
-            reference,
-            recipientPhone: phone,
-            amount: new Prisma.Decimal(amountFull),
-            currency: input.currency,
             status: WhishTransferStatus.PENDING,
-            actorId: origin.actorId,
-            source: origin.source,
-            companyId: origin.companyId ?? null,
-            withdrawalId: origin.withdrawalId ?? null,
+            errorDetail: null,
+            traceId: null,
+            upstreamCode: null,
+            upstreamMessage: null,
+            responseBody: Prisma.DbNull,
           },
         }),
       );
-    } catch (err) {
-      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-        const dup = await this.prisma.runAsAdmin((tx) =>
-          origin.withdrawalId
-            ? tx.whishTransfer.findUnique({ where: { withdrawalId: origin.withdrawalId } })
-            : tx.whishTransfer.findUnique({ where: { reference } }),
+    } else {
+      try {
+        row = await this.prisma.runAsAdmin((tx) =>
+          tx.whishTransfer.create({
+            data: {
+              reference,
+              recipientPhone: phone,
+              amount: new Prisma.Decimal(amountFull),
+              currency: input.currency,
+              status: WhishTransferStatus.PENDING,
+              actorId: origin.actorId,
+              source: origin.source,
+              companyId: origin.companyId ?? null,
+              withdrawalId: origin.withdrawalId ?? null,
+            },
+          }),
         );
-        if (dup) return this.map(dup);
+      } catch (err) {
+        if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+          const dup = await this.prisma.runAsAdmin((tx) =>
+            origin.withdrawalId
+              ? tx.whishTransfer.findUnique({ where: { withdrawalId: origin.withdrawalId } })
+              : tx.whishTransfer.findUnique({ where: { reference } }),
+          );
+          if (dup) return this.map(dup);
+        }
+        throw err;
       }
-      throw err;
     }
 
     // 4. Acquire the session + the next monotonic counter.

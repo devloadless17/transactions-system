@@ -226,11 +226,14 @@ export class WithdrawalAutoApprovalService implements OnApplicationBootstrap, On
     const transferred = net.floorToWhole();
     try {
       // floorWhole: EXTERNAL = floor(net), the cents become the rounding remainder.
+      // skipReceivableBlock: the transfer already SUCCEEDED (money left), so settle
+      // must NOT be blocked by a receivable that appeared after the transfer —
+      // otherwise the row would wedge in PROCESSING forever. The debt still stands.
       await this.withdrawals.approve(
         w.id,
         null,
         { externalReference: reference, notes: `Auto-approved via Whish W2W (${reference})` },
-        { floorWhole: true },
+        { floorWhole: true, skipReceivableBlock: true },
       );
       await this.config.recordSuccess();
       await this.audit.record({

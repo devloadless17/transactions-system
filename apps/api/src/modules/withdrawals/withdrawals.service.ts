@@ -176,7 +176,10 @@ export class WithdrawalsService {
     // floorWhole: settle to whole dollars (auto Whish W2W path). The recipient got
     // floor(net); the sub-dollar remainder stays with the platform (rolled into the
     // realized FEE) and is recorded as rounding_remainder. Manual approvals omit it.
-    opts?: { floorWhole?: boolean },
+    // skipReceivableBlock: settle even if the company now owes a RECEIVABLE — used
+    // ONLY when the W2W transfer already SUCCEEDED (money physically left, so the
+    // ledger MUST record it; the debt stays outstanding and still blocks NEW money-out).
+    opts?: { floorWhole?: boolean; skipReceivableBlock?: boolean },
   ): Promise<WithdrawalResponse> {
     const pre = await this.prisma.runAsAdmin((tx) =>
       tx.withdrawal.findUnique({ where: { id }, select: { companyId: true } }),
@@ -195,21 +198,30 @@ export class WithdrawalsService {
       // withdrawal reserved its funds (clawback claims `available`, not the
       // reserved bucket). Re-assert the money-out block at approval so reserved
       // funds can't leave while the company owes the platform — mirrors request().
-      const owed = await this.ledger.outstandingReceivable(cTx, w.companyId, w.currency);
-      if (owed.isPositive()) {
-        throw new ConflictError(
-          `Outstanding balance of ${owed.toString()} ${w.currency} owed to the platform must be settled before this withdrawal can be approved`,
-          { currency: w.currency, outstanding: owed.toString() },
-        );
+      // Skipped only when settling a transfer that ALREADY left (skipReceivableBlock):
+      // the money is gone, so the ledger MUST book it; the debt remains outstanding.
+      if (!opts?.skipReceivableBlock) {
+        const owed = await this.ledger.outstandingReceivable(cTx, w.companyId, w.currency);
+        if (owed.isPositive()) {
+          throw new ConflictError(
+            `Outstanding balance of ${owed.toString()} ${w.currency} owed to the platform must be settled before this withdrawal can be approved`,
+            { currency: w.currency, outstanding: owed.toString() },
+          );
+        }
       }
 
+      // A PROCESSING row is ALWAYS an auto Whish transfer of floor(net), so force
+      // whole-dollar settlement regardless of how approve() was entered — otherwise
+      // a manual approve of a PROCESSING row would book the full net to EXTERNAL
+      // while only floor(net) actually left.
+      const floorWhole = opts?.floorWhole === true || w.status === 'PROCESSING';
       const amount = Money.of(w.amount.toString());
       const fee = Money.of(w.feeAmount.toString());
       const reserved = reservedTotal(amount, fee, w.feeApplication);
       const net = netOfFee(amount, fee, w.feeApplication);
       // The money that actually leaves. floorWhole sends whole dollars and keeps
       // the cents; otherwise the recipient gets the full net.
-      const external = opts?.floorWhole ? net.floorToWhole() : net;
+      const external = floorWhole ? net.floorToWhole() : net;
       // What the platform realizes = original fee + any floored remainder. By
       // construction `external + feeRealized == reserved`, so debits == credits.
       const feeRealized = reserved.sub(external);
@@ -458,20 +470,36 @@ export class WithdrawalsService {
       if (!input.externalReference) {
         throw new ValidationError('externalReference is required to complete a transfer');
       }
-      // A PROCESSING row is always an auto Whish transfer → settle whole-dollar.
+      // Operator confirms the money moved → settle whole-dollar, and past any
+      // receivable that appeared after the transfer (the cash already left).
       return this.approve(
         id,
         actorId,
         { externalReference: input.externalReference, notes: input.notes },
-        { floorWhole: true },
+        { floorWhole: true, skipReceivableBlock: true },
       );
     }
     const pre = await this.prisma.runAsAdmin((tx) =>
-      tx.withdrawal.findUnique({ where: { id }, select: { companyId: true, status: true } }),
+      tx.withdrawal.findUnique({
+        where: { id },
+        select: { companyId: true, status: true, metadata: true },
+      }),
     );
     if (!pre) throw new NotFoundError('Withdrawal', id);
     if (pre.status !== 'PROCESSING') {
       throw new ConflictError(`Withdrawal is in status ${pre.status}, not PROCESSING`);
+    }
+    // Refuse to revert a row whose transfer already SUCCEEDED (settle failed but the
+    // money LEFT). Reverting → PENDING would let a later reject/cancel release the
+    // reserved funds back to the company on top of the cash it already received —
+    // a double-pay. Such a row can only be COMPLETEd.
+    if (
+      autoMetaFlag(pre.metadata, 'needsAttention') ||
+      autoMetaStatus(pre.metadata) === 'SUCCESS'
+    ) {
+      throw new ConflictError(
+        'This withdrawal’s transfer already succeeded (money left the platform). It can only be completed, not reverted — reverting would double-pay the company.',
+      );
     }
     await this.revertFromProcessing(id, pre.companyId, {
       status: 'FAILED',
@@ -724,6 +752,15 @@ function autoMetaFlag(
   const a = (metadata as Record<string, unknown>).autoApproval;
   if (!a || typeof a !== 'object') return false;
   return (a as Record<string, unknown>)[flag] === true;
+}
+
+/** Read `metadata.autoApproval.status` (null/absent → null). */
+function autoMetaStatus(metadata: unknown): string | null {
+  if (!metadata || typeof metadata !== 'object') return null;
+  const a = (metadata as Record<string, unknown>).autoApproval;
+  if (!a || typeof a !== 'object') return null;
+  const s = (a as Record<string, unknown>).status;
+  return typeof s === 'string' ? s : null;
 }
 
 /** Merge an autoApproval patch into existing metadata (never drops apiKeyId etc.). */

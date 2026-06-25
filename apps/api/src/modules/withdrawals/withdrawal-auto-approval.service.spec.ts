@@ -138,6 +138,27 @@ describe('WithdrawalAutoApprovalService — error handling never double-pays', (
     expect(config.recordFailure).toHaveBeenCalled();
   });
 
+  it('on SUCCESS settles whole-dollar AND past any receivable (floorWhole + skipReceivableBlock)', async () => {
+    const { service, withdrawals, transfers } = build({
+      state: makeState(),
+      candidates: [candidate],
+    });
+    transfers.sendTransfer.mockResolvedValue({
+      status: 'SUCCESS',
+      reference: 'wt_x',
+      traceId: 't',
+    });
+    await runTick(service);
+    // The money already left → settle must floor to whole dollars and must not be
+    // blocked by a receivable that appeared after the transfer.
+    expect(withdrawals.approve).toHaveBeenCalledWith(
+      candidate.id,
+      null,
+      expect.objectContaining({ externalReference: 'wt_x' }),
+      expect.objectContaining({ floorWhole: true, skipReceivableBlock: true }),
+    );
+  });
+
   it('a pre-call ValidationError (money did NOT move) reverts to manual', async () => {
     const { service, withdrawals, transfers } = build({
       state: makeState(),
