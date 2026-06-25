@@ -32,8 +32,6 @@ export interface W2WSubmitInput {
   phone: string;
   /** Decimal amount string (already validated). */
   amount: string;
-  /** Our reference — sent as the Whish `note` so the transfer ties back to us. */
-  note: string;
   session: ResolvedW2WSession;
 }
 
@@ -86,7 +84,7 @@ export class WhishW2WClient {
   async submit(input: W2WSubmitInput): Promise<W2WSubmitResult> {
     const url = `${this.config.get('WHISH_W2W_BASE_URL', { infer: true })}/application/submit`;
     const amount = input.amount; // 2dp string, formatted by the service
-    const body = this.buildBody(input.phone, amount, input.note);
+    const body = this.buildBody(input.phone, amount);
     const headers = this.buildHeaders(input.session);
 
     let res: Response;
@@ -144,8 +142,8 @@ export class WhishW2WClient {
   }
 
   /** The non-secret request body, safe to persist in the admin log. */
-  buildRedactedRequest(input: { phone: string; amount: string; note: string }): unknown {
-    return this.buildBody(input.phone, input.amount, input.note);
+  buildRedactedRequest(input: { phone: string; amount: string }): unknown {
+    return this.buildBody(input.phone, input.amount);
   }
 
   private isAuthFailure(status: number, code: string | null, message: string | null): boolean {
@@ -154,7 +152,7 @@ export class WhishW2WClient {
     return /sign(ed)? ?in again|signed out|session.*expired|unauthor/i.test(message ?? '');
   }
 
-  private buildBody(phone: string, amount: string, note: string) {
+  private buildBody(phone: string, amount: string) {
     return {
       creditCardId: -1,
       fetchPrice: false,
@@ -179,7 +177,9 @@ export class WhishW2WClient {
           stringText: null,
         },
         {
-          stringValue: note,
+          // Empty note — we don't send our reference (or anything) to Whish; the
+          // reference lives only in our own whish_transfers row. Matches the real app.
+          stringValue: '',
           fieldId: FIELD_NOTE,
           fieldIdentifier: 'note',
           imageValues: [],

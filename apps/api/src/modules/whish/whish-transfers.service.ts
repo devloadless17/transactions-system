@@ -142,7 +142,6 @@ export class WhishTransfersService {
     const redactedRequest = this.client.buildRedactedRequest({
       phone,
       amount: amount2dp,
-      note: reference,
     });
 
     // 5. Call Whish, self-healing the (possibly phone-shared) session counter.
@@ -159,7 +158,6 @@ export class WhishTransfersService {
         r = await this.client.submit({
           phone,
           amount: amount2dp,
-          note: reference,
           session: activeSession,
         });
       } catch (err) {
