@@ -1,5 +1,6 @@
 import type { OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
 import { Injectable, Logger } from '@nestjs/common';
+import { Money } from '@app/shared';
 import type { Withdrawal } from '@app/db';
 import { WithdrawalsService } from './withdrawals.service';
 import { AutoApprovalConfigStore } from './auto-approval-config.store';
@@ -120,13 +121,18 @@ export class WithdrawalAutoApprovalService implements OnApplicationBootstrap, On
       return false;
     }
 
+    // Transfer whole dollars only: floor the net "to pay" (e.g. 18.67 → 18). The
+    // settle (approve floorWhole) keeps the cents as the rounding remainder, so the
+    // amount sent here and the amount booked to EXTERNAL match exactly.
+    const transferAmount = Money.of(w.netAmount.toString()).floorToWhole();
+
     let result;
     try {
       // Idempotent on withdrawalId: a row already attempted returns its existing
       // status WITHOUT re-sending — so crash-recovery never double-transfers.
       result = await this.transfers.sendTransfer(
-        // Candidates are filtered to USD; W2W is USD-only.
-        { amount: w.netAmount.toString(), recipientPhone: phone, currency: 'USD' },
+        // Candidates are filtered to USD (>= $1); W2W is USD-only.
+        { amount: transferAmount.toString(), recipientPhone: phone, currency: 'USD' },
         { source: 'WITHDRAWAL', actorId: null, companyId: w.companyId, withdrawalId: w.id },
       );
     } catch (err) {
@@ -194,11 +200,16 @@ export class WithdrawalAutoApprovalService implements OnApplicationBootstrap, On
     reference: string,
     traceId: string | null,
   ): Promise<void> {
+    const net = Money.of(w.netAmount.toString());
+    const transferred = net.floorToWhole();
     try {
-      await this.withdrawals.approve(w.id, null, {
-        externalReference: reference,
-        notes: `Auto-approved via Whish W2W (${reference})`,
-      });
+      // floorWhole: EXTERNAL = floor(net), the cents become the rounding remainder.
+      await this.withdrawals.approve(
+        w.id,
+        null,
+        { externalReference: reference, notes: `Auto-approved via Whish W2W (${reference})` },
+        { floorWhole: true },
+      );
       await this.config.recordSuccess();
       await this.audit.record({
         actorId: null,
@@ -209,7 +220,9 @@ export class WithdrawalAutoApprovalService implements OnApplicationBootstrap, On
         metadata: {
           reference,
           traceId,
-          amount: w.netAmount.toString(),
+          net: net.toString(),
+          transferred: transferred.toString(),
+          rounding: net.sub(transferred).toString(),
           currency: w.currency.trim(),
         },
       });

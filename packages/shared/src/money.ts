@@ -80,6 +80,11 @@ export class Money {
     return new Money(this.value.toDecimalPlaces(MONEY_SCALE, Decimal.ROUND_HALF_EVEN));
   }
 
+  /** Round DOWN to a whole unit (e.g. 18.67 → 18, 25.99 → 25). Never rounds up. */
+  floorToWhole(): Money {
+    return new Money(this.value.floor());
+  }
+
   /** String form with full precision — what we send to the DB. */
   toString(): string {
     return this.round().value.toFixed();

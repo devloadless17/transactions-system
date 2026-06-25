@@ -480,6 +480,11 @@ model Withdrawal {
   currency          String           @db.Char(3)
   feeAmount         Decimal          @default(0) @map("fee_amount") @db.Decimal(20, 8)
   netAmount         Decimal          @default(0) @map("net_amount") @db.Decimal(20, 8)
+  // Sub-dollar cents kept by the platform when an auto Whish W2W transfer floors
+  // the net to a whole dollar (net 18.67 → transfer 18 → 0.67 here). 0 for every
+  // other settlement. Realized into FEE; tracked here so platform "leftovers" are
+  // auditable and true commission revenue = FEE − sum(rounding_remainder).
+  roundingRemainder Decimal          @default(0) @map("rounding_remainder") @db.Decimal(20, 8)
   feeApplication    FeeApplication   @default(DEDUCTED) @map("fee_application")
   status            WithdrawalStatus @default(PENDING)
   payoutMethod      PayoutMethod     @map("payout_method")

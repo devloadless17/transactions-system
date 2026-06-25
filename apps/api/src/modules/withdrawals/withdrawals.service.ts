@@ -173,6 +173,10 @@ export class WithdrawalsService {
     id: string,
     approvedById: string | null,
     input: ApproveWithdrawalInput,
+    // floorWhole: settle to whole dollars (auto Whish W2W path). The recipient got
+    // floor(net); the sub-dollar remainder stays with the platform (rolled into the
+    // realized FEE) and is recorded as rounding_remainder. Manual approvals omit it.
+    opts?: { floorWhole?: boolean },
   ): Promise<WithdrawalResponse> {
     const pre = await this.prisma.runAsAdmin((tx) =>
       tx.withdrawal.findUnique({ where: { id }, select: { companyId: true } }),
@@ -202,13 +206,27 @@ export class WithdrawalsService {
       const amount = Money.of(w.amount.toString());
       const fee = Money.of(w.feeAmount.toString());
       const reserved = reservedTotal(amount, fee, w.feeApplication);
-      const external = netOfFee(amount, fee, w.feeApplication);
+      const net = netOfFee(amount, fee, w.feeApplication);
+      // The money that actually leaves. floorWhole sends whole dollars and keeps
+      // the cents; otherwise the recipient gets the full net.
+      const external = opts?.floorWhole ? net.floorToWhole() : net;
+      // What the platform realizes = original fee + any floored remainder. By
+      // construction `external + feeRealized == reserved`, so debits == credits.
+      const feeRealized = reserved.sub(external);
+      const rounding = net.sub(external); // 0 unless floored
 
-      // Funds leave the platform; the fee is realized to the FEE account.
-      // Ledger: reserved → external(net) + FEE(fee). Zero lines are skipped.
+      // Funds leave the platform; the fee (incl. any rounding) is realized to FEE.
+      // Ledger: reserved → external + FEE(feeRealized). Zero lines are skipped.
       await this.ledger.writeEntries(
         cTx,
-        settleEntries({ withdrawalId: w.id }, w.companyId, w.currency, reserved, external, fee),
+        settleEntries(
+          { withdrawalId: w.id },
+          w.companyId,
+          w.currency,
+          reserved,
+          external,
+          feeRealized,
+        ),
       );
       await this.wallets.applyDelta(cTx, {
         companyId: w.companyId,
@@ -225,6 +243,7 @@ export class WithdrawalsService {
           // Admin's note → admin_notes; NEVER overwrite the company's request note.
           adminNotes: input.notes ?? undefined,
           externalReference: input.externalReference,
+          roundingRemainder: rounding.toString(),
         },
       });
     });
@@ -433,10 +452,13 @@ export class WithdrawalsService {
       if (!input.externalReference) {
         throw new ValidationError('externalReference is required to complete a transfer');
       }
-      return this.approve(id, actorId, {
-        externalReference: input.externalReference,
-        notes: input.notes,
-      });
+      // A PROCESSING row is always an auto Whish transfer → settle whole-dollar.
+      return this.approve(
+        id,
+        actorId,
+        { externalReference: input.externalReference, notes: input.notes },
+        { floorWhole: true },
+      );
     }
     const pre = await this.prisma.runAsAdmin((tx) =>
       tx.withdrawal.findUnique({ where: { id }, select: { companyId: true, status: true } }),
@@ -473,7 +495,12 @@ export class WithdrawalsService {
           status: 'PENDING',
           payoutMethod: 'WISH',
           currency: 'USD',
-          netAmount: { lte: new Prisma.Decimal(opts.maxAutoApproveAmount) },
+          // >= 1 so flooring to whole dollars still transfers something; sub-$1
+          // nets stay manual. <= the configured cap.
+          netAmount: {
+            gte: new Prisma.Decimal(1),
+            lte: new Prisma.Decimal(opts.maxAutoApproveAmount),
+          },
           createdAt: { lte: cutoff, gte: opts.enabledAt },
         },
         orderBy: { createdAt: 'asc' },
@@ -614,6 +641,7 @@ function mapWithdrawal(row: {
   feeAmount: { toString(): string };
   feeApplication: FeeApplication;
   netAmount: { toString(): string };
+  roundingRemainder: { toString(): string };
   status: WithdrawalStatus;
   payoutMethod: PayoutMethod;
   payoutDetails: unknown;
@@ -635,6 +663,7 @@ function mapWithdrawal(row: {
     feeAmount: row.feeAmount.toString(),
     feeApplication: row.feeApplication,
     netAmount: row.netAmount.toString(),
+    roundingRemainder: row.roundingRemainder.toString(),
     totalAmount: Money.of(row.netAmount.toString())
       .add(Money.of(row.feeAmount.toString()))
       .toString(),
