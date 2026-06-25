@@ -5,6 +5,7 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Put,
   Query,
   StreamableFile,
   UseGuards,
@@ -15,12 +16,16 @@ import {
   createWithdrawalSchema,
   listWithdrawalsQuerySchema,
   rejectWithdrawalSchema,
+  resolveProcessingSchema,
+  updateWithdrawalAutoApprovalSchema,
   UserRole,
   type ApproveWithdrawalInput,
   type CancelRequestInput,
   type CreateWithdrawalInput,
   type ListWithdrawalsQuery,
   type RejectWithdrawalInput,
+  type ResolveProcessingInput,
+  type UpdateWithdrawalAutoApprovalInput,
 } from '@app/shared';
 import { ZodPipe } from '../../common/pipes/zod-validation.pipe';
 import { CompanyAccessGuard } from '../api-keys/guards/company-access.guard';
@@ -33,11 +38,15 @@ import type { AuthPrincipal } from '../../common/types/request.types';
 import { SkipResponseEnvelope } from '../../common/decorators/skip-response-envelope.decorator';
 import { ForbiddenError } from '../../common/errors/domain.error';
 import { WithdrawalsService } from './withdrawals.service';
+import { AutoApprovalConfigStore } from './auto-approval-config.store';
 
 @UseGuards(CompanyAccessGuard, RolesGuard, CsrfGuard)
 @Controller()
 export class WithdrawalsController {
-  constructor(private readonly withdrawals: WithdrawalsService) {}
+  constructor(
+    private readonly withdrawals: WithdrawalsService,
+    private readonly autoApproval: AutoApprovalConfigStore,
+  ) {}
 
   // ---------------- Company endpoints ----------------
 
@@ -119,6 +128,23 @@ export class WithdrawalsController {
     return this.withdrawals.streamCsv({ query });
   }
 
+  // Auto-approval config (SUPER_ADMIN only). Declared BEFORE the `:id` routes so
+  // the literal `auto-approval` segment isn't captured by the UUID param route.
+  @Roles(UserRole.SUPER_ADMIN)
+  @Get('admin/withdrawals/auto-approval')
+  async getAutoApproval() {
+    return this.autoApproval.getConfig();
+  }
+
+  @Roles(UserRole.SUPER_ADMIN)
+  @Put('admin/withdrawals/auto-approval')
+  @Audited({ action: 'withdrawal.auto_approval_config_updated', entityType: 'withdrawal' })
+  async updateAutoApproval(
+    @Body(new ZodPipe(updateWithdrawalAutoApprovalSchema)) body: UpdateWithdrawalAutoApprovalInput,
+  ) {
+    return this.autoApproval.update(body);
+  }
+
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
   @Get('admin/withdrawals/:id')
   async adminGet(@Param('id', new ParseUUIDPipe()) id: string) {
@@ -145,5 +171,22 @@ export class WithdrawalsController {
     @CurrentUser() user: AuthPrincipal,
   ) {
     return this.withdrawals.reject(id, user.userId, body);
+  }
+
+  // Operator escape hatch for a row stuck in PROCESSING (auto-approval left it
+  // ambiguous): confirm-and-settle or revert-to-pending. SUPER_ADMIN only.
+  @Roles(UserRole.SUPER_ADMIN)
+  @Post('admin/withdrawals/:id/resolve-processing')
+  @Audited({
+    action: 'withdrawal.resolve_processing',
+    entityType: 'withdrawal',
+    idFrom: 'params.id',
+  })
+  async resolveProcessing(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body(new ZodPipe(resolveProcessingSchema)) body: ResolveProcessingInput,
+    @CurrentUser() user: AuthPrincipal,
+  ) {
+    return this.withdrawals.resolveProcessing(id, user.userId, body);
   }
 }

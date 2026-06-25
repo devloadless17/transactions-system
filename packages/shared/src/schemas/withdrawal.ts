@@ -73,6 +73,20 @@ export const withdrawalResponseSchema = z.object({
   processedAt: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  // Auto-approval summary (Whish WISH withdrawals), derived from metadata so the
+  // admin queue can show WHY a row is PENDING/PROCESSING. Null when never
+  // auto-touched. `needsReconcile` = an ambiguous (UNKNOWN) transfer awaiting an
+  // operator; `needsAttention` = transfer succeeded but settle is retrying;
+  // `terminal` = a clean failure dropped back to the manual queue.
+  autoApproval: z
+    .object({
+      status: z.string(),
+      needsReconcile: z.boolean().optional(),
+      needsAttention: z.boolean().optional(),
+      terminal: z.boolean().optional(),
+      errorDetail: z.string().nullish(),
+    })
+    .nullish(),
 });
 export type WithdrawalResponse = z.infer<typeof withdrawalResponseSchema>;
 

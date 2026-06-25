@@ -734,6 +734,28 @@ model WhishSessionCredential {
   @@map("whish_session_credentials")
 }
 
+// Single-row config for auto-approving Whish (WISH) withdrawals: on request, the
+// background processor transfers the money via W2W and settles the withdrawal —
+// no human step. Ships OFF (`enabled` false): nothing auto-processes until a
+// SUPER_ADMIN flips it on, and then only for requests created after `enabledAt`.
+// `holdSeconds` is the cancel/safety window; `maxAutoApproveAmount` caps the auto
+// amount. The circuit breaker (`circuitBreakerTrippedAt` + `consecutiveFailures`)
+// auto-pauses on Whish failure, independent of `enabled` so a trip keeps the
+// operator's preference. Admin-only RLS.
+model WithdrawalAutoApprovalConfig {
+  id                      String    @id @default("default")
+  enabled                 Boolean   @default(false)
+  enabledAt               DateTime? @map("enabled_at") @db.Timestamptz(6)
+  holdSeconds             Int       @default(30) @map("hold_seconds")
+  maxAutoApproveAmount    Decimal   @default(500) @map("max_auto_approve_amount") @db.Decimal(20, 8)
+  circuitBreakerTrippedAt DateTime? @map("circuit_breaker_tripped_at") @db.Timestamptz(6)
+  consecutiveFailures     Int       @default(0) @map("consecutive_failures")
+  failureThreshold        Int       @default(3) @map("failure_threshold")
+  updatedAt               DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("withdrawal_auto_approval_configs")
+}
+
 // -------------------------- Webhook Deliveries -------------------
 // Durable log/queue of outbound webhook attempts. Created in 0001 and protected
 // by RLS (0002). NOTE: not yet wired — the current Whish webhook delivery is

@@ -38,6 +38,8 @@ import {
 } from '@/features/company/withdrawals-view';
 import { useCompanyNames } from '@/features/admin/company-filter';
 import { ExportCsvButton } from '@/components/export-csv-button';
+import { AutoApprovalPanel } from '@/features/admin/withdrawals/auto-approval-panel';
+import { ResolveProcessingDialog } from '@/features/admin/withdrawals/resolve-processing-dialog';
 
 interface ReviewState {
   withdrawal: WithdrawalResponse;
@@ -65,6 +67,7 @@ export function AdminWithdrawalsView({
   config,
   headerAction,
   backoffice = false,
+  superAdmin = false,
 }: {
   config: AdminProcessConfig;
   headerAction?: ReactNode;
@@ -72,12 +75,19 @@ export function AdminWithdrawalsView({
   // (the money that actually leaves), never the platform fee or gross. Full
   // admins (SUPER_ADMIN / ADMIN_OPERATOR) see Amount + Fee + Net unchanged.
   backoffice?: boolean;
+  // SUPER_ADMIN unlocks the auto-approval panel + the stuck-transfer escape hatch
+  // (withdrawals page only).
+  superAdmin?: boolean;
 }) {
   const qc = useQueryClient();
   // Operators land on the pending queue by default; all other filters start "any".
   const [filters, setFilters] = useState<FlowFilters>({ ...EMPTY_FLOW_FILTERS, status: 'PENDING' });
   const [review, setReview] = useState<ReviewState | null>(null);
+  const [resolve, setResolve] = useState<WithdrawalResponse | null>(null);
   const [page, setPage] = useState(1);
+  // Auto-approval is a withdrawals-only feature; the same view also renders the
+  // payouts/loads queues, which never show it.
+  const showAutoApproval = superAdmin && config.noun === 'withdrawal';
 
   const params = flowFilterParams(filters, { pageSize: '50', page: String(page) });
 
@@ -184,7 +194,12 @@ export function AdminWithdrawalsView({
     {
       key: 'status',
       header: 'Status',
-      cell: (w) => <Badge variant={statusVariant(w.status)}>{w.status}</Badge>,
+      cell: (w) => (
+        <div className="flex flex-wrap items-center gap-1">
+          <Badge variant={statusVariant(w.status)}>{w.status}</Badge>
+          {autoApprovalBadge(w)}
+        </div>
+      ),
     },
     {
       key: 'requested',
@@ -212,6 +227,14 @@ export function AdminWithdrawalsView({
               </Button>
             </div>
           )}
+          {/* Stuck PROCESSING (ambiguous auto-transfer) → SUPER_ADMIN escape hatch. */}
+          {superAdmin && w.status === 'PROCESSING' && w.autoApproval?.needsReconcile && (
+            <div className="flex justify-end">
+              <Button variant="outline" size="sm" onClick={() => setResolve(w)}>
+                Resolve
+              </Button>
+            </div>
+          )}
         </span>
       ),
     },
@@ -233,6 +256,8 @@ export function AdminWithdrawalsView({
           {headerAction}
         </div>
       </div>
+
+      {showAutoApproval && <AutoApprovalPanel />}
 
       <FlowFilterBar
         value={filters}
@@ -276,8 +301,38 @@ export function AdminWithdrawalsView({
           qc.invalidateQueries({ queryKey: config.queryKey });
         }}
       />
+
+      <ResolveProcessingDialog
+        withdrawal={resolve}
+        onClose={() => setResolve(null)}
+        onDone={() => {
+          setResolve(null);
+          qc.invalidateQueries({ queryKey: config.queryKey });
+        }}
+      />
     </div>
   );
+}
+
+/** Small badge explaining an auto-approval row's state in the queue. */
+function autoApprovalBadge(w: WithdrawalResponse): ReactNode {
+  const a = w.autoApproval;
+  if (!a) return null;
+  if (a.needsReconcile)
+    return (
+      <Badge variant="destructive" title={a.errorDetail ?? undefined}>
+        Auto: needs reconcile
+      </Badge>
+    );
+  if (a.needsAttention) return <Badge variant="warning">Auto: settling</Badge>;
+  if (w.status === 'PROCESSING') return <Badge variant="secondary">Auto: transferring</Badge>;
+  if (a.terminal && w.status === 'PENDING')
+    return (
+      <Badge variant="secondary" title={a.errorDetail ?? undefined}>
+        Auto: failed
+      </Badge>
+    );
+  return null;
 }
 
 function ReviewDialog({

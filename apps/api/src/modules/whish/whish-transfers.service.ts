@@ -53,6 +53,16 @@ export class WhishTransfersService {
     private readonly txLogs: TransactionLogsService,
   ) {}
 
+  /** Whether W2W transfers are configured/enabled (env flag). */
+  isW2WEnabled(): boolean {
+    return this.client.isEnabled();
+  }
+
+  /** Non-secret session health (configured / lastRotatedAt / lastAuthFailureAt). */
+  sessionStatus() {
+    return this.session.status();
+  }
+
   async sendTransfer(
     input: SendWhishTransferInput,
     origin: TransferOrigin,

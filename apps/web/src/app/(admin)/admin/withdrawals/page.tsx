@@ -12,8 +12,13 @@ export const dynamic = 'force-dynamic';
 export default async function Page() {
   const session = await getSession();
   const backoffice = session?.role === UserRole.BACKOFFICE;
+  const superAdmin = session?.role === UserRole.SUPER_ADMIN;
   return withListPrefetch(
     [defaultListPrefetch(ADMIN_WITHDRAWAL_CONFIG)],
-    <AdminWithdrawalsView config={ADMIN_WITHDRAWAL_CONFIG} backoffice={backoffice} />,
+    <AdminWithdrawalsView
+      config={ADMIN_WITHDRAWAL_CONFIG}
+      backoffice={backoffice}
+      superAdmin={superAdmin}
+    />,
   );
 }

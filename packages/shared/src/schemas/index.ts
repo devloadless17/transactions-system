@@ -9,6 +9,7 @@ export * from './wallet';
 export * from './api-key';
 export * from './payout-method';
 export * from './withdrawal';
+export * from './withdrawal-auto-approval';
 export * from './payout';
 export * from './load';
 export * from './audit';

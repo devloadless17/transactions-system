@@ -10,10 +10,12 @@ import {
   type PayoutDetails,
   type PayoutMethod,
   type RejectWithdrawalInput,
+  type ResolveProcessingInput,
   type WithdrawalResponse,
   type WithdrawalStatus,
 } from '@app/shared';
-import type { Prisma, PrismaClient } from '@app/db';
+import { Prisma } from '@app/db';
+import type { PrismaClient, Withdrawal } from '@app/db';
 import { PrismaService } from '../../database/prisma.service';
 import { LedgerService } from '../ledger/ledger.service';
 import { WalletsService } from '../wallets/wallets.service';
@@ -161,9 +163,15 @@ export class WithdrawalsService {
     return response;
   }
 
+  /**
+   * Settle a withdrawal (manual approve or auto-approval). `approvedById` is null
+   * for the automated path (system actor). Accepts `PENDING` (manual queue) or
+   * `PROCESSING` (auto-approval claimed it before transferring) — both are
+   * pre-settlement states; the serializable tx + status guard keep it single-shot.
+   */
   async approve(
     id: string,
-    approvedById: string,
+    approvedById: string | null,
     input: ApproveWithdrawalInput,
   ): Promise<WithdrawalResponse> {
     const pre = await this.prisma.runAsAdmin((tx) =>
@@ -175,7 +183,7 @@ export class WithdrawalsService {
 
       const w = await cTx.withdrawal.findUnique({ where: { id } });
       if (!w) throw new NotFoundError('Withdrawal', id);
-      if (w.status !== 'PENDING') {
+      if (w.status !== 'PENDING' && w.status !== 'PROCESSING') {
         throw new ConflictError(`Withdrawal is in status ${w.status} and cannot be approved`);
       }
 
@@ -212,7 +220,7 @@ export class WithdrawalsService {
         where: { id },
         data: {
           status: 'COMPLETED',
-          approvedById,
+          approvedById: approvedById ?? null,
           processedAt: new Date(),
           // Admin's note → admin_notes; NEVER overwrite the company's request note.
           adminNotes: input.notes ?? undefined,
@@ -352,6 +360,148 @@ export class WithdrawalsService {
     return response;
   }
 
+  // ---------------- Auto-approval support ----------------
+  // These power the background WithdrawalAutoApprovalService. The claim
+  // (PENDING→PROCESSING) is the lock that makes a transfer and a company cancel
+  // mutually exclusive: cancel()/reject() guard `status === 'PENDING'`, so once a
+  // row is PROCESSING they're refused and money can't be paid for a cancelled
+  // withdrawal.
+
+  /**
+   * Atomically claim a PENDING withdrawal for auto-processing (→ PROCESSING).
+   * Returns false if it's no longer PENDING (cancelled/raced) — caller skips it.
+   */
+  async claimForProcessing(id: string, companyId: string): Promise<boolean> {
+    const claimed = await this.prisma.runSerializableAsTenant(companyId, async (tx) => {
+      const cTx = tx as unknown as PrismaClient;
+      const w = await cTx.withdrawal.findUnique({ where: { id } });
+      if (!w || w.companyId !== companyId || w.status !== 'PENDING') return false;
+      await cTx.withdrawal.update({
+        where: { id },
+        data: {
+          status: 'PROCESSING',
+          metadata: mergeAutoMeta(w.metadata, {
+            status: 'PROCESSING',
+            attemptedAt: new Date().toISOString(),
+          }),
+        },
+      });
+      return true;
+    });
+    if (claimed) this.notify(companyId);
+    return claimed;
+  }
+
+  /** Revert a claimed row back to PENDING (clean failure / session expired). */
+  async revertFromProcessing(id: string, companyId: string, auto: AutoApprovalMeta): Promise<void> {
+    await this.prisma.runSerializableAsTenant(companyId, async (tx) => {
+      const cTx = tx as unknown as PrismaClient;
+      const w = await cTx.withdrawal.findUnique({ where: { id } });
+      if (!w || w.status !== 'PROCESSING') return;
+      await cTx.withdrawal.update({
+        where: { id },
+        data: { status: 'PENDING', metadata: mergeAutoMeta(w.metadata, auto) },
+      });
+    });
+    this.notify(companyId);
+  }
+
+  /** Merge auto-approval metadata without changing status (UNKNOWN / settle-retry flags). */
+  async setAutoMeta(id: string, companyId: string, auto: AutoApprovalMeta): Promise<void> {
+    await this.prisma.runSerializableAsTenant(companyId, async (tx) => {
+      const cTx = tx as unknown as PrismaClient;
+      const w = await cTx.withdrawal.findUnique({ where: { id } });
+      if (!w) return;
+      await cTx.withdrawal.update({
+        where: { id },
+        data: { metadata: mergeAutoMeta(w.metadata, auto) },
+      });
+    });
+  }
+
+  /**
+   * Operator escape hatch for a row stuck in PROCESSING (an UNKNOWN transfer the
+   * operator has reconciled by hand): CONFIRM the money moved and settle, or
+   * REVERT to PENDING (money did NOT move) so it can be retried/rejected.
+   */
+  async resolveProcessing(
+    id: string,
+    actorId: string,
+    input: ResolveProcessingInput,
+  ): Promise<WithdrawalResponse> {
+    if (input.action === 'complete') {
+      if (!input.externalReference) {
+        throw new ValidationError('externalReference is required to complete a transfer');
+      }
+      return this.approve(id, actorId, {
+        externalReference: input.externalReference,
+        notes: input.notes,
+      });
+    }
+    const pre = await this.prisma.runAsAdmin((tx) =>
+      tx.withdrawal.findUnique({ where: { id }, select: { companyId: true, status: true } }),
+    );
+    if (!pre) throw new NotFoundError('Withdrawal', id);
+    if (pre.status !== 'PROCESSING') {
+      throw new ConflictError(`Withdrawal is in status ${pre.status}, not PROCESSING`);
+    }
+    await this.revertFromProcessing(id, pre.companyId, {
+      status: 'FAILED',
+      terminal: true,
+      needsReconcile: false,
+      needsAttention: false,
+      errorDetail: 'operator_reverted',
+    });
+    return this.getById(id);
+  }
+
+  /**
+   * PENDING WISH/USD withdrawals eligible for auto-approval: past the hold window,
+   * created after the toggle was enabled, under the cap, and not already terminal
+   * (a prior auto attempt failed → left for manual). Admin-scoped (cross-company).
+   */
+  async findAutoApprovalCandidates(opts: {
+    holdSeconds: number;
+    enabledAt: Date;
+    maxAutoApproveAmount: string;
+    limit: number;
+  }): Promise<Withdrawal[]> {
+    const cutoff = new Date(Date.now() - opts.holdSeconds * 1000);
+    return this.prisma.runAsAdmin((tx) =>
+      tx.withdrawal.findMany({
+        where: {
+          status: 'PENDING',
+          payoutMethod: 'WISH',
+          currency: 'USD',
+          netAmount: { lte: new Prisma.Decimal(opts.maxAutoApproveAmount) },
+          createdAt: { lte: cutoff, gte: opts.enabledAt },
+          // Exclude rows a prior auto attempt marked terminal (failed → manual).
+          NOT: { metadata: { path: ['autoApproval', 'terminal'], equals: true } },
+        },
+        orderBy: { createdAt: 'asc' },
+        take: opts.limit,
+      }),
+    );
+  }
+
+  /**
+   * Rows stuck in PROCESSING that the processor should resolve (crash recovery /
+   * settle-retry). Excludes UNKNOWN rows already flagged `needsReconcile` — those
+   * wait for the operator escape hatch, never auto-touched again.
+   */
+  async findStuckProcessing(limit: number): Promise<Withdrawal[]> {
+    return this.prisma.runAsAdmin((tx) =>
+      tx.withdrawal.findMany({
+        where: {
+          status: 'PROCESSING',
+          NOT: { metadata: { path: ['autoApproval', 'needsReconcile'], equals: true } },
+        },
+        orderBy: { createdAt: 'asc' },
+        take: limit,
+      }),
+    );
+  }
+
   async list(args: {
     companyId?: string;
     query: ListWithdrawalsQuery;
@@ -467,6 +617,7 @@ function mapWithdrawal(row: {
   approvedById: string | null;
   notes: string | null;
   adminNotes: string | null;
+  metadata: unknown;
   processedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
@@ -493,5 +644,44 @@ function mapWithdrawal(row: {
     processedAt: row.processedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
+    autoApproval: autoApprovalSummary(row.metadata),
   };
+}
+
+/** Project the stored autoApproval metadata into the (admin-visible) summary. */
+function autoApprovalSummary(metadata: unknown): WithdrawalResponse['autoApproval'] {
+  if (!metadata || typeof metadata !== 'object') return null;
+  const a = (metadata as Record<string, unknown>).autoApproval;
+  if (!a || typeof a !== 'object') return null;
+  const m = a as Record<string, unknown>;
+  return {
+    status: String(m.status ?? 'UNKNOWN'),
+    needsReconcile: m.needsReconcile === true ? true : undefined,
+    needsAttention: m.needsAttention === true ? true : undefined,
+    terminal: m.terminal === true ? true : undefined,
+    errorDetail: typeof m.errorDetail === 'string' ? m.errorDetail : undefined,
+  };
+}
+
+/** Auto-approval bookkeeping stored under `withdrawal.metadata.autoApproval`. */
+export interface AutoApprovalMeta {
+  status: 'PROCESSING' | 'SUCCESS' | 'FAILED' | 'UNKNOWN' | 'SESSION_EXPIRED';
+  reference?: string;
+  traceId?: string | null;
+  errorDetail?: string;
+  needsReconcile?: boolean;
+  needsAttention?: boolean;
+  terminal?: boolean;
+  attemptedAt?: string;
+}
+
+/** Merge an autoApproval patch into existing metadata (never drops apiKeyId etc.). */
+function mergeAutoMeta(existing: unknown, auto: AutoApprovalMeta): Prisma.InputJsonValue {
+  const base =
+    existing && typeof existing === 'object' ? (existing as Record<string, unknown>) : {};
+  const prevAuto =
+    base.autoApproval && typeof base.autoApproval === 'object'
+      ? (base.autoApproval as Record<string, unknown>)
+      : {};
+  return { ...base, autoApproval: { ...prevAuto, ...auto } } as Prisma.InputJsonValue;
 }
