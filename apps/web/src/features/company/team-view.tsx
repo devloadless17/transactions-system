@@ -137,6 +137,7 @@ export function TeamView() {
             isLoading={listQ.isLoading}
             error={listQ.error}
             rowKey={(m) => m.id}
+            pageSize={10}
           />
         </CardContent>
       </Card>

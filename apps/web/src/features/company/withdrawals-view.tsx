@@ -245,7 +245,7 @@ export function WithdrawalsView({ config }: { config: ProcessConfig }) {
   const [filters, setFilters] = useState<FlowFilters>(EMPTY_FLOW_FILTERS);
   const [page, setPage] = useState(1);
 
-  const params = flowFilterParams(filters, { pageSize: '50', page: String(page) });
+  const params = flowFilterParams(filters, { pageSize: '20', page: String(page) });
   const listQ = useQuery({
     queryKey: [...config.queryKey, 'list', params.toString()],
     queryFn: () =>
@@ -780,14 +780,14 @@ function DetailDrawer({
                     : 'space-y-1 rounded-md border border-primary/30 bg-primary/5 p-3'
                 }
               >
-                <span className="text-xs font-semibold uppercase">
+                <p className="text-xs font-semibold uppercase tracking-wide opacity-80">
                   {rejected ? `Reason for ${capitalize(noun)} rejection` : 'Note from admin'}
-                </span>
+                </p>
                 <CopyText
                   value={withdrawal.adminNotes}
                   label="Note"
                   multiline
-                  className="text-sm"
+                  className="block text-sm"
                 />
               </div>
             )}

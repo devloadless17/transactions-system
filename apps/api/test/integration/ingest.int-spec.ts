@@ -155,4 +155,29 @@ describe('ingest idempotency & replay', () => {
     const snap = await snapshot(h, companyId);
     expect(Money.of(snap.wallet!.available).eq(Money.of('100'))).toBe(true);
   });
+
+  it('ingests for a hidden (visible:false) but ACTIVE company — visibility is discovery-only, NOT an ingest gate', async () => {
+    // Regression guard: a prod incident stranded paid Whish deposits when a
+    // company was hidden from source discovery — the old ingest path wrongly
+    // 403'd on `visible:false`, so already-collected money couldn't settle.
+    // `visible` must gate ONLY GET /v1/ingest/companies; ACTIVE companies still
+    // ingest (and Whish links still settle) regardless. Deactivation (status) is
+    // the real off-switch.
+    const { companyId } = await createCompany(h);
+    const sourceId = await createEnabledSource(h, companyId);
+    await addTransactionFee(h, companyId, '0');
+    await h.prisma.runAsAdmin((tx) =>
+      tx.company.update({ where: { id: companyId }, data: { visible: false } }),
+    );
+
+    const txn = await h.transactions.ingest(
+      { kind: 'source', sourceId },
+      ingestInput(companyId, '100', { externalTransactionId: 'hidden-ext-1' }),
+    );
+    expect(txn.replayed).toBe(false);
+    expect(Money.of(txn.netAmount).eq(Money.of('100'))).toBe(true);
+
+    const snap = await snapshot(h, companyId);
+    expect(Money.of(snap.wallet!.available).eq(Money.of('100'))).toBe(true);
+  });
 });

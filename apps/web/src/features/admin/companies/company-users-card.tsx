@@ -140,6 +140,7 @@ export function CompanyUsersCard({ companyId }: { companyId: string }) {
           rows={listQ.data?.data}
           isLoading={listQ.isLoading}
           rowKey={(m) => m.id}
+          pageSize={10}
           empty={<div className="py-6 text-center text-muted-foreground">No users yet.</div>}
         />
       </CardContent>

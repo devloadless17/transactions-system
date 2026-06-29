@@ -73,22 +73,25 @@ export function useEntityDetailQuery(
   });
 }
 
-function EntityDetailBody({
-  kind,
-  q,
-}: {
-  kind: ActivityKind;
-  q: ReturnType<typeof useEntityDetailQuery>;
-}) {
+function EntityDetailBody({ q }: { q: ReturnType<typeof useEntityDetailQuery> }) {
+  // Route off the SHAPE of the loaded data, never the requested `kind`. When the
+  // selected item switches between a deposit and a flow (withdrawal/payout/load),
+  // the `kind` prop updates synchronously while react-query's `data` can still
+  // hold the previous item's record for a render — picking the renderer by `kind`
+  // then feeds a FlowRecord into DepositDetail (no `.transaction` → reads
+  // undefined.status) or a deposit into FlowDetail (no `totalAmount` →
+  // trimAmount(undefined)), crashing the whole page into the error boundary.
+  // Deposit detail is the only shape carrying a `transaction` field.
+  const data = q.data;
   return (
     <>
       {q.isLoading && <div className="h-40 w-full animate-pulse rounded bg-muted" />}
       {q.isError && <p className="text-destructive">Couldn&apos;t load details — try again.</p>}
-      {q.data &&
-        (kind === 'DEPOSIT' ? (
-          <DepositDetail d={q.data as TransactionDetailResponse} />
+      {data &&
+        ('transaction' in data ? (
+          <DepositDetail d={data as TransactionDetailResponse} />
         ) : (
-          <FlowDetail r={q.data as FlowRecord} />
+          <FlowDetail r={data as FlowRecord} />
         ))}
     </>
   );
@@ -135,7 +138,7 @@ export function ActivityDetailDrawer({
               {formatMoney(item.amount)} {item.currency}
             </div>
 
-            <EntityDetailBody kind={item.kind} q={q} />
+            <EntityDetailBody q={q} />
 
             {scope === 'admin' && item.companyName && (
               <Section title="Company">
@@ -192,7 +195,7 @@ export function EntityDetailDrawer({
         </SheetHeader>
         {target && (
           <div className="mt-4 space-y-6 text-sm">
-            <EntityDetailBody kind={target.kind} q={q} />
+            <EntityDetailBody q={q} />
           </div>
         )}
       </SheetContent>

@@ -3,8 +3,11 @@
  * must stay strings — these only format for display, never for calculation.
  */
 
-/** Drop trailing fractional zeros: "10.500" → "10.5", "10.00" → "10". */
-export function trimAmount(s: string): string {
+/** Drop trailing fractional zeros: "10.500" → "10.5", "10.00" → "10".
+ * Tolerates a missing/non-string value (returns '—') so a display-only formatter
+ * can never throw and take a whole page down via the error boundary. */
+export function trimAmount(s: string | null | undefined): string {
+  if (typeof s !== 'string') return '—';
   if (!s.includes('.')) return s;
   return s.replace(/\.?0+$/, '');
 }
@@ -29,7 +32,8 @@ function truncateDecimal(s: string, dp: number): string {
  * rounded display could show more money than the wallet actually holds.
  * "1234.50000000" → "1,234.5"; "0.005" → "0.005"; non-numeric passes through.
  */
-export function formatMoney(s: string): string {
+export function formatMoney(s: string | null | undefined): string {
+  if (typeof s !== 'string') return '—';
   if (Number.isNaN(Number(s))) return s;
   const negative = s.trim().startsWith('-');
   const abs = negative ? s.trim().slice(1) : s.trim();
@@ -49,7 +53,8 @@ export function formatMoney(s: string): string {
  * total can never exceed the real value; sub-1 values keep their full precision;
  * non-numeric input is passed through unchanged. For balances use `formatMoney`.
  */
-export function formatNumber(s: string): string {
+export function formatNumber(s: string | null | undefined): string {
+  if (typeof s !== 'string') return '—';
   const n = Number(s);
   if (Number.isNaN(n)) return s;
   if (n === 0) return '0';

@@ -101,4 +101,37 @@ describe('Whish reconcile — late success on a terminal link (#3)', () => {
     expect(Number(snap.wallet?.available)).toBe(50); // still 50, not 100
     expect(snap.balanced).toBe(true);
   });
+
+  // The super-admin recovery path: cross-company reconcile by id (no tenant
+  // scoping). Mirrors an operator clicking "Refresh" on a paid-but-unsettled link
+  // after fixing the blocker — it must settle AND clear the needsAttention flag.
+  it('adminRefreshStatus settles a flagged paid-but-unsettled link and clears the flag', async () => {
+    const { companyId } = await createCompany(h);
+    await addTransactionFee(h, companyId, '0');
+    // A row left PENDING + needsAttention by a prior failed settlement.
+    const p = await h.prisma.runAsAdmin((tx) =>
+      tx.whishPayment.create({
+        data: {
+          companyId,
+          callbackToken: callbackToken(),
+          amount: '50.00',
+          currency: USD,
+          invoice: 'inv-stuck',
+          status: WhishPaymentStatus.PENDING,
+          metadata: { needsAttention: true, paidButUnsettled: true, settlementError: 'blocked' },
+        },
+        select: { id: true },
+      }),
+    );
+    h.whishClient.status = 'success'; // blocker removed; Whish still holds the money
+
+    const res = await h.whish.adminRefreshStatus(p.id); // no companyId — admin scope
+
+    expect(res.status).toBe('PAID');
+    expect(res.transactionId).toBeTruthy();
+    expect(res.needsAttention).toBe(false); // flag cleared on successful settle
+    const snap = await snapshot(h, companyId);
+    expect(snap.balanced).toBe(true);
+    expect(Number(snap.wallet?.available)).toBe(50);
+  });
 });

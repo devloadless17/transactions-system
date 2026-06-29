@@ -90,6 +90,10 @@ const fakeRealtime = {
 const fakeNotifications = {
   requestSubmitted: async () => undefined,
   requestResolved: async () => undefined,
+  // Called by the payout/withdrawal cancel paths (release()). The real service
+  // implements it; the stub must mirror every method the code-under-test calls,
+  // else the `as unknown as` cast hides a "not a function" at runtime.
+  clearAdminRequest: async () => undefined,
 } as unknown as NotificationsService;
 
 const fakeCounter = { inc: () => undefined } as unknown as Counter<string>;

@@ -391,6 +391,22 @@ export class WhishPaymentsService {
     return this.reconcile(payment);
   }
 
+  /**
+   * Admin (cross-company) reconcile of one payment by id. Same authoritative
+   * settlement path as the company-facing refresh, but not tenant-scoped — a
+   * platform admin can re-attempt ANY company's stuck payment. This is the
+   * operator's recovery for a paid-but-unsettled link: the 60s poller skips
+   * needsAttention rows, so once the underlying cause is fixed (e.g. the company
+   * made visible again) a manual refresh is what re-books it.
+   */
+  async adminRefreshStatus(id: string): Promise<WhishPaymentResponse> {
+    const payment = await this.prisma.runAsAdmin((tx) =>
+      tx.whishPayment.findUnique({ where: { id } }),
+    );
+    if (!payment) throw new NotFoundError('WhishPayment', id);
+    return this.reconcile(payment);
+  }
+
   /** Look up a payment by its numeric reference (externalId) — used by the CRM integration. */
   async getByExternalId(companyId: string, externalId: number): Promise<WhishPaymentResponse> {
     const row = await this.prisma.runAsTenant(companyId, (tx) =>
@@ -821,7 +837,8 @@ function withRef(base: string, externalId: number): string {
 }
 
 function mapWhishPayment(row: WhishPayment): WhishPaymentResponse {
-  const meta = (row.metadata as { needsAttention?: unknown } | null) ?? null;
+  const meta =
+    (row.metadata as { needsAttention?: unknown; settlementError?: unknown } | null) ?? null;
   return {
     id: row.id,
     companyId: row.companyId,
@@ -834,6 +851,9 @@ function mapWhishPayment(row: WhishPayment): WhishPaymentResponse {
     payerPhoneNumber: row.payerPhoneNumber,
     transactionId: row.transactionId,
     needsAttention: meta?.needsAttention === true,
+    // The exact reason settlement failed (the thrown ingest error), so the UI can
+    // show what actually went wrong instead of guessing "check its commission rule".
+    settlementError: typeof meta?.settlementError === 'string' ? meta.settlementError : null,
     createdAt: row.createdAt.toISOString(),
     paidAt: row.paidAt?.toISOString() ?? null,
   };

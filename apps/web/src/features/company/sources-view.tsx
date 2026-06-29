@@ -47,6 +47,7 @@ export function SourcesView() {
             isLoading={isLoading}
             error={error}
             rowKey={(s) => s.id}
+            pageSize={10}
             empty={<div className="py-8 text-center text-muted-foreground">No sources yet.</div>}
           />
         </CardContent>

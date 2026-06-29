@@ -1,13 +1,15 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { PaginatedResponse, WhishPaymentResponse } from '@app/shared';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { DataTable, type Column } from '@/components/ui/data-table';
 import { Pagination } from '@/components/ui/pagination';
 import { apiFetch } from '@/lib/api.client';
 import { ApiClientError } from '@/lib/api';
+import { toast } from '@/lib/toast';
 import { useCompanyNames } from '@/features/admin/company-filter';
 
 const PAGE_SIZE = 20;
@@ -20,6 +22,7 @@ function statusVariant(s: WhishPaymentResponse['status']) {
 
 export function AdminWhishView() {
   const [page, setPage] = useState(1);
+  const qc = useQueryClient();
 
   const paymentsQ = useQuery({
     queryKey: ['admin', 'whish', 'payments', { page }],
@@ -27,6 +30,24 @@ export function AdminWhishView() {
       apiFetch<PaginatedResponse<WhishPaymentResponse>>(
         `/admin/whish/payments?page=${page}&pageSize=${PAGE_SIZE}`,
       ),
+  });
+
+  // Operator recovery: re-attempt settlement of one payment. The 60s poller skips
+  // needsAttention rows, so a stuck (paid-but-unsettled) link only re-books when an
+  // operator triggers this once the underlying cause is fixed.
+  const refreshMu = useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<WhishPaymentResponse>(`/admin/whish/payments/${id}/refresh-status`, {
+        method: 'POST',
+      }),
+    onSuccess: (p) => {
+      if (p.status === 'PAID') toast.success(`#${p.externalId} settled — booked to the ledger`);
+      else if (p.needsAttention)
+        toast.error(`#${p.externalId} still unsettled: ${p.settlementError ?? 'needs attention'}`);
+      else toast.success(`#${p.externalId} refreshed — ${p.status}`);
+    },
+    onError: (err) => toast.error(err instanceof ApiClientError ? err.message : 'Refresh failed'),
+    onSettled: () => qc.invalidateQueries({ queryKey: ['admin', 'whish'] }),
   });
 
   const data = paymentsQ.data;
@@ -71,7 +92,11 @@ export function AdminWhishView() {
           {p.needsAttention && (
             <Badge
               variant="destructive"
-              title="Paid at Whish but not settled — check its commission rule"
+              title={
+                p.settlementError
+                  ? `Paid at Whish but not settled: ${p.settlementError}`
+                  : 'Paid at Whish but not settled — needs operator attention'
+              }
             >
               Needs attention
             </Badge>
@@ -84,6 +109,22 @@ export function AdminWhishView() {
       header: 'Created',
       className: 'text-xs text-muted-foreground',
       cell: (p) => new Date(p.createdAt).toLocaleString(),
+    },
+    {
+      key: 'actions',
+      header: '',
+      align: 'right',
+      cell: (p) => (
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={refreshMu.isPending && refreshMu.variables === p.id}
+          onClick={() => refreshMu.mutate(p.id)}
+          title="Ask Whish for the latest status and settle if collected"
+        >
+          {refreshMu.isPending && refreshMu.variables === p.id ? 'Refreshing…' : 'Refresh'}
+        </Button>
+      ),
     },
   ];
 

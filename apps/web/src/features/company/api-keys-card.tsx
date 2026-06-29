@@ -114,6 +114,7 @@ export function ApiKeysCard() {
           isLoading={listQ.isLoading}
           error={listQ.error}
           rowKey={(k) => k.id}
+          pageSize={10}
           empty={<div className="py-6 text-center text-muted-foreground">No keys yet.</div>}
         />
       </CardContent>

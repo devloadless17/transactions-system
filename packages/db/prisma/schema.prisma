@@ -187,8 +187,11 @@ model Company {
   name            String
   slug            String        @unique
   status          CompanyStatus @default(ACTIVE)
-  // When false, the company is hidden from discovery/list APIs (e.g. the
-  // source-facing GET /v1/ingest/companies). Toggled by SUPER_ADMIN.
+  // Discovery-list flag ONLY: when false, the company is hidden from the
+  // source-facing discovery list (GET /v1/ingest/companies). It does NOT gate
+  // ingestion or settlement — a source that knows a hidden-but-ACTIVE company's
+  // slug can still post, and an in-flight Whish collect-link still settles. To
+  // stop a company entirely, deactivate it (status). Toggled by SUPER_ADMIN.
   visible         Boolean       @default(true)
   defaultCurrency String        @map("default_currency") @db.Char(3)
   metadata        Json?         @db.JsonB
@@ -277,10 +280,10 @@ model SourceFeeRule {
 }
 
 // ----------------------- Company ↔ Source pairing -----------------
-// Sources are system-wide: any ACTIVE + visible company may ingest from any
-// ACTIVE source. This table is an OPTIONAL admin record/convenience, NOT an
-// ingest authorization gate — TransactionsService.ingest gates only on
-// source.status, company.status and company.visible, and never reads this table.
+// Sources are system-wide: any ACTIVE company may ingest from any ACTIVE source.
+// This table is an OPTIONAL admin record/convenience, NOT an ingest authorization
+// gate — TransactionsService.ingest gates only on source.status and company.status
+// (NOT company.visible, which is discovery-only), and never reads this table.
 model CompanySource {
   id        String   @id @default(uuid()) @db.Uuid
   companyId String   @map("company_id") @db.Uuid
@@ -301,8 +304,9 @@ model CompanySource {
 // API keys come in two flavours:
 //   - SOURCE keys (sourceId set, companyId null): held by external providers
 //     like OMT/wish. Caller posts to /v1/ingest/transactions with a
-//     `companySlug` in the body. Can target any ACTIVE + visible company
-//     (sources are system-wide; see CompanySource above).
+//     `companySlug` in the body. Can target any ACTIVE company — `visible`
+//     only governs discovery listing, not ingest (sources are system-wide; see
+//     CompanySource above).
 //   - COMPANY keys (companyId set, sourceId null): legacy company-held keys.
 //     The company picks `sourceCode` per request.
 // Exactly one of `companyId` / `sourceId` is set — enforced by CHECK.

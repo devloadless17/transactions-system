@@ -142,6 +142,7 @@ export function SourceApiKeysView({ sourceId }: { sourceId: string }) {
             rows={listQ.data?.data}
             isLoading={listQ.isLoading}
             rowKey={(k) => k.id}
+            pageSize={10}
             empty={
               <div className="py-8 text-center text-muted-foreground">
                 No keys yet for this source.

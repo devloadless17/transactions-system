@@ -89,7 +89,7 @@ export function AdminWithdrawalsView({
   // payouts/loads queues, which never show it.
   const showAutoApproval = superAdmin && config.noun === 'withdrawal';
 
-  const params = flowFilterParams(filters, { pageSize: '50', page: String(page) });
+  const params = flowFilterParams(filters, { pageSize: '20', page: String(page) });
 
   const listQ = useQuery({
     queryKey: [...config.queryKey, params.toString()],

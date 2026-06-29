@@ -1,6 +1,6 @@
 'use client';
-import { useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useState } from 'react';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from '@/lib/toast';
 import Link from 'next/link';
 import type { PaginatedResponse, SourceResponse } from '@app/shared';
@@ -9,19 +9,35 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
 import { DataTable, type Column } from '@/components/ui/data-table';
+import { Pagination } from '@/components/ui/pagination';
 import { apiFetch } from '@/lib/api.client';
 import { ApiClientError } from '@/lib/api';
 import { EmptyState } from '@/components/empty-state';
 import { Boxes } from 'lucide-react';
 import { CreateSourceDialog } from './create-source-dialog';
 
+const PAGE_SIZE = 20;
+
 export function SourcesView() {
   const qc = useQueryClient();
   const [createOpen, setCreateOpen] = useState(false);
+  const [page, setPage] = useState(1);
+  // Page-scoped key: the optimistic toggle below mutates exactly the page in view.
+  const listKey = ['admin', 'sources', page] as const;
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ['admin', 'sources'],
-    queryFn: () => apiFetch<PaginatedResponse<SourceResponse>>('/admin/sources?pageSize=100'),
+    queryKey: listKey,
+    queryFn: () =>
+      apiFetch<PaginatedResponse<SourceResponse>>(
+        `/admin/sources?page=${page}&pageSize=${PAGE_SIZE}`,
+      ),
+    placeholderData: keepPreviousData,
   });
+
+  // Clamp back if the result set shrinks below the current page.
+  useEffect(() => {
+    const tp = data?.meta.totalPages;
+    if (tp && page > tp) setPage(tp);
+  }, [data, page]);
 
   const toggleMu = useMutation({
     mutationFn: ({ id, active }: { id: string; active: boolean }) =>
@@ -30,12 +46,13 @@ export function SourcesView() {
         body: { status: active ? 'ACTIVE' : 'INACTIVE' },
       }),
     // Optimistic: flip the switch in cache immediately so the toggle feels instant,
-    // then reconcile (or roll back) once the server responds.
+    // then reconcile (or roll back) once the server responds. The toggled row is on
+    // the page in view, so we update just that page's cache entry.
     onMutate: async ({ id, active }) => {
       await qc.cancelQueries({ queryKey: ['admin', 'sources'] });
-      const prev = qc.getQueryData<PaginatedResponse<SourceResponse>>(['admin', 'sources']);
+      const prev = qc.getQueryData<PaginatedResponse<SourceResponse>>(listKey);
       if (prev) {
-        qc.setQueryData<PaginatedResponse<SourceResponse>>(['admin', 'sources'], {
+        qc.setQueryData<PaginatedResponse<SourceResponse>>(listKey, {
           ...prev,
           data: prev.data.map((s) =>
             s.id === id ? { ...s, status: active ? 'ACTIVE' : 'INACTIVE' } : s,
@@ -45,7 +62,7 @@ export function SourcesView() {
       return { prev };
     },
     onError: (err, _v, ctx) => {
-      if (ctx?.prev) qc.setQueryData(['admin', 'sources'], ctx.prev);
+      if (ctx?.prev) qc.setQueryData(listKey, ctx.prev);
       toast.error(err instanceof ApiClientError ? err.message : 'Failed');
     },
     onSuccess: (s) => {
@@ -140,6 +157,15 @@ export function SourcesView() {
           />
         </CardContent>
       </Card>
+
+      {data && (
+        <Pagination
+          page={data.meta.page}
+          total={data.meta.total}
+          totalPages={data.meta.totalPages}
+          onPageChange={setPage}
+        />
+      )}
 
       <CreateSourceDialog
         open={createOpen}

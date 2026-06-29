@@ -90,11 +90,16 @@ export const whishPaymentResponseSchema = z.object({
   collectUrl: z.string().nullable(),
   payerPhoneNumber: z.string().nullable(),
   transactionId: z.string().uuid().nullable(),
-  // True when the payment is PAID at Whish but settlement into the ledger failed
-  // (usually its commission rule changed after the link was minted). The
-  // reconciler keeps retrying, but it needs operator attention — surfaced here so
-  // it's visible in the UI/API instead of only in logs.
+  // True when the payment is PAID at Whish but settlement into the ledger failed.
+  // It needs operator attention — surfaced here so it's visible in the UI/API
+  // instead of only in logs. Note: the 60s reconciler does NOT auto-retry a
+  // needsAttention row; clearing it requires a manual refresh once the underlying
+  // cause is fixed.
   needsAttention: z.boolean(),
+  // The exact settlement failure reason (the thrown ingest error message) when
+  // needsAttention is true; null otherwise. Lets the UI show the real cause rather
+  // than a hard-coded guess.
+  settlementError: z.string().nullable(),
   createdAt: z.string(),
   paidAt: z.string().nullable(),
 });

@@ -31,7 +31,6 @@ import { CrmDispatchService } from '../crm/crm-dispatch.service';
 import {
   ConflictError,
   DuplicateTransactionError,
-  ForbiddenError,
   NotFoundError,
   ValidationError,
 } from '../../common/errors/domain.error';
@@ -93,10 +92,11 @@ export class TransactionsService {
   /**
    * Public list of companies for source providers to discover slugs.
    * Called by Wish/OMT/etc on startup so they can cache slugs and then
-   * post transactions against them. Returns every ACTIVE + visible company —
-   * the superadmin's `visible` flag is the single switch that exposes a company
-   * to sources (there is no per-source opt-in). Only the fields a third-party
-   * integrator needs to know are returned.
+   * post transactions against them. Returns every ACTIVE + visible company.
+   * `visible` is purely a discovery-list filter: it controls whether a company
+   * shows up HERE, and nothing else — it does NOT gate ingestion (a source that
+   * already knows a hidden-but-active company's slug can still post to it). Only
+   * the fields a third-party integrator needs to know are returned.
    *
    * Guarded by `ApiKeyAuthGuard` + source-key check in the controller;
    * the service itself is unauthenticated for testability.
@@ -165,13 +165,12 @@ export class TransactionsService {
     if (!company || company.status !== 'ACTIVE') {
       throw new ValidationError(`company '${input.companyId}' not found or inactive`);
     }
-    // Any ACTIVE source may post to any ACTIVE company the superadmin has made
-    // `visible` — that flag is the single gate exposing a company to sources
-    // (there is no per-source opt-in). A hidden company is off-limits to every
-    // source, for both discovery and ingestion.
-    if (!company.visible) {
-      throw new ForbiddenError(`company '${input.companyId}' is not available to sources`);
-    }
+    // `company.visible` is intentionally NOT an ingest gate. It controls one thing
+    // only: whether the company appears in the source-facing discovery list
+    // (GET /v1/ingest/companies). Hiding a company from discovery must never strand
+    // money already in flight — e.g. a Whish collect-link that was paid before the
+    // company was hidden still settles here. The single hard "this company can do
+    // nothing" switch is deactivation (status !== ACTIVE), enforced just above.
     const companyId = company.id;
     const source: { id: string; code: string; status: string } = foundSource;
 

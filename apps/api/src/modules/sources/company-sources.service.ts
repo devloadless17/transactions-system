@@ -6,10 +6,11 @@ import { NotFoundError } from '../../common/errors/domain.error';
 
 /**
  * Admin management of company↔source pairings. NOTE: sources are system-wide —
- * any ACTIVE + visible company may ingest from any ACTIVE source (the only
- * ingest gates are source.status, company.status and company.visible). These
- * pairings are an optional admin record / convenience, NOT an ingest
- * authorization gate; TransactionsService.ingest does not consult this table.
+ * any ACTIVE company may ingest from any ACTIVE source (the only ingest gates are
+ * source.status and company.status; company.visible is discovery-only and does
+ * NOT gate ingest). These pairings are an optional admin record / convenience,
+ * NOT an ingest authorization gate; TransactionsService.ingest does not consult
+ * this table.
  */
 @Injectable()
 export class CompanySourcesService {
