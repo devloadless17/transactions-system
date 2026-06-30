@@ -713,7 +713,13 @@ function WishFields({ form }: { form: UseFormReturn<CreateWithdrawalInput> }) {
         <Controller
           control={control}
           name="payout.recipientPhone"
-          render={({ field }) => <PhoneInput value={field.value ?? ''} onChange={field.onChange} />}
+          render={({ field }) => (
+            <PhoneInput
+              value={field.value ?? ''}
+              onChange={field.onChange}
+              placeholder="71 505 894"
+            />
+          )}
         />
       </Field>
       <div className="sm:col-span-2">

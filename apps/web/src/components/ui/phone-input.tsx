@@ -1,5 +1,6 @@
 'use client';
 import { useMemo } from 'react';
+import { ChevronDown } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/cn';
 
@@ -93,23 +94,38 @@ export function PhoneInput({
 
   return (
     <div className={cn('flex gap-2', className)}>
-      <select
-        aria-label="Country code"
-        className="h-9 shrink-0 rounded-md border border-input bg-background px-2 text-sm"
-        value={country.iso}
-        onChange={(e) => {
-          const next = COUNTRIES.find((c) => c.iso === e.target.value) ?? DEFAULT_COUNTRY;
-          onChange(compose(next, national));
-        }}
-      >
-        {COUNTRIES.map((c) => (
-          <option key={c.iso} value={c.iso}>
-            {flagEmoji(c.iso)} +{c.dial} {c.name}
-          </option>
-        ))}
-      </select>
+      {/* Country selector: a compact "flag +dial ⌄" pill. The real <select> sits
+          transparent on top, so we keep the native dropdown (full country names),
+          keyboard nav, and the mobile picker for free — only the collapsed look is
+          ours, which is what keeps the control narrow (no full name shown). */}
+      <div className="relative shrink-0 rounded-md ring-offset-background focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2">
+        <div
+          aria-hidden
+          className="pointer-events-none flex h-10 items-center gap-1.5 rounded-md border border-input bg-muted/50 pl-2.5 pr-7 text-sm"
+        >
+          <span className="leading-none">{flagEmoji(country.iso)}</span>
+          <span className="font-medium tabular-nums">+{country.dial}</span>
+          <ChevronDown className="absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+        </div>
+        <select
+          aria-label="Country code"
+          className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+          value={country.iso}
+          onChange={(e) => {
+            const next = COUNTRIES.find((c) => c.iso === e.target.value) ?? DEFAULT_COUNTRY;
+            onChange(compose(next, national));
+          }}
+        >
+          {COUNTRIES.map((c) => (
+            <option key={c.iso} value={c.iso}>
+              {flagEmoji(c.iso)} +{c.dial} {c.name}
+            </option>
+          ))}
+        </select>
+      </div>
       <Input
         id={id}
+        className="flex-1"
         inputMode="tel"
         autoComplete="tel-national"
         placeholder={placeholder ?? 'Phone number'}
