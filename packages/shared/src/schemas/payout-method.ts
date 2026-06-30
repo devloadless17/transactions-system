@@ -39,10 +39,31 @@ const cashPayoutSchema = z.object({
   instructions: z.string().trim().max(500).optional(),
 });
 
+// A WISH recipient phone. Deliberately TOLERANT of how integrators/operators format
+// a number (a leading +, spaces, dashes, parens) — the transfer service strips those
+// to a bare msisdn before sending to Whish — but it must actually be phone-SHAPED:
+// 6–15 digits and no letters. The old `min(4)` accepted "N/A" / a name, which then
+// only failed late at Whish (a confusing, delayed auto-transfer failure). This keeps
+// every real phone format an API caller might send while rejecting non-phones early.
+const wishRecipientPhoneSchema = z
+  .string()
+  .trim()
+  .max(30)
+  .refine((v) => /^[+(\d][\d\s().+-]*$/.test(v), {
+    message: 'recipientPhone must be a phone number (digits, with optional + ( ) - and spaces)',
+  })
+  .refine(
+    (v) => {
+      const digits = (v.match(/\d/g) ?? []).length;
+      return digits >= 6 && digits <= 15;
+    },
+    { message: 'recipientPhone must contain 6–15 digits' },
+  );
+
 const wishPayoutSchema = z.object({
   method: z.literal(PayoutMethod.WISH),
   recipientName: z.string().trim().min(2).max(120),
-  recipientPhone: z.string().trim().min(4).max(30),
+  recipientPhone: wishRecipientPhoneSchema,
   instructions: z.string().trim().max(500).optional(),
 });
 

@@ -167,6 +167,7 @@ export function TransactionLogsView() {
                 <option value="">All</option>
                 <option value="WHISH_LINK">Whish link</option>
                 <option value="INGEST">Ingest</option>
+                <option value="WHISH_TRANSFER">Whish transfer</option>
               </select>
             </div>
             <div className="space-y-1">

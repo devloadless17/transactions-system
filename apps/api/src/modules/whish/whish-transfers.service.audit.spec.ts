@@ -356,3 +356,39 @@ describe('WhishTransfersService.sendTransfer (audit) — idempotency + ambiguous
     expect(row.errorDetail).toBe('session_not_configured');
   });
 });
+
+describe('WhishTransfersService.map — response exposes the withdrawal linkage', () => {
+  // The Transfer-Money history drawer keys off these fields: `source` tells it
+  // "auto-transfer vs manual", `withdrawalId`/`companyId` deep-link to the
+  // withdrawal it settled, and `errorDetail`/`upstreamMessage` explain a failure.
+  // They must survive the mapper, not just live on the row.
+  it('a returned transfer DTO carries source, withdrawalId, companyId and the failure reason', async () => {
+    const { svc, client } = build({
+      seedRow: {
+        id: 'wt-existing',
+        reference: 'ref-1',
+        withdrawalId: 'w1',
+        companyId: 'c1',
+        status: WhishTransferStatus.FAILED,
+        errorDetail: 'transfer_failed', // not session_expired → returned as-is via map()
+        amount: new Prisma.Decimal('20'),
+        currency: 'USD',
+        createdAt: new Date(),
+        traceId: null,
+        upstreamMessage: 'Whish: recipient not found',
+        source: 'WITHDRAWAL',
+        recipientPhone: '71505894',
+      },
+    });
+    const res = await svc.sendTransfer(
+      { amount: '20', recipientPhone: '71505894', currency: 'USD' },
+      ORIGIN,
+    );
+    expect(client.submit).not.toHaveBeenCalled(); // non-resendable short-circuit
+    expect(res.source).toBe('WITHDRAWAL');
+    expect(res.withdrawalId).toBe('w1');
+    expect(res.companyId).toBe('c1');
+    expect(res.errorDetail).toBe('transfer_failed');
+    expect(res.upstreamMessage).toBe('Whish: recipient not found');
+  });
+});

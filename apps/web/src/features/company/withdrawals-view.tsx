@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useForm, type UseFormReturn } from 'react-hook-form';
+import { Controller, useForm, type UseFormReturn } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { toast } from '@/lib/toast';
 import {
@@ -40,6 +40,7 @@ import {
 } from '@/components/ui/sheet';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { PhoneInput } from '@/components/ui/phone-input';
 import { DateRangePicker, type RangePreset } from '@/components/ui/date-range-picker';
 import { CompanyFilter } from '@/features/admin/company-filter';
 import { ExportCsvButton } from '@/components/export-csv-button';
@@ -699,7 +700,7 @@ function CashFields({ form }: { form: UseFormReturn<CreateWithdrawalInput> }) {
 }
 
 function WishFields({ form }: { form: UseFormReturn<CreateWithdrawalInput> }) {
-  const { register, formState } = form as unknown as UseFormReturn<{
+  const { register, control, formState } = form as unknown as UseFormReturn<{
     payout: { recipientName: string; recipientPhone: string; instructions?: string };
   }>;
   const err = (formState.errors.payout ?? {}) as Record<string, { message?: string } | undefined>;
@@ -709,7 +710,11 @@ function WishFields({ form }: { form: UseFormReturn<CreateWithdrawalInput> }) {
         <Input {...register('payout.recipientName')} />
       </Field>
       <Field label="Whish phone" error={err.recipientPhone?.message}>
-        <Input {...register('payout.recipientPhone')} />
+        <Controller
+          control={control}
+          name="payout.recipientPhone"
+          render={({ field }) => <PhoneInput value={field.value ?? ''} onChange={field.onChange} />}
+        />
       </Field>
       <div className="sm:col-span-2">
         <Field label="Instructions (optional)" error={err.instructions?.message}>

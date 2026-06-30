@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { PhoneInput } from '@/components/ui/phone-input';
 import { DataTable, type Column } from '@/components/ui/data-table';
 import { Pagination } from '@/components/ui/pagination';
 import {
@@ -21,6 +22,9 @@ import {
 import { apiFetch } from '@/lib/api.client';
 import { ApiClientError } from '@/lib/api';
 import { toast } from '@/lib/toast';
+import { useCompanyNames } from '@/features/admin/company-filter';
+import { EntityDetailDrawer } from '@/features/activity/activity-detail-drawer';
+import { WhishTransferDetailDrawer } from './whish-transfer-detail-drawer';
 
 const PAGE_SIZE = 20;
 const CURRENCY = 'USD';
@@ -111,12 +115,7 @@ function SendCard() {
         </div>
         <div className="space-y-1">
           <Label className="text-xs">Recipient phone</Label>
-          <Input
-            inputMode="tel"
-            placeholder="71505894"
-            value={phone}
-            onChange={(e) => setPhone(e.target.value)}
-          />
+          <PhoneInput value={phone} onChange={setPhone} placeholder="71 505 894" />
         </div>
         <Button
           className="w-full gap-1.5"
@@ -376,6 +375,14 @@ function HistoryCard() {
       ),
   });
   const data = q.data;
+  const [selectedTransfer, setSelectedTransfer] = useState<WhishTransferResponse | null>(null);
+  // The linked withdrawal whose detail drawer is open (from a transfer's "View
+  // withdrawal"); rendered via the shared EntityDetailDrawer.
+  const [withdrawalId, setWithdrawalId] = useState<string | null>(null);
+  const companyNames = useCompanyNames(
+    (data?.data ?? []).map((t) => t.companyId).filter((x): x is string => !!x),
+  );
+  const companyName = (id: string) => companyNames.get(id) ?? id.slice(0, 8);
 
   useEffect(() => {
     const tp = data?.meta.totalPages;
@@ -449,6 +456,7 @@ function HistoryCard() {
           isLoading={q.isLoading}
           error={q.error}
           rowKey={(t) => t.id}
+          onRowClick={(t) => setSelectedTransfer(t)}
           empty={<div className="py-8 text-center text-muted-foreground">No transfers yet.</div>}
         />
       </CardContent>
@@ -462,6 +470,18 @@ function HistoryCard() {
           />
         </div>
       )}
+
+      <WhishTransferDetailDrawer
+        transfer={selectedTransfer}
+        companyName={companyName}
+        onOpenWithdrawal={(id) => setWithdrawalId(id)}
+        onClose={() => setSelectedTransfer(null)}
+      />
+      <EntityDetailDrawer
+        scope="admin"
+        target={withdrawalId ? { kind: 'WITHDRAWAL', id: withdrawalId } : null}
+        onClose={() => setWithdrawalId(null)}
+      />
     </Card>
   );
 }

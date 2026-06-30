@@ -34,7 +34,14 @@ export const whishTransferResponseSchema = z.object({
   status: z.nativeEnum(WhishTransferStatus),
   traceId: z.string().nullable(),
   upstreamMessage: z.string().nullable(),
+  // Structured failure reason (e.g. 'session_expired', 'transfer_failed') — shown
+  // in the detail drawer alongside the Whish upstream message.
+  errorDetail: z.string().nullable(),
   source: z.string(),
+  // Set only when source === 'WITHDRAWAL': the withdrawal this transfer settled and
+  // its company, so the admin can trace an auto-transfer back to its request.
+  withdrawalId: z.string().uuid().nullable(),
+  companyId: z.string().uuid().nullable(),
   createdAt: z.string(),
 });
 export type WhishTransferResponse = z.infer<typeof whishTransferResponseSchema>;

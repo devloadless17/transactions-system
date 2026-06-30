@@ -639,11 +639,11 @@ Files a `PENDING` top-up request. Returns `201` with the persisted load includin
 
 `payout` fields by `method`:
 
-| method   | Required                                         | Optional                                       |
-| -------- | ------------------------------------------------ | ---------------------------------------------- |
-| `CASH`   | `recipientName` (2–120), `recipientPhone` (4–30) | `pickupLocation` (≤200), `instructions` (≤500) |
-| `WISH`   | `recipientName` (2–120), `recipientPhone` (4–30) | `instructions` (≤500)                          |
-| `CRYPTO` | `network` (2–40), `walletAddress` (20–200)       | `memo` (≤120), `instructions` (≤500)           |
+| method   | Required                                                                                                       | Optional                                       |
+| -------- | -------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| `CASH`   | `recipientName` (2–120), `recipientPhone` (4–30)                                                               | `pickupLocation` (≤200), `instructions` (≤500) |
+| `WISH`   | `recipientName` (2–120), `recipientPhone` (a phone number — 6–15 digits; optional `+`, spaces, dashes, parens) | `instructions` (≤500)                          |
+| `CRYPTO` | `network` (2–40), `walletAddress` (20–200)                                                                     | `memo` (≤120), `instructions` (≤500)           |
 
 ```bash
 curl -X POST "https://portal.rivalpayments.com/v1/company/loads" \
@@ -884,7 +884,7 @@ Only a `PENDING` request can be approved, rejected, or cancelled. Acting on any 
 | `method`        | Required fields                                                                                                                        | Optional fields                                                |
 | --------------- | -------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
 | `CASH`          | `recipientName` (2–120), `recipientPhone` (4–30)                                                                                       | `pickupLocation` (≤200), `instructions` (≤500)                 |
-| `WISH`          | `recipientName` (2–120), `recipientPhone` (4–30)                                                                                       | `instructions` (≤500)                                          |
+| `WISH`          | `recipientName` (2–120), `recipientPhone` (a phone number — 6–15 digits; optional `+`, spaces, dashes, parens)                         | `instructions` (≤500)                                          |
 | `CRYPTO`        | `network` (2–40), `walletAddress` (20–200)                                                                                             | `memo` (≤120), `instructions` (≤500)                           |
 | `BANK_TRANSFER` | `accountHolder` (2–120), `accountNumber` (4–40), `bankName` (2–120) (+ optional `swiftBic` 8–11, `routingNumber` 3–20, `instructions`) | **Read-only — not accepted on create**                         |
 | `OTHER`         | `description` (2–500)                                                                                                                  | `instructions` (≤500) · **Read-only — not accepted on create** |

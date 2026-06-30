@@ -293,6 +293,16 @@ function FlowDetail({ r }: { r: FlowRecord }) {
         />
         {r.externalReference && <Row label="External reference" value={r.externalReference} mono />}
         {r.notes && <Row label="Notes" value={r.notes} />}
+        {r.adminNotes && <Row label="Admin notes" value={r.adminNotes} />}
+        {/* Why the last Whish auto-transfer attempt failed (e.g. recipient not found)
+            — a failed transfer reverts the withdrawal to PENDING with the reason here,
+            so it reads plainly instead of an unexplained back-to-manual row. */}
+        {(r as WithdrawalResponse).autoApproval?.errorDetail && (
+          <Row
+            label="Auto-transfer note"
+            value={(r as WithdrawalResponse).autoApproval!.errorDetail!}
+          />
+        )}
       </Section>
 
       <PayoutInstructions w={r as WithdrawalResponse} />

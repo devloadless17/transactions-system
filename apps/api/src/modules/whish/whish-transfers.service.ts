@@ -400,7 +400,10 @@ export class WhishTransfersService {
       status: r.status,
       traceId: r.traceId,
       upstreamMessage: r.upstreamMessage,
+      errorDetail: r.errorDetail,
       source: r.source,
+      withdrawalId: r.withdrawalId,
+      companyId: r.companyId,
       createdAt: r.createdAt.toISOString(),
     };
   }
