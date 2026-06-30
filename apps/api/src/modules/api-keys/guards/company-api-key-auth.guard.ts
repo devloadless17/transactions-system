@@ -39,7 +39,12 @@ export class CompanyApiKeyAuthGuard implements CanActivate {
     const principal: AuthPrincipal = {
       userId: result.keyId,
       email: `apikey:${result.keyId}`,
-      role: UserRole.COMPANY_OWNER, // surrogate — integration paths don't consult role
+      // Surrogate role so integration paths (ingest/whish/withdrawals/payouts/loads)
+      // that gate on @Roles(COMPANY_OWNER) accept the key. Dashboard-only management
+      // surfaces (api-keys CRUD, team, CRM webhook config) are additionally fronted by
+      // SessionOnlyGuard, which rejects `apiKeyAuth` — so a leaked key can move money
+      // per its grants but cannot mint keys, manage users, or repoint the webhook.
+      role: UserRole.COMPANY_OWNER,
       companyId: result.companyId,
       sourceId: null,
       apiKeyAuth: true,

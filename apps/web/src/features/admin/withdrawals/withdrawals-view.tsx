@@ -4,6 +4,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import { toast } from '@/lib/toast';
 import {
   PayoutMethod,
+  type ActivityKind,
   type PaginatedResponse,
   type WithdrawalResponse,
   type WithdrawalStatus,
@@ -40,6 +41,7 @@ import { useCompanyNames } from '@/features/admin/company-filter';
 import { ExportCsvButton } from '@/components/export-csv-button';
 import { AutoApprovalPanel } from '@/features/admin/withdrawals/auto-approval-panel';
 import { ResolveProcessingDialog } from '@/features/admin/withdrawals/resolve-processing-dialog';
+import { EntityDetailDrawer } from '@/features/activity/activity-detail-drawer';
 
 interface ReviewState {
   withdrawal: WithdrawalResponse;
@@ -84,7 +86,10 @@ export function AdminWithdrawalsView({
   const [filters, setFilters] = useState<FlowFilters>({ ...EMPTY_FLOW_FILTERS, status: 'PENDING' });
   const [review, setReview] = useState<ReviewState | null>(null);
   const [resolve, setResolve] = useState<WithdrawalResponse | null>(null);
+  const [detail, setDetail] = useState<WithdrawalResponse | null>(null);
   const [page, setPage] = useState(1);
+  // This view is shared by withdrawals/payouts/loads; the kind is constant per page.
+  const detailKind = config.noun.toUpperCase() as ActivityKind;
   // Auto-approval is a withdrawals-only feature; the same view also renders the
   // payouts/loads queues, which never show it.
   const showAutoApproval = superAdmin && config.noun === 'withdrawal';
@@ -276,14 +281,10 @@ export function AdminWithdrawalsView({
             isLoading={listQ.isLoading}
             error={listQ.error}
             rowKey={(w) => w.id}
-            onRowClick={(w) => {
-              // Only PENDING rows open the approve/reject dialog. A PROCESSING row is
-              // mid auto-transfer — never offer plain "approve" for it (that path is
-              // for the manual queue); route stuck ones to the Resolve escape hatch.
-              if (w.status === 'PENDING') setReview({ withdrawal: w, action: 'approve' });
-              else if (superAdmin && w.status === 'PROCESSING' && w.autoApproval?.needsReconcile)
-                setResolve(w);
-            }}
+            // Any row opens its detail drawer (full info + trace, every status).
+            // Approve/Reject (pending) and Resolve (stuck PROCESSING) stay on the
+            // row's action buttons, which stopPropagation so they don't open it.
+            onRowClick={(w) => setDetail(w)}
             empty={<div className="py-8 text-center text-muted-foreground">Nothing to review.</div>}
           />
         </CardContent>
@@ -316,6 +317,12 @@ export function AdminWithdrawalsView({
           setResolve(null);
           qc.invalidateQueries({ queryKey: config.queryKey });
         }}
+      />
+
+      <EntityDetailDrawer
+        scope="admin"
+        target={detail ? { kind: detailKind, id: detail.id } : null}
+        onClose={() => setDetail(null)}
       />
     </div>
   );

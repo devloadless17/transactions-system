@@ -11,6 +11,7 @@ import { apiFetch } from '@/lib/api.client';
 import { ApiClientError } from '@/lib/api';
 import { toast } from '@/lib/toast';
 import { useCompanyNames } from '@/features/admin/company-filter';
+import { WhishPaymentDetailDrawer } from './whish-payment-detail-drawer';
 
 const PAGE_SIZE = 20;
 
@@ -22,6 +23,7 @@ function statusVariant(s: WhishPaymentResponse['status']) {
 
 export function AdminWhishView() {
   const [page, setPage] = useState(1);
+  const [detail, setDetail] = useState<WhishPaymentResponse | null>(null);
   const qc = useQueryClient();
 
   const paymentsQ = useQuery({
@@ -119,7 +121,10 @@ export function AdminWhishView() {
           variant="ghost"
           size="sm"
           disabled={refreshMu.isPending && refreshMu.variables === p.id}
-          onClick={() => refreshMu.mutate(p.id)}
+          onClick={(e) => {
+            e.stopPropagation(); // don't also open the row's detail drawer
+            refreshMu.mutate(p.id);
+          }}
           title="Ask Whish for the latest status and settle if collected"
         >
           {refreshMu.isPending && refreshMu.variables === p.id ? 'Refreshing…' : 'Refresh'}
@@ -153,10 +158,12 @@ export function AdminWhishView() {
             isLoading={paymentsQ.isLoading}
             error={paymentsQ.error}
             rowKey={(p) => p.id}
+            onRowClick={(p) => setDetail(p)}
             empty={
               <div className="py-8 text-center text-muted-foreground">No Whish payments yet.</div>
             }
           />
+          <WhishPaymentDetailDrawer payment={detail} onClose={() => setDetail(null)} />
         </CardContent>
       </Card>
 

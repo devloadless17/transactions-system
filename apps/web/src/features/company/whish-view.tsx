@@ -31,6 +31,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { apiFetch } from '@/lib/api.client';
 import { ApiClientError } from '@/lib/api';
+import { WhishPaymentDetailDrawer } from '@/features/admin/whish/whish-payment-detail-drawer';
 
 const PAGE_SIZE = 20;
 
@@ -44,6 +45,7 @@ export function WhishView() {
   const qc = useQueryClient();
   const [page, setPage] = useState(1);
   const [createOpen, setCreateOpen] = useState(false);
+  const [detail, setDetail] = useState<WhishPaymentResponse | null>(null);
   const queryKey = ['company', 'whish', { page }] as const;
 
   const listQ = useQuery({
@@ -98,6 +100,7 @@ export function WhishView() {
               href={p.collectUrl}
               target="_blank"
               rel="noreferrer"
+              onClick={(e) => e.stopPropagation()}
               className="inline-flex items-center gap-1 text-primary hover:underline"
             >
               Open <ExternalLink className="h-3 w-3" />
@@ -105,7 +108,8 @@ export function WhishView() {
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => {
+              onClick={(e) => {
+                e.stopPropagation();
                 navigator.clipboard?.writeText(p.collectUrl!);
                 toast.success('Link copied');
               }}
@@ -137,7 +141,10 @@ export function WhishView() {
             variant="ghost"
             size="sm"
             disabled={refreshMu.isPending}
-            onClick={() => refreshMu.mutate(p.id)}
+            onClick={(e) => {
+              e.stopPropagation();
+              refreshMu.mutate(p.id);
+            }}
           >
             Refresh
           </Button>
@@ -172,12 +179,14 @@ export function WhishView() {
                 : undefined
             }
             rowKey={(p) => p.id}
+            onRowClick={(p) => setDetail(p)}
             empty={
               <div className="py-8 text-center text-muted-foreground">
                 No payment links yet. Create one to get started.
               </div>
             }
           />
+          <WhishPaymentDetailDrawer payment={detail} onClose={() => setDetail(null)} />
         </CardContent>
       </Card>
 

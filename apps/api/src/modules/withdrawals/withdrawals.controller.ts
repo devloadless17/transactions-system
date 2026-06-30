@@ -7,9 +7,9 @@ import {
   Post,
   Put,
   Query,
-  StreamableFile,
   UseGuards,
 } from '@nestjs/common';
+import type { StreamableFile } from '@nestjs/common';
 import {
   approveWithdrawalSchema,
   cancelRequestSchema,
@@ -39,6 +39,7 @@ import { SkipResponseEnvelope } from '../../common/decorators/skip-response-enve
 import { ForbiddenError } from '../../common/errors/domain.error';
 import { WithdrawalsService } from './withdrawals.service';
 import { AutoApprovalConfigStore } from './auto-approval-config.store';
+import { WithdrawalAutoApprovalService } from './withdrawal-auto-approval.service';
 
 @UseGuards(CompanyAccessGuard, RolesGuard, CsrfGuard)
 @Controller()
@@ -46,6 +47,7 @@ export class WithdrawalsController {
   constructor(
     private readonly withdrawals: WithdrawalsService,
     private readonly autoApproval: AutoApprovalConfigStore,
+    private readonly autoApprovalRunner: WithdrawalAutoApprovalService,
   ) {}
 
   // ---------------- Company endpoints ----------------
@@ -58,12 +60,17 @@ export class WithdrawalsController {
     @CurrentUser() user: AuthPrincipal,
   ) {
     if (!user.companyId) throw new ForbiddenError('No company in session');
-    return this.withdrawals.request(
+    const result = await this.withdrawals.request(
       user.companyId,
       user.apiKeyAuth ? null : user.userId,
       body,
       user.apiKeyAuth ? user.userId : null,
     );
+    // Fast lane for auto-approval: a WISH request is the only auto-approvable kind,
+    // so nudge the processor to run just after the hold window instead of waiting
+    // for the 15s poll. No-op when auto-approval is OFF (the nudge re-checks).
+    if (result.payoutMethod === 'WISH') this.autoApprovalRunner.nudge();
+    return result;
   }
 
   @Roles(UserRole.COMPANY_OWNER, UserRole.COMPANY_MANAGER, UserRole.COMPANY_VIEWER)

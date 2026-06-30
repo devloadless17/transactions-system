@@ -3,7 +3,7 @@ import { WHISH_CURRENCIES, WhishTransferStatus } from '../enums';
 import { moneyAmountSchema, paginationSchema } from './common';
 
 // A recipient phone for a Whish W2W transfer. Whish expects a bare msisdn (e.g.
-// "71178866") but operators may paste a "+" prefix, so allow it and let the
+// "71505894") but operators may paste a "+" prefix, so allow it and let the
 // service normalise. Bounded to keep obvious garbage out at the edge.
 export const whishPhoneSchema = z
   .string()

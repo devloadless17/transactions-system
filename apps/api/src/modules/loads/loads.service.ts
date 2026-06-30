@@ -386,7 +386,11 @@ export class LoadsService {
           skip,
           take: args.query.pageSize,
         }),
-        this.cache.wrap(countKey, LIST_COUNT_CACHE_TTL_SEC, () => tx.load.count({ where })),
+        // singleFlight:false — runs inside the caller's tx; compute-on-miss, never
+        // block on the cross-request poll (which would pin this pooled connection).
+        this.cache.wrap(countKey, LIST_COUNT_CACHE_TTL_SEC, () => tx.load.count({ where }), {
+          singleFlight: false,
+        }),
       ]);
 
       return {

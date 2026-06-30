@@ -4,6 +4,7 @@ import { ZodPipe } from '../../common/pipes/zod-validation.pipe';
 import { CompanyAccessGuard } from './guards/company-access.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CsrfGuard } from '../auth/guards/csrf.guard';
+import { SessionOnlyGuard } from '../auth/guards/session-only.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Audited } from '../audit/audit.decorator';
@@ -17,7 +18,9 @@ import { ForbiddenError } from '../../common/errors/domain.error';
  * keys self-serve. Source-provider ingest keys are managed separately by the
  * super admin under /v1/admin/sources/:sourceId/api-keys.
  */
-@UseGuards(CompanyAccessGuard, RolesGuard, CsrfGuard)
+// SessionOnlyGuard: managing API keys must require an interactive dashboard
+// session — a leaked `tsk_` key must not be able to mint/rotate/revoke keys.
+@UseGuards(CompanyAccessGuard, SessionOnlyGuard, RolesGuard, CsrfGuard)
 @Roles(UserRole.COMPANY_OWNER, UserRole.COMPANY_MANAGER)
 @Controller('company/api-keys')
 export class ApiKeysController {

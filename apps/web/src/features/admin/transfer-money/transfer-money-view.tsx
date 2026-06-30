@@ -113,7 +113,7 @@ function SendCard() {
           <Label className="text-xs">Recipient phone</Label>
           <Input
             inputMode="tel"
-            placeholder="71178866"
+            placeholder="71505894"
             value={phone}
             onChange={(e) => setPhone(e.target.value)}
           />

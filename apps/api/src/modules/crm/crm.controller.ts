@@ -4,6 +4,7 @@ import { ZodPipe } from '../../common/pipes/zod-validation.pipe';
 import { CompanyAccessGuard } from '../api-keys/guards/company-access.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CsrfGuard } from '../auth/guards/csrf.guard';
+import { SessionOnlyGuard } from '../auth/guards/session-only.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Audited } from '../audit/audit.decorator';
@@ -32,6 +33,9 @@ export class CrmController {
     return this.config.getConfig(companyOf(user));
   }
 
+  // SessionOnlyGuard: repointing the CRM webhook is dashboard-only — a leaked API
+  // key must not be able to redirect a company's event stream to an attacker.
+  @UseGuards(SessionOnlyGuard)
   @Roles(UserRole.COMPANY_OWNER)
   @Put('config')
   @Audited({ action: 'crm.config_set', entityType: 'company', idFrom: 'principal.companyId' })
@@ -42,6 +46,7 @@ export class CrmController {
     return this.config.setConfig(companyOf(user), body);
   }
 
+  @UseGuards(SessionOnlyGuard)
   @Roles(UserRole.COMPANY_OWNER)
   @Delete('config')
   @Audited({ action: 'crm.config_cleared', entityType: 'company', idFrom: 'principal.companyId' })
@@ -49,6 +54,7 @@ export class CrmController {
     return this.config.clear(companyOf(user));
   }
 
+  @UseGuards(SessionOnlyGuard)
   @Roles(UserRole.COMPANY_OWNER)
   @Post('demo/enable')
   @Audited({ action: 'crm.demo_enabled', entityType: 'company', idFrom: 'principal.companyId' })

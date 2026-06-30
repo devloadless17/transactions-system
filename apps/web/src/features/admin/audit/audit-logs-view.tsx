@@ -2,7 +2,12 @@
 import { useEffect, useState } from 'react';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
-import type { ActivityKind, AuditLogResponse, PaginatedResponse } from '@app/shared';
+import type {
+  ActivityKind,
+  AuditLogResponse,
+  PaginatedResponse,
+  WhishPaymentResponse,
+} from '@app/shared';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -12,6 +17,7 @@ import { apiFetch } from '@/lib/api.client';
 import { useDebouncedValue } from '@/lib/use-debounced-value';
 import { CompanyFilter, useCompanyNames } from '@/features/admin/company-filter';
 import { auditEntityTarget, EntityDetailDrawer } from '@/features/activity/activity-detail-drawer';
+import { WhishPaymentDetailDrawer } from '@/features/admin/whish/whish-payment-detail-drawer';
 
 const PAGE_SIZE = 50;
 
@@ -51,6 +57,14 @@ export function AuditLogsView() {
   const [state, setState] = useState<State>(() => stateFromParams(searchParams));
   // The money operation whose detail drawer is open (clicked from an entity cell).
   const [entityTarget, setEntityTarget] = useState<{ kind: ActivityKind; id: string } | null>(null);
+  // Whish payments aren't an ActivityKind (no ledger flow of their own), so they get
+  // their own deep link → fetch by id → detail drawer.
+  const [whishId, setWhishId] = useState<string | null>(null);
+  const whishQ = useQuery({
+    queryKey: ['admin', 'whish', 'payment', whishId],
+    queryFn: () => apiFetch<WhishPaymentResponse>(`/admin/whish/payments/${whishId}`),
+    enabled: !!whishId,
+  });
 
   // Single writer: update state AND push it to the URL together (replace, so we
   // don't pollute history on every keystroke). Because state and URL end up in
@@ -119,18 +133,32 @@ export function AuditLogsView() {
         // Deposits/withdrawals/payouts/loads open their full detail in place, so
         // an operator can jump from an audit entry straight to the transaction.
         const target = auditEntityTarget(a.entityType, a.entityId);
-        return target ? (
-          <button
-            type="button"
-            onClick={() => setEntityTarget(target)}
-            className="text-primary underline-offset-2 hover:underline"
-            title="View full details"
-          >
-            {label}
-          </button>
-        ) : (
-          <span>{label}</span>
-        );
+        if (target)
+          return (
+            <button
+              type="button"
+              onClick={() => setEntityTarget(target)}
+              className="text-primary underline-offset-2 hover:underline"
+              title="View full details"
+            >
+              {label}
+            </button>
+          );
+        // Whish payments: deep-link to their own detail drawer.
+        if (a.entityType === 'whish_payment' && a.entityId) {
+          const id = a.entityId;
+          return (
+            <button
+              type="button"
+              onClick={() => setWhishId(id)}
+              className="text-primary underline-offset-2 hover:underline"
+              title="View full details"
+            >
+              {label}
+            </button>
+          );
+        }
+        return <span>{label}</span>;
       },
     },
     {
@@ -205,6 +233,11 @@ export function AuditLogsView() {
         scope="admin"
         target={entityTarget}
         onClose={() => setEntityTarget(null)}
+      />
+
+      <WhishPaymentDetailDrawer
+        payment={whishId ? (whishQ.data ?? null) : null}
+        onClose={() => setWhishId(null)}
       />
     </div>
   );

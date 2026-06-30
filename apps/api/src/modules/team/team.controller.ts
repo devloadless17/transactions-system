@@ -20,6 +20,7 @@ import { ZodPipe } from '../../common/pipes/zod-validation.pipe';
 import { CompanyAccessGuard } from '../api-keys/guards/company-access.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CsrfGuard } from '../auth/guards/csrf.guard';
+import { SessionOnlyGuard } from '../auth/guards/session-only.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Audited } from '../audit/audit.decorator';
@@ -27,7 +28,9 @@ import type { AuthPrincipal } from '../../common/types/request.types';
 import { ForbiddenError } from '../../common/errors/domain.error';
 import { TeamService } from './team.service';
 
-@UseGuards(CompanyAccessGuard, RolesGuard, CsrfGuard)
+// SessionOnlyGuard: team management is dashboard-only — a leaked API key must
+// not be able to invite/remove users or change roles.
+@UseGuards(CompanyAccessGuard, SessionOnlyGuard, RolesGuard, CsrfGuard)
 @Controller('company/team')
 export class TeamController {
   constructor(private readonly team: TeamService) {}

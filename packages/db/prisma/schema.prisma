@@ -275,7 +275,7 @@ model SourceFeeRule {
   createdAt DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  @@index([sourceId, channel, active])
+  @@index([sourceId, channel, active], map: "source_fee_rules_source_channel_active_idx")
   @@map("source_fee_rules")
 }
 
@@ -622,6 +622,10 @@ model AuditLog {
   // id DESC) — without this, that view seq-scans + external-sorts the whole table
   // at scale. A backward index scan early-stops on LIMIT instead.
   @@index([createdAt(sort: Desc), id(sort: Desc)], map: "audit_logs_created_at_id_idx")
+  // Serves the action-filtered admin audit list ordered by created_at DESC (backward
+  // index scan, early-stops on LIMIT). Mirrors migration 20260623120000 — declared here
+  // so `prisma migrate dev` never emits a spurious DROP of audit_logs_action_created_idx.
+  @@index([action, createdAt(sort: Desc)], map: "audit_logs_action_created_idx")
   @@map("audit_logs")
 }
 
@@ -874,7 +878,7 @@ model Notification {
 
   reads NotificationRead[]
 
-  @@index([scope, companyId, createdAt])
+  @@index([scope, companyId, createdAt], map: "notifications_scope_company_created_idx")
   @@map("notifications")
 }
 
@@ -892,7 +896,7 @@ model NotificationRead {
   // but kept under the "Cleared" filter for review.
   dismissedAt    DateTime?    @map("dismissed_at") @db.Timestamptz(6)
 
-  @@unique([notificationId, userId])
-  @@index([userId])
+  @@unique([notificationId, userId], map: "notification_reads_notification_user_key")
+  @@index([userId], map: "notification_reads_user_idx")
   @@map("notification_reads")
 }

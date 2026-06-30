@@ -7,6 +7,16 @@ import {
   whishPaymentResponseSchema,
 } from '@app/shared';
 
+// Fields on a company-facing response schema that are deliberately NOT shown in the
+// example field table (admin/internal projections or rarely-needed extras). Adding a
+// NEW schema field that isn't here forces a conscious doc decision — the reverse-
+// coverage test below fails until the field is either documented or allow-listed.
+const WHISH_RESPONSE_UNDOCUMENTED_OK = new Set([
+  'companyId',
+  'payerPhoneNumber',
+  'settlementError',
+]);
+
 /**
  * Docs ↔ API-schema contract (anti-drift).
  *
@@ -112,6 +122,64 @@ describe('docs ↔ API schema contract (anti-drift)', () => {
       expect(line, 'the whish payments list row should exist in the guide').toBeTruthy();
       expect(line).toContain('needsAttention');
       expect(line).not.toMatch(/`from`|`to`/);
+    });
+  });
+
+  // The 2026-06-30 audit found this exact drift survived a green contract test: the
+  // sources doc still claimed a hidden company → 403 on ingest after `visible` became
+  // discovery-only. These assertions pin the corrected semantics so it can't recur.
+  describe('ingest visibility semantics (visible is discovery-only)', () => {
+    it('the sources doc no longer claims a hidden company is rejected (403) on ingest', () => {
+      expect(INGEST_DOC).not.toMatch(/hidden company → `403/);
+      expect(INGEST_DOC).not.toMatch(/`403 FORBIDDEN` \(company not `visible`/);
+    });
+
+    it('the sources doc states `visible` only governs discovery, not ingest', () => {
+      expect(INGEST_DOC).toMatch(
+        /still accepts ingest|discovery list only|only controls \*\*discovery\*\*/i,
+      );
+      expect(INGEST_DOC).toMatch(/not\*\* an ingest gate|does not gate ingest|discovery-only/i);
+    });
+  });
+
+  describe('ingest response omits platform fee/net (sources never see the margin)', () => {
+    it('the sources doc states the response omits the fee and net amounts', () => {
+      expect(INGEST_DOC).toMatch(/deliberately omits the fee/i);
+    });
+  });
+
+  describe('whish response field table is COMPLETE (reverse drift: schema → docs)', () => {
+    it('every whishPaymentResponseSchema field is documented or explicitly allow-listed', () => {
+      const documented = new Set([
+        'id',
+        'externalId',
+        'status',
+        'amount',
+        'currency',
+        'invoice',
+        'collectUrl',
+        'transactionId',
+        'needsAttention',
+        'createdAt',
+        'paidAt',
+      ]);
+      const undocumented = Object.keys(whishPaymentResponseSchema.shape).filter(
+        (k) => !documented.has(k) && !WHISH_RESPONSE_UNDOCUMENTED_OK.has(k),
+      );
+      expect(
+        undocumented,
+        `whishPaymentResponseSchema has fields neither documented nor allow-listed: ${undocumented.join(', ')}. Document them in companies-integration-docs.md or add to WHISH_RESPONSE_UNDOCUMENTED_OK.`,
+      ).toEqual([]);
+    });
+  });
+
+  describe('error envelope codes are documented', () => {
+    it('both guides describe the standard error codes integrators key off', () => {
+      for (const code of ['VALIDATION_ERROR', 'UNAUTHORIZED']) {
+        expect(GUIDE, `companies guide should document ${code}`).toContain(code);
+      }
+      expect(INGEST_DOC).toContain('VALIDATION_ERROR');
+      expect(INGEST_DOC).toContain('DUPLICATE_TRANSACTION');
     });
   });
 });

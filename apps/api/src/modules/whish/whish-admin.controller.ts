@@ -36,6 +36,12 @@ export class WhishAdminController {
     return this.payments.listAll(query);
   }
 
+  /** One payment by id (across companies) — e.g. an audit-log deep link. */
+  @Get('payments/:id')
+  async getOne(@Param('id', new ParseUUIDPipe()) id: string) {
+    return this.payments.adminGetById(id);
+  }
+
   /**
    * Re-attempt settlement of one payment (cross-company). The operator's recovery
    * for a paid-but-unsettled link: asks Whish for the authoritative status and

@@ -16,6 +16,7 @@ import { ValidationError } from '../../common/errors/domain.error';
 import { assertListOffset } from '../../common/pagination';
 import { TransactionLogsService } from '../transaction-logs/transaction-logs.service';
 import { WhishSessionStore } from './whish-session.store';
+import { W2WCryptoError } from './w2w-crypto';
 import { WhishW2WClient, WhishSessionExpiredError, type W2WSubmitResult } from './whish-w2w.client';
 
 // One submit + at most one drift-corrected retry. The retry only ever fires on a
@@ -128,6 +129,13 @@ export class WhishTransfersService {
           where: { id: existing.id },
           data: {
             status: WhishTransferStatus.PENDING,
+            // Re-sync the destination fields: an operator may resend a session-expired
+            // row with a corrected amount/phone (admin Transfer Money). The persisted
+            // row must match what we actually submit to Whish, not the stale values —
+            // otherwise the audit record diverges from the real transfer.
+            recipientPhone: phone,
+            amount: new Prisma.Decimal(amountFull),
+            currency: input.currency,
             errorDetail: null,
             traceId: null,
             upstreamCode: null,
@@ -167,7 +175,23 @@ export class WhishTransfersService {
     }
 
     // 4. Acquire the session + the next monotonic counter.
-    const session = await this.session.nextRequest();
+    let session;
+    try {
+      session = await this.session.nextRequest();
+    } catch (err) {
+      if (err instanceof W2WCryptoError) {
+        // Credential decryption failed (e.g. WHISH_W2W_ENC_KEY rotated) — submit was
+        // NEVER reached, so money definitively did NOT move. Mark the row terminal and
+        // surface a ValidationError so the auto-approval orchestrator reverts to manual
+        // (its money-did-not-move branch) instead of treating it as an ambiguous
+        // in-flight failure (UNKNOWN + needsReconcile + circuit-breaker burn).
+        await this.fail(row.id, 'session_decrypt_failed', (err as Error).message, null);
+        throw new ValidationError(
+          'Whish W2W session credentials could not be decrypted — a SUPER_ADMIN must re-seed them (check WHISH_W2W_ENC_KEY).',
+        );
+      }
+      throw err;
+    }
     if (!session) {
       await this.fail(row.id, 'session_not_configured', null, null);
       throw new ValidationError(

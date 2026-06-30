@@ -84,6 +84,53 @@ COMPANY_{OWNER,MANAGER,VIEWER}`, login throttle (10/60s per IP), per-key + per-I
 
 ---
 
+## BUSINESS-CRITICAL INVARIANTS (owner-stated; a violation of any is a launch blocker)
+
+These are the product owner's non-negotiables. Treat each as a named invariant to **prove or
+disprove** with evidence; a failure here is **Critical/High**, not a polish item. Real companies
+are already transacting, ~90% via **API + CRM webhooks**.
+
+1. **The two deposit flows must NEVER break or block.** (a) **Source ingest** —
+   `POST /ingest/{sourceCode}/transactions` with discovery via `GET /ingest/companies`; the company
+   is passive (it just receives). (b) **Whish Pay** — company-driven, via **public API AND the
+   dashboard**. Money that is collected must always either become a **booked deposit** or land in a
+   **visible, operator-recoverable** state. No silent drop; no collected-but-unbooked-with-no-signal.
+2. **Deposits are DEDUCTED** so a deposit **succeeds even at zero wallet balance** (the fee comes out
+   of the deposit, never the wallet). Prove no path can block a deposit for lack of balance, and that
+   `commission ≤ amount` holds (no negative net / unbalanced ledger).
+3. **Withdrawals are ON_TOP**, mostly **auto-approved** (Whish W2W to a recipient phone), with a
+   **master switch to manual**. The Whish wallet is **external and NOT tracked by the system** (the
+   admin also spends from it elsewhere). Any transfer failure — **session expired, insufficient Whish
+   balance, ambiguous/UNKNOWN result** — must **never corrupt the ledger, never double-pay, never
+   strand reserved funds**, and must leave the withdrawal **manually approvable / markable**. OFF must
+   never transfer (the switch is re-checked mid-run).
+4. **Loads** (credit the company wallet) and **Payouts** (debit it) — usually no fee; **API-only**.
+5. **CRM emit boundary:** deposits (`transaction.*`) and withdrawals (`withdrawal.*`) are emitted to
+   the company's CRM webhook; **loads and payouts are deliberately NOT emitted**. Prove the boundary.
+6. **Every flow has a manual fallback.** If any automated part stops (poller down, Whish session
+   dead, auto-approval off), the operator can still complete or recover the operation **by hand**
+   with **correct calculations preserved** — nothing wedges with no way out.
+7. **Light & fast everywhere** — every list paginated and offset-bounded, every hot query indexed,
+   no unbounded `findMany`, no per-request work that scales with total rows. No lags or jank.
+8. **Docs are correct AND working** — the API is the primary product surface; a new integrator can go
+   zero-to-working from the docs alone, and internal-only concepts (source fees, net revenue) never
+   leak to companies.
+
+### Recent changes to verify specifically (and the drift they may create)
+
+- **`company.visible` is now discovery-only** (gates only `GET /ingest/companies`); a hidden+ACTIVE
+  company **still ingests and still settles Whish**. Verify the new behavior holds end-to-end AND that
+  **docs match** (`docs/sources-integration-docs.md` previously said hidden → `403` on ingest — confirm
+  whether that line is now stale and flag it).
+- **Super-admin Whish "Refresh"** endpoint (`whish-admin.controller.ts` → `adminRefreshStatus`) is the
+  operator recovery for paid-but-unsettled links (the 60s poller deliberately **skips** `needsAttention`
+  rows). Verify it re-settles and clears the flag, is correctly role-gated (SUPER_ADMIN/ADMIN_OPERATOR,
+  not BACKOFFICE), CSRF-guarded, and audited.
+- **`settlementError`** is surfaced on the Whish payment response/badge — confirm it never leaks
+  internal detail to a company that shouldn't see it.
+
+---
+
 ## DIMENSIONS TO AUDIT (run as parallel agent groups; each is exhaustive, not a sample)
 
 ### 1. Money correctness & the ledger — _zero tolerance_
@@ -172,6 +219,21 @@ COMPANY_{OWNER,MANAGER,VIEWER}`, login throttle (10/60s per IP), per-key + per-I
   hiding money/security failures; the global exception filter maps everything to clean,
   non-leaky responses; failed external calls degrade gracefully.
 - Transaction boundaries: every multi-write money path is atomic; nothing partially commits.
+- **Manual recoverability — no stuck money (owner invariant #6).** For **every** flow, prove there is
+  an operator path to recover or complete by hand if the automation stops, **without corrupting
+  calculations**. Enumerate the known stuck/edge states and confirm each has a working, role-gated,
+  audited recovery — and that none can silently swallow money:
+  - Whish **paid-but-unsettled** / **paid-after-expiry** / **unexpected-status** (`needsAttention`):
+    the poller skips these by design → the **admin Refresh** endpoint must re-settle them; prove it.
+  - Withdrawal **PROCESSING/UNKNOWN** after an ambiguous transfer: a manual `resolveProcessing`
+    (mark transferred / revert) must exist and keep the ledger balanced; prove no double-pay and no
+    stranded reservation.
+  - Deposit **no-matching-commission-rule**: ingest is blocked until pricing is configured — confirm
+    it surfaces loudly (counter + deduped operator alert) and recovers on a retry once a rule exists.
+  - Auto-approval **off / circuit-broken / Whish session expired**: manual approve + manual
+    mark-as-transferred must still work; the external/untracked Whish wallet must never be assumed.
+  - Wallet `version` conflict after retries (→ 409): confirm the caller-retry contract is safe
+    (idempotent, no double-credit) and documented.
 
 ### 6. Code cleanliness & correctness signals
 
@@ -189,7 +251,14 @@ COMPANY_{OWNER,MANAGER,VIEWER}`, login throttle (10/60s per IP), per-key + per-I
   every error code, auth, idempotency, rate limits, and the newer features (Whish **redirect
   URLs**) are documented — and **internal-only** concepts (source fees, net revenue) are **not**
   exposed to companies anywhere.
-- The **docs↔schema contract test** still pins docs to the real zod schemas (no drift). Run it.
+- The **docs↔schema contract test** still pins docs to the real zod schemas (no drift). Run it —
+  and assess its **coverage**: it must guard **ingest** (request + the fee-omitting response),
+  **loads**, **payouts**, the full **withdrawal** fields, **list pagination** (params + response
+  shape + the `MAX_LIST_OFFSET` cap behaviour), and the **error envelope** — not only Whish + the
+  withdrawal CASH example. A narrow contract test is itself a finding (it lets docs drift).
+- Cross-check the docs against the **current** behaviour, especially anything changed recently
+  (e.g. the `company.visible` ingest-gate semantics, Whish redirect URLs). Any documented behaviour
+  that no longer matches code is a **doc-drift finding** with the exact `file:line` on both sides.
 - A new integrator could go from zero to a working integration using only the docs. Note any gap.
 
 ### 8. Deploy-readiness & operability

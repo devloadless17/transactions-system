@@ -210,7 +210,11 @@ export class LedgerService {
           skip,
           take: query.pageSize,
         }),
-        this.cache.wrap(countKey, LIST_COUNT_CACHE_TTL_SEC, () => tx.ledgerEntry.count({ where })),
+        // singleFlight:false — this runs inside the caller's tx; never block on the
+        // cross-request poll (which would pin this pooled connection). Compute on miss.
+        this.cache.wrap(countKey, LIST_COUNT_CACHE_TTL_SEC, () => tx.ledgerEntry.count({ where }), {
+          singleFlight: false,
+        }),
       ]);
 
       return {

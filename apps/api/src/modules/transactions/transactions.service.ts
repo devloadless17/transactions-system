@@ -706,7 +706,11 @@ export class TransactionsService {
           // and more scalable than loading the whole sources table per request.
           include: { source: { select: { code: true } } },
         }),
-        this.cache.wrap(countKey, LIST_COUNT_CACHE_TTL_SEC, () => tx.transaction.count({ where })),
+        // singleFlight:false — runs inside the caller's tx; compute-on-miss, never
+        // block on the cross-request poll (which would pin this pooled connection).
+        this.cache.wrap(countKey, LIST_COUNT_CACHE_TTL_SEC, () => tx.transaction.count({ where }), {
+          singleFlight: false,
+        }),
       ]);
 
       return {

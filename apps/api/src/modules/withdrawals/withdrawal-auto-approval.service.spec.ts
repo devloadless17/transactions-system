@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { WithdrawalAutoApprovalService } from './withdrawal-auto-approval.service';
 import { ValidationError } from '../../common/errors/domain.error';
+import { WhishSessionExpiredError } from '../whish/whish-w2w.client';
 
 // Safety guarantee under test: when auto-approval is OFF (or the toggle is flipped
 // OFF mid-run), the processor must NEVER claim a withdrawal or send a transfer.
@@ -72,7 +73,7 @@ const candidate = {
   companyId: 'c1',
   netAmount: { toString: () => '20' },
   currency: 'USD',
-  payoutDetails: { recipientPhone: '71178866' },
+  payoutDetails: { recipientPhone: '71505894' },
 };
 
 describe('WithdrawalAutoApprovalService — disabled never transfers', () => {
@@ -172,5 +173,88 @@ describe('WithdrawalAutoApprovalService — error handling never double-pays', (
       expect.objectContaining({ status: 'FAILED', terminal: true }),
     );
     expect(withdrawals.setAutoMeta).not.toHaveBeenCalled();
+  });
+});
+
+describe('WithdrawalAutoApprovalService — transfer-outcome branches', () => {
+  it('(a) WhishSessionExpiredError reverts to manual, trips the breaker, and stops the tick', async () => {
+    const { service, withdrawals, config, transfers } = build({
+      state: makeState(),
+      candidates: [candidate],
+    });
+    transfers.sendTransfer.mockRejectedValue(new WhishSessionExpiredError('expired'));
+    await runTick(service);
+    // Money did NOT move → revert to manual; the whole W2W side is down → trip the
+    // breaker (which is what pauses further processing until the session is re-seeded).
+    expect(withdrawals.revertFromProcessing).toHaveBeenCalledWith(
+      candidate.id,
+      candidate.companyId,
+      expect.objectContaining({ status: 'SESSION_EXPIRED', errorDetail: 'session_expired' }),
+    );
+    expect(config.trip).toHaveBeenCalledWith('session_expired');
+    // A session-expired transfer must NOT settle or hold-for-reconcile.
+    expect(withdrawals.approve).not.toHaveBeenCalled();
+  });
+
+  it('(b) a clean FAILED result reverts terminal, records success (system healthy), and audits', async () => {
+    const { service, withdrawals, config, transfers } = build({
+      state: makeState(),
+      candidates: [candidate],
+    });
+    transfers.sendTransfer.mockResolvedValue({
+      status: 'FAILED',
+      reference: 'wt_f',
+      upstreamMessage: 'insufficient balance',
+    });
+    await runTick(service);
+    expect(withdrawals.revertFromProcessing).toHaveBeenCalledWith(
+      candidate.id,
+      candidate.companyId,
+      expect.objectContaining({ status: 'FAILED', terminal: true, reference: 'wt_f' }),
+    );
+    // A clean business failure means the SYSTEM is healthy — must not trip the breaker.
+    expect(config.recordSuccess).toHaveBeenCalled();
+    expect(config.recordFailure).not.toHaveBeenCalled();
+  });
+
+  it('(c) an UNKNOWN/PENDING result holds the row needsReconcile (never auto-retried), no revert', async () => {
+    const { service, withdrawals, config, transfers } = build({
+      state: makeState(),
+      candidates: [candidate],
+    });
+    transfers.sendTransfer.mockResolvedValue({
+      status: 'UNKNOWN',
+      reference: 'wt_u',
+      traceId: 't',
+    });
+    await runTick(service);
+    expect(withdrawals.setAutoMeta).toHaveBeenCalledWith(
+      candidate.id,
+      candidate.companyId,
+      expect.objectContaining({ status: 'UNKNOWN', needsReconcile: true }),
+    );
+    expect(withdrawals.revertFromProcessing).not.toHaveBeenCalled();
+    expect(config.recordFailure).toHaveBeenCalled();
+  });
+
+  it('(d) transfer SUCCEEDED but settle threw → hold needsAttention (PROCESSING), never revert', async () => {
+    const { service, withdrawals, transfers } = build({
+      state: makeState(),
+      candidates: [candidate],
+    });
+    transfers.sendTransfer.mockResolvedValue({
+      status: 'SUCCESS',
+      reference: 'wt_s',
+      traceId: 't',
+    });
+    withdrawals.approve.mockRejectedValue(new Error('receivable appeared'));
+    await runTick(service);
+    // Money LEFT but settle failed → keep PROCESSING, flag for retry; never revert.
+    expect(withdrawals.setAutoMeta).toHaveBeenCalledWith(
+      candidate.id,
+      candidate.companyId,
+      expect.objectContaining({ status: 'SUCCESS', needsAttention: true }),
+    );
+    expect(withdrawals.revertFromProcessing).not.toHaveBeenCalled();
   });
 });

@@ -543,6 +543,8 @@ export class ActivityService {
             Array<{ n: bigint }>
           >(`SELECT COUNT(*)::bigint AS n FROM (${this.unionSql()}) u WHERE u.company_id = $1::uuid AND u.currency = $2`, companyId, currency)
           .then((r) => Number(r[0]?.n ?? 0)),
+      // singleFlight:false — runs inside the caller's tx; compute-on-miss.
+      { singleFlight: false },
     );
   }
 
@@ -555,7 +557,8 @@ export class ActivityService {
     const key =
       `list-count:activity:${companyId ?? 'all'}:${currency ?? query.currency ?? ''}` +
       `:${query.direction ?? ''}:${query.kind ?? ''}:${query.from ?? ''}:${query.to ?? ''}:${query.search ?? ''}`;
-    return this.cache.wrap(key, LIST_COUNT_CACHE_TTL_SEC, run);
+    // singleFlight:false — runs inside the caller's tx; compute-on-miss.
+    return this.cache.wrap(key, LIST_COUNT_CACHE_TTL_SEC, run, { singleFlight: false });
   }
 
   private mapRow(r: ActivityRow, isCompanyScope: boolean, balanceMode: boolean): ActivityItem {

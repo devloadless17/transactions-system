@@ -20,6 +20,7 @@ import type { WhishPayment } from '@app/db';
 import { PrismaService } from '../../database/prisma.service';
 import type { Env } from '../../config/env.schema';
 import {
+  DomainError,
   DuplicateTransactionError,
   ForbiddenError,
   NotFoundError,
@@ -407,6 +408,13 @@ export class WhishPaymentsService {
     return this.reconcile(payment);
   }
 
+  /** Admin: fetch one payment by id across companies (e.g. an audit-log deep link). */
+  async adminGetById(id: string): Promise<WhishPaymentResponse> {
+    const row = await this.prisma.runAsAdmin((tx) => tx.whishPayment.findUnique({ where: { id } }));
+    if (!row) throw new NotFoundError('WhishPayment', id);
+    return mapWhishPayment(row);
+  }
+
   /** Look up a payment by its numeric reference (externalId) — used by the CRM integration. */
   async getByExternalId(companyId: string, externalId: number): Promise<WhishPaymentResponse> {
     const row = await this.prisma.runAsTenant(companyId, (tx) =>
@@ -584,11 +592,21 @@ export class WhishPaymentsService {
         this.logger.error(
           `Whish payment ${payment.externalId} is PAID at Whish but could NOT be settled (company ${payment.companyId}): ${message}. Left PENDING for retry — needs operator attention (likely its commission rule changed after the link was created).`,
         );
+        // Company-facing: only surface intentional DomainError messages (e.g.
+        // NO_COMMISSION_RULE — actionable + safe). An unexpected internal error
+        // (Prisma, etc.) must not leak schema/internal detail into the company's
+        // response — the raw message stays in the log above for operators.
+        const safeError =
+          err instanceof DomainError ? err.message : 'Settlement failed — please contact support.';
         await this.prisma.runAsAdmin((tx) =>
           tx.whishPayment.update({
             where: { id: payment.id },
             data: {
-              metadata: { needsAttention: true, paidButUnsettled: true, settlementError: message },
+              metadata: {
+                needsAttention: true,
+                paidButUnsettled: true,
+                settlementError: safeError,
+              },
             },
           }),
         );

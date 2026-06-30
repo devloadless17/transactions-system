@@ -246,6 +246,19 @@ export class WithdrawalsService {
         delta: { reserved: reserved.mul(-1) },
       });
 
+      // If this row went through auto-approval (it carries autoApproval metadata),
+      // clear the transient stuck flags now that it has settled to COMPLETED — else a
+      // settle-fail-then-retry-succeed leaves a permanent stale "needs attention"
+      // badge on a fully-settled withdrawal. No-op for manual approvals.
+      const settledAutoMeta =
+        autoMetaStatus(w.metadata) !== null
+          ? mergeAutoMeta(w.metadata, {
+              status: 'SUCCESS',
+              needsAttention: false,
+              needsReconcile: false,
+            })
+          : undefined;
+
       return cTx.withdrawal.update({
         where: { id },
         data: {
@@ -256,6 +269,7 @@ export class WithdrawalsService {
           adminNotes: input.notes ?? undefined,
           externalReference: input.externalReference,
           roundingRemainder: rounding.toString(),
+          ...(settledAutoMeta ? { metadata: settledAutoMeta } : {}),
         },
       });
     });
@@ -454,6 +468,10 @@ export class WithdrawalsService {
         data: { metadata: mergeAutoMeta(w.metadata, auto) },
       });
     });
+    // These flags (needsReconcile / needsAttention / UNKNOWN) are the operator-
+    // actionable stuck-money signals; emit so the admin queue + Resolve-processing
+    // escape hatch update live, mirroring every other mutator (revertFromProcessing).
+    this.notify(companyId);
   }
 
   /**
@@ -599,7 +617,11 @@ export class WithdrawalsService {
           skip,
           take: args.query.pageSize,
         }),
-        this.cache.wrap(countKey, LIST_COUNT_CACHE_TTL_SEC, () => tx.withdrawal.count({ where })),
+        // singleFlight:false — runs inside the caller's tx; compute-on-miss, never
+        // block on the cross-request poll (which would pin this pooled connection).
+        this.cache.wrap(countKey, LIST_COUNT_CACHE_TTL_SEC, () => tx.withdrawal.count({ where }), {
+          singleFlight: false,
+        }),
       ]);
 
       return {

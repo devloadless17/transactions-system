@@ -27,6 +27,7 @@ const BATCH = 25;
 export class WithdrawalAutoApprovalService implements OnApplicationBootstrap, OnModuleDestroy {
   private readonly logger = new Logger(WithdrawalAutoApprovalService.name);
   private timer?: NodeJS.Timeout;
+  private nudgeTimer?: NodeJS.Timeout;
   private running = false;
 
   constructor(
@@ -45,6 +46,37 @@ export class WithdrawalAutoApprovalService implements OnApplicationBootstrap, On
 
   onModuleDestroy(): void {
     if (this.timer) clearInterval(this.timer);
+    if (this.nudgeTimer) clearTimeout(this.nudgeTimer);
+  }
+
+  /**
+   * Fast lane: a WISH withdrawal was just requested. The 15s interval poller is a
+   * safety net — on its own it adds up to ~15s of latency on top of the hold
+   * window, so a 3s hold can take ~18s to transfer. This schedules a one-shot tick
+   * just after the hold window (≈ holdSeconds + 1s) so the transfer fires promptly.
+   *
+   * Debounced: a burst of requests collapses to ONE run at the latest request's
+   * hold expiry (each call resets the timer). Best-effort and self-correcting — the
+   * tick re-reads the master switch + hold window, so this can never transfer when
+   * auto-approval is OFF or before a row is actually eligible. The interval poller
+   * still covers anything this misses (e.g. a request created during a restart).
+   */
+  nudge(): void {
+    void this.config
+      .getState()
+      .then((state) => {
+        if (!state.enabled || !state.enabledAt) return; // OFF → no fast lane
+        if (this.nudgeTimer) clearTimeout(this.nudgeTimer);
+        this.nudgeTimer = setTimeout(
+          () => {
+            this.nudgeTimer = undefined;
+            void this.tick();
+          },
+          state.holdSeconds * 1000 + 1000,
+        );
+        this.nudgeTimer.unref?.();
+      })
+      .catch(() => undefined); // never let a nudge failure surface; the poller covers it
   }
 
   private async tick(): Promise<void> {
