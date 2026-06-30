@@ -29,12 +29,14 @@ const CREATE_RESPONSE = `{
     "payerPhoneNumber": null,
     "transactionId": null,
     "needsAttention": false,
+    "settlementError": null,
     "paidAt": null,
     "createdAt": "2026-06-04T12:00:00.000Z"
   }
 }
 # needsAttention=true means Whish took the money but settlement into your wallet
-# failed (e.g. a commission rule changed) — contact support if you see it.`;
+# failed (e.g. a commission rule changed). settlementError holds the reason; once
+# your platform admin fixes the cause, refresh the payment and it settles.`;
 
 const STATUS_CURL = `curl ${API_BASE}/integrations/whish/payments/1781018591 \\
   -H "Authorization: Bearer tsk_<company-key>"
@@ -129,10 +131,16 @@ function ApiSection() {
   const fields: [string, string][] = [
     [
       'amount',
-      'Decimal string, e.g. "25.00". A commission rule (set by your platform admin) must cover this amount, otherwise you get 422 NO_COMMISSION_RULE.',
+      'A decimal string in quotes — "25.00", never the bare number 25.00. Up to 8 decimal places, must be greater than 0. A commission rule (set by your platform admin) must cover it, otherwise you get 422 NO_COMMISSION_RULE.',
     ],
-    ['currency', 'Currency code. Whish is USD only.'],
-    ['invoice', 'Your own order/reference label (1–200 chars). Shown back on the payment.'],
+    [
+      'currency',
+      'Exactly "USD" (uppercase) — the only currency Whish supports. Anything else is a 400 VALIDATION_ERROR.',
+    ],
+    [
+      'invoice',
+      'Required. Your own order/reference label (1–200 chars). Shown back on the payment.',
+    ],
     [
       'idempotencyKey',
       'Optional (8–120 chars). A retried create with the same key returns the original link instead of minting a duplicate — safe to retry on a network error.',
@@ -149,6 +157,28 @@ function ApiSection() {
     [
       'FAILED',
       'The payment did not go through — declined, or the link lapsed unpaid. (Whish reports no separate “expired”, so both arrive as FAILED.)',
+    ],
+  ];
+  const errors: [string, string][] = [
+    [
+      '400 VALIDATION_ERROR',
+      'A field is malformed — most often amount sent as a number instead of a "string", a currency other than "USD", or a missing invoice. The error body names the offending field.',
+    ],
+    [
+      '422 NO_COMMISSION_RULE',
+      'No commission rule covers this amount for your company, so the link is refused before any customer pays. Ask your platform admin to add a rule covering your amounts.',
+    ],
+    [
+      '401 / 403',
+      'Auth failed. Send your company key as Authorization: Bearer tsk_… — these are server-to-server (no cookies/session).',
+    ],
+    [
+      '502 WHISH_ERROR',
+      'Whish itself errored or was unreachable. Safe to retry (reuse your idempotencyKey); if it persists, contact support.',
+    ],
+    [
+      'needsAttention: true',
+      'Created and paid, but settlement into your wallet failed — read settlementError for the reason. Once the cause is fixed, refresh the payment and it settles.',
     ],
   ];
   return (
@@ -234,6 +264,21 @@ function ApiSection() {
               >
                 <code className="col-span-3 font-mono">{s}</code>
                 <span className="col-span-9 text-muted-foreground">{d}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <p className="mb-1 text-xs font-medium uppercase text-muted-foreground">Common errors</p>
+          <div className="space-y-1">
+            {errors.map(([s, d]) => (
+              <div
+                key={s}
+                className="grid grid-cols-12 gap-2 border-b py-1.5 text-xs last:border-0"
+              >
+                <code className="col-span-4 font-mono">{s}</code>
+                <span className="col-span-8 text-muted-foreground">{d}</span>
               </div>
             ))}
           </div>

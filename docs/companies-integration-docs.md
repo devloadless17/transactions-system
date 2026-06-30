@@ -1390,6 +1390,7 @@ Returned (under the `data` envelope) by every create / get / refresh call.
 | `payerPhoneNumber` | string \| null            | The payer's Whish phone, populated after Whish reports a result.                                                                                                                                                                                                                |
 | `transactionId`    | string (UUID) \| null     | The settled ledger transaction id. Non-null only when `PAID`.                                                                                                                                                                                                                   |
 | `needsAttention`   | boolean                   | `true` when the money is **PAID at Whish but could not be settled** into the ledger (almost always because the commission rule changed after the link was minted) — the reconciler keeps retrying but an operator must act. Surfaced so it is visible to you, not just in logs. |
+| `settlementError`  | string \| null            | When `needsAttention` is `true`, the exact reason settlement failed (e.g. `NO_COMMISSION_RULE`); `null` otherwise. Unexpected internal errors are redacted to a generic "contact support" message — only safe, actionable reasons are surfaced.                                 |
 | `createdAt`        | string (ISO-8601)         |                                                                                                                                                                                                                                                                                 |
 | `paidAt`           | string (ISO-8601) \| null | Set when settled.                                                                                                                                                                                                                                                               |
 
@@ -1452,6 +1453,7 @@ curl -X POST "https://portal.rivalpayments.com/v1/integrations/whish/payments" \
     "payerPhoneNumber": null,
     "transactionId": null,
     "needsAttention": false,
+    "settlementError": null,
     "createdAt": "2026-06-22T10:15:00.000Z",
     "paidAt": null
   }
@@ -1539,6 +1541,7 @@ curl "https://portal.rivalpayments.com/v1/integrations/whish/payments/100237" \
     "payerPhoneNumber": "9613xxxxxx",
     "transactionId": "7c8d9e0f-1a2b-3c4d-5e6f-7081a2b3c4d5",
     "needsAttention": false,
+    "settlementError": null,
     "createdAt": "2026-06-22T10:15:00.000Z",
     "paidAt": "2026-06-22T10:18:42.000Z"
   }
