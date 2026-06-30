@@ -135,6 +135,16 @@ services:
       # SSR → API over the internal network. The browser resolves the API
       # same-origin at runtime (apps/web/src/lib/api.ts:publicApiBase).
       API_INTERNAL_BASE_URL: http://api:3001/v1
+    healthcheck:
+      # Liveness for `docker ps` (and so a deploy's readiness is observable). The
+      # Next.js standalone server answers once it's up; `/` 307-redirects to
+      # /login, which busybox wget (alpine) follows and renders 200 for an anon
+      # request — so the check needs no API. Caddy's lb_try_duration is what
+      # actually rides out the container swap; this is just visibility.
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:3000/ >/dev/null 2>&1 || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 6
 
   caddy:
     image: caddy:2-alpine

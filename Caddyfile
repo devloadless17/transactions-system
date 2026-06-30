@@ -8,6 +8,13 @@
 # Same-origin web ↔ API, so cookies/CORS need no cross-site config. Caddy
 # obtains and renews the TLS cert automatically once DNS points DOMAIN at this
 # server and ports 80/443 are reachable. DOMAIN is injected from the env.
+#
+# Zero-downtime deploys: each upstream has a short connection-retry window
+# (lb_try_duration/lb_try_interval). When a deploy recreates the api/web
+# container, requests arriving during the few-second swap WAIT for the new
+# container to accept connections instead of returning a 502. Caddy only retries
+# when no connection could be established (the request never reached a backend),
+# so this is idempotent and has no effect on normal traffic.
 {$DOMAIN} {
 	encode zstd gzip
 
@@ -26,12 +33,18 @@
 	# exclusive and ordered, so this never shadows the web catch-all below.
 	@api path /v1/* /socket.io/*
 	handle @api {
-		reverse_proxy api:3001
+		reverse_proxy api:3001 {
+			lb_try_duration 15s
+			lb_try_interval 250ms
+		}
 	}
 
 	# Everything else is the web app.
 	handle {
-		reverse_proxy web:3000
+		reverse_proxy web:3000 {
+			lb_try_duration 15s
+			lb_try_interval 250ms
+		}
 	}
 }
 
@@ -56,10 +69,16 @@ staging.portal.rivalpayments.com {
 
 	@api path /v1/* /socket.io/*
 	handle @api {
-		reverse_proxy api-staging:3001
+		reverse_proxy api-staging:3001 {
+			lb_try_duration 15s
+			lb_try_interval 250ms
+		}
 	}
 
 	handle {
-		reverse_proxy web-staging:3000
+		reverse_proxy web-staging:3000 {
+			lb_try_duration 15s
+			lb_try_interval 250ms
+		}
 	}
 }

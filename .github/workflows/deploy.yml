@@ -303,6 +303,17 @@ jobs:
           echo "==> Migrations / RLS rotation / seed"
           docker compose -f docker-compose.prod.yml run --rm -T migrate </dev/null
 
+          # Caddy isn't recreated by `up -d` (its compose definition is unchanged),
+          # so the freshly-shipped Caddyfile won't load on its own. Reload it NOW —
+          # while the current web/api are still up — so the new config (incl. the
+          # zero-downtime upstream retry) is ACTIVE before we swap the containers
+          # below, making the swap itself seamless. Reload is graceful + atomic: an
+          # invalid Caddyfile is rejected and the running config is kept, so this can
+          # never break the live proxy.
+          echo "==> Reloading Caddy config"
+          docker compose -f docker-compose.prod.yml exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile \
+            || echo "::warning::caddy reload failed — Caddy kept its previous config; verify the Caddyfile"
+
           # IMAGE_TAG is pinned to this commit's SHA, so only api/web (whose image ref
           # changed) get recreated. postgres/redis/caddy keep running untouched — the
           # data volumes are never recreated, so nothing in the DB is lost.

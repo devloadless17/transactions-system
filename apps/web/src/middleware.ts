@@ -60,6 +60,8 @@ export async function middleware(req: NextRequest): Promise<NextResponse> {
 
 export const config = {
   // Run on app pages only. Skip Next internals, static files (anything with a
-  // dot), and the auth pages themselves (no point refreshing on /login).
-  matcher: ['/((?!_next/static|_next/image|favicon.ico|login|change-password|.*\\..*).*)'],
+  // dot), the auth pages (no point refreshing on /login), and the public /pay/*
+  // payer landings — anonymous payers returning from Whish never have a session
+  // to refresh, so they must not pay the refresh round-trip on that hot path.
+  matcher: ['/((?!_next/static|_next/image|favicon.ico|login|change-password|pay|.*\\..*).*)'],
 };
