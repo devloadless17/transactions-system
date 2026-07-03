@@ -161,9 +161,9 @@ jobs:
             "$SSH_USER@$HOST:$DEPLOY_DIR/"
 
           echo "==> Deploying staging stack"
-          ssh -i "$KEY" -p "$PORT" $COMMON \
-            "$SSH_USER@$HOST" \
-            "DEPLOY_DIR='$DEPLOY_DIR' DOCKER_USERNAME='$DOCKER_USERNAME' DOCKER_SECRET='$DOCKER_SECRET' GITHUB_SHA='$GITHUB_SHA' bash -s" <<'REMOTE'
+          # Secret over STDIN, not argv (argv is readable via `ps` on the VPS).
+          # Same construct as the prod deploy; verified with %q round-trip.
+          REMOTE_SCRIPT="$(cat <<'REMOTE'
           set -e
           cd "$DEPLOY_DIR"
 
@@ -214,3 +214,8 @@ jobs:
 
           $SC ps
           REMOTE
+          )"
+          { printf 'DOCKER_SECRET=%q\n' "$DOCKER_SECRET"; printf '%s\n' "$REMOTE_SCRIPT"; } | \
+            ssh -i "$KEY" -p "$PORT" $COMMON \
+              "$SSH_USER@$HOST" \
+              "DEPLOY_DIR='$DEPLOY_DIR' DOCKER_USERNAME='$DOCKER_USERNAME' GITHUB_SHA='$GITHUB_SHA' bash -s"

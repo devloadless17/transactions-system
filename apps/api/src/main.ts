@@ -61,20 +61,34 @@ class CorsIoAdapter extends IoAdapter {
         lazyConnect: false,
       });
       const subClient = pubClient.duplicate();
-      let attached = false;
-      const onError = (e: Error) => {
-        if (!attached) {
-          this.logger.warn(
-            `redis adapter unavailable — realtime falls back to in-memory (cross-instance events dropped): ${e.message}`,
-          );
+      // createAdapter() is synchronous and succeeds even when Redis is down, so
+      // "attached" says nothing about connectivity. Gate the logs on the REAL
+      // connection lifecycle instead: announce 'enabled' only once both clients
+      // are ready, and warn on every error (rate-limited) — otherwise a dead
+      // Redis in a multi-replica deploy silently drops cross-instance events
+      // while the boot log claims the adapter is enabled.
+      let readyCount = 0;
+      const onReady = () => {
+        readyCount += 1;
+        if (readyCount === 2) {
+          this.logger.log('Socket.IO Redis adapter connected (cross-replica realtime).');
         }
+      };
+      pubClient.once('ready', onReady);
+      subClient.once('ready', onReady);
+      let lastWarnAt = 0;
+      const onError = (e: Error) => {
+        const now = Date.now();
+        if (now - lastWarnAt < 30_000) return; // rate-limit: ioredis retries forever
+        lastWarnAt = now;
+        this.logger.warn(
+          `redis adapter unavailable — realtime degraded to in-memory (cross-instance events dropped): ${e.message}`,
+        );
       };
       pubClient.on('error', onError);
       subClient.on('error', onError);
       try {
         server.adapter(createAdapter(pubClient, subClient));
-        attached = true;
-        this.logger.log('Socket.IO Redis adapter enabled (cross-replica realtime).');
       } catch (e) {
         this.logger.warn(
           `failed to attach redis adapter — realtime stays in-memory: ${(e as Error).message}`,

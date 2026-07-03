@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { BadRequestException, type ArgumentsHost } from '@nestjs/common';
-import { ZodError, z } from 'zod';
+import { type ZodError, z } from 'zod';
 import { GlobalExceptionFilter } from './global-exception.filter';
 import { NotFoundError, ValidationError } from '../errors/domain.error';
 

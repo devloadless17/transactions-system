@@ -104,6 +104,16 @@ export class PayoutsService {
       const reserved = reservedTotal(amount, fee, feeApplication);
       const net = netOfFee(amount, fee, feeApplication);
 
+      // A DEDUCTED fee >= amount would make the recipient receive 0 while the
+      // full amount still leaves the wallet to the platform FEE account. Reject
+      // clearly at request time (mirrors withdrawals; deposits are untouched).
+      if (!net.isPositive()) {
+        throw new ValidationError(
+          `The ${fee.toString()} ${input.currency} fee consumes the entire amount — the recipient would receive 0. Increase the amount or fix the fee rule.`,
+          { amount: amount.toString(), fee: fee.toString() },
+        );
+      }
+
       await assertSufficient(cTx, companyId, input.currency, reserved);
 
       const p = await cTx.payout.create({

@@ -275,9 +275,12 @@ jobs:
             "$SSH_USER@$HOST:$DEPLOY_DIR/"
 
           echo "==> Activating .env + deploying"
-          ssh -i "$KEY" -p "$PORT" $COMMON \
-            "$SSH_USER@$HOST" \
-            "DEPLOY_DIR='$DEPLOY_DIR' DOCKER_USERNAME='$DOCKER_USERNAME' DOCKER_SECRET='$DOCKER_SECRET' bash -s" <<'REMOTE'
+          # The remote script is captured into a variable so DOCKER_SECRET can be
+          # prepended over STDIN (printf %q) instead of riding the ssh argv —
+          # argv is world-readable via `ps` on the VPS for the whole deploy.
+          # (Construct verified: %q survives quotes/$()/backticks intact, and the
+          # in-script `</dev/null` stdin guards keep working.)
+          REMOTE_SCRIPT="$(cat <<'REMOTE'
           set -e
           cd "$DEPLOY_DIR"
           mv -f .env.rendered .env
@@ -338,6 +341,23 @@ jobs:
             exit 1
           fi
 
+          # The dashboard must come up too — a runtime-broken web (bad standalone
+          # start, missing asset) previously deployed green because only the API was
+          # gated. Same loop, against the web container's healthcheck.
+          echo "==> Waiting for web health"
+          RETRIES=0
+          until [ "$RETRIES" -ge "$MAX" ]; do
+            STATUS=$(docker inspect --format='{{.State.Health.Status}}' txn_web 2>/dev/null || echo "starting")
+            [ "$STATUS" = "healthy" ] && { echo "Web is healthy!"; break; }
+            RETRIES=$((RETRIES + 1)); echo "  ...($RETRIES/$MAX) status=$STATUS"; sleep 4
+          done
+          if [ "$RETRIES" -ge "$MAX" ]; then
+            echo "Web did not become healthy in time:"
+            docker compose -f docker-compose.prod.yml logs --tail 80 web
+            echo "::error::New release is unhealthy (web). Old image kept — run ./rollback.sh on the server to revert."
+            exit 1
+          fi
+
           # Healthy: commit the rollback pointer, then drop images we no longer need.
           # We keep the new release + the previous one (for rollback) + the floating
           # :latest, and remove everything older so disk doesn't grow unbounded.
@@ -359,3 +379,8 @@ jobs:
 
           docker compose -f docker-compose.prod.yml ps
           REMOTE
+          )"
+          { printf 'DOCKER_SECRET=%q\n' "$DOCKER_SECRET"; printf '%s\n' "$REMOTE_SCRIPT"; } | \
+            ssh -i "$KEY" -p "$PORT" $COMMON \
+              "$SSH_USER@$HOST" \
+              "DEPLOY_DIR='$DEPLOY_DIR' DOCKER_USERNAME='$DOCKER_USERNAME' bash -s"

@@ -15,6 +15,7 @@ import { PrismaService } from '../../database/prisma.service';
 import { ValidationError } from '../../common/errors/domain.error';
 import { assertListOffset } from '../../common/pagination';
 import { TransactionLogsService } from '../transaction-logs/transaction-logs.service';
+import { RealtimeService } from '../realtime/realtime.service';
 import { WhishSessionStore } from './whish-session.store';
 import { W2WCryptoError } from './w2w-crypto';
 import { WhishW2WClient, WhishSessionExpiredError, type W2WSubmitResult } from './whish-w2w.client';
@@ -56,6 +57,7 @@ export class WhishTransfersService {
     private readonly client: WhishW2WClient,
     private readonly session: WhishSessionStore,
     private readonly txLogs: TransactionLogsService,
+    private readonly realtime: RealtimeService,
   ) {}
 
   /** Whether W2W transfers are configured/enabled (env flag). */
@@ -81,6 +83,14 @@ export class WhishTransfersService {
     this.sendQueue = result.then(
       () => undefined,
       () => undefined,
+    );
+    // Nudge the admin Transfer-Money surface live on ANY outcome (best-effort,
+    // post-commit — every whish_transfers write above commits in its own
+    // runAsAdmin). ['admin','whish'] prefix-covers the transfers list keys.
+    // Attached to `result` (not awaited here) so a thrown send still nudges.
+    void result.then(
+      () => this.realtime.admin(['whish']),
+      () => this.realtime.admin(['whish']),
     );
     return result;
   }
@@ -186,8 +196,13 @@ export class WhishTransfersService {
         // (its money-did-not-move branch) instead of treating it as an ambiguous
         // in-flight failure (UNKNOWN + needsReconcile + circuit-breaker burn).
         await this.fail(row.id, 'session_decrypt_failed', (err as Error).message, null);
+        // details.code lets the auto-approval orchestrator recognize this as a
+        // FLEET-WIDE outage (every row will fail identically until the key is
+        // fixed) and trip its circuit breaker instead of burning through the
+        // whole queue row-by-row.
         throw new ValidationError(
           'Whish W2W session credentials could not be decrypted — a SUPER_ADMIN must re-seed them (check WHISH_W2W_ENC_KEY).',
+          { code: 'session_decrypt_failed' },
         );
       }
       throw err;

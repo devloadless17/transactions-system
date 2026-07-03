@@ -190,6 +190,15 @@ export class WithdrawalAutoApprovalService implements OnApplicationBootstrap, On
           terminal: true,
           errorDetail: err.message,
         });
+        // A credential-decrypt failure is FLEET-WIDE (a rotated/invalid
+        // WHISH_W2W_ENC_KEY fails every row identically) — trip the breaker and
+        // stop the tick like session_expired, so the operator gets ONE loud
+        // paused-feature signal instead of the whole queue silently failing
+        // row-by-row to manual.
+        if ((err.details as { code?: string } | undefined)?.code === 'session_decrypt_failed') {
+          await this.config.trip('session_decrypt_failed');
+          return true; // stop the tick — nothing else can transfer until the key is fixed
+        }
         return false;
       }
       // Any other unexpected error could have fired AFTER the Whish call (e.g. a DB

@@ -84,6 +84,13 @@ const ALLOWLIST = new Set<string>([
   '20260622230000_audit_logs_list_index:audit_logs_created_at_id_idx',
   '20260623120000_audit_logs_action_index:audit_logs_action_created_idx',
   '20260623130000_analytics_source_indexes:transactions_completed_source_created_idx',
+  // 2026-07-03 audit fixes: tables still small at ship time; the migration file
+  // carries CONCURRENTLY out-of-band commands for large deployments (build those
+  // first and the in-migration IF NOT EXISTS no-ops).
+  '20260703120000_analytics_settled_and_processed_indexes:transactions_settled_source_created_idx',
+  '20260703120000_analytics_settled_and_processed_indexes:withdrawals_completed_processed_idx',
+  '20260703120000_analytics_settled_and_processed_indexes:payouts_completed_processed_idx',
+  '20260703120000_analytics_settled_and_processed_indexes:loads_completed_processed_idx',
 ]);
 
 function migrationsDir(): string {

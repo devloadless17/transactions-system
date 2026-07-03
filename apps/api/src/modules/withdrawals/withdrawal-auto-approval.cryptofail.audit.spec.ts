@@ -91,4 +91,31 @@ describe('auto-approval: decryption-failure (ValidationError) classification', (
     // ...and a config error must not count against the circuit breaker.
     expect(config.recordFailure).not.toHaveBeenCalled();
   });
+
+  it('a session_decrypt_failed ValidationError (details.code) is FLEET-WIDE: reverts, TRIPS the breaker, and stops the tick', async () => {
+    const { service, withdrawals, config } = build();
+    // Two candidates queued: the tick must stop after the FIRST decrypt failure
+    // instead of burning the whole queue row-by-row to manual.
+    const second = { ...candidate, id: 'w2' };
+    withdrawals.findAutoApprovalCandidates.mockResolvedValue([candidate, second]);
+    (service as unknown as { transfers: { sendTransfer: ReturnType<typeof vi.fn> } })[
+      'transfers'
+    ].sendTransfer = vi.fn().mockRejectedValue(
+      new ValidationError('Whish W2W session credentials could not be decrypted', {
+        code: 'session_decrypt_failed',
+      }),
+    );
+    await runTick(service);
+
+    // Row reverted to manual (money did not move)…
+    expect(withdrawals.revertFromProcessing).toHaveBeenCalledWith(
+      candidate.id,
+      candidate.companyId,
+      expect.objectContaining({ status: 'FAILED', terminal: true }),
+    );
+    // …the breaker trips loudly (one paused-feature signal, not N silent rows)…
+    expect(config.trip).toHaveBeenCalledWith('session_decrypt_failed');
+    // …and the tick stopped: the second candidate was never claimed.
+    expect(withdrawals.claimForProcessing).toHaveBeenCalledTimes(1);
+  });
 });

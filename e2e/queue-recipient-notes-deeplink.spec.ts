@@ -168,12 +168,15 @@ test.describe('queue recipient + notes + deep-link', () => {
     const bopage = await ctx.newPage();
     try {
       await bopage.goto('/admin/withdrawals', { waitUntil: 'domcontentloaded' });
-      await expect(bopage.locator('table thead')).toBeVisible({ timeout: 30_000 });
-      const head = bopage.locator('table thead');
-      // Single net money column labelled "Amount"; no Fee/Net exposure.
-      await expect(head.getByText('Amount', { exact: true })).toBeVisible();
-      await expect(head.getByText('Fee', { exact: true })).toHaveCount(0);
-      await expect(head.getByText('Net', { exact: true })).toHaveCount(0);
+      // The page mounts more than one table (queue + history) — a bare
+      // 'table thead' strict-locator flakes when the second is still hidden.
+      // Scope visibility to the first, but assert the Fee/Net ban across ALL
+      // table headers (stronger than the original single-table check).
+      const heads = bopage.locator('table thead');
+      await expect(heads.first()).toBeVisible({ timeout: 30_000 });
+      await expect(heads.first().getByText('Amount', { exact: true })).toBeVisible();
+      await expect(heads.getByText('Fee', { exact: true })).toHaveCount(0);
+      await expect(heads.getByText('Net', { exact: true })).toHaveCount(0);
     } finally {
       await bopage.close();
       await ctx.close();

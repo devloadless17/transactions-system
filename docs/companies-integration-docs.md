@@ -20,6 +20,7 @@ This is the single reference for integrating your own systems (CRM, back office,
 - [Loads (Wallet Top-Ups)](#loads-wallet-top-ups)
 - [Withdrawals & Payouts (Money Out)](#withdrawals--payouts-money-out)
 - [Wallets, Ledger & Activity Feed](#wallets-ledger--activity-feed)
+- [In-App Notifications (inbox)](#in-app-notifications-inbox)
 - [Whish Payment Collection](#whish-payment-collection)
 - [Outbound CRM Notifications (Webhooks)](#outbound-crm-notifications-webhooks)
 
@@ -944,25 +945,28 @@ curl -X POST "https://portal.rivalpayments.com/v1/company/withdrawals" \
 
 **Response fields**
 
-| Field                     | Type                   | Notes                                                                                            |
-| ------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------ |
-| `id`                      | uuid                   | Use in `:id` paths.                                                                              |
-| `companyId`               | uuid                   | Always your own company.                                                                         |
-| `amount`                  | string                 | The requested amount.                                                                            |
-| `currency`                | string                 | e.g. `USD`.                                                                                      |
-| `feeAmount`               | string                 | Platform fee (`0` if no rule).                                                                   |
-| `feeApplication`          | `DEDUCTED` \| `ON_TOP` | How the fee is applied.                                                                          |
-| `netAmount`               | string                 | What the recipient receives. `DEDUCTED`→`amount−fee`; `ON_TOP`→`amount`.                         |
-| `totalAmount`             | string                 | What the company is charged (`net + fee`). `==amount` for `DEDUCTED`; `amount+fee` for `ON_TOP`. |
-| `status`                  | `WithdrawalStatus`     | `PENDING` / `COMPLETED` / `REJECTED` / `CANCELLED`.                                              |
-| `payoutMethod`            | `PayoutMethod`         | `CASH` / `WISH` / `CRYPTO` / `BANK_TRANSFER` / `OTHER`.                                          |
-| `payoutDetails`           | object \| null         | The method object you submitted (may be `null` for old rows).                                    |
-| `externalReference`       | string \| null         | Off-platform proof set at approval (wire id, tx hash, receipt #).                                |
-| `requestedById`           | uuid \| null           | `null` for API-key requests.                                                                     |
-| `approvedById`            | uuid \| null           | Operator who approved/rejected; `null` until resolved.                                           |
-| `notes`                   | string \| null         |                                                                                                  |
-| `processedAt`             | string \| null         | ISO-8601; set when approved/rejected/cancelled.                                                  |
-| `createdAt` / `updatedAt` | string                 | ISO-8601.                                                                                        |
+| Field                     | Type                   | Notes                                                                                                                                                                                                                                                                                                                                                        |
+| ------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `id`                      | uuid                   | Use in `:id` paths.                                                                                                                                                                                                                                                                                                                                          |
+| `companyId`               | uuid                   | Always your own company.                                                                                                                                                                                                                                                                                                                                     |
+| `amount`                  | string                 | The requested amount.                                                                                                                                                                                                                                                                                                                                        |
+| `currency`                | string                 | e.g. `USD`.                                                                                                                                                                                                                                                                                                                                                  |
+| `feeAmount`               | string                 | Platform fee (`0` if no rule).                                                                                                                                                                                                                                                                                                                               |
+| `feeApplication`          | `DEDUCTED` \| `ON_TOP` | How the fee is applied.                                                                                                                                                                                                                                                                                                                                      |
+| `netAmount`               | string                 | What the recipient receives. `DEDUCTED`→`amount−fee`; `ON_TOP`→`amount`.                                                                                                                                                                                                                                                                                     |
+| `totalAmount`             | string                 | What the company is charged (`net + fee`). `==amount` for `DEDUCTED`; `amount+fee` for `ON_TOP`.                                                                                                                                                                                                                                                             |
+| `status`                  | `WithdrawalStatus`     | `PENDING` / `COMPLETED` / `REJECTED` / `CANCELLED`.                                                                                                                                                                                                                                                                                                          |
+| `payoutMethod`            | `PayoutMethod`         | `CASH` / `WISH` / `CRYPTO` / `BANK_TRANSFER` / `OTHER`.                                                                                                                                                                                                                                                                                                      |
+| `payoutDetails`           | object \| null         | The method object you submitted (may be `null` for old rows).                                                                                                                                                                                                                                                                                                |
+| `externalReference`       | string \| null         | Off-platform proof set at approval (wire id, tx hash, receipt #).                                                                                                                                                                                                                                                                                            |
+| `requestedById`           | uuid \| null           | `null` for API-key requests.                                                                                                                                                                                                                                                                                                                                 |
+| `approvedById`            | uuid \| null           | Operator who approved/rejected; `null` until resolved.                                                                                                                                                                                                                                                                                                       |
+| `notes`                   | string \| null         | Your own request note (never overwritten by us).                                                                                                                                                                                                                                                                                                             |
+| `adminNotes`              | string \| null         | Set by the platform operator — e.g. the reason when a request is `REJECTED`. `null` otherwise.                                                                                                                                                                                                                                                               |
+| `roundingRemainder`       | string \| null         | **Withdrawals only.** When an automatic Whish transfer sends whole dollars, the sub-dollar cents of `netAmount` are kept here (e.g. net `18.67` → transfer `18`, remainder `0.67`). `null`/`0` when not applicable.                                                                                                                                          |
+| `autoApproval`            | object \| null         | **Withdrawals only.** Present when the automatic Whish transfer pipeline touched this withdrawal: `{ status, needsReconcile?, terminal?, errorDetail?, reference? }`. `errorDetail` is the plain-language reason a transfer attempt failed (the withdrawal returns to `PENDING` for manual handling — see the auto-approval section). `null` when untouched. |
+| `processedAt`             | string \| null         | ISO-8601; set when approved/rejected/cancelled.                                                                                                                                                                                                                                                                                                              |
+| `createdAt` / `updatedAt` | string                 | ISO-8601.                                                                                                                                                                                                                                                                                                                                                    |
 
 **Error — insufficient balance (example)** — note this is `409`, not 422:
 
@@ -1352,6 +1356,22 @@ Common error envelopes apply throughout: `401 UNAUTHORIZED` (bad/missing key), `
 
 ---
 
+## In-App Notifications (inbox)
+
+Your dashboard's notification bell is also reachable programmatically (company API key **or** dashboard session). These are the platform's in-app notices about **your** operations — e.g. "withdrawal approved", "load rejected" — not the CRM webhook stream (which pushes; this is pull-only).
+
+| Endpoint                        | Method | Notes                                                                                                                                                                                |
+| ------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `/v1/notifications`             | GET    | Paginated list. Query: `page` (≥1), `pageSize` (1–**50**, default 20), `filter` = `active` (default, not cleared) \| `unread` \| `cleared`. Response: `{ data, meta, unreadCount }`. |
+| `/v1/notifications/:id/read`    | POST   | Mark one read → `{ ok: true }`.                                                                                                                                                      |
+| `/v1/notifications/read-all`    | POST   | Mark all read.                                                                                                                                                                       |
+| `/v1/notifications/:id/dismiss` | POST   | Clear one from the active list (kept under `filter=cleared`).                                                                                                                        |
+| `/v1/notifications/clear-all`   | POST   | Clear all active.                                                                                                                                                                    |
+
+Each notification: `{ id, scope, flow, event, title, body, link, entityId, companyName, read, createdAt }` — `link` is the in-app path the bell opens (e.g. `/app/withdrawals`), `entityId` the operation it is about. Any company role can read and manage its own inbox. Most integrations won't need this — the CRM webhooks already push every money event — but it's here for completeness.
+
+---
+
 ## Whish Payment Collection
 
 Whish Pay lets your CRM mint a hosted payment link, hand the link to your customer, and have the collected money settle automatically into your company wallet. The flow is **collect → reconcile**: you create a link, the customer pays on Whish's hosted page, Whish confirms the payment, and the platform writes a ledger transaction and credits your wallet. You can confirm settlement either by polling, by registering an outbound webhook, or by forcing a status refresh.
@@ -1590,7 +1610,7 @@ Returns the (possibly updated) payment object under a **200** envelope, same sha
 
 ### Outbound webhook (avoid polling)
 
-Instead of polling, register an endpoint and the platform will POST you a signed `whish.payment.paid` event when a payment settles. Webhook config (`company/whish/webhook`) is manageable with **either** a company API key (`Authorization: Bearer tsk_…`, no CSRF) **or** a dashboard cookie session (with the CSRF token): `GET` requires `COMPANY_OWNER` / `COMPANY_MANAGER` / `COMPANY_VIEWER`; `PUT` (set), `POST rotate-secret`, and `DELETE` (clear) require `COMPANY_OWNER`. (API-key callers act as a `COMPANY_OWNER` surrogate, so all pass.) Once set, delivery is best-effort (2 attempts, never blocks settlement); always keep polling/refresh as a fallback.
+Instead of polling, register an endpoint and the platform will POST you a signed `whish.payment.paid` event when a payment settles. Reading the config (`GET company/whish/webhook`) works with **either** a company API key (`Authorization: Bearer tsk_…`, no CSRF) **or** a dashboard cookie session (with the CSRF token), roles `COMPANY_OWNER` / `COMPANY_MANAGER` / `COMPANY_VIEWER`. **Changing it is dashboard-only**: `PUT` (set), `POST rotate-secret`, and `DELETE` (clear) require a `COMPANY_OWNER` **dashboard session** — an API key gets `403`. (Same rule as the CRM webhook: a leaked integration key must never be able to redirect your event stream or rotate your signing secret.) Once set, delivery is best-effort (2 attempts, never blocks settlement); always keep polling/refresh as a fallback.
 
 Delivered request:
 
@@ -1971,7 +1991,7 @@ Content-Type: application/json
 
 ### Aside: the separate Whish "payment.paid" webhook (`company/whish/webhook`)
 
-A distinct, older, **HMAC-signed** outbound channel that fires only when a Whish payment is paid. Configure via `GET/PUT/DELETE https://portal.rivalpayments.com/v1/company/whish/webhook` and `POST .../rotate-secret`. `PUT {"url":"https://..."}` returns `{ url, hasSecret, secret? }` — the `secret` (`whsec_…`) is returned **only** on first set / rotation, so capture it then.
+A distinct, older, **HMAC-signed** outbound channel that fires only when a Whish payment is paid. Read via `GET https://portal.rivalpayments.com/v1/company/whish/webhook` (API key or session); **change via the dashboard only** — `PUT`, `DELETE`, and `POST .../rotate-secret` require a `COMPANY_OWNER` dashboard session (an API key gets `403`). `PUT {"url":"https://..."}` returns `{ url, hasSecret, secret? }` — the `secret` (`whsec_…`) is returned **only** on first set / rotation, so capture it then.
 
 Verification (verified in `whish-webhook.service.ts`): we send headers `x-whish-event: whish.payment.paid`, `x-whish-timestamp: <unix s>`, and `x-whish-signature: t=<timestamp>,sha256=<hex>`. The HMAC-SHA256 is computed over the string **`<timestamp>.<rawBody>`** keyed by your secret. To verify: recompute the HMAC over `timestamp.body`, compare in constant time, and reject if `timestamp` is not recent (replay guard). Body shape: `{ "event": "whish.payment.paid", "data": { externalId, status, amount, currency, invoice, payerPhoneNumber, transactionId, paidAt } }`. Delivery here is best-effort only (**2 attempts**, 5s timeout, no durable retry) — fall back to polling `GET /integrations/whish/payments/:ref` if you miss one.
 

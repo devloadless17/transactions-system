@@ -2,9 +2,16 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
+  createLoadSchema,
+  createPayoutSchema,
   createWhishPaymentSchema,
   createWithdrawalSchema,
+  listNotificationsQuerySchema,
+  loadResponseSchema,
+  paginationSchema,
+  payoutResponseSchema,
   whishPaymentResponseSchema,
+  withdrawalResponseSchema,
 } from '@app/shared';
 
 // Fields on a company-facing response schema that are deliberately NOT shown in the
@@ -180,6 +187,134 @@ describe('docs ↔ API schema contract (anti-drift)', () => {
       }
       expect(INGEST_DOC).toContain('VALIDATION_ERROR');
       expect(INGEST_DOC).toContain('DUPLICATE_TRANSACTION');
+    });
+
+    it('every company-facing money/limit error code appears in the companies guide', () => {
+      for (const code of [
+        'INSUFFICIENT_BALANCE',
+        'RATE_LIMITED',
+        'NO_COMMISSION_RULE',
+        'WRITE_CONFLICT',
+        'WHISH_ERROR',
+        'FORBIDDEN',
+      ]) {
+        expect(GUIDE, `companies guide should document ${code}`).toContain(code);
+      }
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // 2026-07-03 audit: the contract test only guarded Whish + the CASH
+  // withdrawal example — loads, payouts, the full withdrawal response, and
+  // pagination could all drift silently. The blocks below close that gap.
+  // ------------------------------------------------------------------
+
+  describe('loads & payouts — documented example bodies parse (audit 2026-07-03)', () => {
+    it('the documented WISH load body is accepted by createLoadSchema', () => {
+      const documented = {
+        amount: '1000.00',
+        currency: 'USD',
+        notes: 'Sent via Whish from +9613XXXXXX',
+        payout: { method: 'WISH', recipientName: 'Acme Treasury', recipientPhone: '+9613000000' },
+      };
+      expect(createLoadSchema.safeParse(documented).success).toBe(true);
+    });
+
+    it('the withdrawal-identical CASH body is accepted by createPayoutSchema (the docs say "identical body")', () => {
+      const documented = {
+        amount: '250.00',
+        currency: 'USD',
+        notes: 'Vendor invoice #4471',
+        payout: {
+          method: 'CASH',
+          recipientName: 'Jane Vendor',
+          recipientPhone: '+9611234567',
+          pickupLocation: 'Beirut HQ',
+        },
+      };
+      expect(createPayoutSchema.safeParse(documented).success).toBe(true);
+    });
+
+    it('the documented WISH and CRYPTO withdrawal bodies are accepted by createWithdrawalSchema', () => {
+      const wish = {
+        amount: '200.00',
+        currency: 'USD',
+        payout: { method: 'WISH', recipientName: 'John Doe', recipientPhone: '+961-70-000-000' },
+      };
+      const crypto = {
+        amount: '100.00',
+        currency: 'USD',
+        payout: {
+          method: 'CRYPTO',
+          network: 'TRC20',
+          walletAddress: 'TQ1234567890ABCDEFGHIJ1234567890XYZ',
+        },
+      };
+      expect(createWithdrawalSchema.safeParse(wish).success).toBe(true);
+      expect(createWithdrawalSchema.safeParse(crypto).success).toBe(true);
+    });
+  });
+
+  describe('flow response tables are COMPLETE (reverse drift: schema → docs)', () => {
+    // A company API key receives every one of these fields — each must appear in
+    // the guide (as a `field` table row or a "field": example) or be consciously
+    // allow-listed. Catches exactly the roundingRemainder/adminNotes/autoApproval
+    // gap the 2026-07-03 audit found.
+    const documentedInGuide = (field: string) =>
+      GUIDE.includes(`\`${field}\``) || GUIDE.includes(`"${field}"`);
+
+    it('every withdrawalResponseSchema field is documented in the companies guide', () => {
+      const missing = Object.keys(withdrawalResponseSchema.shape).filter(
+        (k) => !documentedInGuide(k),
+      );
+      expect(
+        missing,
+        `withdrawal response fields not documented anywhere in the guide: ${missing.join(', ')}`,
+      ).toEqual([]);
+    });
+
+    it('every load/payout response field is documented in the companies guide', () => {
+      for (const [name, schema] of [
+        ['load', loadResponseSchema],
+        ['payout', payoutResponseSchema],
+      ] as const) {
+        const missing = Object.keys(schema.shape).filter((k) => !documentedInGuide(k));
+        expect(missing, `${name} response fields not documented: ${missing.join(', ')}`).toEqual(
+          [],
+        );
+      }
+    });
+  });
+
+  describe('pagination contract matches the documented caps', () => {
+    it('paginationSchema hard-caps pageSize at 100 and the guide says so', () => {
+      expect(paginationSchema.safeParse({ page: 1, pageSize: 100 }).success).toBe(true);
+      expect(paginationSchema.safeParse({ page: 1, pageSize: 101 }).success).toBe(false);
+      expect(GUIDE).toMatch(/Hard cap 100/);
+    });
+
+    it('notifications pageSize caps at 50 and the endpoints are documented', () => {
+      expect(listNotificationsQuerySchema.safeParse({ pageSize: 50 }).success).toBe(true);
+      expect(listNotificationsQuerySchema.safeParse({ pageSize: 51 }).success).toBe(false);
+      expect(GUIDE).toContain('/v1/notifications');
+      expect(GUIDE).toMatch(/`active`.*`unread`.*`cleared`|active.*unread.*cleared/);
+    });
+
+    it('the transactions deep-offset cap documented (100,000) matches the code', () => {
+      const svc = read('apps/api/src/modules/transactions/transactions.service.ts');
+      const code = svc.match(/MAX_LIST_OFFSET\s*=\s*([\d_]+)/)?.[1]?.replace(/_/g, '');
+      expect(code, 'transactions.service.ts should define MAX_LIST_OFFSET').toBe('100000');
+      expect(GUIDE).toMatch(/100,000/);
+    });
+  });
+
+  describe('whish outbound-webhook management is documented as dashboard-only (audit 2026-07-03 High)', () => {
+    it('the guide states PUT/rotate/DELETE require a dashboard session (API key → 403)', () => {
+      expect(GUIDE).toMatch(/Changing it is dashboard-only|change via the dashboard only/i);
+      // and it no longer promises API-key write access to the webhook config
+      expect(GUIDE).not.toMatch(
+        /Webhook config \(`company\/whish\/webhook`\) is manageable with \*\*either\*\*/,
+      );
     });
   });
 });

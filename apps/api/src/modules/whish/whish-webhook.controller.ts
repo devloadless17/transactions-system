@@ -4,6 +4,7 @@ import { ZodPipe } from '../../common/pipes/zod-validation.pipe';
 import { CompanyAccessGuard } from '../api-keys/guards/company-access.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CsrfGuard } from '../auth/guards/csrf.guard';
+import { SessionOnlyGuard } from '../auth/guards/session-only.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Audited } from '../audit/audit.decorator';
@@ -28,6 +29,10 @@ export class WhishWebhookController {
     return this.webhooks.getConfig(user.companyId);
   }
 
+  // SessionOnlyGuard: repointing the outbound webhook is dashboard-only — a leaked
+  // API key must not be able to redirect the company's whish.payment.paid stream
+  // to an attacker (same invariant as the CRM webhook config).
+  @UseGuards(SessionOnlyGuard)
   @Roles(UserRole.COMPANY_OWNER)
   @Put()
   @Audited({ action: 'whish.webhook_set', entityType: 'company', idFrom: 'principal.companyId' })
@@ -39,6 +44,7 @@ export class WhishWebhookController {
     return this.webhooks.setUrl(user.companyId, body.url);
   }
 
+  @UseGuards(SessionOnlyGuard)
   @Roles(UserRole.COMPANY_OWNER)
   @Post('rotate-secret')
   @Audited({
@@ -51,6 +57,7 @@ export class WhishWebhookController {
     return this.webhooks.rotateSecret(user.companyId);
   }
 
+  @UseGuards(SessionOnlyGuard)
   @Roles(UserRole.COMPANY_OWNER)
   @Delete()
   @Audited({

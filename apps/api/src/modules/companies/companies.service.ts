@@ -154,9 +154,12 @@ export class CompaniesService {
         },
       });
     });
-    // Status/visibility flips must reach the company's own users too (e.g. a
-    // deactivated company should see access change), not just admins.
-    this.realtime.company(id, ['companies']);
+    // Admin-room only: TOPIC_KEYS.companies maps exclusively to admin-app query
+    // keys, so a company-room delivery invalidated nothing for company users (a
+    // deactivated company learns on its next API call, which 403s). If a company
+    // shell ever queries its own profile live, add that key to
+    // TOPIC_KEYS.companies and switch this back to realtime.company(...).
+    this.realtime.admin(['companies'], id);
     return mapCompany(row);
   }
 

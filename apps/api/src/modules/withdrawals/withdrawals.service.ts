@@ -113,6 +113,18 @@ export class WithdrawalsService {
       const reserved = reservedTotal(amount, fee, feeApplication);
       const net = netOfFee(amount, fee, feeApplication);
 
+      // A DEDUCTED fee >= amount would make the recipient receive 0 while the
+      // full amount still leaves the wallet to the platform FEE account — a
+      // balanced but surely-misconfigured money-out. Reject clearly at request
+      // time, before anything is reserved. (ON_TOP nets = amount, so this can
+      // only trip on a DEDUCTED rule; deposits are untouched.)
+      if (!net.isPositive()) {
+        throw new ValidationError(
+          `The ${fee.toString()} ${input.currency} fee consumes the entire amount — the recipient would receive 0. Increase the amount or fix the fee rule.`,
+          { amount: amount.toString(), fee: fee.toString() },
+        );
+      }
+
       // Clear "top up" error if available can't cover the reserved total.
       await assertSufficient(cTx, companyId, input.currency, reserved);
 

@@ -154,3 +154,48 @@ describe('validateEnv', () => {
     ).toThrow(/WHISH_CALLBACK_BASE/);
   });
 });
+
+// W2W transfers move real money out of the platform's Whish account — the
+// enabled-state refinements (https/public base URL, 44-char base64 enc key)
+// were the only production fail-closed block without spec coverage
+// (2026-07-03 audit). Pin them like the rest.
+describe('WHISH_W2W production refinements', () => {
+  const w2wOk: Record<string, string> = {
+    WHISH_W2W_ENABLED: 'true',
+    WHISH_W2W_BASE_URL: 'https://api.whish.money/itel-service',
+    // openssl rand -base64 32 → 44 chars
+    WHISH_W2W_ENC_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+  };
+
+  it('accepts a fully-formed W2W config in production', () => {
+    expect(() => validateEnv({ ...prodOk, ...w2wOk })).not.toThrow();
+  });
+
+  it('rejects a short (non-32-byte) WHISH_W2W_ENC_KEY when enabled', () => {
+    expect(() => validateEnv({ ...prodOk, ...w2wOk, WHISH_W2W_ENC_KEY: 'too-short' })).toThrow(
+      /WHISH_W2W_ENC_KEY/,
+    );
+  });
+
+  it('rejects an http (non-https) W2W base URL when enabled', () => {
+    expect(() =>
+      validateEnv({ ...prodOk, ...w2wOk, WHISH_W2W_BASE_URL: 'http://api.whish.money/itel' }),
+    ).toThrow(/WHISH_W2W_BASE_URL/);
+  });
+
+  it('rejects a localhost W2W base URL when enabled', () => {
+    expect(() =>
+      validateEnv({ ...prodOk, ...w2wOk, WHISH_W2W_BASE_URL: 'https://localhost:8443/itel' }),
+    ).toThrow(/WHISH_W2W_BASE_URL/);
+  });
+
+  it('applies none of the W2W refinements when the feature is disabled', () => {
+    expect(() =>
+      validateEnv({
+        ...prodOk,
+        WHISH_W2W_ENABLED: 'false',
+        WHISH_W2W_ENC_KEY: 'short',
+      }),
+    ).not.toThrow();
+  });
+});

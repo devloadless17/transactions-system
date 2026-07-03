@@ -39,6 +39,12 @@ import { TransactionLogsService } from '../transaction-logs/transaction-logs.ser
 const WHISH_SOURCE_CODE = 'whish';
 // Stale-payment reconciliation window.
 const RECONCILE_MIN_AGE_MS = 60_000; // don't poll links younger than this
+// A TRANSIENT settlement failure (DB blip, exhausted serializable retries — NOT a
+// DomainError) stays in the poller's retry set; only after this many consecutive
+// failed attempts is it parked as needsAttention for an operator. Permanent
+// config errors (DomainError, e.g. NO_COMMISSION_RULE) park immediately —
+// retrying every 60s can't fix pricing.
+const TRANSIENT_SETTLE_PARK_AFTER = 10;
 const EXPIRE_AGE_MS = 24 * 3600_000; // give up (EXPIRED) after this
 // Max stale-pending links polled per reconciliation tick. Whish never pushes a
 // failure (only a success callback), so polling is the ONLY way failed/abandoned
@@ -582,35 +588,44 @@ export class WhishPaymentsService {
         if (!existing) throw err;
         txn = existing;
       } else {
-        // Genuine failure: Whish has the customer's money but we can't settle it —
-        // almost always because the link's commission rule was changed/deactivated
-        // after it was minted, so ingest can't resolve a price. NEVER let collected
-        // money sit invisibly stuck: flag it for operator attention (ERROR + a
-        // persisted metadata marker + a realtime nudge), then rethrow so the
-        // stale-reconcile retry picks it up next tick.
+        // Genuine failure: Whish has the customer's money but we can't settle it.
+        // NEVER let collected money sit invisibly stuck — but distinguish WHY:
+        //  - PERMANENT (DomainError, e.g. NO_COMMISSION_RULE): retrying every 60s
+        //    can't fix pricing → park as needsAttention immediately (the poller
+        //    skips parked rows; the admin Refresh recovers once config is fixed).
+        //  - TRANSIENT (DB blip, exhausted serializable retries, anything else):
+        //    the next poller tick will likely succeed → leave it in the retry set
+        //    (no needsAttention), only parking after TRANSIENT_SETTLE_PARK_AFTER
+        //    consecutive failures so a persistent unknown failure still reaches an
+        //    operator instead of retrying forever.
         const message = err instanceof Error ? err.message : 'settlement failed';
+        const isPermanent = err instanceof DomainError;
+        const priorAttempts =
+          ((payment.metadata as { settlementAttempts?: number } | null)?.settlementAttempts ?? 0) +
+          1;
+        const park = isPermanent || priorAttempts >= TRANSIENT_SETTLE_PARK_AFTER;
         this.logger.error(
-          `Whish payment ${payment.externalId} is PAID at Whish but could NOT be settled (company ${payment.companyId}): ${message}. Left PENDING for retry — needs operator attention (likely its commission rule changed after the link was created).`,
+          `Whish payment ${payment.externalId} is PAID at Whish but could NOT be settled (company ${payment.companyId}): ${message}. ` +
+            (park
+              ? 'Parked as needsAttention — operator action required (admin Refresh re-settles once the cause is fixed).'
+              : `Left PENDING for automatic retry (attempt ${priorAttempts}/${TRANSIENT_SETTLE_PARK_AFTER}).`),
         );
         // Company-facing: only surface intentional DomainError messages (e.g.
         // NO_COMMISSION_RULE — actionable + safe). An unexpected internal error
         // (Prisma, etc.) must not leak schema/internal detail into the company's
         // response — the raw message stays in the log above for operators.
-        const safeError =
-          err instanceof DomainError ? err.message : 'Settlement failed — please contact support.';
+        const safeError = isPermanent ? err.message : 'Settlement failed — please contact support.';
         await this.prisma.runAsAdmin((tx) =>
           tx.whishPayment.update({
             where: { id: payment.id },
             data: {
-              metadata: {
-                needsAttention: true,
-                paidButUnsettled: true,
-                settlementError: safeError,
-              },
+              metadata: park
+                ? { needsAttention: true, paidButUnsettled: true, settlementError: safeError }
+                : { paidButUnsettled: true, settlementAttempts: priorAttempts },
             },
           }),
         );
-        this.realtime.company(payment.companyId, ['whish']);
+        if (park) this.realtime.company(payment.companyId, ['whish']);
         throw err;
       }
     }

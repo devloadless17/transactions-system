@@ -116,6 +116,7 @@ function build(opts: {
     status: vi.fn(),
   };
   const txLogs = { record: vi.fn() };
+  const realtime = { admin: vi.fn(), company: vi.fn() };
 
   const svc = new WhishTransfersService(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -126,8 +127,10 @@ function build(opts: {
     session as any,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     txLogs as any,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    realtime as any,
   );
-  return { svc, rows, delegate, client, session, txLogs };
+  return { svc, rows, delegate, client, session, txLogs, realtime };
 }
 
 const ORIGIN: TransferOrigin = {

@@ -19,6 +19,7 @@ import {
   addFlowFee,
   addTransactionFee,
   buildHarness,
+  cashWithdrawalInput,
   createCompany,
   createEnabledSource,
   ingestInput,
@@ -138,5 +139,39 @@ describe('cross-tenant cancel guard', () => {
     // A load reserves nothing; just confirm the books are still trivially balanced.
     const snap = await snapshot(h, a.companyId);
     expect(snap.balanced).toBe(true);
+  });
+});
+
+// Zero-net money-out guard (2026-07-03 audit): a DEDUCTED fee that consumes the
+// entire amount would send the recipient 0 while the full amount leaves the
+// wallet to the platform FEE account — a balanced but surely-misconfigured
+// state. Request must be rejected up front with nothing reserved; deposits are
+// deliberately NOT guarded (a deposit must never be blocked by pricing shape).
+describe('zero-net DEDUCTED money-out is rejected at request time', () => {
+  it('withdrawal with a 100% DEDUCTED fee → ValidationError, nothing reserved', async () => {
+    const { companyId, userId } = await fundedCompany('100');
+    await addFlowFee(h, companyId, 'WITHDRAWAL', '100'); // fee == amount → net 0
+
+    await expect(
+      h.withdrawals.request(companyId, userId, cashWithdrawalInput('50')),
+    ).rejects.toThrow(/recipient would receive 0/i);
+
+    const snap = await snapshot(h, companyId);
+    expect(snap.balanced).toBe(true);
+    expect(eq(snap.wallet!.reserved, '0')).toBe(true);
+    expect(eq(snap.wallet!.available, '100')).toBe(true);
+  });
+
+  it('payout with a 100% DEDUCTED fee → ValidationError, nothing reserved', async () => {
+    const { companyId, userId } = await fundedCompany('100');
+    await addFlowFee(h, companyId, 'PAYOUT', '100');
+
+    await expect(h.payouts.request(companyId, userId, payoutInput('25'))).rejects.toThrow(
+      /recipient would receive 0/i,
+    );
+
+    const snap = await snapshot(h, companyId);
+    expect(snap.balanced).toBe(true);
+    expect(eq(snap.wallet!.reserved, '0')).toBe(true);
   });
 });
