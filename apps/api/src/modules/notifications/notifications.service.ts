@@ -11,6 +11,7 @@ import {
 import type { Prisma } from '@app/db';
 import { PrismaService } from '../../database/prisma.service';
 import { RealtimeService } from '../realtime/realtime.service';
+import { TelegramClient } from '../telegram/telegram.client';
 import type { AuthPrincipal } from '../../common/types/request.types';
 import { NotFoundError, ValidationError } from '../../common/errors/domain.error';
 
@@ -61,6 +62,7 @@ export class NotificationsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly realtime: RealtimeService,
+    private readonly telegram: TelegramClient,
   ) {}
 
   // ---------- creation (called by the money services) ----------
@@ -73,11 +75,12 @@ export class NotificationsService {
     amount: string;
     currency: string;
   }): Promise<void> {
+    let name: string | null = null;
     try {
       const company = await this.prisma.runAsAdmin((tx) =>
         tx.company.findUnique({ where: { id: p.companyId }, select: { name: true } }),
       );
-      const name = company?.name ?? null;
+      name = company?.name ?? null;
       await this.create({
         scope: 'ADMIN',
         companyId: p.companyId,
@@ -91,6 +94,21 @@ export class NotificationsService {
       });
     } catch (e) {
       this.logger.warn(`notify requestSubmitted failed: ${(e as Error).message}`);
+    }
+
+    // Also fan out to Telegram for load/payout requests only (never withdrawals),
+    // so a request isn't missed when no one is watching the dashboard. Fired
+    // independently of the in-app create above — an in-app hiccup must not
+    // suppress the Telegram alert — and fire-and-forget: the client never throws
+    // and is a silent no-op unless the bot credentials are configured (prod only).
+    if (p.flow === 'PAYOUT' || p.flow === 'LOAD') {
+      void this.telegram.notifyRequest({
+        flow: p.flow,
+        companyName: name,
+        amount: p.amount,
+        currency: p.currency,
+        entityId: p.entityId,
+      });
     }
   }
 

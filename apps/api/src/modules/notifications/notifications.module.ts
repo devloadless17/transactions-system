@@ -1,6 +1,7 @@
 import { Global, Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
 import { ApiKeysModule } from '../api-keys/api-keys.module';
+import { TelegramModule } from '../telegram/telegram.module';
 import { NotificationsController } from './notifications.controller';
 import { NotificationsService } from './notifications.service';
 
@@ -8,7 +9,7 @@ import { NotificationsService } from './notifications.service';
 // NotificationsService without importing this module everywhere.
 @Global()
 @Module({
-  imports: [AuthModule, ApiKeysModule],
+  imports: [AuthModule, ApiKeysModule, TelegramModule],
   controllers: [NotificationsController],
   providers: [NotificationsService],
   exports: [NotificationsService],

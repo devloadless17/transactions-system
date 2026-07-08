@@ -8,7 +8,11 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { TransactionResponse } from '@app/shared';
-import { PrismaService } from '../../src/database/prisma.service';
+import type { ConfigService } from '@nestjs/config';
+import type { PrismaService } from '../../src/database/prisma.service';
+import type { RealtimeService } from '../../src/modules/realtime/realtime.service';
+import type { CacheService } from '../../src/modules/cache/cache.service';
+import type { Env } from '../../src/config/env.schema';
 import { CrmConfigService } from '../../src/modules/crm/crm-config.service';
 import { CrmDeliveryService } from '../../src/modules/crm/crm-delivery.service';
 import { CrmDemoInboxService } from '../../src/modules/crm/crm-demo-inbox.service';
@@ -19,21 +23,18 @@ const API_PUBLIC_URL = 'http://localhost:3001/v1';
 
 const fakeRealtime = {
   company: () => undefined,
-} as unknown as import('../../src/modules/realtime/realtime.service').RealtimeService;
+} as unknown as RealtimeService;
 
 const fakeConfig = {
   get: (key: string) => (key === 'API_PUBLIC_URL' ? API_PUBLIC_URL : undefined),
-} as unknown as import('@nestjs/config').ConfigService<
-  import('../../src/config/env.schema').Env,
-  true
->;
+} as unknown as ConfigService<Env, true>;
 
 // Pass-through cache: the delivery sweep's distributed lock always "acquires"
 // (single-process test) and unlock is a no-op.
 const fakeCache = {
   tryLock: async () => 'test-lock',
   unlock: async () => undefined,
-} as unknown as import('../../src/modules/cache/cache.service').CacheService;
+} as unknown as CacheService;
 
 let h: Harness;
 let prisma: PrismaService;

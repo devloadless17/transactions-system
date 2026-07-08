@@ -199,3 +199,29 @@ describe('WHISH_W2W production refinements', () => {
     ).not.toThrow();
   });
 });
+
+// Telegram alerts are all-or-nothing: a half-configured pair must fail closed so
+// a typo surfaces at boot rather than as a silently-missed money request.
+describe('Telegram alert env pairing', () => {
+  it('accepts both Telegram vars left blank (feature off)', () => {
+    expect(() => validateEnv(base)).not.toThrow();
+  });
+
+  it('accepts both Telegram vars set together', () => {
+    expect(() =>
+      validateEnv({ ...base, TELEGRAM_BOT_TOKEN: '123:abc', TELEGRAM_CHAT_ID: '-1001234567890' }),
+    ).not.toThrow();
+  });
+
+  it('rejects a token without a chat id', () => {
+    expect(() => validateEnv({ ...base, TELEGRAM_BOT_TOKEN: '123:abc' })).toThrow(
+      /TELEGRAM_CHAT_ID/,
+    );
+  });
+
+  it('rejects a chat id without a token', () => {
+    expect(() => validateEnv({ ...base, TELEGRAM_CHAT_ID: '-1001234567890' })).toThrow(
+      /TELEGRAM_BOT_TOKEN/,
+    );
+  });
+});

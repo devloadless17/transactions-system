@@ -103,6 +103,33 @@ export const envSchema = z
     WHISH_W2W_LANGUAGE: z.string().default('en'),
     WHISH_W2W_TIMEZONE: z.string().default('Asia/Beirut'),
     WHISH_W2W_THEME: z.string().default('light'),
+
+    // ---- Telegram alerts (load/payout requests) ----
+    // Best-effort push to a platform-admin Telegram group the moment a company
+    // submits a load/payout request (never withdrawals). BOTH must be set for
+    // the feature to fire — leave BOTH blank to disable it (the default, and how
+    // staging stays silent while shipping identical code to production).
+    // `TELEGRAM_BOT_TOKEN` comes from @BotFather; `TELEGRAM_CHAT_ID` is the group
+    // id (a negative number, e.g. -100… for supergroups) — kept as a string.
+    TELEGRAM_BOT_TOKEN: z.string().default(''),
+    TELEGRAM_CHAT_ID: z.string().default(''),
+  })
+  // Telegram alerts are all-or-nothing: a half-configured pair (token without a
+  // chat id, or vice versa) would silently never deliver. Fail closed so a typo
+  // surfaces at boot rather than as a missed money request. Applies in every
+  // environment (dev leaves both blank → passes), so it sits before the
+  // production-only guard below.
+  .superRefine((env, ctx) => {
+    const hasToken = env.TELEGRAM_BOT_TOKEN.trim().length > 0;
+    const hasChat = env.TELEGRAM_CHAT_ID.trim().length > 0;
+    if (hasToken !== hasChat) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [hasToken ? 'TELEGRAM_CHAT_ID' : 'TELEGRAM_BOT_TOKEN'],
+        message:
+          'TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set together (or both left blank)',
+      });
+    }
   })
   // Fail closed in production: the dev-friendly defaults above (insecure
   // cookies, the committed "change_me" secrets, http origins) must never reach

@@ -110,6 +110,11 @@ services:
       WHISH_W2W_ENABLED: ${WHISH_W2W_ENABLED:-false}
       WHISH_W2W_ENC_KEY: ${WHISH_W2W_ENC_KEY:-}
       WHISH_W2W_BASE_URL: ${WHISH_W2W_BASE_URL:-https://api.whish.money/itel-service}
+      # Telegram alerts for load/payout requests. Both must be set to enable;
+      # leaving them unset (the default) disables the feature. This is what keeps
+      # staging silent while shipping identical code — only prod sets these.
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
     healthcheck:
       # 127.0.0.1 (not localhost): the API binds IPv4; busybox wget would hit
       # IPv6 ::1 first and get connection-refused. Pin IPv4.

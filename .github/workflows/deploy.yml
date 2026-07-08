@@ -226,6 +226,10 @@ jobs:
           # at rest); only the flag + the AES-256-GCM key flow through here.
           WHISH_W2W_ENABLED: ${{ secrets.WHISH_W2W_ENABLED || 'false' }}
           WHISH_W2W_ENC_KEY: ${{ secrets.WHISH_W2W_ENC_KEY }}
+          # Telegram alerts for load/payout requests (production-only feature).
+          # Unset secrets render empty → placeholders become '' → feature off.
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SEED_DATABASE: ${{ github.event.inputs.seed_database || 'false' }}
         run: |
           cp .env.prod.example .env.rendered
@@ -255,6 +259,8 @@ jobs:
           sed -i "s|__WHISH_ALLOW_SANDBOX__|$WHISH_ALLOW_SANDBOX|g" .env.rendered
           sed -i "s|__WHISH_W2W_ENABLED__|$WHISH_W2W_ENABLED|g" .env.rendered
           sed -i "s|__WHISH_W2W_ENC_KEY__|$(esc "$WHISH_W2W_ENC_KEY")|g" .env.rendered
+          sed -i "s|__TELEGRAM_BOT_TOKEN__|$(esc "$TELEGRAM_BOT_TOKEN")|g" .env.rendered
+          sed -i "s|__TELEGRAM_CHAT_ID__|$(esc "$TELEGRAM_CHAT_ID")|g" .env.rendered
           sed -i "s|^SEED_DATABASE=false|SEED_DATABASE=$SEED_DATABASE|g" .env.rendered
 
       - name: Ship & deploy

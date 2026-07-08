@@ -125,6 +125,11 @@ services:
       WHISH_W2W_ENABLED: ${WHISH_W2W_ENABLED:-false}
       WHISH_W2W_ENC_KEY: ${WHISH_W2W_ENC_KEY:-}
       WHISH_W2W_BASE_URL: ${WHISH_W2W_BASE_URL:-https://api.whish.money/itel-service}
+      # Telegram alerts for load/payout requests. Intentionally a PRODUCTION-only
+      # feature: leave TELEGRAM_* UNSET in .env.staging so this no-ops on staging.
+      # The passthrough mirrors prod only so the two compose files stay identical.
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
     healthcheck:
       test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:3001/v1/health || exit 1']
       interval: 10s
