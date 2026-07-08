@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import { API_BASE } from './helpers';
 
 // Regression guards for two CSV-export bugs found in review:
@@ -13,7 +13,7 @@ import { API_BASE } from './helpers';
 
 const BOM = Buffer.from([0xef, 0xbb, 0xbf]);
 
-async function fetchCsv(page: import('@playwright/test').Page, pathAndQuery: string) {
+async function fetchCsv(page: Page, pathAndQuery: string) {
   const res = await page.request.get(`${API_BASE}/v1${pathAndQuery}`);
   expect(res.ok(), `${pathAndQuery} → ${res.status()}`).toBeTruthy();
   expect(res.headers()['content-type'] ?? '').toContain('text/csv');
