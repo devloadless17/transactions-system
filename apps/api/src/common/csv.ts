@@ -6,6 +6,11 @@ import { Readable } from 'node:stream';
 // across the whole (potentially large) download.
 export const CSV_EXPORT_CHUNK = 1000;
 
+// UTF-8 byte-order mark. Prefix every CSV with it so Excel (which otherwise
+// decodes with the OS ANSI code page, e.g. Windows-1252) reads the file as UTF-8
+// — without it a "•" in an invoice shows up as "â€¢". Modern CSV parsers strip it.
+export const UTF8_BOM = '\uFEFF';
+
 /**
  * RFC-4180 quote a single cell AND neutralize spreadsheet formula injection:
  * Excel/Sheets execute a cell that begins with = + - @ (or a leading tab/CR).
@@ -48,7 +53,10 @@ export function streamCsvKeyset<T>(opts: {
   const chunk = opts.chunk ?? CSV_EXPORT_CHUNK;
 
   async function* generate(): AsyncGenerator<string> {
-    yield opts.header.join(',') + '\n';
+    // Lead with a UTF-8 BOM so Excel (which otherwise assumes the OS ANSI code
+    // page, e.g. Windows-1252) decodes multi-byte characters correctly — without
+    // it a "•" in an invoice renders as "â€¢". Modern CSV parsers strip the BOM.
+    yield UTF8_BOM + opts.header.join(',') + '\n';
     let cursor: CsvKeysetCursor | null = null;
     for (;;) {
       const page = await opts.fetchPage(cursor, chunk);

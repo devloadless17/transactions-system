@@ -266,7 +266,8 @@ export class LedgerService {
     const prisma = this.prisma;
 
     async function* generate(): AsyncGenerator<string> {
-      yield header.join(',') + '\n';
+      // Lead with a UTF-8 BOM so Excel reads the file as UTF-8 (else “•” etc. shows as mojibake). Matches the shared CSV exporter.
+      yield '\uFEFF' + header.join(',') + '\n';
       let cursor: { createdAt: Date; id: string } | null = null;
       for (;;) {
         const pageWhere: Prisma.LedgerEntryWhereInput = cursor

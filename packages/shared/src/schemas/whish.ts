@@ -75,6 +75,16 @@ export const listWhishPaymentsQuerySchema = paginationSchema.extend({
   // only the literal "true" as enabling the filter. (Kept as an enum rather than
   // a transform so the schema stays a plain ZodObject the ZodPipe accepts.)
   needsAttention: z.enum(['true', 'false']).optional(),
+  // Admin-only: filter to a single company. Ignored by the company-scoped list
+  // (it always forces the session company).
+  companyId: z.string().uuid().optional(),
+  // ISO date strings — filter by created (createdAt) time.
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
+  // Fuzzy match across the invoice text, payer phone, and numeric reference —
+  // so a company can find a link by an MT5 / OWM / order id buried in the
+  // free-text invoice. Bounded like every other string filter (it feeds a LIKE).
+  search: z.string().trim().max(200).optional(),
 });
 export type ListWhishPaymentsQuery = z.infer<typeof listWhishPaymentsQuerySchema>;
 

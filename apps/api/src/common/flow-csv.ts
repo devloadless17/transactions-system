@@ -5,6 +5,13 @@ import { streamCsvKeyset } from './csv';
 // Shared CSV projection for the three sibling money-movement flows
 // (withdrawal / payout / load) — they have an identical row shape, so one
 // header + one cell projector keeps every export consistent.
+// Columns mirror what the app's own table shows (Debited/You-pay · Fee ·
+// Recipient-gets/Credited) so the export can't be misread. We deliberately do
+// NOT emit the raw requested `amount`: for an ON_TOP fee it equals the net and
+// for a DEDUCTED fee it equals the gross, so a bare `amount` column silently
+// duplicates one of the others depending on fee_application. `gross_amount` is
+// the money that actually moves (net + fee); `net_amount` is what the recipient
+// receives; `fee_application` says how the fee was applied.
 export const FLOW_CSV_HEADER = [
   'id',
   'created_at',
@@ -12,10 +19,9 @@ export const FLOW_CSV_HEADER = [
   'company_id',
   'status',
   'currency',
-  'amount',
+  'gross_amount',
   'fee_amount',
   'net_amount',
-  'total_amount',
   'fee_application',
   'payout_method',
   'external_reference',
@@ -59,8 +65,10 @@ function recipient(details: unknown): { name: string; contact: string } {
 
 export function flowCsvCells(r: FlowCsvRow): Array<string | null> {
   const rec = recipient(r.payoutDetails);
-  // total = net + fee (the money that actually moves); matches the API response.
-  const total = Money.of(r.netAmount.toString()).add(Money.of(r.feeAmount.toString())).toString();
+  // gross = net + fee = the money that actually moves (debited for a
+  // withdrawal/payout, paid in for a load); matches the API's totalAmount and
+  // the app's "Debited" / "You pay" column.
+  const gross = Money.of(r.netAmount.toString()).add(Money.of(r.feeAmount.toString())).toString();
   return [
     r.id,
     r.createdAt.toISOString(),
@@ -68,10 +76,9 @@ export function flowCsvCells(r: FlowCsvRow): Array<string | null> {
     r.companyId,
     r.status,
     r.currency.trim(),
-    r.amount.toString(),
+    gross,
     r.feeAmount.toString(),
     r.netAmount.toString(),
-    total,
     r.feeApplication,
     r.payoutMethod,
     r.externalReference ?? '',

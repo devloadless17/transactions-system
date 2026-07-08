@@ -1,4 +1,5 @@
 import { Controller, Get, Param, ParseUUIDPipe, Post, Query, UseGuards } from '@nestjs/common';
+import type { StreamableFile } from '@nestjs/common';
 import {
   WHISH_CURRENCIES,
   listWhishPaymentsQuerySchema,
@@ -12,6 +13,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { CsrfGuard } from '../auth/guards/csrf.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { Audited } from '../audit/audit.decorator';
+import { SkipResponseEnvelope } from '../../common/decorators/skip-response-envelope.decorator';
 import { ValidationError } from '../../common/errors/domain.error';
 import { WhishPaymentsService } from './whish-payments.service';
 
@@ -34,6 +36,16 @@ export class WhishAdminController {
   @Get('payments')
   async list(@Query(new ZodPipe(listWhishPaymentsQuerySchema)) query: ListWhishPaymentsQuery) {
     return this.payments.listAll(query);
+  }
+
+  // Declared BEFORE `payments/:id` so the literal `export.csv` isn't captured by
+  // the UUID param route.
+  @Get('payments/export.csv')
+  @SkipResponseEnvelope()
+  exportPayments(
+    @Query(new ZodPipe(listWhishPaymentsQuerySchema)) query: ListWhishPaymentsQuery,
+  ): StreamableFile {
+    return this.payments.streamCsv({ query });
   }
 
   /** One payment by id (across companies) — e.g. an audit-log deep link. */

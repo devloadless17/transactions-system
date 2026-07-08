@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { PaginatedResponse, WhishPaymentResponse } from '@app/shared';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -10,8 +10,17 @@ import { Pagination } from '@/components/ui/pagination';
 import { apiFetch } from '@/lib/api.client';
 import { ApiClientError } from '@/lib/api';
 import { toast } from '@/lib/toast';
+import { useDebouncedValue } from '@/lib/use-debounced-value';
+import { ExportCsvButton } from '@/components/export-csv-button';
 import { useCompanyNames } from '@/features/admin/company-filter';
 import { WhishPaymentDetailDrawer } from './whish-payment-detail-drawer';
+import {
+  WhishFilterBar,
+  whishFilterParams,
+  whishFiltersActive,
+  EMPTY_WHISH_FILTERS,
+  type WhishFilters,
+} from './whish-filter-bar';
 
 const PAGE_SIZE = 20;
 
@@ -24,14 +33,24 @@ function statusVariant(s: WhishPaymentResponse['status']) {
 export function AdminWhishView() {
   const [page, setPage] = useState(1);
   const [detail, setDetail] = useState<WhishPaymentResponse | null>(null);
+  const [filters, setFilters] = useState<WhishFilters>(EMPTY_WHISH_FILTERS);
+  const [search, setSearch] = useState('');
+  const debouncedSearch = useDebouncedValue(search, 300);
   const qc = useQueryClient();
 
+  const params = whishFilterParams(filters, debouncedSearch, {
+    page: String(page),
+    pageSize: String(PAGE_SIZE),
+  });
+  const filtersOn = whishFiltersActive(filters, debouncedSearch);
+
   const paymentsQ = useQuery({
-    queryKey: ['admin', 'whish', 'payments', { page }],
+    queryKey: ['admin', 'whish', 'payments', params.toString()],
     queryFn: () =>
       apiFetch<PaginatedResponse<WhishPaymentResponse>>(
-        `/admin/whish/payments?page=${page}&pageSize=${PAGE_SIZE}`,
+        `/admin/whish/payments?${params.toString()}`,
       ),
+    placeholderData: keepPreviousData,
   });
 
   // Operator recovery: re-attempt settlement of one payment. The 60s poller skips
@@ -135,16 +154,38 @@ export function AdminWhishView() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold">Whish Pay</h1>
-        <p className="text-sm text-muted-foreground">
-          Platform account balance and every Whish payment across companies.
-        </p>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold">Whish Pay</h1>
+          <p className="text-sm text-muted-foreground">
+            Platform account balance and every Whish payment across companies.
+          </p>
+        </div>
+        <ExportCsvButton
+          path="/admin/whish/payments/export.csv"
+          params={params}
+          filename="whish-payments"
+        />
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2">
         <BalanceCard currency="USD" />
       </div>
+
+      <WhishFilterBar
+        value={filters}
+        onChange={(f) => {
+          setFilters(f);
+          setPage(1);
+        }}
+        search={search}
+        onSearchChange={(s) => {
+          setSearch(s);
+          setPage(1);
+        }}
+        showCompanyFilter
+        showNeedsAttention
+      />
 
       <Card>
         <CardHeader>
@@ -160,7 +201,9 @@ export function AdminWhishView() {
             rowKey={(p) => p.id}
             onRowClick={(p) => setDetail(p)}
             empty={
-              <div className="py-8 text-center text-muted-foreground">No Whish payments yet.</div>
+              <div className="py-8 text-center text-muted-foreground">
+                {filtersOn ? 'No payments match your filters.' : 'No Whish payments yet.'}
+              </div>
             }
           />
           <WhishPaymentDetailDrawer payment={detail} onClose={() => setDetail(null)} />

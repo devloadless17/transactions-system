@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, StreamableFile } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import crypto from 'node:crypto';
 import {
@@ -27,6 +27,7 @@ import {
   ValidationError,
 } from '../../common/errors/domain.error';
 import { assertListOffset } from '../../common/pagination';
+import { streamCsvKeyset } from '../../common/csv';
 import { TransactionsService } from '../transactions/transactions.service';
 import { CommissionResolverService } from '../commissions/commission-resolver.service';
 import { CommissionsRepository } from '../commissions/commissions.repository';
@@ -315,15 +316,52 @@ export class WhishPaymentsService {
     }
   }
 
+  /**
+   * Build the Prisma `where` shared by the list, admin-list and CSV exports so a
+   * filter (status / needs-attention / date range / text search) means the same
+   * thing everywhere. `scope.companyId` pins a company-scoped view; otherwise the
+   * admin `companyId` query param (if any) is honoured.
+   */
+  private listWhere(
+    query: ListWhishPaymentsQuery,
+    scope: { companyId?: string },
+  ): Prisma.WhishPaymentWhereInput {
+    const where: Prisma.WhishPaymentWhereInput = {};
+    if (scope.companyId) where.companyId = scope.companyId;
+    else if (query.companyId) where.companyId = query.companyId;
+    if (query.status) where.status = query.status;
+    if (query.needsAttention === 'true')
+      where.metadata = { path: ['needsAttention'], equals: true };
+    if (query.from || query.to) {
+      where.createdAt = {
+        ...(query.from ? { gte: new Date(query.from) } : {}),
+        ...(query.to ? { lte: new Date(query.to) } : {}),
+      };
+    }
+    // Fuzzy search across the free-text invoice, the payer phone, and — when the
+    // term is purely numeric — the numeric reference (externalId, a bigint). This
+    // is what lets a company find a link by an MT5 / OWM / order id buried in the
+    // invoice text (e.g. "OWM-E6CE3F70 • MT5 5000123 • ID E2E-9988776655").
+    if (query.search) {
+      const s = query.search;
+      const or: Prisma.WhishPaymentWhereInput[] = [
+        { invoice: { contains: s, mode: 'insensitive' } },
+        { payerPhoneNumber: { contains: s, mode: 'insensitive' } },
+      ];
+      // Only treat a bounded all-digits term as a reference — kept within int64 so
+      // a giant number can never make Prisma range-error on the bigint column.
+      if (/^\d{1,18}$/.test(s)) or.push({ externalId: BigInt(s) });
+      where.OR = or;
+    }
+    return where;
+  }
+
   async list(
     companyId: string,
     query: ListWhishPaymentsQuery,
   ): Promise<PaginatedResponse<WhishPaymentResponse>> {
     return this.prisma.runAsTenant(companyId, async (tx) => {
-      const where: Prisma.WhishPaymentWhereInput = { companyId };
-      if (query.status) where.status = query.status;
-      if (query.needsAttention === 'true')
-        where.metadata = { path: ['needsAttention'], equals: true };
+      const where = this.listWhere(query, { companyId });
       const skip = (query.page - 1) * query.pageSize;
       assertListOffset(skip);
       const [rows, total] = await Promise.all([
@@ -793,11 +831,7 @@ export class WhishPaymentsService {
   /** Admin: list Whish payments across all companies. */
   async listAll(query: ListWhishPaymentsQuery): Promise<PaginatedResponse<WhishPaymentResponse>> {
     return this.prisma.runAsAdmin(async (tx) => {
-      const where: Prisma.WhishPaymentWhereInput = {};
-      if (query.status) where.status = query.status;
-      // Operators can filter to just the stuck (paid-but-unsettled) payments.
-      if (query.needsAttention === 'true')
-        where.metadata = { path: ['needsAttention'], equals: true };
+      const where = this.listWhere(query, {});
       const skip = (query.page - 1) * query.pageSize;
       assertListOffset(skip);
       const [rows, total] = await Promise.all([
@@ -818,6 +852,48 @@ export class WhishPaymentsService {
           totalPages: Math.max(1, Math.ceil(total / query.pageSize)),
         },
       };
+    });
+  }
+
+  /**
+   * Stream ALL Whish payments matching the filters as CSV (no row cap), walked in
+   * keyset chunks over (createdAt desc, id desc). Mirrors the list query's filters
+   * so the export matches exactly what the user sees. A company scope (companyId)
+   * runs each chunk under RLS; the admin export (no companyId) runs cross-company.
+   */
+  streamCsv(args: { companyId?: string; query: ListWhishPaymentsQuery }): StreamableFile {
+    const where = this.listWhere(args.query, { companyId: args.companyId });
+    const scope = args.companyId ?? null;
+    const prisma = this.prisma;
+    return streamCsvKeyset<WhishPayment>({
+      filename: `whish-payments-${Date.now()}.csv`,
+      header: WHISH_CSV_HEADER,
+      fetchPage: (cursor, take) => {
+        // Combine the base filter with the keyset predicate via AND — a plain
+        // top-level OR here would CLOBBER the search OR the base `where` may set.
+        const pageWhere: Prisma.WhishPaymentWhereInput = cursor
+          ? {
+              AND: [
+                where,
+                {
+                  OR: [
+                    { createdAt: { lt: cursor.createdAt } },
+                    { createdAt: cursor.createdAt, id: { lt: cursor.id } },
+                  ],
+                },
+              ],
+            }
+          : where;
+        return prisma.runAsScoped(scope, (tx) =>
+          tx.whishPayment.findMany({
+            where: pageWhere,
+            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+            take,
+          }),
+        );
+      },
+      cursorOf: (r) => ({ createdAt: r.createdAt, id: r.id }),
+      toCells: whishCsvCells,
     });
   }
 
@@ -861,6 +937,49 @@ export class WhishPaymentsService {
     const { balance } = await this.whish.getBalance(currency);
     return { currency, balance };
   }
+}
+
+// CSV columns for the Whish Pay export. A Whish collect is a single settled
+// amount (the payer pays it in full — there's no fee/net split at this layer, so
+// no gross/net ambiguity like the money-out flows). `reference` is the numeric
+// externalId shown as #<n> in the app; `needs_attention` / `settlement_error`
+// surface the paid-but-unsettled state.
+const WHISH_CSV_HEADER = [
+  'id',
+  'created_at',
+  'paid_at',
+  'reference',
+  'company_id',
+  'status',
+  'currency',
+  'amount',
+  'invoice',
+  'payer_phone',
+  'transaction_id',
+  'needs_attention',
+  'settlement_error',
+  'collect_url',
+] as const;
+
+function whishCsvCells(row: WhishPayment): Array<string | null> {
+  const meta =
+    (row.metadata as { needsAttention?: unknown; settlementError?: unknown } | null) ?? null;
+  return [
+    row.id,
+    row.createdAt.toISOString(),
+    row.paidAt?.toISOString() ?? '',
+    row.externalId.toString(),
+    row.companyId,
+    row.status,
+    row.currency.trim(),
+    row.amount.toString(),
+    row.invoice,
+    row.payerPhoneNumber ?? '',
+    row.transactionId ?? '',
+    meta?.needsAttention === true ? 'true' : 'false',
+    typeof meta?.settlementError === 'string' ? meta.settlementError : '',
+    row.collectUrl ?? '',
+  ];
 }
 
 /** Append `ref=<externalId>` to a redirect URL, respecting any existing query. */

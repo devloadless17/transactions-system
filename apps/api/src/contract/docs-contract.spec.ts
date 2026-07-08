@@ -7,6 +7,7 @@ import {
   createWhishPaymentSchema,
   createWithdrawalSchema,
   listNotificationsQuerySchema,
+  listWhishPaymentsQuerySchema,
   loadResponseSchema,
   paginationSchema,
   payoutResponseSchema,
@@ -122,13 +123,22 @@ describe('docs ↔ API schema contract (anti-drift)', () => {
       expect(GUIDE).toContain('NO_COMMISSION_RULE');
     });
 
-    it('the whish payments list is documented with real params, not phantom from/to (audit #12)', () => {
+    it('the whish payments list documents its REAL query params (audit #12)', () => {
       const line = GUIDE.split('\n').find(
         (l) => l.includes('/v1/company/whish/payments') && /List payments/.test(l),
       );
       expect(line, 'the whish payments list row should exist in the guide').toBeTruthy();
       expect(line).toContain('needsAttention');
-      expect(line).not.toMatch(/`from`|`to`/);
+      // `from`/`to`/`search` used to be phantom (documented but unimplemented); the
+      // dashboard filter + CSV export made them real backend params, so the guide
+      // must now document them — the opposite of the original audit #12 assertion.
+      const real = listWhishPaymentsQuerySchema.shape;
+      expect(real.from).toBeDefined();
+      expect(real.to).toBeDefined();
+      expect(real.search).toBeDefined();
+      expect(line).toMatch(/`from\??`/);
+      expect(line).toMatch(/`to\??`/);
+      expect(line).toContain('search');
     });
   });
 

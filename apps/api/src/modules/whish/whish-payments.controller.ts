@@ -8,6 +8,7 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
+import type { StreamableFile } from '@nestjs/common';
 import {
   createWhishPaymentSchema,
   listWhishPaymentsQuerySchema,
@@ -22,6 +23,7 @@ import { CsrfGuard } from '../auth/guards/csrf.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Audited } from '../audit/audit.decorator';
+import { SkipResponseEnvelope } from '../../common/decorators/skip-response-envelope.decorator';
 import type { AuthPrincipal } from '../../common/types/request.types';
 import { ForbiddenError } from '../../common/errors/domain.error';
 import { WhishPaymentsService } from './whish-payments.service';
@@ -44,6 +46,19 @@ export class WhishPaymentsController {
   ) {
     if (!user.companyId) throw new ForbiddenError('No company in session');
     return this.payments.list(user.companyId, query);
+  }
+
+  // Declared BEFORE the `:id` route so the literal `export.csv` segment isn't
+  // captured by the UUID param route.
+  @Roles(UserRole.COMPANY_OWNER, UserRole.COMPANY_MANAGER, UserRole.COMPANY_VIEWER)
+  @Get('export.csv')
+  @SkipResponseEnvelope()
+  export(
+    @Query(new ZodPipe(listWhishPaymentsQuerySchema)) query: ListWhishPaymentsQuery,
+    @CurrentUser() user: AuthPrincipal,
+  ): StreamableFile {
+    if (!user.companyId) throw new ForbiddenError('No company in session');
+    return this.payments.streamCsv({ companyId: user.companyId, query });
   }
 
   @Roles(UserRole.COMPANY_OWNER, UserRole.COMPANY_MANAGER, UserRole.COMPANY_VIEWER)

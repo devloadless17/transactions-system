@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { toast } from '@/lib/toast';
@@ -31,7 +31,16 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { apiFetch } from '@/lib/api.client';
 import { ApiClientError } from '@/lib/api';
+import { useDebouncedValue } from '@/lib/use-debounced-value';
+import { ExportCsvButton } from '@/components/export-csv-button';
 import { WhishPaymentDetailDrawer } from '@/features/admin/whish/whish-payment-detail-drawer';
+import {
+  WhishFilterBar,
+  whishFilterParams,
+  whishFiltersActive,
+  EMPTY_WHISH_FILTERS,
+  type WhishFilters,
+} from '@/features/admin/whish/whish-filter-bar';
 
 const PAGE_SIZE = 20;
 
@@ -46,15 +55,32 @@ export function WhishView() {
   const [page, setPage] = useState(1);
   const [createOpen, setCreateOpen] = useState(false);
   const [detail, setDetail] = useState<WhishPaymentResponse | null>(null);
-  const queryKey = ['company', 'whish', { page }] as const;
+  const [filters, setFilters] = useState<WhishFilters>(EMPTY_WHISH_FILTERS);
+  const [search, setSearch] = useState('');
+  // Debounce the search box so we don't refetch on every keystroke.
+  const debouncedSearch = useDebouncedValue(search, 300);
+
+  const params = whishFilterParams(filters, debouncedSearch, {
+    page: String(page),
+    pageSize: String(PAGE_SIZE),
+  });
+  const filtersOn = whishFiltersActive(filters, debouncedSearch);
 
   const listQ = useQuery({
-    queryKey,
+    queryKey: ['company', 'whish', 'list', params.toString()],
     queryFn: () =>
       apiFetch<PaginatedResponse<WhishPaymentResponse>>(
-        `/company/whish/payments?page=${page}&pageSize=${PAGE_SIZE}`,
+        `/company/whish/payments?${params.toString()}`,
       ),
+    placeholderData: keepPreviousData,
   });
+
+  // Clamp back if the filtered set shrinks below the current page so the user
+  // isn't stranded on an empty page with the pagination controls hidden.
+  useEffect(() => {
+    const tp = listQ.data?.meta.totalPages;
+    if (tp && page > tp) setPage(tp);
+  }, [listQ.data, page]);
 
   const refreshMu = useMutation({
     mutationFn: (id: string) =>
@@ -162,8 +188,30 @@ export function WhishView() {
             your wallet automatically once confirmed.
           </p>
         </div>
-        <Button onClick={() => setCreateOpen(true)}>New payment link</Button>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <ExportCsvButton
+            path="/company/whish/payments/export.csv"
+            params={params}
+            filename="whish-payments"
+          />
+          <Button className="w-full sm:w-auto" onClick={() => setCreateOpen(true)}>
+            New payment link
+          </Button>
+        </div>
       </div>
+
+      <WhishFilterBar
+        value={filters}
+        onChange={(f) => {
+          setFilters(f);
+          setPage(1);
+        }}
+        search={search}
+        onSearchChange={(s) => {
+          setSearch(s);
+          setPage(1);
+        }}
+      />
 
       <Card>
         <CardContent className="p-0">
@@ -182,7 +230,9 @@ export function WhishView() {
             onRowClick={(p) => setDetail(p)}
             empty={
               <div className="py-8 text-center text-muted-foreground">
-                No payment links yet. Create one to get started.
+                {filtersOn
+                  ? 'No payments match your filters.'
+                  : 'No payment links yet. Create one to get started.'}
               </div>
             }
           />
