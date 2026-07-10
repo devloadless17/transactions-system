@@ -30,10 +30,17 @@ import { Label } from '@/components/ui/label';
 import { apiFetch } from '@/lib/api.client';
 import { ApiClientError } from '@/lib/api';
 
-export function TeamView() {
+export function TeamView({
+  isOwner,
+  currentUserId,
+}: {
+  isOwner: boolean;
+  currentUserId: string | null;
+}) {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const [created, setCreated] = useState<InviteTeamMemberResponse | null>(null);
+  const [resetTarget, setResetTarget] = useState<TeamMemberResponse | null>(null);
 
   const listQ = useQuery({
     queryKey: ['company', 'team'],
@@ -89,24 +96,34 @@ export function TeamView() {
       key: 'actions',
       header: '',
       align: 'right',
-      cell: (m) =>
-        m.status === 'ACTIVE' ? (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => updateMu.mutate({ id: m.id, status: UserStatus.DISABLED })}
-          >
-            Disable
-          </Button>
-        ) : (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => updateMu.mutate({ id: m.id, status: UserStatus.ACTIVE })}
-          >
-            Reactivate
-          </Button>
-        ),
+      cell: (m) => (
+        <div className="flex items-center justify-end gap-1">
+          {/* Owners can reset a teammate's password, but never their own — they
+              rotate it via Change password, which proves the current one. */}
+          {isOwner && m.id !== currentUserId && (
+            <Button variant="ghost" size="sm" onClick={() => setResetTarget(m)}>
+              Reset password
+            </Button>
+          )}
+          {m.status === 'ACTIVE' ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => updateMu.mutate({ id: m.id, status: UserStatus.DISABLED })}
+            >
+              Disable
+            </Button>
+          ) : (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => updateMu.mutate({ id: m.id, status: UserStatus.ACTIVE })}
+            >
+              Reactivate
+            </Button>
+          )}
+        </div>
+      ),
     },
   ];
 
@@ -154,7 +171,101 @@ export function TeamView() {
           qc.invalidateQueries({ queryKey: ['company', 'team'] });
         }}
       />
+
+      <ResetPasswordDialog
+        target={resetTarget}
+        onClose={() => setResetTarget(null)}
+        onReset={() => qc.invalidateQueries({ queryKey: ['company', 'team'] })}
+      />
     </div>
+  );
+}
+
+/**
+ * Owner-initiated password reset. Mirrors the admin dialog
+ * (features/admin/companies/company-users-card.tsx): confirm, then show the
+ * one-time temporary password exactly once.
+ */
+function ResetPasswordDialog({
+  target,
+  onClose,
+  onReset,
+}: {
+  target: TeamMemberResponse | null;
+  onClose: () => void;
+  onReset: () => void;
+}) {
+  const [result, setResult] = useState<InviteTeamMemberResponse | null>(null);
+
+  const mu = useMutation({
+    mutationFn: () =>
+      apiFetch<InviteTeamMemberResponse>(`/company/team/${target!.id}/reset-password`, {
+        method: 'POST',
+      }),
+    onSuccess: (res) => {
+      setResult(res);
+      onReset();
+    },
+    onError: (err) => toast.error(err instanceof ApiClientError ? err.message : 'Failed'),
+  });
+
+  function handleOpenChange(v: boolean) {
+    if (!v) {
+      setResult(null);
+      onClose();
+    }
+  }
+
+  return (
+    <Dialog open={!!target} onOpenChange={handleOpenChange}>
+      <DialogContent>
+        {result ? (
+          <>
+            <DialogHeader>
+              <DialogTitle>Temporary password</DialogTitle>
+              <DialogDescription>
+                Share this one-time password with {result.member.email}. It is shown only once and
+                must be changed on their next login.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="rounded-md border bg-muted/30 p-3 font-mono text-xs break-all">
+              {result.temporaryPassword}
+            </div>
+            <DialogFooter>
+              <Button
+                onClick={() => {
+                  navigator.clipboard?.writeText(result.temporaryPassword);
+                  toast.success('Copied');
+                }}
+              >
+                Copy
+              </Button>
+              <Button variant="outline" onClick={() => handleOpenChange(false)}>
+                Done
+              </Button>
+            </DialogFooter>
+          </>
+        ) : (
+          <>
+            <DialogHeader>
+              <DialogTitle>Reset password?</DialogTitle>
+              <DialogDescription>
+                {target?.email} will get a new one-time temporary password and be signed out of all
+                sessions. They must set a new password on their next login.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => handleOpenChange(false)}>
+                Cancel
+              </Button>
+              <Button onClick={() => mu.mutate()} disabled={mu.isPending}>
+                {mu.isPending ? 'Resetting…' : 'Reset password'}
+              </Button>
+            </DialogFooter>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
   );
 }
 

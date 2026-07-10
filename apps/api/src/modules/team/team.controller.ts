@@ -72,4 +72,24 @@ export class TeamController {
     if (!user.companyId) throw new ForbiddenError('No company in session');
     return this.team.remove(user.companyId, id, user.userId);
   }
+
+  /**
+   * Owner-initiated recovery for a user in their OWN company. The tenant is taken
+   * from the authenticated principal — NEVER from a path param — so an owner
+   * cannot reach another company's users (the service 404s on a mismatch, which
+   * also covers platform admins, whose companyId is NULL).
+   *
+   * Same guards as the rest of this controller: SessionOnlyGuard means a leaked
+   * company API key can't mint credentials, and CsrfGuard covers the mutation.
+   */
+  @Roles(UserRole.COMPANY_OWNER)
+  @Post(':id/reset-password')
+  @Audited({ action: 'team.password_reset', entityType: 'user', idFrom: 'params.id' })
+  async resetPassword(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @CurrentUser() user: AuthPrincipal,
+  ) {
+    if (!user.companyId) throw new ForbiddenError('No company in session');
+    return this.team.resetPassword(user.companyId, id, user.userId);
+  }
 }

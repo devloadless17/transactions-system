@@ -50,14 +50,34 @@ export class TeamService {
   }
 
   /**
-   * Admin recovery: issue a fresh one-time temporary password for a company user
-   * who is locked out (lost/forgotten credential). Forces a change on next login
-   * and revokes every active session so the old credential is dead. The plaintext
-   * is returned ONCE for the admin to hand to the user out-of-band.
+   * Recovery: issue a fresh one-time temporary password for a company user who is
+   * locked out (lost/forgotten credential). Forces a change on next login and
+   * revokes every active session so the old credential is dead. The plaintext is
+   * returned ONCE, to be handed to the user out-of-band.
+   *
+   * Callable by a platform admin (for any company) or by a COMPANY_OWNER for a
+   * user in their OWN company — the caller supplies `companyId`, and the
+   * `member.companyId !== companyId` check below is what makes cross-tenant
+   * resets impossible. This runs under `runAsAdmin` (RLS bypassed), so that
+   * check is the tenant boundary; never pass a client-supplied companyId here.
+   *
+   * `actorId` (owner path) blocks resetting your OWN password: rotating your own
+   * credential must go through change-password, which proves knowledge of the
+   * current one. Otherwise a hijacked session could mint a new credential
+   * without ever knowing the old.
    */
-  async resetPassword(companyId: string, id: string): Promise<InviteTeamMemberResponse> {
+  async resetPassword(
+    companyId: string,
+    id: string,
+    actorId?: string,
+  ): Promise<InviteTeamMemberResponse> {
+    if (actorId && actorId === id) {
+      throw new ForbiddenError('Use Change password to update your own password');
+    }
     const result = await this.prisma.runAsAdmin(async (tx) => {
       const member = await tx.user.findUnique({ where: { id } });
+      // A platform admin has companyId = NULL, so this also stops a company owner
+      // from ever targeting a SUPER_ADMIN / ADMIN_OPERATOR / BACKOFFICE account.
       if (!member || member.companyId !== companyId) throw new NotFoundError('TeamMember', id);
 
       const tempPassword = generateTempPassword();
