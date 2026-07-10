@@ -82,9 +82,11 @@ export const listCompaniesQuerySchema = z.object({
   // Opt-in: computing balances costs an extra wallet query, and most callers of
   // this list (e.g. the admin company-name filter) only want names. Asking for
   // it does NOT grant it — a SUPER_ADMIN role is still required.
-  // Left as a literal (not transformed to boolean) because ZodPipe requires the
-  // schema's input and output types to match.
-  withBalances: z.enum(['true', 'false']).optional(),
+  // A permissive string (only `'true'` opts in, at the controller) so a stray
+  // value like `?withBalances=1` degrades to "no balances" instead of 400-ing
+  // the whole list. Kept as a string, not transformed, because ZodPipe requires
+  // the schema's input and output types to match.
+  withBalances: z.string().optional(),
   search: z.string().trim().optional(),
   status: z.nativeEnum(CompanyStatus).optional(),
   // Comma-separated company ids — resolve names for just the rows on screen

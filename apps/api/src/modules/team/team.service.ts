@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import argon2 from 'argon2';
 import crypto from 'node:crypto';
 import {
+  COMPANY_ROLES,
   UserRole,
   UserStatus,
   type InviteTeamMemberInput,
@@ -78,9 +79,14 @@ export class TeamService {
     }
     const result = await this.prisma.runAsAdmin(async (tx) => {
       const member = await tx.user.findUnique({ where: { id } });
-      // A platform admin has companyId = NULL, so this also stops a company owner
-      // from ever targeting a SUPER_ADMIN / ADMIN_OPERATOR / BACKOFFICE account.
-      if (!member || member.companyId !== companyId) throw new NotFoundError('TeamMember', id);
+      // A platform admin has companyId = NULL, so the tenant check below already
+      // stops a company owner from targeting one. The role check is defence in
+      // depth: it keeps that guarantee LOCAL to this method rather than resting on
+      // an invariant enforced elsewhere (admin rows happen to have companyId NULL),
+      // so a future "admin scoped to a company" can never become resettable here.
+      if (!member || member.companyId !== companyId || !COMPANY_ROLES.includes(member.role)) {
+        throw new NotFoundError('TeamMember', id);
+      }
 
       const tempPassword = generateTempPassword();
       const passwordHash = await argon2.hash(tempPassword, { type: argon2.argon2id });

@@ -75,7 +75,13 @@ export function CompaniesView({
     },
   ];
 
-  if (canViewBalances) {
+  // Show the balance column only when the SERVER actually returned balances
+  // (`totals` present) — not merely because the viewer is a SUPER_ADMIN. Keying
+  // on the response means a stale/cached bundle that requested without the flag
+  // shows no column at all, rather than a full column of em-dashes that reads as
+  // "every tenant holds nothing". Authorization is still enforced server-side.
+  const hasBalances = data?.totals !== undefined;
+  if (hasBalances) {
     columns.push({
       key: 'balance',
       header: 'Available balance',
@@ -89,7 +95,7 @@ export function CompaniesView({
   // otherwise a reader on page 2 of 5 would take it for a page subtotal.
   const totalCompanies = data?.meta.total ?? 0;
   const totalsRow =
-    canViewBalances && data?.totals ? (
+    hasBalances && data?.totals ? (
       <TableRow>
         <TableCell colSpan={columns.length - 1}>
           Total available — all {totalCompanies} {totalCompanies === 1 ? 'company' : 'companies'}

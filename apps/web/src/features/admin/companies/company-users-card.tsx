@@ -28,6 +28,7 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { apiFetch } from '@/lib/api.client';
+import { ResetPasswordDialog } from '@/components/reset-password-dialog';
 import { ApiClientError } from '@/lib/api';
 
 const prettyRole = (r: string) => r.replace('COMPANY_', '');
@@ -153,92 +154,12 @@ export function CompanyUsersCard({ companyId }: { companyId: string }) {
       />
 
       <ResetPasswordDialog
-        companyId={companyId}
         target={resetTarget}
+        endpoint={(m) => `/admin/companies/${companyId}/users/${m.id}/reset-password`}
         onClose={() => setResetTarget(null)}
+        onReset={() => qc.invalidateQueries({ queryKey })}
       />
     </Card>
-  );
-}
-
-function ResetPasswordDialog({
-  companyId,
-  target,
-  onClose,
-}: {
-  companyId: string;
-  target: TeamMemberResponse | null;
-  onClose: () => void;
-}) {
-  const [result, setResult] = useState<InviteTeamMemberResponse | null>(null);
-
-  const mu = useMutation({
-    mutationFn: () =>
-      apiFetch<InviteTeamMemberResponse>(
-        `/admin/companies/${companyId}/users/${target!.id}/reset-password`,
-        { method: 'POST' },
-      ),
-    onSuccess: (res) => setResult(res),
-    onError: (err) => toast.error(err instanceof ApiClientError ? err.message : 'Failed'),
-  });
-
-  function handleOpenChange(v: boolean) {
-    if (!v) {
-      setResult(null);
-      onClose();
-    }
-  }
-
-  return (
-    <Dialog open={!!target} onOpenChange={handleOpenChange}>
-      <DialogContent>
-        {result ? (
-          <>
-            <DialogHeader>
-              <DialogTitle>Temporary password</DialogTitle>
-              <DialogDescription>
-                Share this one-time password with {result.member.email}. It is shown only once and
-                must be changed on their next login.
-              </DialogDescription>
-            </DialogHeader>
-            <div className="rounded-md border bg-muted/30 p-3 font-mono text-xs break-all">
-              {result.temporaryPassword}
-            </div>
-            <DialogFooter>
-              <Button
-                onClick={() => {
-                  navigator.clipboard?.writeText(result.temporaryPassword);
-                  toast.success('Copied');
-                }}
-              >
-                Copy
-              </Button>
-              <Button variant="outline" onClick={() => handleOpenChange(false)}>
-                Done
-              </Button>
-            </DialogFooter>
-          </>
-        ) : (
-          <>
-            <DialogHeader>
-              <DialogTitle>Reset password?</DialogTitle>
-              <DialogDescription>
-                {target?.email} will get a new one-time temporary password and be signed out of all
-                sessions. They must set a new password on their next login.
-              </DialogDescription>
-            </DialogHeader>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => handleOpenChange(false)}>
-                Cancel
-              </Button>
-              <Button onClick={() => mu.mutate()} disabled={mu.isPending}>
-                {mu.isPending ? 'Resetting…' : 'Reset password'}
-              </Button>
-            </DialogFooter>
-          </>
-        )}
-      </DialogContent>
-    </Dialog>
   );
 }
 

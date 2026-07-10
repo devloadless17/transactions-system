@@ -82,6 +82,19 @@ describe('TeamService.resetPassword — owner path', () => {
     expect(update).not.toHaveBeenCalled();
   });
 
+  // Defence in depth: even a row that WRONGLY carries both this company's id and a
+  // platform role (a future "admin scoped to a company", a bad seed) must not be
+  // resettable by the owner. The guard is local, not reliant on admins having a
+  // NULL companyId.
+  it.each(['SUPER_ADMIN', 'ADMIN_OPERATOR', 'BACKOFFICE'])(
+    'REFUSES to reset a %s even if its companyId matches',
+    async (role) => {
+      const { svc, update } = makeService(member({ id: 'x', companyId: OWNER_CO, role }));
+      await expect(svc.resetPassword(OWNER_CO, 'x', OWNER_ID)).rejects.toThrow(NotFoundError);
+      expect(update).not.toHaveBeenCalled();
+    },
+  );
+
   it('REFUSES a self-reset — that must go through change-password', async () => {
     const { svc, tx } = makeService(member({ id: OWNER_ID, role: 'COMPANY_OWNER' }));
     await expect(svc.resetPassword(OWNER_CO, OWNER_ID, OWNER_ID)).rejects.toThrow(ForbiddenError);

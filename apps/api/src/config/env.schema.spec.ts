@@ -1,5 +1,18 @@
 import { describe, expect, it } from 'vitest';
+import { listCompaniesQuerySchema } from '@app/shared';
 import { validateEnv } from './env.schema';
+
+describe('listCompaniesQuerySchema.withBalances is permissive', () => {
+  // A perf opt-in must never 400 the whole list on an unexpected value; only
+  // 'true' opts in (checked at the controller).
+  it.each(['1', 'yes', 'TRUE', 'false', '', 'anything'])('accepts %o', (v) => {
+    expect(() => listCompaniesQuerySchema.parse({ withBalances: v })).not.toThrow();
+  });
+
+  it('omitting it is fine', () => {
+    expect(listCompaniesQuerySchema.parse({}).withBalances).toBeUndefined();
+  });
+});
 
 // A baseline that parses cleanly in development.
 const base: Record<string, string> = {
