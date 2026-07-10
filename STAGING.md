@@ -39,7 +39,7 @@ docker network create edge        # idempotent enough; ignore "already exists"
 
 **3. Ship the new config to the server.** The updated `Caddyfile` (with the
 staging route), `docker-compose.staging.yml`, and the same-origin prod web image
-all arrive on the next normal prod deploy (push to `main`). That deploy also
+all arrive on the next normal prod deploy (push to `production`). That deploy also
 re-attaches the prod Caddy to `edge`. Prod stays up; verify it's still healthy
 after.
 
@@ -84,15 +84,17 @@ confirm a Whish payment link mints against the sandbox.
 
 ## Continuous deployment (branch flow)
 
-Two branches, two stacks, same server:
+Three branches. **Only `production` can deploy the live site** — `main` is a safe
+integration branch that runs CI but never touches the server:
 
-| Push to…  | Workflow                               | Deploys                                | Whish   |
-| --------- | -------------------------------------- | -------------------------------------- | ------- |
-| `main`    | `.github/workflows/deploy.yml`         | prod (`docker-compose.prod.yml`)       | LIVE    |
-| `staging` | `.github/workflows/deploy-staging.yml` | staging (`docker-compose.staging.yml`) | SANDBOX |
+| Push to…     | Workflow                               | Deploys                                     | Whish   |
+| ------------ | -------------------------------------- | ------------------------------------------- | ------- |
+| `main`       | `.github/workflows/deploy.yml`         | **nothing** — CI only (typecheck/lint/test) | —       |
+| `staging`    | `.github/workflows/deploy-staging.yml` | staging (`docker-compose.staging.yml`)      | SANDBOX |
+| `production` | `.github/workflows/deploy.yml`         | prod (`docker-compose.prod.yml`)            | LIVE    |
 
 - Each workflow builds **its own branch's code**, so staging tests exactly what
-  you'll later merge to `main`.
+  you'll later release from `production`.
 - Images are tagged per stack — prod: `:latest` / `:<sha>`; staging: `:staging` /
   `:staging-<sha>` — so they never collide in the shared Docker Hub repo.
 - The staging workflow needs **no extra GitHub secrets** (just the SSH + Docker
@@ -100,7 +102,15 @@ Two branches, two stacks, same server:
   server; CI only ships code and re-points the stack at the new image tag.
 
 Typical flow: do the work on `staging` → push → it deploys to the sandbox site →
-verify → open a PR `staging → main` → merge → prod deploys.
+verify → open a PR `staging → main` → merge (CI runs, nothing deploys) → when you
+are ready to release, **push `main` to `production`**:
+
+```bash
+git push origin main:production   # ← the only thing that deploys the live site
+```
+
+> A manual `workflow_dispatch` run of the deploy workflow also **only deploys when
+> run from the `production` branch**; from `main` it just runs the checks.
 
 > First-time `staging` branch: `git switch -c staging && git push -u origin staging`.
 > `.env.staging` must already exist on the server (see One-time setup above) or

@@ -1,21 +1,28 @@
-# PR → typecheck + lint only
-# Push to main (or manual run) → typecheck → build & push both images →
-#                                ship to the VPS → migrate/seed → health-gate.
+# ONLY the `production` branch deploys to the live site. `main` is the safe
+# integration branch: it runs CI but never touches the server.
 #
-# Single workflow: the typecheck job runs on every event; the build-and-deploy
-# job is gated to non-PR events, so PRs never touch the server.
+#   PR → main|production          → typecheck + lint + test only
+#   Push to main                  → typecheck + lint + test only (NO deploy)
+#   Push to production            → typecheck → build & push both images →
+#                                   ship to the VPS → migrate/seed → health-gate
+#   Manual run (workflow_dispatch)→ only deploys when run FROM the `production`
+#                                   branch; from main it just runs the checks.
+#
+# Single workflow: the typecheck job runs on every event; build + deploy are
+# gated on `github.ref == refs/heads/production`, so neither a PR nor a push to
+# main can ever reach the server. To release: `git push origin main:production`.
 #
 # SSH auth: the deploy key is stored base64-encoded (single line) in the
 # VPS_SSH_KEY_B64 secret — a single line can't get its newlines mangled on
 # paste, which is what broke the multi-line VPS_SSH_KEY. We decode it to a file
 # and use plain ssh/scp (no appleboy key-parsing quirks).
-name: Deploy to Production
+name: CI & Deploy to Production
 
 on:
   push:
-    branches: [main]
+    branches: [main, production]
   pull_request:
-    branches: [main]
+    branches: [main, production]
   workflow_dispatch:
     inputs:
       seed_database:
@@ -69,11 +76,12 @@ jobs:
   # ---------------------------------------------------------------
   # Build + push the api and web images IN PARALLEL — one matrix leg each, on
   # its own runner, so the slower (web / next build) no longer waits behind the
-  # api. Skipped on pull_request; needs typecheck green.
+  # api. Runs ONLY on the production branch (never on a PR, never on main);
+  # needs typecheck green.
   # ---------------------------------------------------------------
   build:
     name: Build & push (${{ matrix.app }})
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/production'
     needs: typecheck
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -120,11 +128,13 @@ jobs:
 
   # ---------------------------------------------------------------
   # Ship config, render .env, migrate, recreate the stack. Needs BOTH images
-  # (the whole matrix build job) to have been pushed first.
+  # (the whole matrix build job) to have been pushed first. The production-branch
+  # guard is repeated here deliberately (defence in depth): a skipped `build`
+  # would already skip this job, but the condition makes the intent explicit.
   # ---------------------------------------------------------------
   deploy:
     name: Ship & Deploy
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/production'
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 20

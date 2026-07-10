@@ -1,8 +1,12 @@
 # Production Deployment
 
-Push to `main` → GitHub Actions builds both Docker images, pushes them to Docker
-Hub, ships the compose stack to your server, runs DB migrations, and brings the
-app up behind Caddy with automatic HTTPS.
+Push to `production` → GitHub Actions builds both Docker images, pushes them to
+Docker Hub, ships the compose stack to your server, runs DB migrations, and brings
+the app up behind Caddy with automatic HTTPS.
+
+> `production` is the **only** branch that deploys the live site. `main` is the
+> integration branch: pushing to it runs CI (typecheck, lint, tests) and never
+> touches the server. Release with `git push origin main:production`.
 
 **You only need to (1) prepare the server once and (2) set the GitHub secrets.**
 
@@ -86,14 +90,20 @@ Make sure that domain is the one registered with Whish.
 ## 3. First deploy
 
 1. Set every required secret (step 2).
-2. `Actions → Deploy to Production → Run workflow`, set **seed_database = `true`**,
-   and run it. This applies migrations, creates the runtime DB role, and seeds
-   your super admin.
+2. `Actions → CI & Deploy to Production → Run workflow`, **select the `production`
+   branch**, set **seed_database = `true`**, and run it. This applies migrations,
+   creates the runtime DB role, and seeds your super admin.
+   (Running it from `main` only executes the checks — it will never deploy.)
 3. When it finishes, open `https://DOMAIN` and log in with `SEED_ADMIN_EMAIL` /
    `SEED_ADMIN_PASSWORD`. You'll be prompted to set a new password.
 
-After that, **every push to `main` auto-deploys** (migrations run each time;
-seeding stays off).
+After that, **every push to the `production` branch auto-deploys** (migrations run
+each time; seeding stays off). Pushing to `main` runs CI only and never touches the
+server — to release, promote `main` to `production`:
+
+```bash
+git push origin main:production
+```
 
 ---
 
