@@ -65,19 +65,24 @@ export function TeamView({
     {
       key: 'role',
       header: 'Role',
-      cell: (m) => (
-        <select
-          value={m.role}
-          onChange={(e) => updateMu.mutate({ id: m.id, role: e.target.value as UserRole })}
-          className="h-8 rounded-md border border-input bg-background px-2 text-sm"
-        >
-          {COMPANY_ROLE_VALUES.map((r) => (
-            <option key={r} value={r}>
-              {r}
-            </option>
-          ))}
-        </select>
-      ),
+      // Only an owner may change roles (PATCH /company/team/:id is OWNER-only).
+      // Everyone else sees the role as text rather than a control that 403s.
+      cell: (m) =>
+        isOwner ? (
+          <select
+            value={m.role}
+            onChange={(e) => updateMu.mutate({ id: m.id, role: e.target.value as UserRole })}
+            className="h-8 rounded-md border border-input bg-background px-2 text-sm"
+          >
+            {COMPANY_ROLE_VALUES.map((r) => (
+              <option key={r} value={r}>
+                {r}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <span className="text-sm">{m.role}</span>
+        ),
     },
     {
       key: 'status',
@@ -96,34 +101,37 @@ export function TeamView({
       key: 'actions',
       header: '',
       align: 'right',
-      cell: (m) => (
-        <div className="flex items-center justify-end gap-1">
-          {/* Owners can reset a teammate's password, but never their own — they
-              rotate it via Change password, which proves the current one. */}
-          {isOwner && m.id !== currentUserId && (
-            <Button variant="ghost" size="sm" onClick={() => setResetTarget(m)}>
-              Reset password
-            </Button>
-          )}
-          {m.status === 'ACTIVE' ? (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => updateMu.mutate({ id: m.id, status: UserStatus.DISABLED })}
-            >
-              Disable
-            </Button>
-          ) : (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => updateMu.mutate({ id: m.id, status: UserStatus.ACTIVE })}
-            >
-              Reactivate
-            </Button>
-          )}
-        </div>
-      ),
+      // Every mutation on this row is OWNER-only server-side, so a non-owner gets
+      // no buttons at all rather than controls that always fail with a 403.
+      cell: (m) =>
+        !isOwner ? null : (
+          <div className="flex items-center justify-end gap-1">
+            {/* Owners can reset a teammate's password, but never their own — they
+                rotate it via Change password, which proves the current one. */}
+            {m.id !== currentUserId && (
+              <Button variant="ghost" size="sm" onClick={() => setResetTarget(m)}>
+                Reset password
+              </Button>
+            )}
+            {m.status === 'ACTIVE' ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => updateMu.mutate({ id: m.id, status: UserStatus.DISABLED })}
+              >
+                Disable
+              </Button>
+            ) : (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => updateMu.mutate({ id: m.id, status: UserStatus.ACTIVE })}
+              >
+                Reactivate
+              </Button>
+            )}
+          </div>
+        ),
     },
   ];
 
@@ -136,14 +144,17 @@ export function TeamView({
             Invite teammates and manage roles. Only owners can invite or modify roles.
           </p>
         </div>
-        <Button
-          onClick={() => {
-            setCreated(null);
-            setOpen(true);
-          }}
-        >
-          Invite member
-        </Button>
+        {/* POST /company/team is OWNER-only — don't offer it to anyone else. */}
+        {isOwner && (
+          <Button
+            onClick={() => {
+              setCreated(null);
+              setOpen(true);
+            }}
+          >
+            Invite member
+          </Button>
+        )}
       </div>
 
       <Card>

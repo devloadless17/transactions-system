@@ -6,6 +6,7 @@ import type {
   WhishSessionStatus,
 } from '@app/shared';
 import { PrismaService } from '../../database/prisma.service';
+import { breakerWouldResume } from './auto-approval-rules';
 
 const ROW_ID = 'default';
 
@@ -194,12 +195,9 @@ export class AutoApprovalConfigStore {
    */
   async maybeAutoResume(state: AutoApprovalState, session: WhishSessionStatus): Promise<boolean> {
     if (!state.circuitBreakerTrippedAt) return true;
-    const rotated = session.lastRotatedAt ? new Date(session.lastRotatedAt) : null;
-    const healthy =
-      session.configured &&
-      session.lastAuthFailureAt === null &&
-      rotated !== null &&
-      rotated > state.circuitBreakerTrippedAt;
+    // Shared with `autoApprovalSkipReason()` so the Telegram alert can never
+    // disagree with what the poller is about to do.
+    const healthy = breakerWouldResume(state.circuitBreakerTrippedAt, session);
     if (healthy) {
       await this.clearBreaker();
       this.logger.log('Auto-approval circuit breaker auto-resumed (session refreshed)');

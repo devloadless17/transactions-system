@@ -12,13 +12,18 @@ const OK_SUBJECT: AutoApprovalSubject = {
   currency: 'USD',
   netAmount: '100',
 };
+const HEALTHY_SESSION = {
+  configured: true,
+  lastRotatedAt: null as Date | null,
+  lastAuthFailureAt: null as Date | null,
+};
 const OK_GATES: AutoApprovalGates = {
   enabled: true,
   enabledAt: new Date('2026-01-01T00:00:00Z'),
   circuitBreakerTrippedAt: null,
   maxAutoApproveAmount: '500',
   w2wEnabled: true,
-  sessionConfigured: true,
+  session: HEALTHY_SESSION,
 };
 
 const reasonFor = (s: Partial<AutoApprovalSubject> = {}, g: Partial<AutoApprovalGates> = {}) =>
@@ -31,14 +36,67 @@ describe('autoApprovalSkipReason — will auto-approve', () => {
 });
 
 describe('autoApprovalSkipReason — platform gates (mirror tick() order)', () => {
+  const TRIPPED = new Date('2026-06-01T10:00:00Z');
+
   it('CIRCUIT_BREAKER wins even when everything else is fine', () => {
-    expect(reasonFor({}, { circuitBreakerTrippedAt: new Date() })).toBe('CIRCUIT_BREAKER');
+    expect(reasonFor({}, { circuitBreakerTrippedAt: TRIPPED })).toBe('CIRCUIT_BREAKER');
   });
 
   it('breaker is checked before `enabled`', () => {
-    expect(reasonFor({}, { circuitBreakerTrippedAt: new Date(), enabled: false })).toBe(
+    expect(reasonFor({}, { circuitBreakerTrippedAt: TRIPPED, enabled: false })).toBe(
       'CIRCUIT_BREAKER',
     );
+  });
+
+  // tick() calls maybeAutoResume() and CONTINUES when the session was re-pasted
+  // after the trip. Reporting CIRCUIT_BREAKER there would page a human for a
+  // withdrawal the poller is about to auto-settle.
+  it('does NOT report CIRCUIT_BREAKER when the breaker would auto-resume', () => {
+    expect(
+      reasonFor(
+        {},
+        {
+          circuitBreakerTrippedAt: TRIPPED,
+          session: {
+            configured: true,
+            lastRotatedAt: new Date('2026-06-01T10:05:00Z'), // refreshed AFTER the trip
+            lastAuthFailureAt: null,
+          },
+        },
+      ),
+    ).toBeNull();
+  });
+
+  it('still reports CIRCUIT_BREAKER when the session was rotated BEFORE the trip', () => {
+    expect(
+      reasonFor(
+        {},
+        {
+          circuitBreakerTrippedAt: TRIPPED,
+          session: {
+            configured: true,
+            lastRotatedAt: new Date('2026-06-01T09:00:00Z'),
+            lastAuthFailureAt: null,
+          },
+        },
+      ),
+    ).toBe('CIRCUIT_BREAKER');
+  });
+
+  it('still reports CIRCUIT_BREAKER when a rotated session has an auth failure', () => {
+    expect(
+      reasonFor(
+        {},
+        {
+          circuitBreakerTrippedAt: TRIPPED,
+          session: {
+            configured: true,
+            lastRotatedAt: new Date('2026-06-01T10:05:00Z'),
+            lastAuthFailureAt: new Date('2026-06-01T10:06:00Z'),
+          },
+        },
+      ),
+    ).toBe('CIRCUIT_BREAKER');
   });
 
   it('DISABLED when the feature is off', () => {
@@ -54,7 +112,9 @@ describe('autoApprovalSkipReason — platform gates (mirror tick() order)', () =
   });
 
   it('SESSION_UNAVAILABLE when no healthy Whish session', () => {
-    expect(reasonFor({}, { sessionConfigured: false })).toBe('SESSION_UNAVAILABLE');
+    expect(reasonFor({}, { session: { ...HEALTHY_SESSION, configured: false } })).toBe(
+      'SESSION_UNAVAILABLE',
+    );
   });
 });
 

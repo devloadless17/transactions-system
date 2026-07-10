@@ -61,15 +61,17 @@ export class TeamService {
    * resets impossible. This runs under `runAsAdmin` (RLS bypassed), so that
    * check is the tenant boundary; never pass a client-supplied companyId here.
    *
-   * `actorId` (owner path) blocks resetting your OWN password: rotating your own
-   * credential must go through change-password, which proves knowledge of the
-   * current one. Otherwise a hijacked session could mint a new credential
-   * without ever knowing the old.
+   * `actorId` blocks resetting your OWN password: rotating your own credential
+   * must go through change-password, which proves knowledge of the current one.
+   * Otherwise a hijacked session could mint a new credential without ever
+   * knowing the old. It is REQUIRED (pass `null` only for the platform-admin
+   * path, where the actor is never a company user) so that a new call site
+   * cannot silently opt out of the guard.
    */
   async resetPassword(
     companyId: string,
     id: string,
-    actorId?: string,
+    actorId: string | null,
   ): Promise<InviteTeamMemberResponse> {
     if (actorId && actorId === id) {
       throw new ForbiddenError('Use Change password to update your own password');

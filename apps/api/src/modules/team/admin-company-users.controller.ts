@@ -93,7 +93,10 @@ export class AdminCompanyUsersController {
     @Param('id', new ParseUUIDPipe()) id: string,
   ) {
     await this.assertCompanyExists(companyId);
-    return this.team.resetPassword(companyId, id);
+    // `null` actor: a platform admin is never a member of the target company, so
+    // the self-reset guard cannot apply. Passed explicitly because the parameter
+    // is required — no call site can drop the guard by omission.
+    return this.team.resetPassword(companyId, id, null);
   }
 
   @Delete(':id')

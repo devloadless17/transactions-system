@@ -75,11 +75,15 @@ export class NotificationsService {
     amount: string;
     currency: string;
     /**
-     * WITHDRAWAL only: why a human must action this one (it won't auto-approve).
-     * Set ⇒ a Telegram alert fires, carrying this as the reason. Absent/null ⇒
-     * auto-approval will settle it, so nobody is paged.
+     * WITHDRAWAL only. Resolves WHY a human must action this one, or `null` when
+     * auto-approval will settle it (⇒ nobody is paged).
+     *
+     * Deliberately a thunk, not a value: resolving it costs DB reads, and it is
+     * invoked only AFTER the in-app notification is safely created and only when
+     * Telegram is actually configured. So the admin's bell can never be delayed
+     * (or lost) behind those reads, and a bot-less environment does no work.
      */
-    manualActionReason?: string | null;
+    resolveManualActionReason?: () => Promise<string | null>;
   }): Promise<void> {
     let name: string | null = null;
     try {
@@ -102,27 +106,46 @@ export class NotificationsService {
       this.logger.warn(`notify requestSubmitted failed: ${(e as Error).message}`);
     }
 
-    // Also fan out to Telegram, so a request isn't missed when no one is watching
-    // the dashboard. Loads and payouts ALWAYS need a human. Withdrawals only do
-    // when auto-approval won't pick them up — the caller signals that by passing
-    // `manualActionReason` (see WithdrawalsService.resolveManualReason).
+    // Everything below is the Telegram fan-out. The in-app notification above has
+    // already been created — nothing here may delay or suppress it.
     //
-    // Fired independently of the in-app create above — an in-app hiccup must not
-    // suppress the Telegram alert — and fire-and-forget: the client never throws
-    // and is a silent no-op unless the bot credentials are configured (prod only).
-    const alertTelegram =
-      p.flow === 'PAYOUT' ||
-      p.flow === 'LOAD' ||
-      (p.flow === 'WITHDRAWAL' && !!p.manualActionReason);
-    if (alertTelegram) {
+    // Bail before doing ANY work when the bot isn't configured (dev/staging):
+    // `notifyRequest` would no-op anyway, but the withdrawal path's reason
+    // resolver costs two DB reads we'd otherwise pay for a disabled feature.
+    if (!this.telegram.isConfigured()) return;
+
+    // Loads and payouts ALWAYS need a human.
+    if (p.flow === 'PAYOUT' || p.flow === 'LOAD') {
       void this.telegram.notifyRequest({
         flow: p.flow,
         companyName: name,
         amount: p.amount,
         currency: p.currency,
         entityId: p.entityId,
-        reason: p.manualActionReason ?? null,
+        reason: null,
       });
+      return;
+    }
+
+    // Withdrawals only page a human when auto-approval won't take them. Resolving
+    // that costs DB reads, so it runs detached: the caller already returned and
+    // the admin bell already rang.
+    const resolve = p.resolveManualActionReason;
+    if (p.flow === 'WITHDRAWAL' && resolve) {
+      void (async () => {
+        const reason = await resolve();
+        if (!reason) return; // auto-approval will settle it → nobody is paged
+        await this.telegram.notifyRequest({
+          flow: p.flow,
+          companyName: name,
+          amount: p.amount,
+          currency: p.currency,
+          entityId: p.entityId,
+          reason,
+        });
+      })().catch((e) =>
+        this.logger.warn(`telegram withdrawal alert failed: ${(e as Error).message}`),
+      );
     }
   }
 

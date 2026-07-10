@@ -157,12 +157,13 @@ export class CompaniesService {
       }
 
       // One batched query for the page's balances — never one lookup per row.
-      // Served by the wallets (company_id, currency) unique index.
+      // Served by the wallets (company_id, currency) unique index. No aggregation:
+      // that unique constraint means there is exactly one wallet per
+      // (company, currency), so a GROUP BY … SUM could never combine anything.
       const walletRows = rows.length
-        ? await tx.wallet.groupBy({
-            by: ['companyId', 'currency'],
+        ? await tx.wallet.findMany({
             where: { companyId: { in: rows.map((r) => r.id) } },
-            _sum: { availableBalance: true },
+            select: { companyId: true, currency: true, availableBalance: true },
           })
         : [];
 
@@ -171,7 +172,7 @@ export class CompaniesService {
         const list = byCompany.get(w.companyId) ?? [];
         list.push({
           currency: w.currency.trim(),
-          availableBalance: w._sum.availableBalance?.toString() ?? '0',
+          availableBalance: w.availableBalance.toString(),
         });
         byCompany.set(w.companyId, list);
       }

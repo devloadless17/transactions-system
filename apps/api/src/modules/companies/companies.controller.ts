@@ -50,15 +50,20 @@ export class CompaniesController {
   // while every other route on this controller stays SUPER_ADMIN/ADMIN_OPERATOR.
   //
   // Wallet balances are narrower still: ONLY a SUPER_ADMIN sees how much money a
-  // tenant holds. Enforced here (the service never queries wallets otherwise),
-  // not in the UI — hiding a column would still ship the numbers over the wire.
+  // tenant holds, and only when they explicitly ask (`?withBalances=true`).
+  // Both conditions are required:
+  //   - the role check is the AUTHORIZATION gate (the service never queries the
+  //     wallets otherwise, so the figures cannot leak over the wire);
+  //   - the opt-in keeps the cost off callers that only want names — notably the
+  //     admin company-name filter, which fetches up to 100 companies per render.
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
   @Get()
   async list(
     @Query(new ZodPipe(listCompaniesQuerySchema)) query: ListCompaniesQuery,
     @CurrentUser() user: AuthPrincipal,
   ) {
-    return this.companies.list(query, { includeBalances: user.role === UserRole.SUPER_ADMIN });
+    const includeBalances = query.withBalances === 'true' && user.role === UserRole.SUPER_ADMIN;
+    return this.companies.list(query, { includeBalances });
   }
 
   @Get(':id')

@@ -16,11 +16,13 @@ export default async function CompaniesPage() {
   const canViewBalances = session?.role === UserRole.SUPER_ADMIN;
   // Server-prefetch the first page of companies so the table renders populated
   // on first paint (deterministic default key: page 1, fixed pageSize).
+  // Key AND path must mirror the client query exactly, or the prefetched page
+  // (without balances) would paint first and be replaced on hydration.
   return withListPrefetch(
     [
       {
-        queryKey: ['admin', 'companies', { page: 1 }],
-        path: '/admin/companies?page=1&pageSize=20',
+        queryKey: ['admin', 'companies', { page: 1, withBalances: canViewBalances }],
+        path: `/admin/companies?page=1&pageSize=20${canViewBalances ? '&withBalances=true' : ''}`,
       },
     ],
     <CompaniesView canManage={canManage} canViewBalances={canViewBalances} />,

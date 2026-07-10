@@ -102,17 +102,27 @@ describe('TeamService.resetPassword — owner path', () => {
   });
 });
 
-describe('TeamService.resetPassword — admin path is unchanged', () => {
-  it('still works without an actorId (platform admin resetting a company user)', async () => {
+describe('TeamService.resetPassword — admin path (explicit null actor)', () => {
+  it('works with a null actorId (platform admin resetting a company user)', async () => {
     const { svc, refreshUpdateMany } = makeService(member());
-    await expect(svc.resetPassword(OWNER_CO, 'member-1')).resolves.toMatchObject({
+    await expect(svc.resetPassword(OWNER_CO, 'member-1', null)).resolves.toMatchObject({
       temporaryPassword: expect.any(String),
     });
     expect(refreshUpdateMany).toHaveBeenCalled();
   });
 
-  it('an admin can reset a user whose id equals nothing in session (no self-guard trip)', async () => {
+  it('a null actor never trips the self-guard (an admin is not a company user)', async () => {
     const { svc } = makeService(member({ id: OWNER_ID }));
-    await expect(svc.resetPassword(OWNER_CO, OWNER_ID)).resolves.toBeTruthy();
+    await expect(svc.resetPassword(OWNER_CO, OWNER_ID, null)).resolves.toBeTruthy();
+  });
+
+  // `actorId` is a REQUIRED parameter precisely so a new call site cannot forget
+  // it and silently lose the self-reset guard. Pinned here as a type-level fact:
+  // omitting it is a compile error, so the guard is opt-out, not opt-in.
+  it('the signature forces every caller to decide (compile-time guard)', () => {
+    const svc = makeService(member()).svc;
+    // @ts-expect-error actorId is required — omitting it must not compile.
+    void (() => svc.resetPassword(OWNER_CO, 'member-1'));
+    expect(true).toBe(true);
   });
 });

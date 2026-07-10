@@ -50,10 +50,16 @@ export function CompaniesView({
   const [page, setPage] = useState(1);
   const [createOpen, setCreateOpen] = useState(false);
 
+  // Balances are opt-in per request (they cost a wallet aggregation) AND
+  // SUPER_ADMIN-only server-side. Keyed on the flag so a role change can't serve
+  // a cached balance-less page as if it were the real thing.
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ['admin', 'companies', { page }],
+    queryKey: ['admin', 'companies', { page, withBalances: canViewBalances }],
     queryFn: () =>
-      apiFetch<CompanyListResponse>(`/admin/companies?page=${page}&pageSize=${PAGE_SIZE}`),
+      apiFetch<CompanyListResponse>(
+        `/admin/companies?page=${page}&pageSize=${PAGE_SIZE}` +
+          (canViewBalances ? '&withBalances=true' : ''),
+      ),
   });
 
   const columns: Column<CompanyListItem>[] = [

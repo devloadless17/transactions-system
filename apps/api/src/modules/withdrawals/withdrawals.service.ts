@@ -49,6 +49,19 @@ import { streamFlowCsv } from '../../common/flow-csv';
 
 const REQUESTABLE_STATUS: WithdrawalStatus = 'PENDING';
 
+/** Cap the (uncached) config + Whish-session reads behind the Telegram alert. */
+const ELIGIBILITY_TIMEOUT_MS = 5_000;
+
+/** Reject if `p` hasn't settled within `ms`. Clears its timer either way. */
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const expiry = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    timer.unref?.();
+  });
+  return Promise.race([p, expiry]).finally(() => clearTimeout(timer));
+}
+
 // Per-(filter) list COUNT cached briefly so paging reuses it instead of re-running
 // COUNT(*) on every page — mirrors the transactions/ledger lists. Rows stay live;
 // the total may lag by up to this window. TTL-only (not invalidated on write).
@@ -179,19 +192,17 @@ export class WithdrawalsService {
     this.notify(row.companyId);
     // Unlike loads/payouts, a withdrawal only pages a human when auto-approval
     // will NOT pick it up (over the cap, cash/crypto, non-USD, sub-$1 net, or the
-    // feature is off/paused). Resolved post-commit and fire-and-forget: the two
-    // extra reads must never sit on the money path.
-    void (async () => {
-      const manualActionReason = await this.resolveManualReason(row);
-      await this.notifications.requestSubmitted({
-        flow: 'WITHDRAWAL',
-        companyId: row.companyId,
-        entityId: row.id,
-        amount: row.amount.toString(),
-        currency: row.currency,
-        manualActionReason,
-      });
-    })().catch((e) => this.logger.warn(`withdrawal notify failed: ${(e as Error).message}`));
+    // feature is off/paused). The reason is resolved lazily — AFTER the in-app
+    // notification is created, and only if Telegram is configured — so its DB
+    // reads can never delay or lose the admin's queue entry.
+    void this.notifications.requestSubmitted({
+      flow: 'WITHDRAWAL',
+      companyId: row.companyId,
+      entityId: row.id,
+      amount: row.amount.toString(),
+      currency: row.currency,
+      resolveManualActionReason: () => this.resolveManualReason(row),
+    });
     const response = mapWithdrawal(row);
     // Push the new withdrawal to the company's CRM (guarded, fire-and-forget).
     this.crm.emitWithdrawal(response, 'withdrawal.pending');
@@ -211,10 +222,13 @@ export class WithdrawalsService {
   private async resolveManualReason(row: Withdrawal): Promise<string | null> {
     const netAmount = row.netAmount.toString();
     try {
-      const [state, session] = await Promise.all([
-        this.autoApprovalConfig.getState(),
-        this.transfers.sessionStatus(),
-      ]);
+      // Bounded: these are uncached admin transactions, and a stalled Postgres
+      // must degrade to "alert anyway", never to a promise that never settles.
+      const [state, session] = await withTimeout(
+        Promise.all([this.autoApprovalConfig.getState(), this.transfers.sessionStatus()]),
+        ELIGIBILITY_TIMEOUT_MS,
+        'auto-approval eligibility lookup',
+      );
       const reason = autoApprovalSkipReason(
         { payoutMethod: row.payoutMethod, currency: row.currency, netAmount },
         {
@@ -223,7 +237,7 @@ export class WithdrawalsService {
           circuitBreakerTrippedAt: state.circuitBreakerTrippedAt,
           maxAutoApproveAmount: state.maxAutoApproveAmount,
           w2wEnabled: this.transfers.isW2WEnabled(),
-          sessionConfigured: session.configured,
+          session,
         },
       );
       if (!reason) return null;

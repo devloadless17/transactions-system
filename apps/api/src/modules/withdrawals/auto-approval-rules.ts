@@ -43,6 +43,13 @@ export interface AutoApprovalSubject {
   netAmount: string;
 }
 
+/** The non-secret Whish session health the breaker + gates depend on. */
+export interface SessionHealth {
+  configured: boolean;
+  lastRotatedAt: Date | string | null;
+  lastAuthFailureAt: Date | string | null;
+}
+
 /** Live platform state the poller would see. Mirrors `tick()`'s preconditions. */
 export interface AutoApprovalGates {
   enabled: boolean;
@@ -51,7 +58,26 @@ export interface AutoApprovalGates {
   /** Decimal string, from `AutoApprovalConfigStore.getState()`. */
   maxAutoApproveAmount: string;
   w2wEnabled: boolean;
-  sessionConfigured: boolean;
+  session: SessionHealth;
+}
+
+/**
+ * A tripped breaker does NOT permanently stop auto-approval: `tick()` calls
+ * `AutoApprovalConfigStore.maybeAutoResume()`, which clears the breaker and
+ * CONTINUES once the Whish session has been re-pasted since the trip. This is
+ * the pure decision behind that, shared by the store and by
+ * `autoApprovalSkipReason()` — otherwise the predicate would page a human for
+ * every withdrawal in the window between a session refresh and the next tick,
+ * each of which the poller then happily auto-settles.
+ */
+export function breakerWouldResume(trippedAt: Date, session: SessionHealth): boolean {
+  const rotated = session.lastRotatedAt ? new Date(session.lastRotatedAt) : null;
+  return (
+    session.configured &&
+    session.lastAuthFailureAt === null &&
+    rotated !== null &&
+    rotated > trippedAt
+  );
 }
 
 /**
@@ -69,11 +95,18 @@ export function autoApprovalSkipReason(
   subject: AutoApprovalSubject,
   gates: AutoApprovalGates,
 ): AutoApprovalSkipReason | null {
-  // Platform-wide gates (tick() returns early on each of these).
-  if (gates.circuitBreakerTrippedAt) return 'CIRCUIT_BREAKER';
+  // Platform-wide gates (tick() returns early on each of these). The breaker only
+  // blocks if it would NOT auto-resume — matching tick(), which resumes and
+  // carries on when the session was refreshed after the trip.
+  if (
+    gates.circuitBreakerTrippedAt &&
+    !breakerWouldResume(gates.circuitBreakerTrippedAt, gates.session)
+  ) {
+    return 'CIRCUIT_BREAKER';
+  }
   if (!gates.enabled || !gates.enabledAt) return 'DISABLED';
   if (!gates.w2wEnabled) return 'W2W_DISABLED';
-  if (!gates.sessionConfigured) return 'SESSION_UNAVAILABLE';
+  if (!gates.session.configured) return 'SESSION_UNAVAILABLE';
 
   // Per-withdrawal scoping (the candidate query's `where`).
   if (subject.payoutMethod !== AUTO_APPROVE_METHOD) return 'METHOD_NOT_SUPPORTED';

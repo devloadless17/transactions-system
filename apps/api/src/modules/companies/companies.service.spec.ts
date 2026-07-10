@@ -30,39 +30,41 @@ function makeService(opts: {
   pageWallets: Array<{ companyId: string; currency: string; sum: string }>;
   currencyTotals: Array<{ currency: string; sum: string }>;
 }) {
-  type GroupByArgs = { by: string[]; where?: { companyId?: { in: string[] } } };
-
-  const groupBy = vi.fn(({ by }: GroupByArgs) => {
-    if (by.includes('companyId')) {
-      return Promise.resolve(
-        opts.pageWallets.map((w) => ({
-          companyId: w.companyId,
-          currency: w.currency,
-          _sum: { availableBalance: dec(w.sum) },
-        })),
-      );
-    }
-    return Promise.resolve(
+  // Totals: a genuine cross-company aggregate.
+  const groupBy = vi.fn(() =>
+    Promise.resolve(
       opts.currencyTotals.map((t) => ({
         currency: t.currency,
         _sum: { availableBalance: dec(t.sum) },
       })),
-    );
-  });
+    ),
+  );
+  // Per-page balances: a plain read — `wallets` is unique on (companyId, currency),
+  // so there is nothing to aggregate.
+  type FindManyArgs = { where: { companyId: { in: string[] } } };
+  const walletFindMany = vi.fn((_args: FindManyArgs) =>
+    Promise.resolve(
+      opts.pageWallets.map((w) => ({
+        companyId: w.companyId,
+        currency: w.currency,
+        availableBalance: dec(w.sum),
+      })),
+    ),
+  );
 
   const tx = {
     company: {
       findMany: vi.fn().mockResolvedValue(opts.companies),
       count: vi.fn().mockResolvedValue(opts.total),
     },
-    wallet: { groupBy },
+    wallet: { groupBy, findMany: walletFindMany },
   };
   const prisma = {
     runAsAdmin: vi.fn((cb: (t: typeof tx) => unknown) => cb(tx)),
   } as unknown as PrismaService;
   const realtime = { admin: vi.fn() } as unknown as RealtimeService;
 
-  return { svc: new CompaniesService(prisma, realtime), groupBy, tx };
+  return { svc: new CompaniesService(prisma, realtime), groupBy, walletFindMany, tx };
 }
 
 const query = { page: 1, pageSize: 2 } as never;
@@ -107,7 +109,7 @@ describe('CompaniesService.list — balances & totals', () => {
   });
 
   it('fetches balances in ONE batched query per concern (no N+1)', async () => {
-    const { svc, groupBy } = makeService({
+    const { svc, groupBy, walletFindMany } = makeService({
       companies: [COMPANY('c1', 'A'), COMPANY('c2', 'B')],
       total: 2,
       pageWallets: [{ companyId: 'c1', currency: 'USD', sum: '10' }],
@@ -115,10 +117,11 @@ describe('CompaniesService.list — balances & totals', () => {
     });
 
     await svc.list(query, AS_SUPER_ADMIN);
-    // Exactly two: one grouped by currency (totals), one by companyId (the page).
-    expect(groupBy).toHaveBeenCalledTimes(2);
-    const pageCall = groupBy.mock.calls.find((c) => c[0].by.includes('companyId'))?.[0];
-    expect(pageCall?.where?.companyId?.in).toEqual(['c1', 'c2']);
+    // One aggregate for the cross-company totals…
+    expect(groupBy).toHaveBeenCalledTimes(1);
+    // …and one plain batched read for the page (never one per row).
+    expect(walletFindMany).toHaveBeenCalledTimes(1);
+    expect(walletFindMany.mock.calls[0][0].where.companyId.in).toEqual(['c1', 'c2']);
   });
 
   it('a company with no wallet reports an empty list, not a fake zero', async () => {
@@ -133,8 +136,8 @@ describe('CompaniesService.list — balances & totals', () => {
     expect(res.data[1].balances).toEqual([]);
   });
 
-  it('skips the wallet lookup entirely when the page is empty', async () => {
-    const { svc, groupBy } = makeService({
+  it('skips the per-page wallet read entirely when the page is empty', async () => {
+    const { svc, groupBy, walletFindMany } = makeService({
       companies: [],
       total: 0,
       pageWallets: [],
@@ -144,8 +147,9 @@ describe('CompaniesService.list — balances & totals', () => {
     const res = await svc.list(query, AS_SUPER_ADMIN);
     expect(res.data).toEqual([]);
     expect(res.totals).toEqual([]);
-    // Only the totals groupBy ran; no pointless `companyId IN ()` query.
+    // Only the totals aggregate ran; no pointless `companyId IN ()` query.
     expect(groupBy).toHaveBeenCalledTimes(1);
+    expect(walletFindMany).not.toHaveBeenCalled();
   });
 
   it('keeps multiple currencies separate and sorted (future-proofing)', async () => {
@@ -197,16 +201,18 @@ describe('CompaniesService.list — balances are SUPER_ADMIN-only', () => {
   });
 
   it('never even queries the wallets table when not permitted (no leak, no cost)', async () => {
-    const { svc, groupBy } = makeService(seeded);
+    const { svc, groupBy, walletFindMany } = makeService(seeded);
     await svc.list(query, { includeBalances: false });
     expect(groupBy).not.toHaveBeenCalled();
+    expect(walletFindMany).not.toHaveBeenCalled();
   });
 
   it('defaults to WITHHOLDING balances when the caller is unspecified (fail closed)', async () => {
-    const { svc, groupBy } = makeService(seeded);
+    const { svc, groupBy, walletFindMany } = makeService(seeded);
     const res = await svc.list(query);
     expect(res.totals).toBeUndefined();
     expect(groupBy).not.toHaveBeenCalled();
+    expect(walletFindMany).not.toHaveBeenCalled();
   });
 
   it('still returns the company rows themselves', async () => {

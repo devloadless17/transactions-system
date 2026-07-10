@@ -79,6 +79,12 @@ export type CompanyListResponse = {
 export const listCompaniesQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(20),
+  // Opt-in: computing balances costs an extra wallet query, and most callers of
+  // this list (e.g. the admin company-name filter) only want names. Asking for
+  // it does NOT grant it — a SUPER_ADMIN role is still required.
+  // Left as a literal (not transformed to boolean) because ZodPipe requires the
+  // schema's input and output types to match.
+  withBalances: z.enum(['true', 'false']).optional(),
   search: z.string().trim().optional(),
   status: z.nativeEnum(CompanyStatus).optional(),
   // Comma-separated company ids — resolve names for just the rows on screen
