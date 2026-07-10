@@ -116,6 +116,50 @@ describe('TelegramClient', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('renders a WITHDRAWAL alert with the reason and the withdrawals link', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okResponse());
+    vi.stubGlobal('fetch', fetchMock);
+
+    await makeClient().notifyRequest({
+      flow: 'WITHDRAWAL',
+      companyName: 'Acme',
+      amount: '620.00',
+      currency: 'USD',
+      entityId: 'w-1',
+      reason: 'above cap (610.00 > 500 USD)',
+    });
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.text).toContain('🟠 New WITHDRAWAL request');
+    expect(body.text).toContain('needs manual approval');
+    expect(body.text).toContain('Reason: above cap (610.00 &gt; 500 USD)');
+    expect(body.text).toContain('https://app.example.com/admin/withdrawals');
+  });
+
+  it('escapes HTML in the reason (it is interpolated into the message)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okResponse());
+    vi.stubGlobal('fetch', fetchMock);
+    await makeClient().notifyRequest({
+      flow: 'WITHDRAWAL',
+      companyName: 'Acme',
+      amount: '5',
+      currency: 'USD',
+      entityId: 'w-2',
+      reason: '<b>CASH</b> & co',
+    });
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.text).toContain('&lt;b&gt;CASH&lt;/b&gt; &amp; co');
+    expect(body.text).not.toContain('<b>CASH</b>');
+  });
+
+  it('omits the Reason line entirely when no reason is given (load/payout)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okResponse());
+    vi.stubGlobal('fetch', fetchMock);
+    await makeClient().notifyRequest(REQ);
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.text).not.toContain('Reason:');
+  });
+
   it('never throws when the network keeps failing; gives up after 3 attempts', async () => {
     vi.useFakeTimers();
     const fetchMock = vi.fn().mockRejectedValue(new Error('ECONNRESET'));

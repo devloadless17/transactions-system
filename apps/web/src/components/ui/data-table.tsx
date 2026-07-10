@@ -4,6 +4,7 @@ import {
   Table,
   TableBody,
   TableCell,
+  TableFooter,
   TableHead,
   TableHeader,
   TableRow,
@@ -48,6 +49,14 @@ export type DataTableProps<T> = {
    * render their own <Pagination/> against the API's meta instead.
    */
   pageSize?: number;
+  /**
+   * Optional totals row, rendered in a `<tfoot>` beneath the body. Supply the
+   * `<TableRow>`/`<TableCell>`s yourself so the cells can span/align to match
+   * your columns. Only shown once real rows are on screen — never over the
+   * loading skeleton, the error row, or the empty state, where a "total" would
+   * be meaningless or misleading.
+   */
+  footer?: React.ReactNode;
 };
 
 function errorMessage(error: unknown): string {
@@ -78,9 +87,12 @@ export function DataTable<T>({
   stickyHeader,
   className,
   pageSize,
+  footer,
 }: DataTableProps<T>): React.JSX.Element {
   const colSpan = columns.length || 1;
   const showEmpty = !isLoading && !error && rows != null && rows.length === 0;
+  // A totals row only makes sense once real data is on screen.
+  const showFooter = footer != null && !isLoading && rows != null && rows.length > 0;
 
   // Client-side paging (opt-in via `pageSize`): slice the already-loaded rows and
   // expose Prev/Next. Pure view state — never touches the network.
@@ -184,6 +196,7 @@ export function DataTable<T>({
                 </TableRow>
               ))}
           </TableBody>
+          {showFooter && <TableFooter>{footer}</TableFooter>}
         </Table>
       </div>
       {pageSize != null && (

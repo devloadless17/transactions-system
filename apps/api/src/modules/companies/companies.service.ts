@@ -2,12 +2,13 @@ import { Injectable, Logger } from '@nestjs/common';
 import argon2 from 'argon2';
 import crypto from 'node:crypto';
 import {
+  type CompanyBalance,
+  type CompanyListResponse,
   type CompanyResponse,
   type CompanyStatus,
   type CreateCompanyInput,
   type CreateCompanyResponse,
   type ListCompaniesQuery,
-  type PaginatedResponse,
   type UpdateCompanyInput,
   UserRole,
   UserStatus,
@@ -95,7 +96,15 @@ export class CompaniesService {
     return result;
   }
 
-  async list(query: ListCompaniesQuery): Promise<PaginatedResponse<CompanyResponse>> {
+  /**
+   * `includeBalances` is an AUTHORIZATION gate, not a display toggle: only a
+   * SUPER_ADMIN may see how much money each tenant holds. When false we never
+   * even query the wallets, so the figures cannot leak through the response.
+   */
+  async list(
+    query: ListCompaniesQuery,
+    opts: { includeBalances: boolean } = { includeBalances: false },
+  ): Promise<CompanyListResponse> {
     return this.prisma.runAsAdmin(async (tx) => {
       const where: Prisma.CompanyWhereInput = {};
       if (query.status) where.status = query.status;
@@ -114,7 +123,7 @@ export class CompaniesService {
       if (idList?.length) where.id = { in: idList };
       const skip = (query.page - 1) * query.pageSize;
       assertListOffset(skip);
-      const [rows, total] = await Promise.all([
+      const [rows, total, totalsByCurrency] = await Promise.all([
         tx.company.findMany({
           where,
           orderBy: { createdAt: 'desc' },
@@ -122,15 +131,71 @@ export class CompaniesService {
           take: query.pageSize,
         }),
         tx.company.count({ where }),
+        // Platform float: available balance per currency across EVERY company
+        // matching the query — not just this page — so the admin's "total" is a
+        // real total rather than a page subtotal. Mirrors the groupBy in
+        // platform-analytics.service.ts.
+        opts.includeBalances
+          ? tx.wallet.groupBy({
+              by: ['currency'],
+              where: { company: where },
+              _sum: { availableBalance: true },
+            })
+          : Promise.resolve([]),
       ]);
+
+      if (!opts.includeBalances) {
+        return {
+          data: rows.map(mapCompany),
+          meta: {
+            page: query.page,
+            pageSize: query.pageSize,
+            total,
+            totalPages: Math.max(1, Math.ceil(total / query.pageSize)),
+          },
+        };
+      }
+
+      // One batched query for the page's balances — never one lookup per row.
+      // Served by the wallets (company_id, currency) unique index.
+      const walletRows = rows.length
+        ? await tx.wallet.groupBy({
+            by: ['companyId', 'currency'],
+            where: { companyId: { in: rows.map((r) => r.id) } },
+            _sum: { availableBalance: true },
+          })
+        : [];
+
+      const byCompany = new Map<string, CompanyBalance[]>();
+      for (const w of walletRows) {
+        const list = byCompany.get(w.companyId) ?? [];
+        list.push({
+          currency: w.currency.trim(),
+          availableBalance: w._sum.availableBalance?.toString() ?? '0',
+        });
+        byCompany.set(w.companyId, list);
+      }
+
       return {
-        data: rows.map(mapCompany),
+        data: rows.map((r) => ({
+          ...mapCompany(r),
+          // A company with no wallet yet reports an empty list, not a fake zero.
+          balances: (byCompany.get(r.id) ?? []).sort((a, b) =>
+            a.currency.localeCompare(b.currency),
+          ),
+        })),
         meta: {
           page: query.page,
           pageSize: query.pageSize,
           total,
           totalPages: Math.max(1, Math.ceil(total / query.pageSize)),
         },
+        totals: totalsByCurrency
+          .map((t) => ({
+            currency: t.currency.trim(),
+            availableBalance: t._sum.availableBalance?.toString() ?? '0',
+          }))
+          .sort((a, b) => a.currency.localeCompare(b.currency)),
       };
     });
   }

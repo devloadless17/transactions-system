@@ -26,6 +26,22 @@ const TableBody = React.forwardRef<
 ));
 TableBody.displayName = 'TableBody';
 
+/** Totals row. `border-t` separates it from the body; no hover, it isn't a record. */
+const TableFooter = React.forwardRef<
+  HTMLTableSectionElement,
+  React.HTMLAttributes<HTMLTableSectionElement>
+>(({ className, ...props }, ref) => (
+  <tfoot
+    ref={ref}
+    className={cn(
+      'border-t bg-muted/40 font-medium [&_tr]:border-0 [&_tr:hover]:bg-transparent',
+      className,
+    )}
+    {...props}
+  />
+));
+TableFooter.displayName = 'TableFooter';
+
 const TableRow = React.forwardRef<HTMLTableRowElement, React.HTMLAttributes<HTMLTableRowElement>>(
   ({ className, ...props }, ref) => (
     <tr
@@ -67,4 +83,4 @@ const TableCell = React.forwardRef<
 ));
 TableCell.displayName = 'TableCell';
 
-export { Table, TableHeader, TableBody, TableRow, TableHead, TableCell };
+export { Table, TableHeader, TableBody, TableFooter, TableRow, TableHead, TableCell };

@@ -34,6 +34,8 @@ import type { AnalyticsService } from '../../src/modules/analytics/analytics.ser
 import type { RealtimeService } from '../../src/modules/realtime/realtime.service';
 import type { NotificationsService } from '../../src/modules/notifications/notifications.service';
 import type { CrmDispatchService } from '../../src/modules/crm/crm-dispatch.service';
+import type { AutoApprovalConfigStore } from '../../src/modules/withdrawals/auto-approval-config.store';
+import type { WhishTransfersService } from '../../src/modules/whish/whish-transfers.service';
 import type { WhishClient, WhishCollectStatus } from '../../src/modules/whish/whish.client';
 import type { WhishWebhookService } from '../../src/modules/whish/whish-webhook.service';
 import type { TransactionLogsService } from '../../src/modules/transaction-logs/transaction-logs.service';
@@ -105,6 +107,26 @@ const fakeCrm = {
   emitWithdrawal: () => undefined,
 } as unknown as CrmDispatchService;
 
+// Withdrawal auto-approval ships OFF, so mirror that here: every withdrawal is
+// treated as needing a human. Read post-commit by `resolveManualReason()`.
+const fakeAutoApprovalConfig = {
+  getState: async () => ({
+    enabled: false,
+    enabledAt: null,
+    holdSeconds: 30,
+    maxAutoApproveAmount: '500',
+    circuitBreakerTrippedAt: null,
+    consecutiveFailures: 0,
+    failureThreshold: 3,
+    updatedAt: null,
+  }),
+} as unknown as AutoApprovalConfigStore;
+
+const fakeTransfers = {
+  isW2WEnabled: () => false,
+  sessionStatus: async () => ({ configured: false }),
+} as unknown as WhishTransfersService;
+
 // Whish settlement side-effects not under test here (webhook delivery, tx logs),
 // plus a minimal config the service reads. The reconcile path never touches
 // these on the asserted branches; they exist only to satisfy construction.
@@ -152,6 +174,8 @@ export function buildHarness(): Harness {
     fakeCache,
     fees,
     fakeCrm,
+    fakeAutoApprovalConfig,
+    fakeTransfers,
   );
   const payouts = new PayoutsService(
     prisma,

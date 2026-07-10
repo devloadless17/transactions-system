@@ -43,6 +43,39 @@ export const companyResponseSchema = z.object({
 });
 export type CompanyResponse = z.infer<typeof companyResponseSchema>;
 
+/**
+ * A company's wallet balance in one currency. Kept per-currency (rather than a
+ * single scalar) because a company may hold a wallet per currency — only USD
+ * exists today, but the shape stays correct when more are added.
+ */
+export const companyBalanceSchema = z.object({
+  currency: z.string(),
+  availableBalance: z.string(),
+});
+export type CompanyBalance = z.infer<typeof companyBalanceSchema>;
+
+/**
+ * A company row on the admin list. `balances` is present ONLY for SUPER_ADMIN —
+ * company money is not visible to ADMIN_OPERATOR or BACKOFFICE, who may see that
+ * a tenant exists but not how much it holds. Omitted (not zeroed) otherwise, so
+ * a missing field can never be mistaken for an empty wallet.
+ */
+export const companyListItemSchema = companyResponseSchema.extend({
+  balances: z.array(companyBalanceSchema).optional(),
+});
+export type CompanyListItem = z.infer<typeof companyListItemSchema>;
+
+/**
+ * Paginated companies plus `totals` — the summed available balance per currency
+ * across EVERY company matching the query, not just the current page. Like
+ * `balances`, present only for SUPER_ADMIN.
+ */
+export type CompanyListResponse = {
+  data: CompanyListItem[];
+  meta: { page: number; pageSize: number; total: number; totalPages: number };
+  totals?: CompanyBalance[];
+};
+
 export const listCompaniesQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(20),

@@ -23,6 +23,8 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CsrfGuard } from '../auth/guards/csrf.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import type { AuthPrincipal } from '../../common/types/request.types';
 import { Audited } from '../audit/audit.decorator';
 import { CompaniesService } from './companies.service';
 
@@ -46,10 +48,17 @@ export class CompaniesController {
   // Back-office staff may view the list of companies (who's on the platform),
   // but not a company's detail/analytics — so this read is widened to BACKOFFICE
   // while every other route on this controller stays SUPER_ADMIN/ADMIN_OPERATOR.
+  //
+  // Wallet balances are narrower still: ONLY a SUPER_ADMIN sees how much money a
+  // tenant holds. Enforced here (the service never queries wallets otherwise),
+  // not in the UI — hiding a column would still ship the numbers over the wire.
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
   @Get()
-  async list(@Query(new ZodPipe(listCompaniesQuerySchema)) query: ListCompaniesQuery) {
-    return this.companies.list(query);
+  async list(
+    @Query(new ZodPipe(listCompaniesQuerySchema)) query: ListCompaniesQuery,
+    @CurrentUser() user: AuthPrincipal,
+  ) {
+    return this.companies.list(query, { includeBalances: user.role === UserRole.SUPER_ADMIN });
   }
 
   @Get(':id')

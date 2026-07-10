@@ -1,4 +1,5 @@
-import { Injectable, Logger, StreamableFile } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import type { StreamableFile } from '@nestjs/common';
 import {
   Money,
   type ApproveWithdrawalInput,
@@ -25,6 +26,15 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { CacheService } from '../cache/cache.service';
 import { FeesService } from '../commissions/fees.service';
 import { CrmDispatchService } from '../crm/crm-dispatch.service';
+import { WhishTransfersService } from '../whish/whish-transfers.service';
+import { AutoApprovalConfigStore } from './auto-approval-config.store';
+import {
+  AUTO_APPROVE_CURRENCY,
+  AUTO_APPROVE_METHOD,
+  AUTO_APPROVE_MIN_NET,
+  autoApprovalSkipReason,
+  describeSkipReason,
+} from './auto-approval-rules';
 import {
   assertSufficient,
   netOfFee,
@@ -67,6 +77,11 @@ export class WithdrawalsService {
     private readonly cache: CacheService,
     private readonly fees: FeesService,
     private readonly crm: CrmDispatchService,
+    // Read-only, used post-commit to predict whether auto-approval will pick a
+    // withdrawal up. `AutoApprovalConfigStore` is a leaf (Prisma only) and
+    // `WhishTransfersService` never injects us back, so neither creates a cycle.
+    private readonly autoApprovalConfig: AutoApprovalConfigStore,
+    private readonly transfers: WhishTransfersService,
   ) {}
 
   private async invalidateAnalytics(): Promise<void> {
@@ -162,17 +177,68 @@ export class WithdrawalsService {
 
     await this.invalidateAnalytics();
     this.notify(row.companyId);
-    void this.notifications.requestSubmitted({
-      flow: 'WITHDRAWAL',
-      companyId: row.companyId,
-      entityId: row.id,
-      amount: row.amount.toString(),
-      currency: row.currency,
-    });
+    // Unlike loads/payouts, a withdrawal only pages a human when auto-approval
+    // will NOT pick it up (over the cap, cash/crypto, non-USD, sub-$1 net, or the
+    // feature is off/paused). Resolved post-commit and fire-and-forget: the two
+    // extra reads must never sit on the money path.
+    void (async () => {
+      const manualActionReason = await this.resolveManualReason(row);
+      await this.notifications.requestSubmitted({
+        flow: 'WITHDRAWAL',
+        companyId: row.companyId,
+        entityId: row.id,
+        amount: row.amount.toString(),
+        currency: row.currency,
+        manualActionReason,
+      });
+    })().catch((e) => this.logger.warn(`withdrawal notify failed: ${(e as Error).message}`));
     const response = mapWithdrawal(row);
     // Push the new withdrawal to the company's CRM (guarded, fire-and-forget).
     this.crm.emitWithdrawal(response, 'withdrawal.pending');
     return response;
+  }
+
+  /**
+   * Why a human must action this withdrawal, or `null` if auto-approval will
+   * settle it (in which case no one is alerted). Predicts the poller's decision
+   * using the shared rules, against the NET amount — the cap is applied after the
+   * fee, so a gross over the cap can still auto-approve.
+   *
+   * Fails LOUD: if the config or Whish session can't be read we return a reason
+   * anyway, so a lookup blip produces a spurious ping rather than a withdrawal
+   * that silently waits for someone who was never told.
+   */
+  private async resolveManualReason(row: Withdrawal): Promise<string | null> {
+    const netAmount = row.netAmount.toString();
+    try {
+      const [state, session] = await Promise.all([
+        this.autoApprovalConfig.getState(),
+        this.transfers.sessionStatus(),
+      ]);
+      const reason = autoApprovalSkipReason(
+        { payoutMethod: row.payoutMethod, currency: row.currency, netAmount },
+        {
+          enabled: state.enabled,
+          enabledAt: state.enabledAt,
+          circuitBreakerTrippedAt: state.circuitBreakerTrippedAt,
+          maxAutoApproveAmount: state.maxAutoApproveAmount,
+          w2wEnabled: this.transfers.isW2WEnabled(),
+          sessionConfigured: session.configured,
+        },
+      );
+      if (!reason) return null;
+      return describeSkipReason(reason, {
+        payoutMethod: row.payoutMethod,
+        currency: row.currency,
+        netAmount,
+        maxAutoApproveAmount: state.maxAutoApproveAmount,
+      });
+    } catch (e) {
+      this.logger.warn(
+        `could not determine auto-approval eligibility for withdrawal ${row.id}; alerting anyway: ${(e as Error).message}`,
+      );
+      return 'eligibility unknown — check manually';
+    }
   }
 
   /**
@@ -557,12 +623,14 @@ export class WithdrawalsService {
       tx.withdrawal.findMany({
         where: {
           status: 'PENDING',
-          payoutMethod: 'WISH',
-          currency: 'USD',
+          // Scoping constants are shared with `autoApprovalSkipReason()` so the
+          // poller and anything predicting its behaviour cannot drift apart.
+          payoutMethod: AUTO_APPROVE_METHOD,
+          currency: AUTO_APPROVE_CURRENCY,
           // >= 1 so flooring to whole dollars still transfers something; sub-$1
           // nets stay manual. <= the configured cap.
           netAmount: {
-            gte: new Prisma.Decimal(1),
+            gte: new Prisma.Decimal(AUTO_APPROVE_MIN_NET),
             lte: new Prisma.Decimal(opts.maxAutoApproveAmount),
           },
           createdAt: { lte: cutoff, gte: opts.enabledAt },

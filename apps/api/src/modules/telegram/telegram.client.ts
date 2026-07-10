@@ -9,13 +9,20 @@ const MAX_ATTEMPTS = 3;
 // Backoff before attempt 2 and attempt 3 respectively (ms).
 const RETRY_BACKOFF_MS = [500, 1500];
 
-const FLOW_HEADING: Record<'PAYOUT' | 'LOAD', string> = {
+/** Flows that can raise a Telegram alert. */
+export type AlertFlow = 'PAYOUT' | 'LOAD' | 'WITHDRAWAL';
+
+const FLOW_HEADING: Record<AlertFlow, string> = {
   PAYOUT: '🟢 New PAYOUT request',
   LOAD: '🔵 New LOAD request',
+  // Withdrawals only reach Telegram when auto-approval won't take them, so the
+  // heading says so up front.
+  WITHDRAWAL: '🟠 New WITHDRAWAL request — needs manual approval',
 };
-const FLOW_ADMIN_PATH: Record<'PAYOUT' | 'LOAD', string> = {
+const FLOW_ADMIN_PATH: Record<AlertFlow, string> = {
   PAYOUT: 'payouts',
   LOAD: 'loads',
+  WITHDRAWAL: 'withdrawals',
 };
 
 /** Escape the five characters that are unsafe inside Telegram HTML parse mode. */
@@ -53,24 +60,28 @@ export class TelegramClient {
     );
   }
 
-  /** Alert admins that a company submitted a load/payout request. */
+  /** Alert admins that a company submitted a request needing a human. */
   async notifyRequest(p: {
-    flow: 'PAYOUT' | 'LOAD';
+    flow: AlertFlow;
     companyName: string | null;
     amount: string;
     currency: string;
     entityId: string;
+    /** Why a human must act (withdrawals). Rendered as an extra line when set. */
+    reason?: string | null;
   }): Promise<void> {
     if (!this.isConfigured()) return;
 
     const webOrigin = this.config.get('WEB_ORIGIN', { infer: true });
     const link = `${webOrigin}/admin/${FLOW_ADMIN_PATH[p.flow]}`;
     const company = escapeHtml(p.companyName?.trim() || 'A company');
+    const reason = p.reason?.trim();
     const text =
       `${FLOW_HEADING[p.flow]}\n` +
       `Company: <b>${company}</b>\n` +
-      `Amount: <b>${escapeHtml(p.amount)} ${escapeHtml(p.currency)}</b>\n\n` +
-      `<a href="${escapeHtml(link)}">Open in dashboard →</a>`;
+      `Amount: <b>${escapeHtml(p.amount)} ${escapeHtml(p.currency)}</b>\n` +
+      (reason ? `Reason: ${escapeHtml(reason)}\n` : '') +
+      `\n<a href="${escapeHtml(link)}">Open in dashboard →</a>`;
 
     await this.send(text);
   }

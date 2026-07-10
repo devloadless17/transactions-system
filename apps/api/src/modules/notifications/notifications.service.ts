@@ -74,6 +74,12 @@ export class NotificationsService {
     entityId: string;
     amount: string;
     currency: string;
+    /**
+     * WITHDRAWAL only: why a human must action this one (it won't auto-approve).
+     * Set ⇒ a Telegram alert fires, carrying this as the reason. Absent/null ⇒
+     * auto-approval will settle it, so nobody is paged.
+     */
+    manualActionReason?: string | null;
   }): Promise<void> {
     let name: string | null = null;
     try {
@@ -96,18 +102,26 @@ export class NotificationsService {
       this.logger.warn(`notify requestSubmitted failed: ${(e as Error).message}`);
     }
 
-    // Also fan out to Telegram for load/payout requests only (never withdrawals),
-    // so a request isn't missed when no one is watching the dashboard. Fired
-    // independently of the in-app create above — an in-app hiccup must not
+    // Also fan out to Telegram, so a request isn't missed when no one is watching
+    // the dashboard. Loads and payouts ALWAYS need a human. Withdrawals only do
+    // when auto-approval won't pick them up — the caller signals that by passing
+    // `manualActionReason` (see WithdrawalsService.resolveManualReason).
+    //
+    // Fired independently of the in-app create above — an in-app hiccup must not
     // suppress the Telegram alert — and fire-and-forget: the client never throws
     // and is a silent no-op unless the bot credentials are configured (prod only).
-    if (p.flow === 'PAYOUT' || p.flow === 'LOAD') {
+    const alertTelegram =
+      p.flow === 'PAYOUT' ||
+      p.flow === 'LOAD' ||
+      (p.flow === 'WITHDRAWAL' && !!p.manualActionReason);
+    if (alertTelegram) {
       void this.telegram.notifyRequest({
         flow: p.flow,
         companyName: name,
         amount: p.amount,
         currency: p.currency,
         entityId: p.entityId,
+        reason: p.manualActionReason ?? null,
       });
     }
   }
