@@ -175,8 +175,26 @@ test.describe('company owner resets a teammate password (through the UI)', () =>
     // Data-loss guard: while the reset is in flight the dialog must NOT close
     // (ESC / outside-click ignored, Cancel disabled) — otherwise the one-time
     // password would be minted server-side and thrown away, locking the user out.
+    // Stall the reset so the pending state is deterministically observable (the
+    // real POST is fast enough to otherwise race the assertion), then release it.
+    let releaseReset: () => void = () => {};
+    const resetHeld = new Promise<void>((r) => (releaseReset = r));
+    await page.route('**/company/team/*/reset-password', async (route) => {
+      await resetHeld;
+      await route.continue();
+    });
     await resetDialog.getByRole('button', { name: /^reset password$/i }).click();
+
+    // Mid-flight: Cancel is disabled, and ESC does NOT close the dialog.
     await expect(resetDialog.getByRole('button', { name: /^cancel$/i })).toBeDisabled();
+    await page.keyboard.press('Escape');
+    await expect(resetDialog).toBeVisible();
+    await expect(resetDialog).toContainText(/signed out of all sessions/i);
+
+    // Release the request → the handler continues it, and it reveals the
+    // one-time password. (Don't unroute here — that races the in-flight
+    // `route.continue()`; Playwright drops the route at test end.)
+    releaseReset();
     await expect(resetDialog).toContainText(/temporary password/i, { timeout: 15_000 });
     const newTemp = (await resetDialog.locator('.font-mono').first().innerText()).trim();
     expect(newTemp).not.toBe(invitePassword);

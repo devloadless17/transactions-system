@@ -75,12 +75,13 @@ export function CompaniesView({
     },
   ];
 
-  // Show the balance column only when the SERVER actually returned balances
-  // (`totals` present) — not merely because the viewer is a SUPER_ADMIN. Keying
-  // on the response means a stale/cached bundle that requested without the flag
-  // shows no column at all, rather than a full column of em-dashes that reads as
-  // "every tenant holds nothing". Authorization is still enforced server-side.
-  const hasBalances = data?.totals !== undefined;
+  // Show the balance column for a SUPER_ADMIN, who is exactly the viewer that
+  // sends `withBalances=true` — so the server always returns balances for them.
+  // Gated on this stable prop (not on `data?.totals`, which is transiently
+  // undefined during the first load) so the column and its skeleton don't pop in
+  // and shift the table when data arrives. A row that momentarily lacks balances
+  // still renders safely via `c.balances ?? []`. Authorization stays server-side.
+  const hasBalances = canViewBalances;
   if (hasBalances) {
     columns.push({
       key: 'balance',
