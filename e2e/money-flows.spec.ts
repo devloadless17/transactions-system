@@ -387,5 +387,25 @@ test.describe.serial('money flows end-to-end (API)', () => {
     const after = await platformUsd(admin);
     near(after.volumeOut - before.volumeOut, 305);
     near(after.feesEarned - before.feesEarned, 10);
+
+    // The unified activity feed reports the GROSS that moved (net + fee) for
+    // both fee modes — not the bare requested amount, which for ON_TOP would
+    // silently equal net and hide the fee from the feed/export.
+    const activityRow = async (ref: string) => {
+      const p = new URLSearchParams({ kind: 'WITHDRAWAL', search: ref });
+      const res = await ownerB.get(`/v1/company/activity?${p.toString()}`);
+      expect(res.ok()).toBeTruthy();
+      const rows = unwrap(await res.json()).data as Array<Record<string, string>>;
+      expect(rows, `activity row for ${ref}`).toHaveLength(1);
+      return rows[0];
+    };
+    const ontopRow = await activityRow('E2E-ONTOP-1');
+    near(ontopRow.amount, 205); // gross, not the requested 200
+    near(ontopRow.fee, 5);
+    near(ontopRow.net, 200);
+    const dedRow = await activityRow('E2E-DED-1');
+    near(dedRow.amount, 100);
+    near(dedRow.fee, 5);
+    near(dedRow.net, 95);
   });
 });

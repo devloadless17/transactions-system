@@ -1,0 +1,566 @@
+# Company Developer Guide
+
+A single, self-contained reference for integrating with the platform over the API — everything the in-dashboard **Documentation** pages cover, in one document you can hand to your engineering team.
+
+It is organised as four sections, in the order you'll meet them:
+
+1. **[Getting started](#1-getting-started)** — base URL, authentication, the response envelope, error codes, rate limits.
+2. **[Whish Pay](#2-whish-pay)** — collect payments with a hosted link.
+3. **[Company API](#3-company-api)** — wallets, transactions, withdrawals, payouts, loads, and reading your data.
+4. **[CRM integration](#4-crm-integration)** — receive every deposit and withdrawal event as it happens.
+
+> Throughout this guide the API base URL is written as `https://<your-dashboard-domain>/v1`. The API shares an origin with your dashboard, so it is simply the same domain you sign in to, followed by `/v1`. Replace `tsk_<company-key>` with a real key minted under **Settings → API keys**.
+
+---
+
+## 1. Getting started
+
+Everything you need to call the API: one base URL, a single Bearer key, and the same response shape everywhere. Plain HTTPS and JSON — no SDK required.
+
+### Base URL
+
+Every endpoint lives under this base. All paths in this guide are written relative to it and are prefixed with `/v1`.
+
+```
+https://<your-dashboard-domain>/v1
+```
+
+### Authentication
+
+Send your key as a Bearer token on **every** request. No cookies and no CSRF header — these are server-to-server keys.
+
+```
+Authorization: Bearer tsk_<prefix>_<secret>
+```
+
+**Company key** — _You, the company._ Full access to your own company: wallets, transactions, withdrawals, payouts, loads, Whish Pay, CRM, team, and keys. This is the key you'll use for every call in the [Company API](#3-company-api) section.
+
+> Secrets are shown **once**, at creation. Mint, rotate, or revoke a company key under **Settings → API keys** in the dashboard.
+
+### Every response has the same shape
+
+Success or failure, responses come back wrapped in an envelope. Read your payload from `data`.
+
+**Success**
+
+```json
+{
+  "success": true,
+  "statusCode": 200,
+  "data": {
+    /* your payload */
+  }
+}
+```
+
+**Error**
+
+```json
+{
+  "success": false,
+  "statusCode": 400,
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "amount must be a positive decimal",
+    "details": {
+      /* optional, field-level */
+    }
+  }
+}
+```
+
+- **Lists** nest one level deeper — the array is at `data.data` alongside a total count / paging info in `meta`.
+- **A few endpoints** return raw bodies (no envelope): CSV exports (`/export.csv`), the health check, and inbound webhook/callback acknowledgements.
+
+### Error codes
+
+Branch on the stable `error.code`, never on the message.
+
+| Code                 | HTTP | Meaning                                            |
+| -------------------- | ---- | -------------------------------------------------- |
+| `VALIDATION_ERROR`   | 400  | The request body or query failed validation.       |
+| `UNAUTHORIZED`       | 401  | Missing, invalid, or revoked API key.              |
+| `FORBIDDEN`          | 403  | The key is valid but not allowed to do this.       |
+| `NOT_FOUND`          | 404  | No such resource for your company.                 |
+| `CONFLICT`           | 409  | Duplicate or conflicting request (e.g. reused id). |
+| `NO_COMMISSION_RULE` | 422  | No active commission rule covers this amount.      |
+| `RATE_LIMITED`       | 429  | Too many requests — slow down and retry.           |
+
+### Rate limits
+
+The per-key integration endpoints (Whish Pay and transaction ingest) allow **300 requests per 60 seconds, per key**. Go over and you get a `429 RATE_LIMITED` with the limit echoed in `error.details`. The rest of the API sits behind a global safety throttle.
+
+### Your first call
+
+Check connectivity (no key needed), then read your balances with your company key.
+
+```bash
+# 1) Is the API up?  (no key needed)
+curl https://<your-dashboard-domain>/v1/health
+
+# 2) Read your balances  (company key)
+curl https://<your-dashboard-domain>/v1/company/wallets \
+  -H "Authorization: Bearer tsk_<company-key>"
+```
+
+---
+
+## 2. Whish Pay
+
+Collect payments with a hosted link — by hand on the **Whish Pay** page in the dashboard, or from your own backend via the API below. Share the link with your customer and the money settles into your wallet automatically once they pay — net of commission, with no card details ever touching your system.
+
+### How it works
+
+1. **Create a link** — On the Whish Pay page (or via the API below), enter the amount and an invoice label.
+2. **Share it** — Send the generated link to your customer; they pay on the secure Whish page.
+3. **It settles automatically** — Once paid, we verify with Whish, apply your commission, and credit your wallet with the net.
+4. **Stay in sync** — The transaction is pushed to your CRM at every step (pending, then paid or failed), so your records update on their own.
+
+### Create links from your backend (API)
+
+Authenticate with your company key (see [Getting started](#1-getting-started)). These are server-to-server endpoints — Bearer key, no cookies, no CSRF.
+
+**1. Create a payment link**
+
+```bash
+curl -X POST https://<your-dashboard-domain>/v1/integrations/whish/payments \
+  -H "Authorization: Bearer tsk_<company-key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "amount": "25.00",
+    "currency": "USD",
+    "invoice": "Order #4821"
+  }'
+```
+
+**Request fields**
+
+| Field                | Notes                                                                                                                                                                                                                                |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `amount`             | A decimal **string in quotes** — `"25.00"`, never the bare number `25.00`. Up to 8 decimal places, must be greater than 0. A commission rule (set by your platform admin) must cover it, otherwise you get `422 NO_COMMISSION_RULE`. |
+| `currency`           | Exactly `"USD"` (uppercase) — the only currency Whish supports. Anything else is a `400 VALIDATION_ERROR`.                                                                                                                           |
+| `invoice`            | **Required.** Your own order/reference label (1–200 chars). Shown back on the payment.                                                                                                                                               |
+| `idempotencyKey`     | Optional (8–120 chars). A retried create with the same key returns the original link instead of minting a duplicate — safe to retry on a network error.                                                                              |
+| `successRedirectUrl` | Optional (http/https). Where your customer is sent after a successful payment — overrides your saved default for this one link. We append `?ref=<externalId>` so your page can identify it.                                          |
+| `failureRedirectUrl` | Optional. Same, for a failed or abandoned payment.                                                                                                                                                                                   |
+
+**Response**
+
+```json
+{
+  "success": true,
+  "statusCode": 201,
+  "data": {
+    "id": "6729acd0-16c4-40ff-8474-4ef864538587",
+    "companyId": "b3f1c2d4-...-e9",
+    "externalId": "1781018591",
+    "status": "PENDING",
+    "amount": "25.00",
+    "currency": "USD",
+    "invoice": "Order #4821",
+    "collectUrl": "https://whish.money/collect/7kEo2a7",
+    "payerPhoneNumber": null,
+    "transactionId": null,
+    "needsAttention": false,
+    "settlementError": null,
+    "paidAt": null,
+    "createdAt": "2026-06-04T12:00:00.000Z"
+  }
+}
+```
+
+> `needsAttention: true` means Whish took the money but settlement into your wallet failed (e.g. a commission rule changed). `settlementError` holds the reason; once your platform admin fixes the cause, refresh the payment and it settles.
+
+Send `collectUrl` to your customer and store `externalId` on your order — it is the reference you use to look the payment up and the same id every CRM event carries.
+
+> **Where your customer lands after paying:** set default success / failure pages once on the Whish Pay page, or override per link with `successRedirectUrl` / `failureRedirectUrl` above. Set neither and we use our own confirmation pages. We always append `?ref=<externalId>` so your page knows which payment it was. (These are customer redirects only — the money reaches you via the CRM / status, not these URLs.)
+
+**2. Check a payment's status**
+
+```bash
+curl https://<your-dashboard-domain>/v1/integrations/whish/payments/1781018591 \
+  -H "Authorization: Bearer tsk_<company-key>"
+```
+
+Same shape as create. Watch `status` (and `transactionId` once PAID). This object shows only the **gross** amount. For the fee we took + your net, read the settled transaction (reference `whish:<externalId>`): `GET /company/transactions` returns `commissionAmount` + `netAmount` (also sent on the `transaction.completed` CRM event).
+
+Force a fresh pull from Whish (e.g. after a missed callback) with:
+
+```
+POST /integrations/whish/payments/{externalId}/refresh
+```
+
+**Statuses**
+
+| Status    | Meaning                                                                                                                                |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `PENDING` | Link created, waiting for the customer to pay.                                                                                         |
+| `PAID`    | Customer paid — settled into your wallet (net of commission); `transactionId` is set.                                                  |
+| `FAILED`  | The payment did not go through — declined, or the link lapsed unpaid. (Whish reports no separate "expired", so both arrive as FAILED.) |
+
+**Common errors**
+
+| Error                    | Meaning                                                                                                                                                                               |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `400 VALIDATION_ERROR`   | A field is malformed — most often `amount` sent as a number instead of a `"string"`, a currency other than `"USD"`, or a missing `invoice`. The error body names the offending field. |
+| `422 NO_COMMISSION_RULE` | No commission rule covers this amount for your company, so the link is refused before any customer pays. Ask your platform admin to add a rule covering your amounts.                 |
+| `401 / 403`              | Auth failed. Send your company key as `Authorization: Bearer tsk_…` — these are server-to-server (no cookies/session).                                                                |
+| `502 WHISH_ERROR`        | Whish itself errored or was unreachable. Safe to retry (reuse your `idempotencyKey`); if it persists, contact support.                                                                |
+| `needsAttention: true`   | Created and paid, but settlement into your wallet failed — read `settlementError` for the reason. Once the cause is fixed, refresh the payment and it settles.                        |
+
+> **No need to poll:** every payment is pushed to your CRM automatically — `transaction.pending` when the link is created, then `transaction.completed` once it settles (or `transaction.failed` if it is declined or lapses), all under the same `whish:<externalId>` reference (see the [CRM](#4-crm-integration) section). The status endpoint above is just for reconciliation or if you do not use a CRM.
+
+---
+
+## 3. Company API
+
+Your company key unlocks your whole account over plain HTTPS — read transactions, wallets, ledger, and analytics, and request withdrawals, payouts, and loads. Authentication and the response envelope are covered in [Getting started](#1-getting-started).
+
+### 3.1 Check your balances
+
+Returns `availableBalance` (spendable) and `reservedBalance` (held for pending outflows) per currency. Check this before requesting a withdrawal to avoid an insufficient-funds error.
+
+```bash
+curl https://<your-dashboard-domain>/v1/company/wallets \
+  -H "Authorization: Bearer tsk_<company-key>"
+```
+
+```json
+{
+  "success": true,
+  "statusCode": 200,
+  "data": {
+    "data": [
+      {
+        "currency": "USD",
+        "availableBalance": "1250.00",
+        "pendingBalance": "0",
+        "reservedBalance": "200.00"
+      }
+    ]
+  }
+}
+```
+
+> The wallets array is at `data.data` (the envelope wraps the list body).
+
+### 3.2 Request a withdrawal, payout, or load
+
+All three share the **same body** — only the path differs: `/company/withdrawals`, `/company/payouts`, or `/company/loads`. Requests land in **PENDING** and need platform-admin approval before any funds move.
+
+**Payout method — choose one**
+
+| Method   | Required                          | Optional                         |
+| -------- | --------------------------------- | -------------------------------- |
+| `CASH`   | `recipientName`, `recipientPhone` | `pickupLocation`, `instructions` |
+| `WISH`   | `recipientName`, `recipientPhone` | `instructions`                   |
+| `CRYPTO` | `network`, `walletAddress`        | `memo`, `instructions`           |
+
+**CASH example**
+
+```bash
+curl -X POST https://<your-dashboard-domain>/v1/company/withdrawals \
+  -H "Authorization: Bearer tsk_<company-key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "amount": "500.00",
+    "currency": "USD",
+    "notes": "Weekly settlement",
+    "payout": {
+      "method": "CASH",
+      "recipientName": "Acme Ltd",
+      "recipientPhone": "+961-3-000-000"
+    }
+  }'
+```
+
+**WISH example**
+
+```bash
+curl -X POST https://<your-dashboard-domain>/v1/company/withdrawals \
+  -H "Authorization: Bearer tsk_<company-key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "amount": "200.00",
+    "currency": "USD",
+    "payout": {
+      "method": "WISH",
+      "recipientName": "John Doe",
+      "recipientPhone": "+961-70-000-000"
+    }
+  }'
+```
+
+**CRYPTO example**
+
+```bash
+curl -X POST https://<your-dashboard-domain>/v1/company/withdrawals \
+  -H "Authorization: Bearer tsk_<company-key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "amount": "100.00",
+    "currency": "USD",
+    "payout": {
+      "method": "CRYPTO",
+      "network": "TRC20",
+      "walletAddress": "TXyz...abc"
+    }
+  }'
+```
+
+**Response (201 Created)**
+
+```json
+{
+  "success": true,
+  "statusCode": 201,
+  "data": {
+    "id": "d4f2a1c0-...",
+    "status": "PENDING",
+    "amount": "500.00",
+    "currency": "USD",
+    "feeAmount": "5.00",
+    "feeApplication": "DEDUCTED",
+    "netAmount": "495.00",
+    "totalAmount": "500.00",
+    "payoutMethod": "CASH",
+    "createdAt": "2026-06-10T10:00:00.000Z"
+  }
+}
+```
+
+Fees are returned up front:
+
+- `feeAmount` — the platform fee on this payout.
+- `feeApplication` — `DEDUCTED` → recipient gets `netAmount` (amount − fee). `ON_TOP` → recipient gets the full `amount` and the fee is added, so `totalAmount = amount + fee`.
+- `netAmount` — what the recipient receives.
+- `totalAmount` — what leaves your wallet (net + fee).
+
+### 3.3 Status lifecycle
+
+Every withdrawal, payout, and load moves through these statuses.
+
+| Status      | Meaning                                                                                    |
+| ----------- | ------------------------------------------------------------------------------------------ |
+| `PENDING`   | Submitted — awaiting platform-admin review.                                                |
+| `COMPLETED` | Admin approved and funds delivered — approval settles in one step. Ledger entry finalised. |
+| `REJECTED`  | Admin rejected the request. Reserved funds released.                                       |
+| `CANCELLED` | You cancelled it (only possible while PENDING). Reserved funds released.                   |
+
+> **Withdrawals push to your CRM.** Every withdrawal status change — pending, completed, rejected, cancelled — is delivered to your [CRM webhook](#4-crm-integration) in real time, carrying the same `feeAmount` / `netAmount` / `totalAmount` breakdown, so you never have to poll. Payouts and loads are managed over this API only — read their status with the GET below.
+
+**Check a request's status**
+
+Fetch a single request by id anytime to read its current `status`: `GET /company/withdrawals/:id` (same shape for `payouts` and `loads`). For a rejected request the reason is in `adminNotes`; your original request note stays in `notes`. You can also list and filter by status, e.g. `GET /company/withdrawals?status=PENDING`.
+
+```bash
+curl https://<your-dashboard-domain>/v1/company/withdrawals/<id> \
+  -H "Authorization: Bearer tsk_<company-key>"
+```
+
+```json
+{
+  "success": true,
+  "statusCode": 200,
+  "data": {
+    "id": "d4f2a1c0-...",
+    "status": "COMPLETED",
+    "amount": "500.00",
+    "currency": "USD",
+    "feeAmount": "5.00",
+    "feeApplication": "DEDUCTED",
+    "netAmount": "495.00",
+    "totalAmount": "500.00",
+    "payoutMethod": "CASH",
+    "externalReference": "WIRE-88231",
+    "notes": "Weekly settlement",
+    "adminNotes": null,
+    "createdAt": "2026-06-10T10:00:00.000Z",
+    "processedAt": "2026-06-10T11:30:00.000Z"
+  }
+}
+```
+
+- `externalReference` — our proof we sent it (set on approval).
+- `notes` — your original request note (never overwritten).
+- `adminNotes` — set to the reason if a request is `REJECTED`.
+
+Same path shape for payouts and loads: `/company/payouts/<id>`, `/company/loads/<id>`.
+
+**Cancel while still PENDING** — `POST /company/withdrawals/:id/cancel` (same path shape for payouts and loads):
+
+```bash
+curl -X POST https://<your-dashboard-domain>/v1/company/withdrawals/<id>/cancel \
+  -H "Authorization: Bearer tsk_<company-key>" \
+  -H "Content-Type: application/json" \
+  -d '{ "notes": "No longer needed" }'
+```
+
+### 3.4 Read your data
+
+Transactions, ledger, and analytics are all read with a simple GET. Lists are paginated (the array is at `data.data`); CSV exports stream the raw file.
+
+```bash
+curl "https://<your-dashboard-domain>/v1/company/transactions?page=1&pageSize=20" \
+  -H "Authorization: Bearer tsk_<company-key>"
+```
+
+The list array is at `data.data`, with paging info at `meta`. Page with `?page=N&pageSize=M` (`pageSize` max 100).
+
+> **Fees are transparent.** Every transaction returns `amount` (gross), `commissionAmount` (the platform fee we took), and `netAmount` (what you were credited). Withdrawals, payouts and loads return the same breakdown as `totalAmount` / `feeAmount` / `netAmount` — so after any completed transaction you always know exactly what we charged.
+
+### 3.5 All endpoints at a glance
+
+Every `company/*` route accepts your company key.
+
+| Group        | Endpoints                                                             |
+| ------------ | --------------------------------------------------------------------- |
+| Wallets      | `GET /company/wallets`                                                |
+| Transactions | `GET /company/transactions` · `/:id` · `/:id/detail` · `/export.csv`  |
+| Ledger       | `GET /company/ledger` · `/export.csv`                                 |
+| Analytics    | `GET /company/analytics/overview` · `/wallet-summary`                 |
+| Activity     | `GET /company/activity` · `/operations/counts`                        |
+| Withdrawals  | `GET /company/withdrawals` · `GET /:id` · `POST` · `POST /:id/cancel` |
+| Payouts      | `GET /company/payouts` · `GET /:id` · `POST` · `POST /:id/cancel`     |
+| Loads        | `GET /company/loads` · `GET /:id` · `POST` · `POST /:id/cancel`       |
+| API keys     | `GET` · `POST /company/api-keys` · `POST /:id/rotate` · `/:id/revoke` |
+| Team         | `GET` · `POST /company/team` · `PATCH` · `DELETE /:id`                |
+
+Collecting payments? See [Whish Pay](#2-whish-pay). Pushing transactions to your CRM? See [CRM integration](#4-crm-integration).
+
+### 3.6 Health check
+
+A no-auth, no-side-effects sanity check.
+
+```bash
+curl https://<your-dashboard-domain>/v1/health
+```
+
+---
+
+## 4. CRM integration
+
+We POST every deposit and withdrawal to your CRM as its status changes — a deposit moves pending → completed (or failed if it doesn't go through / lapses, and reversed); a withdrawal moves pending → completed, rejected, or cancelled. Records are matched by a stable `reference`, so your CRM updates the same row in place. (Payouts and loads are managed over the API only — they are not pushed here.)
+
+### 4.1 Configure your CRM endpoint
+
+Set the POST URL of your CRM and the API key it expects in the dashboard (**Documentation → CRM**, or via `PUT /company/crm/config`). We send the key as `Authorization: Bearer <key>` on every request.
+
+- **CRM POST URL** — e.g. `https://your-crm.com/api/transactions`
+- **API key** — the secret your CRM expects; also used to sign every request (see below). Saved keys are never returned; the field shows a masked placeholder once set.
+
+A built-in **demo CRM** is available to preview the integration live without standing up your own endpoint — but note that enabling it **overwrites** any real CRM URL + key you have configured, so only use it before you've connected your production CRM.
+
+### 4.2 What we send
+
+Each event is a POST carrying a stable `reference` and one body — `transaction` for deposit events (`transaction.*`) or `withdrawal` for withdrawal events (`withdrawal.*`). **Upsert by `reference`** so one record moves through its lifecycle in place.
+
+Every request carries these headers:
+
+- `Authorization: Bearer <your-api-key>` — your saved CRM key.
+- `x-crm-event: <event name>` — e.g. `transaction.completed`.
+- `x-crm-timestamp: <unixSeconds>` — the signing timestamp.
+- `x-crm-signature: t=<unixSeconds>,sha256=<hex>` — an **HMAC-SHA256** of `{timestamp}.{rawBody}` keyed by your API key.
+
+**To verify a call came from us:** recompute the HMAC-SHA256 of `{x-crm-timestamp}.{rawRequestBody}` using your API key as the secret, and compare it (constant-time) to the `sha256=` value in `x-crm-signature`. Reject the request if it doesn't match, or if the timestamp is stale.
+
+**Deposit event — body: `transaction`**
+
+```
+POST https://your-crm.com/api/transactions
+Authorization: Bearer <your-api-key>
+Content-Type: application/json
+x-crm-event: transaction.completed
+x-crm-timestamp: 1781018591
+x-crm-signature: t=1781018591,sha256=<hex>
+
+{
+  "event": "transaction.completed",
+  "reference": "whish:10231",
+  "sentAt": "2026-06-04T12:00:00.000Z",
+  "transaction": {
+    "id": "0e1c…",
+    "status": "COMPLETED",
+    "source": "whish",
+    "externalTransactionId": "10231",
+    "amount": "25.00",
+    "currency": "USD",
+    "netAmount": "24.50",
+    "commissionAmount": "0.50",
+    "customer": "John Doe",
+    "tradingAccount": null,
+    "phone": "+961…",
+    "note": "Order #1234",
+    "occurredAt": "2026-06-04T12:00:00.000Z"
+  }
+}
+```
+
+**Withdrawal event — body: `withdrawal`**
+
+```
+x-crm-event: withdrawal.completed
+(same Authorization / x-crm-timestamp / x-crm-signature headers as above)
+
+{
+  "event": "withdrawal.completed",
+  "reference": "withdrawal:d4f2a1c0-…",
+  "sentAt": "2026-06-10T11:30:00.000Z",
+  "withdrawal": {
+    "id": "d4f2a1c0-…",
+    "status": "COMPLETED",              // approved by an admin & paid out
+    "amount": "500.00",                 // the amount you requested
+    "totalAmount": "500.00",            // what left your wallet (net + fee)
+    "feeAmount": "5.00",                // the platform fee we charged
+    "netAmount": "495.00",              // what the recipient received
+    "feeApplication": "DEDUCTED",       // DEDUCTED or ON_TOP
+    "currency": "USD",
+    "payoutMethod": "CASH",
+    "payoutDetails": {                  // recipient + all instructions, one place
+      "method": "CASH",
+      "recipientName": "Acme Ltd",
+      "recipientPhone": "+961-3-000-000",
+      "pickupLocation": "Beirut – Hamra",
+      "instructions": "Call on arrival"
+    },
+    "note": "Weekly settlement",        // your request note (immutable)
+    "adminNote": "Verified",            // admin's note (the reason if REJECTED)
+    "externalReference": "WIRE-88231",  // proof of payment (set once approved)
+    "createdAt": "2026-06-10T10:00:00.000Z",  // when you requested it
+    "processedAt": "2026-06-10T11:30:00.000Z", // when the admin decided (null if PENDING)
+    "occurredAt": "2026-06-10T11:30:00.000Z"
+  }
+}
+```
+
+The withdrawal body mirrors the `GET /company/withdrawals/:id` resource field-for-field. **The decision is in `status`:** `COMPLETED` = approved & paid (proof in `externalReference`), `REJECTED` = declined (reason in `adminNote`), `CANCELLED` = you cancelled it — and `processedAt` is when it was decided (null while `PENDING`). The full payout instructions — phone, pickup, wallet / bank details — are in `payoutDetails`. Money: `totalAmount − feeAmount = netAmount`.
+
+### 4.3 Event types
+
+**Deposit events** (`transaction.*`)
+
+| Event                   | Meaning                                                                                                                                           |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `transaction.pending`   | A deposit was created and is awaiting settlement.                                                                                                 |
+| `transaction.completed` | It settled — funds credited.                                                                                                                      |
+| `transaction.failed`    | The collection did not go through — declined, or the payment link lapsed unpaid. (Whish reports no separate "expired", so both arrive as failed.) |
+| `transaction.reversed`  | A settled deposit was reversed.                                                                                                                   |
+
+**Withdrawal events** (`withdrawal.*`)
+
+| Event                  | Meaning                                                                                     |
+| ---------------------- | ------------------------------------------------------------------------------------------- |
+| `withdrawal.pending`   | Requested — status PENDING, awaiting an admin's decision.                                   |
+| `withdrawal.completed` | Approved by an admin and paid out — status COMPLETED, with `externalReference` as proof.    |
+| `withdrawal.rejected`  | Rejected by an admin — status REJECTED, the reason in `adminNote`. Reserved funds released. |
+| `withdrawal.cancelled` | Cancelled by the company while still pending — status CANCELLED. Reserved funds released.   |
+
+> Payouts and loads are **not** pushed to your CRM — manage those over the REST API.
+
+### 4.4 Delivery & retries
+
+Respond **2xx** to acknowledge. We attempt delivery up to **6 times** — one immediate, then 5 retries with backoff. Only transient failures (timeouts, `429`, and `5xx`) are retried; a `4xx` is treated as permanent and stops further attempts.
+
+---
+
+_This document consolidates the in-dashboard Documentation pages (Getting started, Whish Pay, Company API, CRM). If anything here disagrees with the live dashboard, the dashboard is authoritative._

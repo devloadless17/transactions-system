@@ -14,6 +14,7 @@ import type { ActivityListResponse, ListActivityQuery } from '@app/shared';
 import { ActivityService } from '../../src/modules/activity/activity.service';
 import type { CacheService } from '../../src/modules/cache/cache.service';
 import {
+  addFlowFee,
   addTransactionFee,
   buildHarness,
   createCompany,
@@ -253,5 +254,130 @@ describe('activity feed — balance mode', () => {
     expect(r.data.map((x) => x.id)).toEqual([idPayoutA]);
     // Still the absolute balance after the payout, not a page-relative subtotal.
     expect(moneyEq(r.data[0].balanceAfter, '100')).toBe(true);
+  });
+});
+
+// --- money semantics with non-zero fees ---
+// The flow tables' stored `amount` is the REQUESTED figure: gross for a
+// DEDUCTED fee but net for ON_TOP. The feed must always report the gross that
+// actually moved (net + fee) — this block locks that with real fees in both
+// modes, where the earlier fee-0 fixtures could not tell the difference.
+describe('activity feed — gross amounts with non-zero fees', () => {
+  let companyC: string;
+  let userC: string;
+  let idDepositC: string; //    DEPOSIT 1000, 10% commission → fee 100, net 900
+  let idWithdrawalC: string; // WITHDRAWAL 150, 10% ON_TOP   → fee 15, net 150, gross 165
+  let idPayoutC: string; //     PAYOUT 100, 10% DEDUCTED     → fee 10, net 90, gross 100
+  // Company C's rows are created at "now", so they never leak into the pinned
+  // BEFORE_OTHERS admin-scope expectations above; C's own queries are RLS-scoped.
+  const queryC = { page: 1, pageSize: 20 };
+
+  beforeAll(async () => {
+    const c = await createCompany(h);
+    companyC = c.companyId;
+    userC = c.userId;
+    const sourceC = await createEnabledSource(h, companyC);
+    await addTransactionFee(h, companyC, '10');
+    await addFlowFee(h, companyC, 'WITHDRAWAL', '10', 'ON_TOP');
+    await addFlowFee(h, companyC, 'PAYOUT', '10', 'DEDUCTED');
+
+    const dep = await h.transactions.ingest(
+      { kind: 'source', sourceId: sourceC },
+      ingestInput(companyC, '1000'),
+    );
+    idDepositC = dep.id; // available: 900
+
+    const wd = await h.withdrawals.request(companyC, userC, cashWithdrawalInput('150'));
+    await h.withdrawals.approve(wd.id, userC, { externalReference: 'wd-ontop-1' });
+    idWithdrawalC = wd.id; // gross 165 leaves → available: 735
+
+    const po = await h.payouts.request(companyC, userC, payoutInput('100'));
+    await h.payouts.approve(po.id, userC, { externalReference: 'pay-ded-1' });
+    idPayoutC = po.id; // gross 100 leaves → available: 635
+  });
+
+  it('lists gross (net + fee) for every row, in both fee modes', async () => {
+    const r = await activity.list({ companyId: companyC, query: queryC });
+    const byId = new Map(r.data.map((x) => [x.id, x]));
+
+    const wd = byId.get(idWithdrawalC)!;
+    expect(moneyEq(wd.amount, '165')).toBe(true); // NOT the requested 150
+    expect(moneyEq(wd.fee, '15')).toBe(true);
+    expect(moneyEq(wd.net, '150')).toBe(true);
+
+    const po = byId.get(idPayoutC)!;
+    expect(moneyEq(po.amount, '100')).toBe(true);
+    expect(moneyEq(po.fee, '10')).toBe(true);
+    expect(moneyEq(po.net, '90')).toBe(true);
+
+    const dep = byId.get(idDepositC)!;
+    expect(moneyEq(dep.amount, '1000')).toBe(true);
+    expect(moneyEq(dep.fee, '100')).toBe(true);
+    expect(moneyEq(dep.net, '900')).toBe(true);
+
+    // The invariant the export/UI rely on: amount is always fee + net.
+    for (const row of r.data) {
+      expect(Money.of(row.amount).eq(Money.of(row.fee).add(Money.of(row.net)))).toBe(true);
+    }
+
+    // Balance mode still reconciles — proves the gross change didn't leak into
+    // the (ledger-driven) running-balance math. 900 − 165 − 100 = 635.
+    expect(r.meta.balanceMode).toBe(true);
+    expect(moneyEq(r.data[0].balanceAfter, '635')).toBe(true);
+    const wallet = await h.prisma.runAsScoped(companyC, (tx) =>
+      tx.wallet.findUnique({
+        where: { companyId_currency: { companyId: companyC, currency: 'USD' } },
+      }),
+    );
+    expect(moneyEq(r.data[0].balanceAfter, wallet!.availableBalance.toString())).toBe(true);
+  });
+
+  it('exports gross_amount/fee_amount/net_amount/fee_application columns in the CSV', async () => {
+    const file = activity.streamCsv({ companyId: companyC, query: queryC });
+    let csv = '';
+    for await (const chunk of file.getStream()) csv += chunk;
+    const lines = csv.trim().split('\n');
+    expect(lines).toHaveLength(4); // header + 3 rows
+
+    const header = lines[0].split(',').map((c) => c.trim());
+    expect(header).toContain('gross_amount');
+    expect(header).toContain('fee_amount');
+    expect(header).toContain('net_amount');
+    expect(header).toContain('fee_application');
+    // The ambiguous bare columns must be gone.
+    expect(header).not.toContain('amount');
+    expect(header).not.toContain('fee');
+    expect(header).not.toContain('net');
+
+    // Money columns are the CSV's last four cells (currency, gross, fee, net,
+    // fee_application) — index from the end so free-text cells can't shift them.
+    const moneyTail = (line: string) => {
+      const cells = line.split(',');
+      return {
+        gross: cells[cells.length - 4],
+        fee: cells[cells.length - 3],
+        net: cells[cells.length - 2],
+        feeApplication: cells[cells.length - 1],
+      };
+    };
+
+    const wdLine = lines.find((l) => l.startsWith(idWithdrawalC))!;
+    const wd = moneyTail(wdLine);
+    expect(moneyEq(wd.gross, '165')).toBe(true);
+    expect(moneyEq(wd.fee, '15')).toBe(true);
+    expect(moneyEq(wd.net, '150')).toBe(true);
+    expect(wd.feeApplication).toBe('ON_TOP');
+
+    const poLine = lines.find((l) => l.startsWith(idPayoutC))!;
+    const po = moneyTail(poLine);
+    expect(moneyEq(po.gross, '100')).toBe(true);
+    expect(po.feeApplication).toBe('DEDUCTED');
+
+    const depLine = lines.find((l) => l.startsWith(idDepositC))!;
+    const dep = moneyTail(depLine);
+    expect(moneyEq(dep.gross, '1000')).toBe(true);
+    expect(moneyEq(dep.fee, '100')).toBe(true);
+    expect(moneyEq(dep.net, '900')).toBe(true);
+    expect(dep.feeApplication).toBe(''); // deposits have no fee mode
   });
 });

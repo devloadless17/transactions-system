@@ -259,12 +259,13 @@ export async function createEnabledSource(h: Harness, companyId: string): Promis
 
 export type FlowOp = 'TRANSACTION' | 'WITHDRAWAL' | 'PAYOUT' | 'LOAD';
 
-/** Add a company-scoped percentage fee rule (DEDUCTED) for an operation type. */
+/** Add a company-scoped percentage fee rule for an operation type. */
 export async function addFlowFee(
   h: Harness,
   companyId: string,
   operationType: FlowOp,
   percent: string,
+  feeApplication: 'DEDUCTED' | 'ON_TOP' = 'DEDUCTED',
 ): Promise<void> {
   await h.prisma.runAsAdmin((tx) =>
     tx.commissionRule.create({
@@ -272,7 +273,7 @@ export async function addFlowFee(
         companyId,
         sourceId: null,
         operationType,
-        feeApplication: 'DEDUCTED',
+        feeApplication,
         minAmount: '0.00000001',
         maxAmount: '100000000',
         commissionType: 'PERCENTAGE',

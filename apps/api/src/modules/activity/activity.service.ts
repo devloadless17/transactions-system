@@ -27,6 +27,8 @@ const MAX_LIST_OFFSET = 50_000;
 const BALANCE_MODE_MAX_ROWS = 25_000;
 
 // One DB row of the unified feed (snake_case straight from the raw query).
+// `amount` is always the GROSS money that actually moved (net + fee) — never
+// the bare requested figure, whose meaning flips with fee_application.
 interface ActivityRow {
   id: string;
   kind: ActivityKind;
@@ -34,6 +36,7 @@ interface ActivityRow {
   currency: string;
   fee: string;
   net: string;
+  fee_application?: string | null;
   description: string | null;
   details: string | null;
   reference: string | null;
@@ -147,10 +150,14 @@ export class ActivityService {
         'description',
         'details',
         'reference',
-        'amount',
         'currency',
-        'fee',
-        'net',
+        // Same money-column contract as the per-flow exports (flow-csv.ts): the
+        // gross that actually moved, its split, and the fee mode — never a bare
+        // `amount`, whose meaning flips between gross (DEDUCTED) and net (ON_TOP).
+        'gross_amount',
+        'fee_amount',
+        'net_amount',
+        'fee_application',
       ],
       fetchPage: (cursor, take) =>
         prisma.runAsScoped(scope, (tx) => {
@@ -195,10 +202,11 @@ export class ActivityService {
         r.description ?? '',
         r.details ?? '',
         r.reference ?? '',
-        r.amount,
         r.currency.trim(),
+        r.amount,
         r.fee,
         r.net,
+        r.fee_application ?? '',
       ],
     });
   }
@@ -225,12 +233,16 @@ export class ActivityService {
   // ---------- query builders ----------
 
   // The four COMPLETED operations projected to one shape (no running balance).
-  // Used only by the COUNT queries now — the row queries use the bounded
-  // (normalRowsSql) or balance (balanceUnionSql) variants.
+  // Used by the COUNT queries and the CSV export — the list row queries use the
+  // bounded (normalRowsSql) or balance (balanceUnionSql) variants.
+  // `amount` is the GROSS that actually moved: the flow tables' bare `amount` is
+  // the requested figure (gross for DEDUCTED fees but net for ON_TOP), so it is
+  // recomputed as net + fee; a deposit's stored amount is already gross.
   private unionSql(): string {
     return `
       SELECT o.id, 'DEPOSIT'::text AS kind, o.amount::text AS amount, o.currency,
              o.commission_amount::text AS fee, o.net_amount::text AS net,
+             NULL::text AS fee_application,
              s.code AS description,
              COALESCE(o.payload->>'customer', o.payload->>'target', o.payload->>'phone') AS details,
              o.external_transaction_id AS reference,
@@ -240,8 +252,9 @@ export class ActivityService {
       LEFT JOIN companies c ON c.id = o.company_id
       WHERE o.status = 'COMPLETED'
       UNION ALL
-      SELECT o.id, 'LOAD'::text, o.amount::text, o.currency,
+      SELECT o.id, 'LOAD'::text, (o.net_amount + o.fee_amount)::text, o.currency,
              o.fee_amount::text, o.net_amount::text,
+             o.fee_application::text,
              o.payout_method::text,
              COALESCE(o.payout_details->>'recipientName', o.payout_details->>'accountHolder',
                       o.payout_details->>'walletAddress', o.payout_details->>'description',
@@ -252,8 +265,9 @@ export class ActivityService {
       LEFT JOIN companies c ON c.id = o.company_id
       WHERE o.status = 'COMPLETED'
       UNION ALL
-      SELECT o.id, 'WITHDRAWAL'::text, o.amount::text, o.currency,
+      SELECT o.id, 'WITHDRAWAL'::text, (o.net_amount + o.fee_amount)::text, o.currency,
              o.fee_amount::text, o.net_amount::text,
+             o.fee_application::text,
              o.payout_method::text,
              COALESCE(o.payout_details->>'recipientName', o.payout_details->>'accountHolder',
                       o.payout_details->>'walletAddress', o.payout_details->>'description',
@@ -264,8 +278,9 @@ export class ActivityService {
       LEFT JOIN companies c ON c.id = o.company_id
       WHERE o.status = 'COMPLETED'
       UNION ALL
-      SELECT o.id, 'PAYOUT'::text, o.amount::text, o.currency,
+      SELECT o.id, 'PAYOUT'::text, (o.net_amount + o.fee_amount)::text, o.currency,
              o.fee_amount::text, o.net_amount::text,
+             o.fee_application::text,
              o.payout_method::text,
              COALESCE(o.payout_details->>'recipientName', o.payout_details->>'accountHolder',
                       o.payout_details->>'walletAddress', o.payout_details->>'description',
@@ -299,7 +314,7 @@ export class ActivityService {
       ) la ON la.oid = o.id`;
     const PAYOUT_DETAILS = `COALESCE(o.payout_details->>'recipientName', o.payout_details->>'accountHolder', o.payout_details->>'walletAddress', o.payout_details->>'description', o.external_reference)`;
     const flowBranch = (kind: ActivityKind, table: string, fk: string) => `
-      SELECT o.id, '${kind}'::text AS kind, o.amount::text AS amount, o.currency,
+      SELECT o.id, '${kind}'::text AS kind, (o.net_amount + o.fee_amount)::text AS amount, o.currency,
              o.fee_amount::text AS fee, o.net_amount::text AS net,
              o.payout_method::text AS description,
              ${PAYOUT_DETAILS} AS details,
@@ -371,8 +386,9 @@ export class ActivityService {
 
     const PAYOUT_DETAILS = `COALESCE(o.payout_details->>'recipientName', o.payout_details->>'accountHolder', o.payout_details->>'walletAddress', o.payout_details->>'description', o.external_reference)`;
     // The three money-out/-in tables share an identical projection shape.
+    // Gross (net + fee), not the bare requested amount — see unionSql().
     const flowBranch = (kind: ActivityKind, table: string): string => `(
-      SELECT o.id, '${kind}'::text AS kind, o.amount::text AS amount, o.currency,
+      SELECT o.id, '${kind}'::text AS kind, (o.net_amount + o.fee_amount)::text AS amount, o.currency,
              o.fee_amount::text AS fee, o.net_amount::text AS net,
              o.payout_method::text AS description,
              ${PAYOUT_DETAILS} AS details,

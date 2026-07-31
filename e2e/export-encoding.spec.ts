@@ -39,11 +39,14 @@ test.describe('CSV exports: encoding + columns', () => {
     }
   });
 
-  test('flow exports show gross/fee/net, not an ambiguous bare amount', async ({ page }) => {
+  test('flow + activity exports show gross/fee/net, not an ambiguous bare amount', async ({
+    page,
+  }) => {
     for (const p of [
       '/admin/withdrawals/export.csv',
       '/admin/payouts/export.csv',
       '/admin/loads/export.csv',
+      '/admin/activity/export.csv',
     ]) {
       const { header } = await fetchCsv(page, p);
       const cols = header.split(',');

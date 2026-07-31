@@ -9,6 +9,8 @@ export const activityItemSchema = z.object({
   id: z.string().uuid(),
   kind: z.nativeEnum(ActivityKind),
   direction: z.nativeEnum(ActivityDirection),
+  // Gross amount — the money that actually moves (net + fee); matches
+  // totalAmount on the flow resources. Always amount = fee + net.
   amount: z.string(),
   currency: z.string(),
   fee: z.string(),
