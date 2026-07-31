@@ -20,6 +20,14 @@ const FIELD_CANCEL_DISCLAIMER = '1059';
 const SCAM_DISCLAIMER = 'Be careful, if you fall victim to a scam you may not get your money back.';
 const CANCEL_DISCLAIMER = 'Cancellation of this transaction requires Receiver’s consent';
 
+// Genuine session/credential `auth.*` codes — the caller's session is bad, not the
+// request payload. Deliberately does NOT match input-validation codes Whish also
+// namespaces under `auth.` (e.g. `auth.wrong_phone_format`, `auth.wrong_amount`).
+// 401/403 and the "sign in again / signed out / session expired" dialog regex remain
+// the primary session signals; this only catches session codes returned as HTTP 200.
+const SESSION_AUTH_CODE =
+  /^auth\.(session|token|login|sign_?in|signed?_?out|expired|unauthor|forbidden|invalid_session|not_?authenticated|no_?session|revoked)/i;
+
 /** Raised when Whish rejects the captured session as expired/invalid. */
 export class WhishSessionExpiredError extends DomainError {
   constructor(message: string, details?: Record<string, unknown>) {
@@ -148,7 +156,16 @@ export class WhishW2WClient {
 
   private isAuthFailure(status: number, code: string | null, message: string | null): boolean {
     if (status === 401 || status === 403) return true;
-    if (code?.startsWith('auth.')) return true;
+    // Only GENUINE session/credential codes count as an auth outage. Whish reuses
+    // the `auth.` namespace for per-request field validation too (e.g.
+    // `auth.wrong_phone_format` for a malformed recipient msisdn) — those are clean
+    // business failures for a single transfer, NOT a session expiry. Treating them
+    // as auth failures would wrongly trip the circuit breaker (pausing the whole
+    // withdrawal queue) and misdirect the operator to re-capture a healthy session,
+    // while discarding the real Whish response. So we match session semantics only
+    // and let everything else fall through to a normal `failed` outcome (which
+    // persists the full envelope and surfaces the real message).
+    if (code != null && SESSION_AUTH_CODE.test(code)) return true;
     return /sign(ed)? ?in again|signed out|session.*expired|unauthor/i.test(message ?? '');
   }
 
