@@ -414,6 +414,7 @@ export class WhishTransfersService {
       currency: r.currency.trim(),
       status: r.status,
       traceId: r.traceId,
+      upstreamCode: r.upstreamCode,
       upstreamMessage: r.upstreamMessage,
       errorDetail: r.errorDetail,
       source: r.source,

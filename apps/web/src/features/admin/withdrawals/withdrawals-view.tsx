@@ -340,13 +340,49 @@ function autoApprovalBadge(w: WithdrawalResponse): ReactNode {
     );
   if (a.needsAttention) return <Badge variant="warning">Auto: settling</Badge>;
   if (w.status === 'PROCESSING') return <Badge variant="secondary">Auto: transferring</Badge>;
-  if (a.terminal && w.status === 'PENDING')
+  if (a.terminal && w.status === 'PENDING') {
+    const hint = terminalFailureHint(a.failureCategory);
     return (
-      <Badge variant="secondary" title={a.errorDetail ?? undefined}>
-        Auto: failed
+      <Badge variant="secondary" title={hint.title(a.errorDetail)}>
+        {hint.label}
       </Badge>
     );
+  }
   return null;
+}
+
+/**
+ * Turn a terminal auto-transfer failure category into a queue label + tooltip that
+ * tells the operator whose problem it is. A RECEIVER/TEMPORARY failure is a Whish- or
+ * receiver-side rejection (money did NOT move) — NOT a platform fault — so we say so
+ * explicitly, rather than a bare "Auto: failed" that reads like the system broke.
+ */
+function terminalFailureHint(
+  category: NonNullable<WithdrawalResponse['autoApproval']>['failureCategory'],
+): { label: string; title: (detail?: string | null) => string } {
+  const withDetail = (base: string) => (detail?: string | null) =>
+    detail ? `${base} — Whish: ${detail}` : base;
+  switch (category) {
+    case 'INVALID_RECIPIENT':
+      return {
+        label: 'Auto: bad recipient #',
+        title: withDetail('Whish rejected the recipient number — fix the phone and re-submit'),
+      };
+    case 'RECEIVER':
+      return {
+        label: 'Auto: receiver issue',
+        title: withDetail(
+          'Whish rejected on the receiver side (money did not move) — not a system fault; the receiver may have hit a wallet/receiving limit',
+        ),
+      };
+    case 'TEMPORARY':
+      return {
+        label: 'Auto: Whish busy',
+        title: withDetail('Whish was temporarily unavailable (money did not move) — retry later'),
+      };
+    default:
+      return { label: 'Auto: failed', title: (detail?: string | null) => detail ?? 'Auto: failed' };
+  }
 }
 
 function ReviewDialog({

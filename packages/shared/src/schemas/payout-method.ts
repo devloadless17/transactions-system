@@ -67,6 +67,48 @@ const wishPayoutSchema = z.object({
   instructions: z.string().trim().max(500).optional(),
 });
 
+// W2W is NOT Lebanese-only, so we do NOT force every recipient to be Lebanese. But a
+// number that EXPLICITLY carries the Lebanese 961 country code must be a well-formed
+// Lebanese mobile — the national part is 8 digits, or exactly 7 when it starts with 3
+// (the `+961 3…` family). That catches the real prod bug (9617075183 — 961 + only 7
+// digits, non-3 prefix) up front, instead of it failing LATE at Whish as
+// `auth.wrong_phone_format`. Any OTHER country code / bare-local number is left to the
+// tolerant shape check above, so a valid international recipient is never blocked.
+// Exported so the API/tests can reuse the exact same normalisation.
+export function lebaneseMobileNsn(raw: string): string {
+  let d = raw.replace(/\D/g, '');
+  if (d.startsWith('00961')) d = d.slice(5);
+  else if (d.startsWith('961')) d = d.slice(3);
+  if (d.startsWith('0')) d = d.slice(1);
+  return d;
+}
+
+export function isValidLebaneseMobile(raw: string): boolean {
+  const nsn = lebaneseMobileNsn(raw);
+  return nsn.startsWith('3') ? nsn.length === 7 : nsn.length === 8;
+}
+
+/** True unless the number carries a 961 country code AND is a malformed Lebanese mobile. */
+export function isValidWishRecipientPhone(raw: string): boolean {
+  const digits = raw.replace(/\D/g, '');
+  const hasLebaneseCountryCode = digits.startsWith('00961') || digits.startsWith('961');
+  // Only the 961-tagged numbers are held to the Lebanese rule; everything else
+  // (other country codes, bare local) passes on the tolerant shape alone.
+  return hasLebaneseCountryCode ? isValidLebaneseMobile(raw) : true;
+}
+
+// CREATE-only: the tolerant phone shape PLUS the 961-scoped Lebanese-MSISDN check.
+// Deliberately NOT applied to the read/`wishPayoutSchema` union — legacy rows may hold
+// a number that predates this rule, and re-parsing one on read must never throw.
+const wishRecipientPhoneCreateSchema = wishRecipientPhoneSchema.refine(isValidWishRecipientPhone, {
+  message:
+    'a Lebanese (+961) recipientPhone must be 8 digits after the country code (or 7 digits when it starts with 3)',
+});
+
+const wishPayoutCreateSchema = wishPayoutSchema.extend({
+  recipientPhone: wishRecipientPhoneCreateSchema,
+});
+
 const otherPayoutSchema = z.object({
   method: z.literal(PayoutMethod.OTHER),
   description: z.string().trim().min(2).max(500),
@@ -88,7 +130,7 @@ export type PayoutDetails = z.infer<typeof payoutDetailsSchema>;
 // legacy rows.
 export const createPayoutDetailsSchema = z.discriminatedUnion('method', [
   cashPayoutSchema,
-  wishPayoutSchema,
+  wishPayoutCreateSchema,
   cryptoPayoutSchema,
 ]);
 export type CreatePayoutDetails = z.infer<typeof createPayoutDetailsSchema>;

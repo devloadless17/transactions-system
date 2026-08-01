@@ -215,6 +215,52 @@ describe('WithdrawalAutoApprovalService — transfer-outcome branches', () => {
     // A clean business failure means the SYSTEM is healthy — must not trip the breaker.
     expect(config.recordSuccess).toHaveBeenCalled();
     expect(config.recordFailure).not.toHaveBeenCalled();
+    expect(config.trip).not.toHaveBeenCalled();
+  });
+
+  it('(b2) a transient Whish "off" failure is categorised TEMPORARY and never trips the breaker', async () => {
+    const { service, withdrawals, config, transfers } = build({
+      state: makeState(),
+      candidates: [candidate],
+    });
+    // The exact prod reply: HTTP 200, status:false, code "off" (Whish momentarily
+    // unavailable). Money did NOT move — a single transient must NOT pause the queue.
+    transfers.sendTransfer.mockResolvedValue({
+      status: 'FAILED',
+      reference: 'wt_off',
+      upstreamCode: 'off',
+      upstreamMessage: 'Please try again later.',
+    });
+    await runTick(service);
+    expect(withdrawals.revertFromProcessing).toHaveBeenCalledWith(
+      candidate.id,
+      candidate.companyId,
+      expect.objectContaining({ status: 'FAILED', terminal: true, failureCategory: 'TEMPORARY' }),
+    );
+    expect(config.recordSuccess).toHaveBeenCalled();
+    expect(config.recordFailure).not.toHaveBeenCalled();
+    expect(config.trip).not.toHaveBeenCalled();
+  });
+
+  it('(b3) a receiver-side rejection is categorised RECEIVER', async () => {
+    const { service, withdrawals, config, transfers } = build({
+      state: makeState(),
+      candidates: [candidate],
+    });
+    transfers.sendTransfer.mockResolvedValue({
+      status: 'FAILED',
+      reference: 'wt_r',
+      upstreamCode: 'account.topup.check.condition.fail',
+      upstreamMessage:
+        'This transaction could not be completed at this time. Please reach out to the receiver.',
+    });
+    await runTick(service);
+    expect(withdrawals.revertFromProcessing).toHaveBeenCalledWith(
+      candidate.id,
+      candidate.companyId,
+      expect.objectContaining({ status: 'FAILED', terminal: true, failureCategory: 'RECEIVER' }),
+    );
+    expect(config.trip).not.toHaveBeenCalled();
   });
 
   it('(c) an UNKNOWN/PENDING result holds the row needsReconcile (never auto-retried), no revert', async () => {

@@ -34,6 +34,7 @@ import {
   AUTO_APPROVE_MIN_NET,
   autoApprovalSkipReason,
   describeSkipReason,
+  type W2WFailureCategory,
 } from './auto-approval-rules';
 import {
   assertSufficient,
@@ -844,7 +845,18 @@ function autoApprovalSummary(metadata: unknown): WithdrawalResponse['autoApprova
     needsAttention: m.needsAttention === true ? true : undefined,
     terminal: m.terminal === true ? true : undefined,
     errorDetail: typeof m.errorDetail === 'string' ? m.errorDetail : undefined,
+    failureCategory: isW2WFailureCategory(m.failureCategory) ? m.failureCategory : undefined,
   };
+}
+
+const W2W_FAILURE_CATEGORIES: readonly W2WFailureCategory[] = [
+  'INVALID_RECIPIENT',
+  'RECEIVER',
+  'TEMPORARY',
+  'GENERIC',
+];
+function isW2WFailureCategory(v: unknown): v is W2WFailureCategory {
+  return typeof v === 'string' && (W2W_FAILURE_CATEGORIES as readonly string[]).includes(v);
 }
 
 /** Auto-approval bookkeeping stored under `withdrawal.metadata.autoApproval`. */
@@ -853,6 +865,9 @@ export interface AutoApprovalMeta {
   reference?: string;
   traceId?: string | null;
   errorDetail?: string;
+  // Set on a terminal FAILED to tell the operator whose problem it is (bad recipient
+  // number vs receiver limit vs Whish outage). Derived via `classifyW2WFailure`.
+  failureCategory?: W2WFailureCategory;
   needsReconcile?: boolean;
   needsAttention?: boolean;
   terminal?: boolean;

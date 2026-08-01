@@ -4,6 +4,7 @@ import { Money } from '@app/shared';
 import type { Withdrawal } from '@app/db';
 import { WithdrawalsService } from './withdrawals.service';
 import { AutoApprovalConfigStore } from './auto-approval-config.store';
+import { classifyW2WFailure } from './auto-approval-rules';
 import { WhishTransfersService } from '../whish/whish-transfers.service';
 import { WhishSessionExpiredError } from '../whish/whish-w2w.client';
 import { AuditService } from '../audit/audit.service';
@@ -154,6 +155,7 @@ export class WithdrawalAutoApprovalService implements OnApplicationBootstrap, On
         status: 'FAILED',
         terminal: true,
         errorDetail: 'missing_recipient_phone',
+        failureCategory: 'INVALID_RECIPIENT',
       });
       return false;
     }
@@ -223,11 +225,17 @@ export class WithdrawalAutoApprovalService implements OnApplicationBootstrap, On
         break;
       case 'FAILED':
         // Clean business failure (money did NOT move) — back to manual, terminal.
+        // Categorise so the queue can tell the operator whose problem it is (a bad
+        // recipient number vs a receiver limit vs a transient Whish outage) rather
+        // than a bare "Auto: failed". This is a business failure, so the breaker is
+        // NOT tripped (recordSuccess below) — a single transient 'off' or a
+        // receiver-limit rejection never pauses the whole queue.
         await this.withdrawals.revertFromProcessing(w.id, w.companyId, {
           status: 'FAILED',
           terminal: true,
           reference: result.reference,
           errorDetail: result.upstreamMessage ?? 'transfer_failed',
+          failureCategory: classifyW2WFailure(result.upstreamCode, result.upstreamMessage),
         });
         await this.config.recordSuccess(); // system is healthy, just this one failed
         await this.audit.record({

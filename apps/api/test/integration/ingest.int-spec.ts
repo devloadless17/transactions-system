@@ -132,12 +132,22 @@ describe('ingest idempotency & replay', () => {
       // 0% deducted on TRANSACTION so net == amount and the math is obvious.
       commission: {
         name: 'starter',
-        operations: [{ operationType: 'TRANSACTION', feeApplication: 'DEDUCTED' }],
+        operations: [
+          {
+            operationType: 'TRANSACTION',
+            feeApplication: 'DEDUCTED',
+            tiers: [
+              {
+                minAmount: '0',
+                maxAmount: null,
+                commissionType: 'PERCENTAGE',
+                commissionValue: '0',
+              },
+            ],
+          },
+        ],
         priority: 100,
         active: true,
-        tiers: [
-          { minAmount: '0', maxAmount: null, commissionType: 'PERCENTAGE', commissionValue: '0' },
-        ],
       },
     });
     const companyId = created.company.id;

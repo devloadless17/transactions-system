@@ -82,11 +82,12 @@ export function CommissionRuleDialog({ open, onOpenChange, companies, group, onS
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>{editing ? 'Edit commission rule' : 'New commission rule'}</DialogTitle>
           <DialogDescription>
-            Apply the same fee tiers to a set of companies and operations.
+            Set fee tiers for a set of companies and operations — the same tiers for every
+            operation, or customized per operation.
           </DialogDescription>
         </DialogHeader>
 

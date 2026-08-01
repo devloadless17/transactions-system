@@ -139,22 +139,23 @@ export async function getCsrf(api: APIRequestContext): Promise<string> {
 }
 
 /**
- * Create a commission rule (admin). `data` mirrors createCommissionRuleSchema:
- * { companyId?, sourceId?, operationType, feeApplication, minAmount, maxAmount,
- *   commissionType, commissionValue, priority?, active? }. Returns the rule.
+ * Create a commission rule (admin). `data` is either a full rule-group body or
+ * the legacy flat shape { companyId?, sourceId?, operationType, feeApplication,
+ * minAmount, maxAmount, commissionType, commissionValue, priority?, active? }.
+ * Returns the rule.
  */
 export async function createCommissionRule(
   api: APIRequestContext,
   csrf: string,
   data: Record<string, unknown>,
 ): Promise<{ id: string }> {
-  // The endpoint takes the rule-GROUP shape (companyIds[] / operations[] /
-  // tiers[]), where each operation carries its own fee application. Specs still
-  // pass the legacy flat shape ({operationType, feeApplication, min/max, type,
-  // value}), so translate a flat rule into a single-operation, single-tier group
-  // here — keeps every caller working unchanged.
+  // The endpoint takes the rule-GROUP shape (companyIds[] / operations[]), where
+  // each operation carries its own fee application AND its own tier ladder.
+  // Specs still pass the legacy flat shape ({operationType, feeApplication,
+  // min/max, type, value}), so translate a flat rule into a single-operation,
+  // single-tier group here — keeps every caller working unchanged.
   const body =
-    'tiers' in data
+    'operations' in data
       ? data
       : {
           name: (data.name as string | null) ?? null,
@@ -163,18 +164,18 @@ export async function createCommissionRule(
             {
               operationType: data.operationType ?? 'TRANSACTION',
               feeApplication: data.feeApplication ?? 'DEDUCTED',
+              tiers: [
+                {
+                  minAmount: data.minAmount,
+                  maxAmount: data.maxAmount ?? null,
+                  commissionType: data.commissionType,
+                  commissionValue: data.commissionValue,
+                },
+              ],
             },
           ],
           priority: data.priority ?? 100,
           active: data.active ?? true,
-          tiers: [
-            {
-              minAmount: data.minAmount,
-              maxAmount: data.maxAmount ?? null,
-              commissionType: data.commissionType,
-              commissionValue: data.commissionValue,
-            },
-          ],
         };
   const res = await api.post('/v1/admin/commission-rules', {
     headers: { 'x-csrf-token': csrf },

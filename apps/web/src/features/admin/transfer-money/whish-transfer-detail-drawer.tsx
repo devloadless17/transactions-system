@@ -85,7 +85,7 @@ export function WhishTransferDetailDrawer({
             </section>
 
             {(transfer.status === 'FAILED' || transfer.status === 'UNKNOWN') &&
-              (transfer.errorDetail || transfer.upstreamMessage) && (
+              (transfer.errorDetail || transfer.upstreamMessage || transfer.upstreamCode) && (
                 <section className="space-y-2">
                   <h3 className="text-xs font-medium uppercase text-muted-foreground">
                     {transfer.status === 'UNKNOWN' ? 'Needs reconcile' : 'Failure reason'}
@@ -97,6 +97,9 @@ export function WhishTransferDetailDrawer({
                     {transfer.upstreamMessage ? `Whish: ${transfer.upstreamMessage}. ` : ''}
                     {transfer.errorDetail ? `(${transfer.errorDetail})` : ''}
                   </p>
+                  {transfer.upstreamCode && (
+                    <DetailRow label="Whish code" value={transfer.upstreamCode} mono />
+                  )}
                 </section>
               )}
 

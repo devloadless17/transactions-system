@@ -33,6 +33,10 @@ export const whishTransferResponseSchema = z.object({
   currency: z.string(),
   status: z.nativeEnum(WhishTransferStatus),
   traceId: z.string().nullable(),
+  // The exact upstream code Whish returned (e.g. 'account.topup.check.condition.fail',
+  // 'off', 'auth.wrong_phone_format'). Surfaced so an operator can identify the real
+  // failure without reading the raw responseBody from the DB.
+  upstreamCode: z.string().nullable(),
   upstreamMessage: z.string().nullable(),
   // Structured failure reason (e.g. 'session_expired', 'transfer_failed') — shown
   // in the detail drawer alongside the Whish upstream message.

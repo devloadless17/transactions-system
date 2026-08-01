@@ -33,80 +33,6 @@ export function commissionValueWithinBounds(
   return true;
 }
 
-export const createCommissionRuleSchema = z
-  .object({
-    companyId: z.string().uuid().nullable().optional(),
-    sourceId: z.string().uuid().nullable().optional(),
-    operationType: z.nativeEnum(FeeOperationType).default(FeeOperationType.TRANSACTION),
-    feeApplication: z.nativeEnum(FeeApplication).default(FeeApplication.DEDUCTED),
-    minAmount: nonNegativeDecimalString,
-    maxAmount: nonNegativeDecimalString,
-    commissionType: z.nativeEnum(CommissionType),
-    commissionValue: nonNegativeDecimalString,
-    priority: z.number().int().min(0).max(10_000).default(0),
-    active: z.boolean().default(true),
-  })
-  .refine((v) => Money.of(v.minAmount).lte(Money.of(v.maxAmount)), {
-    message: 'minAmount must be <= maxAmount',
-    path: ['maxAmount'],
-  })
-  .refine((v) => commissionValueWithinBounds(v.commissionType, v.commissionValue), {
-    message: 'PERCENTAGE commissionValue must be between 0 and 100',
-    path: ['commissionValue'],
-  });
-export type CreateCommissionRuleInput = z.infer<typeof createCommissionRuleSchema>;
-
-export const updateCommissionRuleSchema = z
-  .object({
-    companyId: z.string().uuid().nullable().optional(),
-    sourceId: z.string().uuid().nullable().optional(),
-    operationType: z.nativeEnum(FeeOperationType).optional(),
-    feeApplication: z.nativeEnum(FeeApplication).optional(),
-    minAmount: nonNegativeDecimalString.optional(),
-    maxAmount: nonNegativeDecimalString.optional(),
-    commissionType: z.nativeEnum(CommissionType).optional(),
-    commissionValue: nonNegativeDecimalString.optional(),
-    priority: z.number().int().min(0).max(10_000).optional(),
-    active: z.boolean().optional(),
-  })
-  // Cross-field checks only fire when both sides are present in the patch.
-  .refine(
-    (v) =>
-      v.minAmount === undefined ||
-      v.maxAmount === undefined ||
-      Money.of(v.minAmount).lte(Money.of(v.maxAmount)),
-    {
-      message: 'minAmount must be <= maxAmount',
-      path: ['maxAmount'],
-    },
-  )
-  .refine(
-    (v) =>
-      v.commissionType === undefined ||
-      v.commissionValue === undefined ||
-      commissionValueWithinBounds(v.commissionType, v.commissionValue),
-    { message: 'PERCENTAGE commissionValue must be between 0 and 100', path: ['commissionValue'] },
-  );
-export type UpdateCommissionRuleInput = z.infer<typeof updateCommissionRuleSchema>;
-
-export const commissionRuleResponseSchema = z.object({
-  id: z.string().uuid(),
-  companyId: z.string().uuid().nullable(),
-  sourceId: z.string().uuid().nullable(),
-  operationType: z.nativeEnum(FeeOperationType),
-  feeApplication: z.nativeEnum(FeeApplication),
-  minAmount: z.string(),
-  // null = open-ended top tier ("and above").
-  maxAmount: z.string().nullable(),
-  commissionType: z.nativeEnum(CommissionType),
-  commissionValue: z.string(),
-  priority: z.number().int(),
-  active: z.boolean(),
-  createdAt: z.string(),
-  updatedAt: z.string(),
-});
-export type CommissionRuleResponse = z.infer<typeof commissionRuleResponseSchema>;
-
 export const listCommissionRulesQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(50),
@@ -119,11 +45,12 @@ export type ListCommissionRulesQuery = z.infer<typeof listCommissionRulesQuerySc
 // ---------------------------------------------------------------------------
 // Commission rule GROUPS
 //
-// In the admin UI one "rule" applies the SAME amount-tier ladder to a set of
-// companies and a set of operations. The API stores that as many individual
-// CommissionRule rows (one per company × operation × tier) sharing a `groupId`,
-// so the hot-path resolver/index/cache are untouched. These schemas describe the
-// grouped shape the admin endpoints accept and return.
+// In the admin UI one "rule" prices a set of companies and a set of operations,
+// where EACH operation carries its own amount-tier ladder (e.g. deposits 1%,
+// withdrawals 2%). The API stores that as many individual CommissionRule rows
+// (one per company × operation × tier) sharing a `groupId`, so the hot-path
+// resolver/index/cache are untouched. These schemas describe the grouped shape
+// the admin endpoints accept and return.
 // ---------------------------------------------------------------------------
 
 /** One amount bracket. `maxAmount: null` = open-ended ("and above") top tier. */
@@ -184,23 +111,21 @@ function validateTierLadder(tiers: CommissionTierInput[], ctx: z.RefinementCtx):
 }
 
 /**
- * One operation a rule prices, plus how that operation's fee is applied. The fee
- * TIERS (the amounts) are shared across all of a rule's operations; only the
- * application (deducted vs on top) is per-operation — e.g. deposits deducted but
- * withdrawals on top, at the very same fee schedule.
+ * One operation a rule prices: how its fee is applied (deducted vs on top) AND
+ * its own fee-tier ladder. Each operation carries its own ladder, so one rule
+ * can price e.g. deposits at 1% deducted but withdrawals at 2% on top.
  */
-export const commissionOperationSchema = z.object({
-  operationType: z.nativeEnum(FeeOperationType),
-  feeApplication: z.nativeEnum(FeeApplication).default(FeeApplication.DEDUCTED),
-});
+export const commissionOperationSchema = z
+  .object({
+    operationType: z.nativeEnum(FeeOperationType),
+    feeApplication: z.nativeEnum(FeeApplication).default(FeeApplication.DEDUCTED),
+    tiers: z.array(commissionTierSchema).min(1, 'add at least one tier'),
+  })
+  .superRefine((op, ctx) => validateTierLadder(op.tiers, ctx));
 export type CommissionOperationInput = z.infer<typeof commissionOperationSchema>;
 
-/** Validate a group: tier ladder must be well-formed AND no operation repeats. */
-function validateGroup(
-  v: { operations: CommissionOperationInput[]; tiers: CommissionTierInput[] },
-  ctx: z.RefinementCtx,
-): void {
-  validateTierLadder(v.tiers, ctx);
+/** Validate a group: no operation repeats (each op's ladder is checked on the op). */
+function validateGroup(v: { operations: CommissionOperationInput[] }, ctx: z.RefinementCtx): void {
   const seen = new Set<FeeOperationType>();
   for (const op of v.operations) {
     if (seen.has(op.operationType)) {
@@ -220,18 +145,12 @@ const baseGroupShape = {
   // Optional admin-facing label, e.g. "Standard fees".
   name: z.string().trim().max(120).nullable().default(null),
   companyIds: z.array(z.string().uuid()).nullable().default(null),
-  // Which operations this rule prices, each with its own fee application. The
-  // fee tiers below are shared across them.
-  operations: z
-    .array(commissionOperationSchema)
-    .min(1, 'pick at least one operation')
-    .default([
-      { operationType: FeeOperationType.TRANSACTION, feeApplication: FeeApplication.DEDUCTED },
-      { operationType: FeeOperationType.WITHDRAWAL, feeApplication: FeeApplication.DEDUCTED },
-    ]),
+  // Which operations this rule prices, each with its own fee application AND
+  // its own fee-tier ladder. No default: a default set of operations would
+  // imply a default fee schedule, which must always be explicit.
+  operations: z.array(commissionOperationSchema).min(1, 'pick at least one operation'),
   priority: z.number().int().min(0).max(10_000).default(100),
   active: z.boolean().default(true),
-  tiers: z.array(commissionTierSchema).min(1, 'add at least one tier'),
 };
 
 export const createCommissionRuleGroupSchema = z.object(baseGroupShape).superRefine(validateGroup);
@@ -255,23 +174,23 @@ export const commissionRuleGroupResponseSchema = z.object({
   name: z.string().nullable(),
   // null = all companies (global).
   companyIds: z.array(z.string().uuid()).nullable(),
-  // Each priced operation with its own fee application; the tiers below are shared.
+  // Each priced operation with its own fee application and its own tier ladder.
   operations: z.array(
     z.object({
       operationType: z.nativeEnum(FeeOperationType),
       feeApplication: z.nativeEnum(FeeApplication),
+      tiers: z.array(
+        z.object({
+          minAmount: z.string(),
+          maxAmount: z.string().nullable(),
+          commissionType: z.nativeEnum(CommissionType),
+          commissionValue: z.string(),
+        }),
+      ),
     }),
   ),
   priority: z.number().int(),
   active: z.boolean(),
-  tiers: z.array(
-    z.object({
-      minAmount: z.string(),
-      maxAmount: z.string().nullable(),
-      commissionType: z.nativeEnum(CommissionType),
-      commissionValue: z.string(),
-    }),
-  ),
   createdAt: z.string(),
 });
 export type CommissionRuleGroupResponse = z.infer<typeof commissionRuleGroupResponseSchema>;

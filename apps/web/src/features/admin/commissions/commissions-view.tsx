@@ -183,6 +183,12 @@ function RuleCard({
       .join(', '),
     `priority ${group.priority}`,
   ];
+  // Every operation charges the same ladder → render it once (the common case);
+  // otherwise one labeled ladder per operation.
+  const firstOp = group.operations[0];
+  const sameLadder =
+    firstOp !== undefined &&
+    group.operations.every((o) => ladderKey(o.tiers) === ladderKey(firstOp.tiers));
 
   return (
     <Card className={`overflow-hidden transition-colors ${group.active ? '' : 'bg-muted/30'}`}>
@@ -232,28 +238,57 @@ function RuleCard({
           </div>
         </div>
 
-        {/* Tier ladder */}
-        <div className="border-t bg-muted/20">
-          <table className="w-full">
-            <tbody className="divide-y divide-border/60">
-              {group.tiers.map((t, i) => {
-                const next = group.tiers[i + 1];
-                return (
-                  <tr key={i}>
-                    <td className="px-4 py-2 text-sm text-muted-foreground">
-                      {rangeLabel(t, next?.minAmount ?? null, group.tiers.length)}
-                    </td>
-                    <td className="px-4 py-2 text-right text-sm font-medium tabular-nums">
-                      {feeLabel(t.commissionType, t.commissionValue)}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+        {/* Tier ladder(s): one when shared across operations, else one per operation */}
+        {sameLadder ? (
+          <div className="border-t bg-muted/20">
+            <TierTable tiers={firstOp.tiers} />
+          </div>
+        ) : (
+          <div className="divide-y border-t bg-muted/20">
+            {group.operations.map((o) => (
+              <div key={o.operationType}>
+                <p className="px-4 pb-1 pt-2.5 text-xs font-medium text-muted-foreground">
+                  {FEE_OPERATION_LABEL[o.operationType]} ·{' '}
+                  {o.feeApplication === 'ON_TOP' ? 'on top' : 'deducted'}
+                </p>
+                <TierTable tiers={o.tiers} />
+              </div>
+            ))}
+          </div>
+        )}
       </CardContent>
     </Card>
+  );
+}
+
+type ResponseTier = CommissionRuleGroupResponse['operations'][number]['tiers'][number];
+
+/** Canonical fingerprint of a ladder, for the shared-vs-per-operation display split. */
+function ladderKey(tiers: ResponseTier[]): string {
+  return tiers
+    .map((t) => `${t.minAmount}|${t.maxAmount ?? '∞'}|${t.commissionType}|${t.commissionValue}`)
+    .join(';');
+}
+
+function TierTable({ tiers }: { tiers: ResponseTier[] }) {
+  return (
+    <table className="w-full">
+      <tbody className="divide-y divide-border/60">
+        {tiers.map((t, i) => {
+          const next = tiers[i + 1];
+          return (
+            <tr key={i}>
+              <td className="px-4 py-2 text-sm text-muted-foreground">
+                {rangeLabel(t, next?.minAmount ?? null, tiers.length)}
+              </td>
+              <td className="px-4 py-2 text-right text-sm font-medium tabular-nums">
+                {feeLabel(t.commissionType, t.commissionValue)}
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
   );
 }
 
@@ -291,11 +326,7 @@ function fmtAmount(s: string): string {
  * Threshold ranges: each tier runs from its min up to the next tier's start;
  * the top tier (null max) is open-ended.
  */
-function rangeLabel(
-  tier: CommissionRuleGroupResponse['tiers'][number],
-  nextMin: string | null,
-  count: number,
-): string {
+function rangeLabel(tier: ResponseTier, nextMin: string | null, count: number): string {
   const min = tier.minAmount;
   const zeroMin = Number(min) === 0;
   if (tier.maxAmount === null) {

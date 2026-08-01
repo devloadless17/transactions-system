@@ -88,6 +88,9 @@ export const withdrawalResponseSchema = z.object({
       needsAttention: z.boolean().optional(),
       terminal: z.boolean().optional(),
       errorDetail: z.string().nullish(),
+      // Why a terminal auto-transfer failed, so the queue can distinguish an operator
+      // problem (INVALID_RECIPIENT) from a receiver/Whish one (RECEIVER, TEMPORARY).
+      failureCategory: z.enum(['INVALID_RECIPIENT', 'RECEIVER', 'TEMPORARY', 'GENERIC']).nullish(),
     })
     .nullish(),
 });

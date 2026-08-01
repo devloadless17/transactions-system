@@ -146,3 +146,44 @@ export function describeSkipReason(
       return `above cap (${ctx.netAmount} > ${ctx.maxAutoApproveAmount} ${ctx.currency})`;
   }
 }
+
+/**
+ * Category of a Whish W2W transfer FAILURE, derived from the upstream code/message.
+ * Lets the queue tell the operator whether a failed auto-transfer is their problem
+ * to chase (bad recipient number) or the receiver's / Whish's (limits, outage) —
+ * instead of a bare "Auto: failed". `status:false` always means money did NOT move.
+ *
+ *   INVALID_RECIPIENT — the recipient msisdn is malformed/rejected (e.g.
+ *                       `auth.wrong_phone_format`). Fix the number; retrying as-is
+ *                       will fail identically.
+ *   RECEIVER          — a receiver-side precondition failed (e.g.
+ *                       `account.topup.check.condition.fail`, `transfer.failed.title`,
+ *                       "reach out to the receiver"): usually a receiver wallet/receiving
+ *                       limit. Not a platform fault.
+ *   TEMPORARY         — Whish is momentarily unavailable (`off`, "try again later").
+ *                       A later retry may succeed.
+ *   GENERIC           — anything else.
+ */
+export type W2WFailureCategory = 'INVALID_RECIPIENT' | 'RECEIVER' | 'TEMPORARY' | 'GENERIC';
+
+export function classifyW2WFailure(
+  code: string | null | undefined,
+  message: string | null | undefined,
+): W2WFailureCategory {
+  const c = (code ?? '').toLowerCase();
+  const m = (message ?? '').toLowerCase();
+  if (c.includes('phone') || /phone.*format|invalid.*(phone|recipient|number)/.test(m)) {
+    return 'INVALID_RECIPIENT';
+  }
+  if (c === 'off' || /try again later|temporarily|unavailable/.test(m)) {
+    return 'TEMPORARY';
+  }
+  if (
+    c.includes('condition.fail') ||
+    c.includes('transfer.failed') ||
+    /reach out to the receiver|contact the receiver/.test(m)
+  ) {
+    return 'RECEIVER';
+  }
+  return 'GENERIC';
+}

@@ -106,16 +106,19 @@ function commissionGroup(
     name: 'Standard fees',
     companyIds: null,
     operations: [
-      { operationType: FeeOperationType.TRANSACTION, feeApplication: FeeApplication.DEDUCTED },
+      {
+        operationType: FeeOperationType.TRANSACTION,
+        feeApplication: FeeApplication.DEDUCTED,
+        tiers: tiers.map((t) => ({
+          minAmount: t.minAmount,
+          maxAmount: t.maxAmount,
+          commissionType: t.commissionType ?? CommissionType.FIXED,
+          commissionValue: t.commissionValue ?? '1',
+        })),
+      },
     ],
     priority: 100,
     active: true,
-    tiers: tiers.map((t) => ({
-      minAmount: t.minAmount,
-      maxAmount: t.maxAmount,
-      commissionType: t.commissionType ?? CommissionType.FIXED,
-      commissionValue: t.commissionValue ?? '1',
-    })),
   };
 }
 
@@ -172,6 +175,73 @@ describe('createCommissionRuleGroupSchema (commission tier ladder)', () => {
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.error.issues.some((i) => /PERCENTAGE value/.test(i.message))).toBe(true);
+    }
+  });
+
+  it('ACCEPTS a different ladder per operation (deposits 1%, withdrawals 2%)', () => {
+    const base = commissionGroup([{ minAmount: '0', maxAmount: null }]);
+    const result = createCommissionRuleGroupSchema.safeParse({
+      ...base,
+      operations: [
+        {
+          operationType: FeeOperationType.TRANSACTION,
+          feeApplication: FeeApplication.DEDUCTED,
+          tiers: [
+            {
+              minAmount: '0',
+              maxAmount: null,
+              commissionType: CommissionType.PERCENTAGE,
+              commissionValue: '1',
+            },
+          ],
+        },
+        {
+          operationType: FeeOperationType.WITHDRAWAL,
+          feeApplication: FeeApplication.ON_TOP,
+          tiers: [
+            {
+              minAmount: '0',
+              maxAmount: null,
+              commissionType: CommissionType.PERCENTAGE,
+              commissionValue: '2',
+            },
+          ],
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('REJECTS a group whose SECOND operation has a bad ladder, pathed to that op', () => {
+    const base = commissionGroup([{ minAmount: '0', maxAmount: null }]);
+    const result = createCommissionRuleGroupSchema.safeParse({
+      ...base,
+      operations: [
+        ...base.operations,
+        {
+          operationType: FeeOperationType.WITHDRAWAL,
+          feeApplication: FeeApplication.ON_TOP,
+          tiers: [
+            {
+              minAmount: '1',
+              maxAmount: '100',
+              commissionType: CommissionType.FIXED,
+              commissionValue: '1',
+            },
+            {
+              minAmount: '100',
+              maxAmount: null,
+              commissionType: CommissionType.FIXED,
+              commissionValue: '2',
+            },
+          ],
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const overlap = result.error.issues.find((i) => /Tiers overlap/.test(i.message));
+      expect(overlap?.path).toEqual(['operations', 1, 'tiers']);
     }
   });
 });
