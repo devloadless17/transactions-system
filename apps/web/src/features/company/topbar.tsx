@@ -28,7 +28,7 @@ export function CompanyTopbar({ session }: { session: MeResponse }) {
   return (
     <header className="flex h-14 items-center justify-between gap-2 border-b bg-background px-4 sm:px-6">
       <div className="flex min-w-0 items-center gap-2">
-        <MobileNav title="Company" items={companyNavItems} badges={badges} />
+        <MobileNav items={companyNavItems} badges={badges} />
         <div className="hidden truncate text-sm text-muted-foreground sm:block">
           Signed in as {session.email} · {session.role}
         </div>

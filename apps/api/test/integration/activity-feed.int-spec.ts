@@ -381,3 +381,59 @@ describe('activity feed — gross amounts with non-zero fees', () => {
     expect(dep.feeApplication).toBe(''); // deposits have no fee mode
   });
 });
+
+// A deposit priced ON_TOP is the one case where the transactions table's stored
+// `amount` is the NET, not the gross (ingest credits the full amount and debits
+// amount + fee externally). The fixtures above only ever priced deposits
+// DEDUCTED, where amount happens to equal net + fee, so they could not tell the
+// two apart. Deposits carry no fee_application column, so the feed must derive
+// the gross as net + commission — the identity that holds under BOTH modes.
+describe('activity feed — ON_TOP deposit reports the gross that actually moved', () => {
+  let companyD: string;
+  let idDepositD: string; // DEPOSIT 1000, 10% ON_TOP → fee 100, net 1000, gross 1100
+  const queryD = { page: 1, pageSize: 20 };
+
+  beforeAll(async () => {
+    const d = await createCompany(h);
+    companyD = d.companyId;
+    const sourceD = await createEnabledSource(h, companyD);
+    await addFlowFee(h, companyD, 'TRANSACTION', '10', 'ON_TOP');
+
+    const dep = await h.transactions.ingest(
+      { kind: 'source', sourceId: sourceD },
+      ingestInput(companyD, '1000'),
+    );
+    idDepositD = dep.id;
+    // ON_TOP credits the full requested amount; the fee is charged on top of it.
+    expect(moneyEq(dep.netAmount, '1000')).toBe(true);
+  });
+
+  it('lists gross 1100 (net 1000 + fee 100), not the stored amount 1000', async () => {
+    const r = await activity.list({ companyId: companyD, query: queryD });
+    const dep = r.data.find((x) => x.id === idDepositD)!;
+    expect(moneyEq(dep.amount, '1100')).toBe(true);
+    expect(moneyEq(dep.fee, '100')).toBe(true);
+    expect(moneyEq(dep.net, '1000')).toBe(true);
+    // The invariant the export/UI rely on must hold for deposits too.
+    expect(Money.of(dep.amount).eq(Money.of(dep.fee).add(Money.of(dep.net)))).toBe(true);
+
+    // The gross fix must not leak into the ledger-driven running balance: the
+    // wallet was credited the net (1000), not the gross.
+    expect(r.meta.balanceMode).toBe(true);
+    expect(moneyEq(dep.balanceAfter, '1000')).toBe(true);
+  });
+
+  it('exports the same gross in the CSV', async () => {
+    const file = activity.streamCsv({ companyId: companyD, query: queryD });
+    let csv = '';
+    for await (const chunk of file.getStream()) csv += chunk;
+    const line = csv
+      .trim()
+      .split('\n')
+      .find((l) => l.startsWith(idDepositD))!;
+    const cells = line.split(',');
+    expect(moneyEq(cells[cells.length - 4], '1100')).toBe(true); // gross_amount
+    expect(moneyEq(cells[cells.length - 3], '100')).toBe(true); // fee_amount
+    expect(moneyEq(cells[cells.length - 2], '1000')).toBe(true); // net_amount
+  });
+});

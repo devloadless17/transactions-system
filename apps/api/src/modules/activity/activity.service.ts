@@ -235,12 +235,13 @@ export class ActivityService {
   // The four COMPLETED operations projected to one shape (no running balance).
   // Used by the COUNT queries and the CSV export — the list row queries use the
   // bounded (normalRowsSql) or balance (balanceUnionSql) variants.
-  // `amount` is the GROSS that actually moved: the flow tables' bare `amount` is
-  // the requested figure (gross for DEDUCTED fees but net for ON_TOP), so it is
-  // recomputed as net + fee; a deposit's stored amount is already gross.
+  // `amount` is the GROSS that actually moved. Every table's bare `amount` is the
+  // requested figure (gross for DEDUCTED fees but net for ON_TOP), so it is always
+  // recomputed as net + fee — an identity that holds under both fee applications
+  // and needs no fee_application column (deposits don't have one).
   private unionSql(): string {
     return `
-      SELECT o.id, 'DEPOSIT'::text AS kind, o.amount::text AS amount, o.currency,
+      SELECT o.id, 'DEPOSIT'::text AS kind, (o.net_amount + o.commission_amount)::text AS amount, o.currency,
              o.commission_amount::text AS fee, o.net_amount::text AS net,
              NULL::text AS fee_application,
              s.code AS description,
@@ -326,7 +327,7 @@ export class ActivityService {
       ${netJoin(fk)}
       WHERE o.status = 'COMPLETED'`;
     return `
-      SELECT o.id, 'DEPOSIT'::text AS kind, o.amount::text AS amount, o.currency,
+      SELECT o.id, 'DEPOSIT'::text AS kind, (o.net_amount + o.commission_amount)::text AS amount, o.currency,
              o.commission_amount::text AS fee, o.net_amount::text AS net,
              s.code AS description,
              COALESCE(o.payload->>'customer', o.payload->>'target', o.payload->>'phone') AS details,
@@ -403,7 +404,7 @@ export class ActivityService {
 
     const branches: Record<ActivityKind, string> = {
       DEPOSIT: `(
-      SELECT o.id, 'DEPOSIT'::text AS kind, o.amount::text AS amount, o.currency,
+      SELECT o.id, 'DEPOSIT'::text AS kind, (o.net_amount + o.commission_amount)::text AS amount, o.currency,
              o.commission_amount::text AS fee, o.net_amount::text AS net,
              s.code AS description,
              COALESCE(o.payload->>'customer', o.payload->>'target', o.payload->>'phone') AS details,

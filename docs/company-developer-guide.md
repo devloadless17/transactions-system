@@ -33,7 +33,9 @@ Send your key as a Bearer token on **every** request. No cookies and no CSRF hea
 Authorization: Bearer tsk_<prefix>_<secret>
 ```
 
-**Company key** — _You, the company._ Full access to your own company: wallets, transactions, withdrawals, payouts, loads, Whish Pay, CRM, team, and keys. This is the key you'll use for every call in the [Company API](#3-company-api) section.
+**Company key** — _You, the company._ Full access to your own company's money and data: wallets, transactions, withdrawals, payouts, loads, Whish Pay, and activity. This is the key you'll use for every call in the [Company API](#3-company-api) section.
+
+> **Management actions are dashboard-only.** Minting/rotating/revoking API keys, managing team members, and repointing your CRM webhook cannot be done with an API key — they require a signed-in dashboard session. This is deliberate: it means a leaked key can never be used to mint more keys, add users, or redirect your CRM traffic.
 
 > Secrets are shown **once**, at creation. Mint, rotate, or revoke a company key under **Settings → API keys** in the dashboard.
 
@@ -340,12 +342,16 @@ Fees are returned up front:
 
 Every withdrawal, payout, and load moves through these statuses.
 
-| Status      | Meaning                                                                                    |
-| ----------- | ------------------------------------------------------------------------------------------ |
-| `PENDING`   | Submitted — awaiting platform-admin review.                                                |
-| `COMPLETED` | Admin approved and funds delivered — approval settles in one step. Ledger entry finalised. |
-| `REJECTED`  | Admin rejected the request. Reserved funds released.                                       |
-| `CANCELLED` | You cancelled it (only possible while PENDING). Reserved funds released.                   |
+| Status       | Meaning                                                                                                                                                        |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PENDING`    | Submitted — awaiting review.                                                                                                                                   |
+| `PROCESSING` | Withdrawals only: the payout is being sent to the provider. Transient — it settles to `COMPLETED`, or returns to `PENDING` if the transfer doesn't go through. |
+| `APPROVED`   | Approved and awaiting settlement. Rare and transient — most approvals settle straight to `COMPLETED` in one step.                                              |
+| `COMPLETED`  | Funds delivered. Ledger entry finalised.                                                                                                                       |
+| `REJECTED`   | The request was rejected. Reserved funds released.                                                                                                             |
+| `CANCELLED`  | You cancelled it (only possible while PENDING). Reserved funds released.                                                                                       |
+
+> Treat this list as open-ended: handle unknown statuses gracefully rather than failing, so a future status can't break your integration. `PENDING`, `COMPLETED`, `REJECTED` and `CANCELLED` are the four you'll see in normal operation.
 
 > **Withdrawals push to your CRM.** Every withdrawal status change — pending, completed, rejected, cancelled — is delivered to your [CRM webhook](#4-crm-integration) in real time, carrying the same `feeAmount` / `netAmount` / `totalAmount` breakdown, so you never have to poll. Payouts and loads are managed over this API only — read their status with the GET below.
 
@@ -411,7 +417,7 @@ The list array is at `data.data`, with paging info at `meta`. Page with `?page=N
 
 ### 3.5 All endpoints at a glance
 
-Every `company/*` route accepts your company key.
+These `company/*` routes accept your company key.
 
 | Group        | Endpoints                                                             |
 | ------------ | --------------------------------------------------------------------- |
@@ -423,8 +429,8 @@ Every `company/*` route accepts your company key.
 | Withdrawals  | `GET /company/withdrawals` · `GET /:id` · `POST` · `POST /:id/cancel` |
 | Payouts      | `GET /company/payouts` · `GET /:id` · `POST` · `POST /:id/cancel`     |
 | Loads        | `GET /company/loads` · `GET /:id` · `POST` · `POST /:id/cancel`       |
-| API keys     | `GET` · `POST /company/api-keys` · `POST /:id/rotate` · `/:id/revoke` |
-| Team         | `GET` · `POST /company/team` · `PATCH` · `DELETE /:id`                |
+
+**Dashboard session only — these reject an API key with `403 FORBIDDEN`:** `company/api-keys` (list, create, rotate, revoke), `company/team` (list, invite, update, remove), and `PUT/DELETE /company/crm/config`. Use the dashboard for these.
 
 Collecting payments? See [Whish Pay](#2-whish-pay). Pushing transactions to your CRM? See [CRM integration](#4-crm-integration).
 
@@ -444,7 +450,7 @@ We POST every deposit and withdrawal to your CRM as its status changes — a dep
 
 ### 4.1 Configure your CRM endpoint
 
-Set the POST URL of your CRM and the API key it expects in the dashboard (**Documentation → CRM**, or via `PUT /company/crm/config`). We send the key as `Authorization: Bearer <key>` on every request.
+Set the POST URL of your CRM and the API key it expects in the dashboard (**Documentation → CRM**). This is a dashboard-only action — `PUT /company/crm/config` rejects API keys, so a leaked key can't redirect your CRM traffic. We send the key as `Authorization: Bearer <key>` on every request.
 
 - **CRM POST URL** — e.g. `https://your-crm.com/api/transactions`
 - **API key** — the secret your CRM expects; also used to sign every request (see below). Saved keys are never returned; the field shows a masked placeholder once set.

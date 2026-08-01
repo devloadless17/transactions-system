@@ -39,14 +39,15 @@ function useCollapsed(storageKey: string): [boolean, () => void] {
  * Desktop sidebar rail. Hidden below `md`; collapsible to an icon-only rail
  * whose state persists in localStorage under `storageKey`. The mobile drawer
  * (see MobileNav) covers small screens.
+ *
+ * Deliberately has no title/brand row: the nav starts at the top so the first
+ * item lines up with the topbar row beside it.
  */
 export function DashboardSidebar({
-  title,
   items,
   storageKey,
   badges,
 }: {
-  title: string;
   items: readonly NavItem[];
   storageKey: string;
   badges?: Record<string, number>;
@@ -60,14 +61,6 @@ export function DashboardSidebar({
         collapsed ? 'w-16' : 'w-60',
       )}
     >
-      <div
-        className={cn(
-          'flex h-14 items-center px-6 font-semibold',
-          collapsed && 'justify-center px-2',
-        )}
-      >
-        {collapsed ? title.charAt(0) : title}
-      </div>
       <SidebarNav items={items} collapsed={collapsed} badges={badges} />
       <div className={cn('border-t p-3', collapsed && 'flex justify-center')}>
         <Button

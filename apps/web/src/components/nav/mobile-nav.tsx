@@ -2,19 +2,20 @@
 import * as React from 'react';
 import { Menu } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
+import { Sheet, SheetContent, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
 import { SidebarNav, type NavItem } from './sidebar-nav';
 
 /**
  * Mobile navigation: a hamburger trigger (visible only `< md`) that opens a
  * left-side `Sheet` containing the same nav. Tapping a link closes the drawer.
+ *
+ * Mirrors DashboardSidebar: no visible title row. The drawer still needs an
+ * accessible name (Radix Dialog requirement), so the title is `sr-only`.
  */
 export function MobileNav({
-  title,
   items,
   badges,
 }: {
-  title: string;
   items: readonly NavItem[];
   badges?: Record<string, number>;
 }): React.JSX.Element {
@@ -33,9 +34,9 @@ export function MobileNav({
         </Button>
       </SheetTrigger>
       <SheetContent side="left" className="w-72 p-0 sm:max-w-xs">
-        <SheetHeader className="h-14 justify-center border-b px-6">
-          <SheetTitle>{title}</SheetTitle>
-        </SheetHeader>
+        <SheetTitle className="sr-only">Navigation</SheetTitle>
+        {/* Clears the drawer's absolutely-positioned close button. */}
+        <div className="h-10 shrink-0" />
         <SidebarNav items={items} onNavigate={() => setOpen(false)} badges={badges} />
       </SheetContent>
     </Sheet>

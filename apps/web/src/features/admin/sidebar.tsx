@@ -49,7 +49,6 @@ export function AdminSidebar({ role }: { role: UserRole }) {
   const badges = usePendingCounts('admin');
   return (
     <DashboardSidebar
-      title="Txn Admin"
       items={adminNavItemsFor(role)}
       storageKey="admin-sidebar-collapsed"
       badges={badges}

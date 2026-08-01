@@ -43,7 +43,6 @@ export function CompanySidebar() {
   const badges = usePendingCounts('company');
   return (
     <DashboardSidebar
-      title="Company"
       items={companyNavItems}
       storageKey="company-sidebar-collapsed"
       badges={badges}

@@ -13,6 +13,7 @@ import {
   payoutResponseSchema,
   whishPaymentResponseSchema,
   withdrawalResponseSchema,
+  WithdrawalStatus,
 } from '@app/shared';
 
 // Fields on a company-facing response schema that are deliberately NOT shown in the
@@ -56,6 +57,7 @@ const read = (rel: string): string => fs.readFileSync(repoFile(rel), 'utf8');
 // The integration guides were renamed from rival-* to the company/source split.
 const GUIDE = read('docs/companies-integration-docs.md');
 const INGEST_DOC = read('docs/sources-integration-docs.md');
+const DEV_GUIDE = read('docs/company-developer-guide.md');
 
 describe('docs ↔ API schema contract (anti-drift)', () => {
   describe('POST /company/whish/payments — create body (audit #1)', () => {
@@ -325,6 +327,40 @@ describe('docs ↔ API schema contract (anti-drift)', () => {
       expect(GUIDE).not.toMatch(
         /Webhook config \(`company\/whish\/webhook`\) is manageable with \*\*either\*\*/,
       );
+    });
+  });
+
+  // The company developer guide is the hand-to-your-engineers document, so the
+  // same anti-drift rule applies to it as to the older guides above. These pin
+  // the two claims that are actively DANGEROUS when wrong: the SessionOnlyGuard
+  // boundary (a doc promising API-key access to key/team/CRM management invites
+  // "fixing" the guard, turning a leaked key into full account takeover), and
+  // the status list a CRM switches on.
+  describe('company developer guide ↔ SessionOnlyGuard boundary', () => {
+    it('does NOT claim every company/* route accepts an API key', () => {
+      expect(DEV_GUIDE).not.toMatch(/Every `company\/\*` route accepts your company key/);
+    });
+
+    it('states that key, team and CRM-config management need a dashboard session', () => {
+      expect(DEV_GUIDE).toMatch(/[Dd]ashboard[- ]only|dashboard session/);
+      expect(DEV_GUIDE).toMatch(/403 FORBIDDEN/);
+    });
+
+    it('the guarded controllers really are session-only — the doc claim is true', () => {
+      for (const rel of [
+        'apps/api/src/modules/team/team.controller.ts',
+        'apps/api/src/modules/api-keys/api-keys.controller.ts',
+        'apps/api/src/modules/crm/crm.controller.ts',
+      ]) {
+        expect(read(rel), `${rel} must keep SessionOnlyGuard`).toContain('SessionOnlyGuard');
+      }
+    });
+
+    it('documents every WithdrawalStatus the API can return (reverse coverage)', () => {
+      const table = DEV_GUIDE.slice(DEV_GUIDE.indexOf('### 3.3 Status lifecycle'));
+      for (const status of Object.values(WithdrawalStatus)) {
+        expect(table, `status ${status} is undocumented in the guide`).toContain(`\`${status}\``);
+      }
     });
   });
 });
