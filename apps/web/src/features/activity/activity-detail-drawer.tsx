@@ -26,6 +26,7 @@ import {
   PayoutInstructions,
   prettyMethod,
 } from '@/features/company/withdrawals-view';
+import { activityHeadlineAmount } from './headline-amount';
 
 const KIND_LABEL: Record<ActivityKind, string> = {
   DEPOSIT: 'Deposit',
@@ -135,7 +136,7 @@ export function ActivityDetailDrawer({
               )}
             >
               {isIn ? '+' : '−'}
-              {formatMoney(item.amount)} {item.currency}
+              {formatMoney(activityHeadlineAmount(item))} {item.currency}
             </div>
 
             <EntityDetailBody q={q} />

@@ -21,6 +21,7 @@ import {
 import { CompanyFilter } from '@/features/admin/company-filter';
 import { ExportCsvButton } from '@/components/export-csv-button';
 import { ActivityDetailDrawer } from './activity-detail-drawer';
+import { activityHeadlineAmount } from './headline-amount';
 
 const PAGE_SIZE = 20;
 
@@ -271,7 +272,7 @@ function FeedRow({
             )}
           >
             {isIn ? '+' : '−'}
-            {formatMoney(item.amount)} {item.currency}
+            {formatMoney(activityHeadlineAmount(item))} {item.currency}
           </div>
           {Number(item.fee) > 0 && (
             <div className="text-xs text-muted-foreground">fee {trimAmount(item.fee)}</div>
