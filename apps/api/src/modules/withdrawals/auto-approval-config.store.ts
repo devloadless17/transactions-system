@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@app/db';
 import type {
   UpdateWithdrawalAutoApprovalInput,
@@ -6,6 +7,7 @@ import type {
   WhishSessionStatus,
 } from '@app/shared';
 import { PrismaService } from '../../database/prisma.service';
+import type { Env } from '../../config/env.schema';
 import { breakerWouldResume } from './auto-approval-rules';
 
 const ROW_ID = 'default';
@@ -44,7 +46,20 @@ export interface AutoApprovalState {
 export class AutoApprovalConfigStore {
   private readonly logger = new Logger(AutoApprovalConfigStore.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  /**
+   * WITHDRAWAL_AUTO_APPROVAL_SIMULATE (staging only): the poller approves with
+   * a fabricated `SIMULATED-` reference instead of a real W2W transfer. Read
+   * once here so every consumer (poller, alert predicate, admin panel) sees the
+   * same answer; env validation refuses to boot with it AND WHISH_W2W_ENABLED.
+   */
+  readonly simulationMode: boolean;
+
+  constructor(
+    private readonly prisma: PrismaService,
+    env: ConfigService<Env, true>,
+  ) {
+    this.simulationMode = env.get('WITHDRAWAL_AUTO_APPROVAL_SIMULATE', { infer: true });
+  }
 
   async getState(): Promise<AutoApprovalState> {
     const row = await this.prisma.runAsAdmin((tx) =>
@@ -216,6 +231,7 @@ export class AutoApprovalConfigStore {
       consecutiveFailures: s.consecutiveFailures,
       failureThreshold: s.failureThreshold,
       updatedAt: s.updatedAt?.toISOString() ?? null,
+      simulationMode: this.simulationMode,
     };
   }
 }

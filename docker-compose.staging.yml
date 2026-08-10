@@ -125,6 +125,12 @@ services:
       WHISH_W2W_ENABLED: ${WHISH_W2W_ENABLED:-false}
       WHISH_W2W_ENC_KEY: ${WHISH_W2W_ENC_KEY:-}
       WHISH_W2W_BASE_URL: ${WHISH_W2W_BASE_URL:-https://api.whish.money/itel-service}
+      # Staging-only: fake the auto-approval transfer — the pipeline runs with all
+      # its rules (admin toggle, hold window, WISH/USD, cap) but approves with a
+      # SIMULATED- reference instead of moving money. Mutually exclusive with
+      # WHISH_W2W_ENABLED — the API refuses to boot with both. NOT passed through
+      # in docker-compose.prod.yml, so production can never enable it.
+      WITHDRAWAL_AUTO_APPROVAL_SIMULATE: ${WITHDRAWAL_AUTO_APPROVAL_SIMULATE:-true}
       # Telegram alerts for load/payout requests. Intentionally a PRODUCTION-only
       # feature: leave TELEGRAM_* UNSET in .env.staging so this no-ops on staging.
       # The passthrough mirrors prod only so the two compose files stay identical.

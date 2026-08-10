@@ -239,6 +239,7 @@ export class WithdrawalsService {
           maxAutoApproveAmount: state.maxAutoApproveAmount,
           w2wEnabled: this.transfers.isW2WEnabled(),
           session,
+          simulate: this.autoApprovalConfig.simulationMode,
         },
       );
       if (!reason) return null;

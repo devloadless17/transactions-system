@@ -28,6 +28,7 @@ function build(opts: {
   w2wEnabled?: boolean;
   sessionConfigured?: boolean;
   candidates?: unknown[];
+  simulate?: boolean;
 }) {
   const withdrawals = {
     findStuckProcessing: vi.fn().mockResolvedValue([]),
@@ -38,6 +39,7 @@ function build(opts: {
     approve: vi.fn().mockResolvedValue(undefined),
   };
   const config = {
+    simulationMode: opts.simulate ?? false,
     getState: vi.fn().mockResolvedValue(opts.state),
     isEnabled: vi.fn().mockResolvedValue(opts.isEnabled ?? true),
     maybeAutoResume: vi.fn().mockResolvedValue(false),
@@ -61,7 +63,7 @@ function build(opts: {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     audit as any,
   );
-  return { service, withdrawals, transfers, config };
+  return { service, withdrawals, transfers, config, audit };
 }
 
 // tick() is private; invoke it directly for the unit test.
@@ -283,6 +285,25 @@ describe('WithdrawalAutoApprovalService — transfer-outcome branches', () => {
     expect(config.recordFailure).toHaveBeenCalled();
   });
 
+  it('(d2) SUCCESS settle notes name Whish W2W (not the simulated wording)', async () => {
+    const { service, withdrawals, transfers } = build({
+      state: makeState(),
+      candidates: [candidate],
+    });
+    transfers.sendTransfer.mockResolvedValue({
+      status: 'SUCCESS',
+      reference: 'wt_x',
+      traceId: 't',
+    });
+    await runTick(service);
+    expect(withdrawals.approve).toHaveBeenCalledWith(
+      candidate.id,
+      null,
+      expect.objectContaining({ notes: expect.stringContaining('via Whish W2W') }),
+      expect.anything(),
+    );
+  });
+
   it('(d) transfer SUCCEEDED but settle threw → hold needsAttention (PROCESSING), never revert', async () => {
     const { service, withdrawals, transfers } = build({
       state: makeState(),
@@ -302,5 +323,99 @@ describe('WithdrawalAutoApprovalService — transfer-outcome branches', () => {
       expect.objectContaining({ status: 'SUCCESS', needsAttention: true }),
     );
     expect(withdrawals.revertFromProcessing).not.toHaveBeenCalled();
+  });
+});
+
+// SIMULATION MODE (WITHDRAWAL_AUTO_APPROVAL_SIMULATE — staging): the pipeline
+// must run end-to-end with the Whish side completely absent, and must be
+// STRUCTURALLY incapable of sending a transfer. The core assertion in every
+// test here: transfers.sendTransfer is never called.
+describe('WithdrawalAutoApprovalService — simulate mode never moves money', () => {
+  it('approves a candidate with a SIMULATED reference — no transfer, no session read', async () => {
+    const { service, withdrawals, transfers, config, audit } = build({
+      state: makeState(),
+      simulate: true,
+      w2wEnabled: false, // staging reality: real W2W is off
+      sessionConfigured: false, // ...and no Whish session exists
+    });
+    withdrawals.findAutoApprovalCandidates.mockResolvedValue([candidate]);
+    await runTick(service);
+    expect(transfers.sendTransfer).not.toHaveBeenCalled();
+    expect(transfers.sessionStatus).not.toHaveBeenCalled();
+    // Same settle path as prod: floorWhole + skipReceivableBlock, fake reference.
+    expect(withdrawals.approve).toHaveBeenCalledWith(
+      candidate.id,
+      null,
+      expect.objectContaining({
+        externalReference: `SIMULATED-${candidate.id}`,
+        notes: expect.stringContaining('SIMULATED'),
+      }),
+      expect.objectContaining({ floorWhole: true, skipReceivableBlock: true }),
+    );
+    expect(config.recordSuccess).toHaveBeenCalled();
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'withdrawal.auto_approved',
+        metadata: expect.objectContaining({ simulated: true }),
+      }),
+    );
+  });
+
+  it('refuses to run at all when the real W2W flag is somehow also on', async () => {
+    const { service, withdrawals, transfers } = build({
+      state: makeState(),
+      simulate: true,
+      w2wEnabled: true, // must never happen (env validation), but never simulate through it
+      candidates: [candidate],
+    });
+    await runTick(service);
+    expect(withdrawals.findAutoApprovalCandidates).not.toHaveBeenCalled();
+    expect(withdrawals.claimForProcessing).not.toHaveBeenCalled();
+    expect(withdrawals.approve).not.toHaveBeenCalled();
+    expect(transfers.sendTransfer).not.toHaveBeenCalled();
+  });
+
+  it('the admin toggle still gates: OFF ⇒ nothing is claimed or approved', async () => {
+    const { service, withdrawals, transfers } = build({
+      state: makeState({ enabled: false, enabledAt: null }),
+      simulate: true,
+      w2wEnabled: false,
+      candidates: [candidate],
+    });
+    await runTick(service);
+    expect(withdrawals.findAutoApprovalCandidates).not.toHaveBeenCalled();
+    expect(withdrawals.approve).not.toHaveBeenCalled();
+    expect(transfers.sendTransfer).not.toHaveBeenCalled();
+  });
+
+  it('a tripped breaker does not block simulation (no Whish session to resume against)', async () => {
+    const { service, withdrawals, transfers, config } = build({
+      state: makeState({ circuitBreakerTrippedAt: new Date('2026-06-01T10:00:00Z') }),
+      simulate: true,
+      w2wEnabled: false,
+      sessionConfigured: false,
+    });
+    withdrawals.findAutoApprovalCandidates.mockResolvedValue([candidate]);
+    await runTick(service);
+    expect(config.maybeAutoResume).not.toHaveBeenCalled();
+    expect(withdrawals.approve).toHaveBeenCalled();
+    expect(transfers.sendTransfer).not.toHaveBeenCalled();
+  });
+
+  it('a row without a recipient phone still drops to manual (parity with prod)', async () => {
+    const { service, withdrawals, transfers } = build({
+      state: makeState(),
+      simulate: true,
+      w2wEnabled: false,
+      candidates: [{ ...candidate, payoutDetails: {} }],
+    });
+    await runTick(service);
+    expect(withdrawals.revertFromProcessing).toHaveBeenCalledWith(
+      candidate.id,
+      candidate.companyId,
+      expect.objectContaining({ status: 'FAILED', terminal: true }),
+    );
+    expect(withdrawals.approve).not.toHaveBeenCalled();
+    expect(transfers.sendTransfer).not.toHaveBeenCalled();
   });
 });

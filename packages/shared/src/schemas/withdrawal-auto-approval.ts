@@ -29,6 +29,9 @@ export const withdrawalAutoApprovalConfigSchema = z.object({
   consecutiveFailures: z.number().int(),
   failureThreshold: z.number().int(),
   updatedAt: z.string().nullable(),
+  // Read-only, from env (staging only): approvals are simulated — the pipeline
+  // runs with all its rules but no money is ever transferred.
+  simulationMode: z.boolean(),
 });
 export type WithdrawalAutoApprovalConfig = z.infer<typeof withdrawalAutoApprovalConfigSchema>;
 

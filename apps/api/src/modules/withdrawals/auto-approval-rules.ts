@@ -59,6 +59,12 @@ export interface AutoApprovalGates {
   maxAutoApproveAmount: string;
   w2wEnabled: boolean;
   session: SessionHealth;
+  /**
+   * WITHDRAWAL_AUTO_APPROVAL_SIMULATE (staging): the poller settles without a
+   * real transfer, so the breaker/W2W/session gates don't apply — only the
+   * admin toggle and the per-withdrawal scoping do.
+   */
+  simulate: boolean;
 }
 
 /**
@@ -97,16 +103,20 @@ export function autoApprovalSkipReason(
 ): AutoApprovalSkipReason | null {
   // Platform-wide gates (tick() returns early on each of these). The breaker only
   // blocks if it would NOT auto-resume — matching tick(), which resumes and
-  // carries on when the session was refreshed after the trip.
+  // carries on when the session was refreshed after the trip. In simulate mode
+  // tick() consults none of the Whish-side gates, so neither do we.
   if (
+    !gates.simulate &&
     gates.circuitBreakerTrippedAt &&
     !breakerWouldResume(gates.circuitBreakerTrippedAt, gates.session)
   ) {
     return 'CIRCUIT_BREAKER';
   }
   if (!gates.enabled || !gates.enabledAt) return 'DISABLED';
-  if (!gates.w2wEnabled) return 'W2W_DISABLED';
-  if (!gates.session.configured) return 'SESSION_UNAVAILABLE';
+  if (!gates.simulate) {
+    if (!gates.w2wEnabled) return 'W2W_DISABLED';
+    if (!gates.session.configured) return 'SESSION_UNAVAILABLE';
+  }
 
   // Per-withdrawal scoping (the candidate query's `where`).
   if (subject.payoutMethod !== AUTO_APPROVE_METHOD) return 'METHOD_NOT_SUPPORTED';

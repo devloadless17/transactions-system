@@ -41,6 +41,7 @@ function build() {
     approve: vi.fn().mockResolvedValue(undefined),
   };
   const config = {
+    simulationMode: false,
     getState: vi.fn().mockResolvedValue(makeState()),
     isEnabled: vi.fn().mockResolvedValue(true),
     maybeAutoResume: vi.fn().mockResolvedValue(false),

@@ -110,6 +110,7 @@ const fakeCrm = {
 // Withdrawal auto-approval ships OFF, so mirror that here: every withdrawal is
 // treated as needing a human. Read post-commit by `resolveManualReason()`.
 const fakeAutoApprovalConfig = {
+  simulationMode: false,
   getState: async () => ({
     enabled: false,
     enabledAt: null,

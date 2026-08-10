@@ -213,6 +213,46 @@ describe('WHISH_W2W production refinements', () => {
   });
 });
 
+// Simulated auto-approval (staging) and real W2W transfers must never coexist —
+// with both on, "auto-approved" could mean either "money sent" or "faked".
+// The guard applies in EVERY environment (staging runs NODE_ENV=production).
+describe('WITHDRAWAL_AUTO_APPROVAL_SIMULATE mutual exclusion with W2W', () => {
+  const w2wOn: Record<string, string> = {
+    WHISH_W2W_ENABLED: 'true',
+    WHISH_W2W_BASE_URL: 'https://api.whish.money/itel-service',
+    WHISH_W2W_ENC_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+  };
+
+  it('accepts simulate alone (the staging setup)', () => {
+    expect(() =>
+      validateEnv({ ...prodOk, WITHDRAWAL_AUTO_APPROVAL_SIMULATE: 'true' }),
+    ).not.toThrow();
+    expect(validateEnv({ ...base, WITHDRAWAL_AUTO_APPROVAL_SIMULATE: 'true' })).toMatchObject({
+      WITHDRAWAL_AUTO_APPROVAL_SIMULATE: true,
+    });
+  });
+
+  it('defaults to off', () => {
+    expect(validateEnv(base).WITHDRAWAL_AUTO_APPROVAL_SIMULATE).toBe(false);
+  });
+
+  it('rejects simulate together with WHISH_W2W_ENABLED in production', () => {
+    expect(() =>
+      validateEnv({ ...prodOk, ...w2wOn, WITHDRAWAL_AUTO_APPROVAL_SIMULATE: 'true' }),
+    ).toThrow(/WITHDRAWAL_AUTO_APPROVAL_SIMULATE/);
+  });
+
+  it('rejects the pair even in development (guard is environment-independent)', () => {
+    expect(() =>
+      validateEnv({
+        ...base,
+        WHISH_W2W_ENABLED: 'true',
+        WITHDRAWAL_AUTO_APPROVAL_SIMULATE: 'true',
+      }),
+    ).toThrow(/WITHDRAWAL_AUTO_APPROVAL_SIMULATE/);
+  });
+});
+
 // Telegram alerts are all-or-nothing: a half-configured pair must fail closed so
 // a typo surfaces at boot rather than as a silently-missed money request.
 describe('Telegram alert env pairing', () => {

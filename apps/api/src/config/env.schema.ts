@@ -103,6 +103,17 @@ export const envSchema = z
     WHISH_W2W_LANGUAGE: z.string().default('en'),
     WHISH_W2W_TIMEZONE: z.string().default('Asia/Beirut'),
     WHISH_W2W_THEME: z.string().default('light'),
+    // Staging-only: run the withdrawal auto-approval pipeline WITHOUT moving
+    // money — the poller keeps every gate and rule (admin toggle, hold window,
+    // WISH/USD, cap) but fabricates a SUCCESS instead of calling the W2W send,
+    // stamping a `SIMULATED-` reference. W2W has NO sandbox, so this is the only
+    // safe way to exercise auto-approval outside production. Mutually exclusive
+    // with WHISH_W2W_ENABLED (enforced below); only docker-compose.staging.yml
+    // passes it through, so a prod deploy can never enable it.
+    WITHDRAWAL_AUTO_APPROVAL_SIMULATE: z
+      .union([z.literal('true'), z.literal('false')])
+      .default('false')
+      .transform((v) => v === 'true'),
 
     // ---- Telegram alerts (load/payout requests) ----
     // Best-effort push to a platform-admin Telegram group the moment a company
@@ -128,6 +139,20 @@ export const envSchema = z
         path: [hasToken ? 'TELEGRAM_CHAT_ID' : 'TELEGRAM_BOT_TOKEN'],
         message:
           'TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set together (or both left blank)',
+      });
+    }
+  })
+  // Simulated auto-approval and real W2W transfers must never coexist: with
+  // both on, an operator could read "auto-approved" as "money sent" (or the
+  // reverse). Fail closed at boot, in EVERY environment — staging runs with
+  // NODE_ENV=production, so this cannot live behind the production-only guard.
+  .superRefine((env, ctx) => {
+    if (env.WITHDRAWAL_AUTO_APPROVAL_SIMULATE && env.WHISH_W2W_ENABLED) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['WITHDRAWAL_AUTO_APPROVAL_SIMULATE'],
+        message:
+          'must not be enabled together with WHISH_W2W_ENABLED — simulated approvals and real W2W transfers are mutually exclusive',
       });
     }
   })

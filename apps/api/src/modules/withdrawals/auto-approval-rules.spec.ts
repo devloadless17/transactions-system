@@ -24,6 +24,7 @@ const OK_GATES: AutoApprovalGates = {
   maxAutoApproveAmount: '500',
   w2wEnabled: true,
   session: HEALTHY_SESSION,
+  simulate: false,
 };
 
 const reasonFor = (s: Partial<AutoApprovalSubject> = {}, g: Partial<AutoApprovalGates> = {}) =>
@@ -115,6 +116,35 @@ describe('autoApprovalSkipReason — platform gates (mirror tick() order)', () =
     expect(reasonFor({}, { session: { ...HEALTHY_SESSION, configured: false } })).toBe(
       'SESSION_UNAVAILABLE',
     );
+  });
+});
+
+// Mirrors tick()'s simulate branch: settling never touches Whish, so none of the
+// Whish-side gates (breaker / W2W env flag / session) may block or page a human —
+// while the admin toggle and the per-withdrawal scoping still apply unchanged.
+describe('autoApprovalSkipReason — simulate mode (staging)', () => {
+  const TRIPPED = new Date('2026-06-01T10:00:00Z');
+  const NO_WHISH = {
+    simulate: true,
+    w2wEnabled: false,
+    session: { ...HEALTHY_SESSION, configured: false },
+    circuitBreakerTrippedAt: TRIPPED,
+  };
+
+  it('auto-approves with W2W off, no session, and a tripped breaker', () => {
+    expect(reasonFor({}, NO_WHISH)).toBeNull();
+  });
+
+  it('the admin toggle still gates (DISABLED)', () => {
+    expect(reasonFor({}, { ...NO_WHISH, enabled: false })).toBe('DISABLED');
+    expect(reasonFor({}, { ...NO_WHISH, enabledAt: null })).toBe('DISABLED');
+  });
+
+  it('per-withdrawal scoping still applies', () => {
+    expect(reasonFor({ payoutMethod: 'CASH' }, NO_WHISH)).toBe('METHOD_NOT_SUPPORTED');
+    expect(reasonFor({ currency: 'LBP' }, NO_WHISH)).toBe('CURRENCY_NOT_SUPPORTED');
+    expect(reasonFor({ netAmount: '0.5' }, NO_WHISH)).toBe('BELOW_MIN_NET');
+    expect(reasonFor({ netAmount: '500.01' }, NO_WHISH)).toBe('ABOVE_CAP');
   });
 });
 

@@ -87,12 +87,22 @@ export function AutoApprovalPanel() {
                   {!cfg.enabled ? 'Off' : tripped ? 'Paused' : 'On'}
                 </Badge>
               )}
+              {cfg?.simulationMode && <Badge variant="warning">Simulation</Badge>}
             </div>
-            <p className="mt-1 max-w-prose text-xs text-muted-foreground">
-              When ON, new <strong>Whish</strong> withdrawal requests are transferred and approved
-              automatically — real money moves. Off ⇒ every request is handled manually in the queue
-              below. Only requests created after enabling are auto-processed.
-            </p>
+            {cfg?.simulationMode ? (
+              <p className="mt-1 max-w-prose text-xs text-muted-foreground">
+                <strong>Simulation mode</strong> — approvals are faked; no money is transferred.
+                When ON, new <strong>Whish</strong> withdrawal requests are approved automatically
+                with a simulated reference. Off ⇒ every request is handled manually in the queue
+                below. Only requests created after enabling are auto-processed.
+              </p>
+            ) : (
+              <p className="mt-1 max-w-prose text-xs text-muted-foreground">
+                When ON, new <strong>Whish</strong> withdrawal requests are transferred and approved
+                automatically — real money moves. Off ⇒ every request is handled manually in the
+                queue below. Only requests created after enabling are auto-processed.
+              </p>
+            )}
           </div>
           <Switch
             checked={!!cfg?.enabled}

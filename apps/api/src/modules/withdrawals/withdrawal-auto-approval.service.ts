@@ -23,6 +23,12 @@ const BATCH = 25;
  * Ships inert: it no-ops unless a SUPER_ADMIN has enabled the config AND the W2W
  * session is healthy. Dependency-free interval (mirrors WhishReconciliationService),
  * self-guards against overlapping ticks.
+ *
+ * SIMULATION MODE (WITHDRAWAL_AUTO_APPROVAL_SIMULATE, staging only): identical
+ * pipeline — same admin toggle, hold window, and eligibility rules — but the W2W
+ * send is replaced with a fabricated SUCCESS (`SIMULATED-` reference), so the
+ * flow can be exercised where real transfers are forbidden. Env validation
+ * refuses to boot with both simulate and WHISH_W2W_ENABLED on.
  */
 @Injectable()
 export class WithdrawalAutoApprovalService implements OnApplicationBootstrap, OnModuleDestroy {
@@ -38,8 +44,16 @@ export class WithdrawalAutoApprovalService implements OnApplicationBootstrap, On
     private readonly audit: AuditService,
   ) {}
 
+  /** WITHDRAWAL_AUTO_APPROVAL_SIMULATE — single authority is the config store. */
+  private get simulate(): boolean {
+    return this.config.simulationMode;
+  }
+
   onApplicationBootstrap(): void {
-    this.logger.log(`Withdrawal auto-approval poller STARTED (every ${INTERVAL_MS / 1000}s)`);
+    this.logger.log(
+      `Withdrawal auto-approval poller STARTED (every ${INTERVAL_MS / 1000}s)` +
+        (this.simulate ? ' — SIMULATION MODE (no real transfers)' : ''),
+    );
     this.timer = setInterval(() => void this.tick(), INTERVAL_MS);
     this.timer.unref?.();
     void this.tick();
@@ -86,23 +100,36 @@ export class WithdrawalAutoApprovalService implements OnApplicationBootstrap, On
     try {
       const state = await this.config.getState();
 
-      // Circuit breaker: if tripped, only continue once the Whish session has been
-      // refreshed (auto-resume); otherwise skip — everything stays manual.
-      if (state.circuitBreakerTrippedAt) {
+      if (this.simulate) {
+        // Defense in depth on top of the boot-time mutual exclusion: never
+        // simulate while the real W2W side is armed.
+        if (this.transfers.isW2WEnabled()) {
+          this.logger.error(
+            'SIMULATION mode is on but WHISH_W2W_ENABLED is true — refusing to run.',
+          );
+          return;
+        }
+      } else if (state.circuitBreakerTrippedAt) {
+        // Circuit breaker: if tripped, only continue once the Whish session has been
+        // refreshed (auto-resume); otherwise skip — everything stays manual.
         const session = await this.transfers.sessionStatus();
         const resumed = await this.config.maybeAutoResume(state, session);
         if (!resumed) return;
       }
 
       if (!state.enabled || !state.enabledAt) return; // OFF → silent (the default)
-      if (!this.transfers.isW2WEnabled()) {
-        this.logger.warn('Auto-approval is ON but WHISH_W2W_ENABLED is false — skipping.');
-        return;
-      }
-      const session = await this.transfers.sessionStatus();
-      if (!session.configured) {
-        this.logger.warn('Auto-approval is ON but no Whish session is configured — skipping.');
-        return;
+      // Simulation never touches Whish, so the W2W env/session gates only apply
+      // to the real pipeline.
+      if (!this.simulate) {
+        if (!this.transfers.isW2WEnabled()) {
+          this.logger.warn('Auto-approval is ON but WHISH_W2W_ENABLED is false — skipping.');
+          return;
+        }
+        const session = await this.transfers.sessionStatus();
+        if (!session.configured) {
+          this.logger.warn('Auto-approval is ON but no Whish session is configured — skipping.');
+          return;
+        }
       }
 
       // 1. Resolve rows already in PROCESSING (crash recovery / settle retries).
@@ -133,7 +160,7 @@ export class WithdrawalAutoApprovalService implements OnApplicationBootstrap, On
       }
       // Heartbeat so the processor's decisions are visible in the logs.
       this.logger.log(
-        `Auto-approval tick: ${candidates.length} candidate(s), ${stuck.length} stuck, ${processed} processed ` +
+        `${this.simulate ? '[SIMULATED] ' : ''}Auto-approval tick: ${candidates.length} candidate(s), ${stuck.length} stuck, ${processed} processed ` +
           `(hold=${state.holdSeconds}s, cap=${state.maxAutoApproveAmount}).`,
       );
     } catch (err) {
@@ -157,6 +184,14 @@ export class WithdrawalAutoApprovalService implements OnApplicationBootstrap, On
         errorDetail: 'missing_recipient_phone',
         failureCategory: 'INVALID_RECIPIENT',
       });
+      return false;
+    }
+
+    // SIMULATION: fabricate a success at the exact point the real send would
+    // fire — settle flows through the same approve/ledger/webhook path. This
+    // branch is structurally incapable of reaching WhishTransfersService.
+    if (this.simulate) {
+      await this.settleSuccess(w, `SIMULATED-${w.id}`, null);
       return false;
     }
 
@@ -281,7 +316,12 @@ export class WithdrawalAutoApprovalService implements OnApplicationBootstrap, On
       await this.withdrawals.approve(
         w.id,
         null,
-        { externalReference: reference, notes: `Auto-approved via Whish W2W (${reference})` },
+        {
+          externalReference: reference,
+          notes: this.simulate
+            ? `Auto-approved (SIMULATED — no transfer) (${reference})`
+            : `Auto-approved via Whish W2W (${reference})`,
+        },
         { floorWhole: true, skipReceivableBlock: true },
       );
       await this.config.recordSuccess();
@@ -298,6 +338,7 @@ export class WithdrawalAutoApprovalService implements OnApplicationBootstrap, On
           transferred: transferred.toString(),
           rounding: net.sub(transferred).toString(),
           currency: w.currency.trim(),
+          ...(this.simulate ? { simulated: true } : {}),
         },
       });
     } catch (err) {
