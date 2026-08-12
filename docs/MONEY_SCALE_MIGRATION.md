@@ -128,48 +128,52 @@ SELECT count(*) FROM whish_payments WHERE status='PENDING' AND amount <> round(a
 
 ---
 
-## Stage B — quantize, then ALTER
+## Stage B — narrow the columns (DONE, and deliberately partial)
 
-Maintenance window, API stopped. The ordering exists so that the lossy cast is a
-**provable no-op**: quantize first, verify nothing changes, then change the type.
+Shipped as `20260812220000_money_scale_narrow_safe_columns`. It narrows **only**
+the columns that already hold nothing but cent values, so the `ALTER` changes no
+value at all — verified against a copy of production, zero changes in any table:
 
-1. Fresh `pg_dump -Fc`, checksummed, off-host.
-2. `CREATE SCHEMA money_scale_backup_v1` and snapshot every column being touched,
-   **before** any UPDATE. This is the practical rollback.
-3. **Quantize in place.** Round the _inputs_ and **derive** dependents (`net` from
-   `amount − fee`, using the explicit `fee_application` column) rather than
-   rounding each independently — that is what keeps the CHECK constraints
-   satisfied. `max_auto_approve_amount` uses `floor`, never widening a cap.
-   **Do not quantize `wallets`** — they must keep their tail to match the ledger.
-   Every statement is `WHERE x <> round(x,2)`, so it is idempotent.
-4. **`ALTER COLUMN … TYPE numeric(20,2)`**, one `ALTER TABLE` per table (multiple
-   clauses = one rewrite), smallest first: configs → fee rules → commission rules
-   → whish_transfers → loads/payouts → withdrawals → whish_payments →
-   **transactions** (the one to plan for). Set `lock_timeout` /
-   `statement_timeout` inside the migration: `packages/db/deploy.sh` pins
-   `lock_timeout=5000`, far too short for a rewrite.
-5. **Between each wave**, diff against `money_scale_backup_v1`: **zero values may
-   have changed.** Non-zero means the quantize step was incomplete — stop,
-   restore that table, abort the window.
-6. `prisma generate`, rebuild the API image (Prisma's Decimal handling is
-   schema-driven), restart, then force a full reconcile and confirm
-   `divergentCount == 0`.
+`payouts`, `loads`, `whish_payments`, `whish_transfers`, the commission and
+source-fee tier **bounds**, and the auto-approval cap.
 
-`ledger_entries` is **not** migrated. It gets a forward-only constraint instead,
-which costs a millisecond and no rewrite:
+The migration opens with a gate that refuses to run if any targeted column still
+holds a non-cent value. That gate matters: Postgres `round()` is
+half-away-from-zero while the engine is half-even, so a silent rewrite here would
+make the database and the money engine disagree about the same figure.
+
+### What must NEVER be narrowed
+
+This is the part the original plan got wrong, and it is permanent.
+
+**`ledger_entries.amount` and `wallets.*`** — the ledger is append-only and
+accepts only balanced sets, so a global imbalance introduced by re-scaling
+history could never be repaired by appending. Measured on production: the books
+net exactly `0` today, but rounding every historical leg would net **−0.58**. A
+wallet is that ledger's projection, so it stays wide too.
+`ledger_entries_amount_cent_chk` (NOT VALID) constrains new rows instead.
+
+**`transactions.*` and `withdrawals.*`** — these carry legacy over-scale rows
+that currently agree, _to the digit_, with the ledger legs they produced: 71 of
+71 legacy transactions match their FEE leg exactly on production. Because the
+ledger cannot follow them down to cents, narrowing these would **break** that
+agreement — making the data less internally consistent, not more. They are
+quantized on read (`Money.fromDb`) instead, which costs nothing and keeps the
+stored row faithful to its own ledger entries.
+
+**`commission_rules.commission_value` / `source_fee_rules.fee_value`** —
+dual-typed: dollars when `FIXED`, a RATE when `PERCENTAGE`. A rate is not money,
+so `0.125%` stays expressible.
+
+### Rollback
+
+Unlike a lossy re-scale, this one **is** reversible: because no value changed,
+widening the columns back to `numeric(20,8)` restores the previous state exactly.
 
 ```sql
-ALTER TABLE "ledger_entries"
-  ADD CONSTRAINT "ledger_entries_amount_cent_chk"
-  CHECK ("amount" = round("amount", 2)) NOT VALID;
+ALTER TABLE "payouts" ALTER COLUMN "amount" TYPE numeric(20,8), … ;
 ```
 
-`NOT VALID` grandfathers existing rows and skips the scan; every new INSERT is
-still checked. Never `VALIDATE` it.
-
-### Rollback, stated plainly
-
-**`ALTER COLUMN … TYPE numeric(20,2)` is lossy and cannot be undone.** Re-widening
-restores the type, never the digits. The rollback is the backup: the dump, the
-`money_scale_backup_v1` schema, and a tagged pre-B image. Keep the backup schema
-for 30 days of green reconciliation.
+The `pre_2dp` schema snapshot and the pre-deploy `pg_dump` remain the backstop for
+the tier re-derivation, which is the only data change in the whole money-scale
+release.
