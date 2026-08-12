@@ -63,6 +63,23 @@ export class PayoutsService {
     private readonly fees: FeesService,
   ) {}
 
+  /**
+   * Outstanding debt, quantized to the platform money scale.
+   *
+   * MUST match how loads SETTLE that debt (loads.service floors it too). If the
+   * block and the settlement disagree, a sub-cent residue becomes unclearable:
+   * every withdrawal 409s "outstanding balance owed" forever, while no load can
+   * ever bring it to zero. Flooring on both sides means a residue below one cent
+   * neither blocks money-out nor needs clearing.
+   */
+  private async quantizedOwed(
+    tx: PrismaClient,
+    companyId: string,
+    currency: string,
+  ): Promise<Money> {
+    return (await this.ledger.outstandingReceivable(tx, companyId, currency)).floorToScale();
+  }
+
   private async invalidateAnalytics(): Promise<void> {
     await this.analytics
       .invalidateAll()
@@ -92,7 +109,7 @@ export class PayoutsService {
 
       // Block money-out while the company owes the platform (reversal clawback
       // shortfall). It must settle the debt before paying out again.
-      const owed = await this.ledger.outstandingReceivable(cTx, companyId, input.currency);
+      const owed = await this.quantizedOwed(cTx, companyId, input.currency);
       if (owed.isPositive()) {
         throw new ConflictError(
           `Outstanding balance of ${owed.toString()} ${input.currency} owed to the platform must be settled before a payout`,
@@ -184,7 +201,7 @@ export class PayoutsService {
       // payout reserved its funds (clawback claims `available`, not the reserved
       // bucket). Re-assert the money-out block at approval so reserved funds
       // can't leave while the company owes the platform — mirrors request().
-      const owed = await this.ledger.outstandingReceivable(cTx, p.companyId, p.currency);
+      const owed = await this.quantizedOwed(cTx, p.companyId, p.currency);
       if (owed.isPositive()) {
         throw new ConflictError(
           `Outstanding balance of ${owed.toString()} ${p.currency} owed to the platform must be settled before this payout can be approved`,

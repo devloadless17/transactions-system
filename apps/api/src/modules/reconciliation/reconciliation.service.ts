@@ -139,17 +139,17 @@ export function buildReconciliationReport(
       available: {
         wallet: wa.toExactString(),
         ledger: led.available.toExactString(),
-        delta: wa.sub(led.available).toString(),
+        delta: wa.sub(led.available).toExactString(),
       },
       pending: {
         wallet: wp.toExactString(),
         ledger: led.pending.toExactString(),
-        delta: wp.sub(led.pending).toString(),
+        delta: wp.sub(led.pending).toExactString(),
       },
       reserved: {
         wallet: wr.toExactString(),
         ledger: led.reserved.toExactString(),
-        delta: wr.sub(led.reserved).toString(),
+        delta: wr.sub(led.reserved).toExactString(),
       },
     });
   }

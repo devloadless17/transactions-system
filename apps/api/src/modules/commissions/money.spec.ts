@@ -106,6 +106,18 @@ describe('Money', () => {
       expect(Money.of('10.009').floorToScale().toString()).toBe('10');
     });
 
+    it('a sub-cent debt floors to zero, so it cannot deadlock money-out', () => {
+      // Money-out blocks while a debt is outstanding, and a load settles it. Both
+      // sides floor, so a residue below one cent is not "outstanding" to either:
+      // it neither blocks a withdrawal nor needs a load to clear it. If the two
+      // sides disagreed, such a residue would block every withdrawal forever with
+      // no path to clear it.
+      expect(Money.of('0.004').floorToScale().isPositive()).toBe(false);
+      expect(Money.of('0.009').floorToScale().isPositive()).toBe(false);
+      // A real, payable debt still blocks.
+      expect(Money.of('0.01').floorToScale().isPositive()).toBe(true);
+    });
+
     it('ceilToScale clears a sub-cent debt completely', () => {
       // Flooring would leave a remainder that stays isPositive() forever and
       // keeps blocking money-out.

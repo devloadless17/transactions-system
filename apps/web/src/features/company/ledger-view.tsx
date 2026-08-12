@@ -19,7 +19,7 @@ import {
   type RangePreset,
 } from '@/components/ui/date-range-picker';
 import { apiFetch } from '@/lib/api.client';
-import { trimAmount } from '@/lib/format';
+import { formatExact } from '@/lib/format';
 import { ExportCsvButton } from '@/components/export-csv-button';
 import { EntityDetailDrawer } from '@/features/activity/activity-detail-drawer';
 
@@ -105,7 +105,7 @@ export function LedgerView() {
       header: 'Amount',
       align: 'right',
       className: 'font-mono',
-      cell: (e) => trimAmount(e.amount),
+      cell: (e) => formatExact(e.amount),
     },
     { key: 'currency', header: 'Currency', cell: (e) => e.currency },
     {

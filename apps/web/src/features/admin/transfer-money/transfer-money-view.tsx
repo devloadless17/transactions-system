@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Send, AlertTriangle, KeyRound } from 'lucide-react';
+import { MONEY_SCALE } from '@app/shared';
 import type { PaginatedResponse, WhishSessionStatus, WhishTransferResponse } from '@app/shared';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -63,8 +64,15 @@ function SendCard() {
   const [phone, setPhone] = useState('');
   const [confirmOpen, setConfirmOpen] = useState(false);
 
+  // Mirrors the server rule: this sends REAL money, so the amount is strict cents
+  // (moneyAmountSchema) rather than quantized — a sub-cent value here is a typo
+  // worth surfacing before Send is even enabled, not silently rounded.
+  const cents = (v: string) => (v.split('.')[1]?.length ?? 0) <= MONEY_SCALE;
   const valid =
-    /^\d+(\.\d+)?$/.test(amount.trim()) && Number(amount) > 0 && /^\+?\d{6,15}$/.test(phone.trim());
+    /^\d+(\.\d+)?$/.test(amount.trim()) &&
+    cents(amount.trim()) &&
+    Number(amount) > 0 &&
+    /^\+?\d{6,15}$/.test(phone.trim());
 
   const mu = useMutation({
     mutationFn: () =>

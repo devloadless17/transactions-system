@@ -99,6 +99,23 @@ export class WithdrawalsService {
     private readonly transfers: WhishTransfersService,
   ) {}
 
+  /**
+   * Outstanding debt, quantized to the platform money scale.
+   *
+   * MUST match how loads SETTLE that debt (loads.service floors it too). If the
+   * block and the settlement disagree, a sub-cent residue becomes unclearable:
+   * every withdrawal 409s "outstanding balance owed" forever, while no load can
+   * ever bring it to zero. Flooring on both sides means a residue below one cent
+   * neither blocks money-out nor needs clearing.
+   */
+  private async quantizedOwed(
+    tx: PrismaClient,
+    companyId: string,
+    currency: string,
+  ): Promise<Money> {
+    return (await this.ledger.outstandingReceivable(tx, companyId, currency)).floorToScale();
+  }
+
   private async invalidateAnalytics(): Promise<void> {
     await this.analytics
       .invalidateAll()
@@ -128,7 +145,7 @@ export class WithdrawalsService {
 
       // Block money-out while the company owes the platform (e.g. from a
       // reversal clawback that exceeded its balance). It must settle first.
-      const owed = await this.ledger.outstandingReceivable(cTx, companyId, input.currency);
+      const owed = await this.quantizedOwed(cTx, companyId, input.currency);
       if (owed.isPositive()) {
         throw new ConflictError(
           `Outstanding balance of ${owed.toString()} ${input.currency} owed to the platform must be settled before withdrawing`,
@@ -299,7 +316,7 @@ export class WithdrawalsService {
       // Skipped only when settling a transfer that ALREADY left (skipReceivableBlock):
       // the money is gone, so the ledger MUST book it; the debt remains outstanding.
       if (!opts?.skipReceivableBlock) {
-        const owed = await this.ledger.outstandingReceivable(cTx, w.companyId, w.currency);
+        const owed = await this.quantizedOwed(cTx, w.companyId, w.currency);
         if (owed.isPositive()) {
           throw new ConflictError(
             `Outstanding balance of ${owed.toString()} ${w.currency} owed to the platform must be settled before this withdrawal can be approved`,
@@ -525,7 +542,7 @@ export class WithdrawalsService {
       // booked a RECEIVABLE after the request). Leave it PENDING for manual review
       // — approve() enforces the same block, but the auto transfer fires BEFORE
       // approve(), so we must re-assert it here or money could leave despite the debt.
-      const owed = await this.ledger.outstandingReceivable(cTx, w.companyId, w.currency);
+      const owed = await this.quantizedOwed(cTx, w.companyId, w.currency);
       if (owed.isPositive()) return false;
       await cTx.withdrawal.update({
         where: { id },

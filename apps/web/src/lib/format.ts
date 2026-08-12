@@ -51,6 +51,24 @@ export function isZeroAmount(s: string | null | undefined): boolean {
   return typeof s === 'string' && s.trim() !== '' && Number(s) === 0;
 }
 
+/**
+ * Display a money string EXACTLY, grouped but never rounded or padded.
+ * For the append-only ledger, whose historical legs keep their original scale:
+ * truncating them would make a displayed set stop tying out, the same reason the
+ * ledger CSV export is exempt from cent formatting.
+ */
+export function formatExact(s: string | null | undefined): string {
+  if (typeof s !== 'string') return '—';
+  const t = s.trim();
+  if (t === '' || Number.isNaN(Number(t))) return s;
+  const neg = t.startsWith('-');
+  const abs = neg ? t.slice(1) : t;
+  const [i = '0', f = ''] = abs.split('.');
+  const frac = f.replace(/0+$/, '');
+  const out = `${Number(i || '0').toLocaleString('en-US')}${frac ? '.' + frac : ''}`;
+  return neg && Number(abs) !== 0 ? `-${out}` : out;
+}
+
 /** @deprecated alias of formatAmount — kept so existing call sites need no edit. */
 export const trimAmount = formatAmount;
 /** @deprecated alias of formatAmount. */

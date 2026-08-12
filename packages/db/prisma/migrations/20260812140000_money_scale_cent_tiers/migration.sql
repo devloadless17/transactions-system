@@ -46,15 +46,13 @@ END $$;
 
 UPDATE commission_rules SET
   min_amount       = ceil(min_amount * 100) / 100,
-  max_amount       = floor(max_amount * 100) / 100,
-  commission_value = commission_value
+  max_amount       = floor(max_amount * 100) / 100
 WHERE min_amount <> ceil(min_amount * 100) / 100
    OR max_amount <> floor(max_amount * 100) / 100;
 
 UPDATE source_fee_rules SET
   min_amount = ceil(min_amount * 100) / 100,
-  max_amount = floor(max_amount * 100) / 100,
-  fee_value  = fee_value
+  max_amount = floor(max_amount * 100) / 100
 WHERE min_amount <> ceil(min_amount * 100) / 100
    OR max_amount <> floor(max_amount * 100) / 100;
 
