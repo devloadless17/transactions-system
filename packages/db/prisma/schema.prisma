@@ -278,8 +278,8 @@ model SourceFeeRule {
   sourceId  String           @map("source_id") @db.Uuid
   source    Source           @relation(fields: [sourceId], references: [id], onDelete: Cascade)
   channel   SourceFeeChannel @default(INGEST)
-  minAmount Decimal          @default(0) @map("min_amount") @db.Decimal(20, 8)
-  maxAmount Decimal?         @map("max_amount") @db.Decimal(20, 8)
+  minAmount Decimal          @default(0) @map("min_amount") @db.Decimal(20, 2)
+  maxAmount Decimal?         @map("max_amount") @db.Decimal(20, 2)
   feeType   CommissionType   @map("fee_type")
   feeValue  Decimal          @map("fee_value") @db.Decimal(20, 8)
   active    Boolean          @default(true)
@@ -360,10 +360,10 @@ model CommissionRule {
   source          Source?          @relation(fields: [sourceId], references: [id], onDelete: Cascade)
   operationType   FeeOperationType @default(TRANSACTION) @map("operation_type")
   feeApplication  FeeApplication   @default(DEDUCTED) @map("fee_application")
-  minAmount       Decimal          @map("min_amount") @db.Decimal(20, 8)
+  minAmount       Decimal          @map("min_amount") @db.Decimal(20, 2)
   // NULL = "and above" — an open-ended top tier with no upper bound. The resolver
   // treats a null max as +infinity (amount always within range from above).
-  maxAmount       Decimal?         @map("max_amount") @db.Decimal(20, 8)
+  maxAmount       Decimal?         @map("max_amount") @db.Decimal(20, 2)
   commissionType  CommissionType   @map("commission_type")
   commissionValue Decimal          @map("commission_value") @db.Decimal(20, 8)
   priority        Int              @default(0)
@@ -535,10 +535,10 @@ model Payout {
   id                String           @id @default(uuid()) @db.Uuid
   companyId         String           @map("company_id") @db.Uuid
   company           Company          @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  amount            Decimal          @db.Decimal(20, 8)
+  amount            Decimal          @db.Decimal(20, 2)
   currency          String           @db.Char(3)
-  feeAmount         Decimal          @default(0) @map("fee_amount") @db.Decimal(20, 8)
-  netAmount         Decimal          @default(0) @map("net_amount") @db.Decimal(20, 8)
+  feeAmount         Decimal          @default(0) @map("fee_amount") @db.Decimal(20, 2)
+  netAmount         Decimal          @default(0) @map("net_amount") @db.Decimal(20, 2)
   feeApplication    FeeApplication   @default(DEDUCTED) @map("fee_application")
   status            WithdrawalStatus @default(PENDING)
   payoutMethod      PayoutMethod     @map("payout_method")
@@ -573,10 +573,10 @@ model Load {
   id                String           @id @default(uuid()) @db.Uuid
   companyId         String           @map("company_id") @db.Uuid
   company           Company          @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  amount            Decimal          @db.Decimal(20, 8)
+  amount            Decimal          @db.Decimal(20, 2)
   currency          String           @db.Char(3)
-  feeAmount         Decimal          @default(0) @map("fee_amount") @db.Decimal(20, 8)
-  netAmount         Decimal          @default(0) @map("net_amount") @db.Decimal(20, 8)
+  feeAmount         Decimal          @default(0) @map("fee_amount") @db.Decimal(20, 2)
+  netAmount         Decimal          @default(0) @map("net_amount") @db.Decimal(20, 2)
   feeApplication    FeeApplication   @default(DEDUCTED) @map("fee_application")
   status            WithdrawalStatus @default(PENDING)
   payoutMethod      PayoutMethod     @map("payout_method")
@@ -654,7 +654,7 @@ model WhishPayment {
   company          Company            @relation(fields: [companyId], references: [id], onDelete: Restrict)
   externalId       BigInt             @unique @default(autoincrement()) @map("external_id")
   callbackToken    String             @unique @map("callback_token")
-  amount           Decimal            @db.Decimal(20, 8)
+  amount           Decimal            @db.Decimal(20, 2)
   currency         String             @db.Char(3)
   invoice          String
   status           WhishPaymentStatus @default(PENDING)
@@ -702,7 +702,7 @@ model WhishTransfer {
   // Our idempotency key; also sent upstream as the Whish `note` (fieldId 140).
   reference       String              @unique
   recipientPhone  String              @map("recipient_phone")
-  amount          Decimal             @db.Decimal(20, 8)
+  amount          Decimal             @db.Decimal(20, 2)
   currency        String              @default("USD") @db.Char(3)
   status          WhishTransferStatus @default(PENDING)
   // X-Trace-Id response header — the only upstream correlation id we get.
@@ -771,7 +771,7 @@ model WithdrawalAutoApprovalConfig {
   enabled                 Boolean   @default(false)
   enabledAt               DateTime? @map("enabled_at") @db.Timestamptz(6)
   holdSeconds             Int       @default(30) @map("hold_seconds")
-  maxAutoApproveAmount    Decimal   @default(500) @map("max_auto_approve_amount") @db.Decimal(20, 8)
+  maxAutoApproveAmount    Decimal   @default(500) @map("max_auto_approve_amount") @db.Decimal(20, 2)
   circuitBreakerTrippedAt DateTime? @map("circuit_breaker_tripped_at") @db.Timestamptz(6)
   consecutiveFailures     Int       @default(0) @map("consecutive_failures")
   failureThreshold        Int       @default(3) @map("failure_threshold")
