@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { CommissionType, SourceFeeChannel, SourceStatus } from '../enums';
 import { Money } from '../money';
+import { MONEY_INPUT_DP, RATE_INPUT_DP, moneyAmountSchema, rateStringSchema } from './common';
 
 const codeRegex = /^[a-z][a-z0-9_]{1,49}$/;
 
@@ -34,13 +35,10 @@ export type SourceResponse = z.infer<typeof sourceResponseSchema>;
 // of a commission rule. Tiered like commission rules: an amount band per channel
 // with a FIXED amount or a PERCENTAGE rate. Admin/system-only.
 
-// Money values are decimal strings, never floats — bounded to the ledger's
-// Decimal(20,8) scale so a value can't be silently rounded or overflow the column.
-const feeDecimalString = z
-  .string()
-  .regex(/^\d+(\.\d+)?$/, 'must be a non-negative decimal string (e.g. "1.50")')
-  .refine((v) => (v.split('.')[1]?.length ?? 0) <= 8, 'at most 8 decimal places')
-  .refine((v) => v.split('.')[0]!.length <= 12, 'integer part is at most 12 digits');
+// Tier BOUNDS are money amounts (cents). The fee VALUE is dual-typed — dollars
+// when FIXED, a rate when PERCENTAGE — and is split per-type in the superRefine
+// below so a sub-basis-point rate stays expressible.
+const feeDecimalString = moneyAmountSchema;
 
 const HUNDRED = Money.of('100');
 
@@ -51,7 +49,9 @@ export const sourceFeeRuleInputSchema = z
     // null = open-ended top tier (no upper bound).
     maxAmount: feeDecimalString.nullable(),
     feeType: z.nativeEnum(CommissionType),
-    feeValue: feeDecimalString,
+    // Permissive here on purpose — see commissionTierSchema: a PERCENTAGE value
+    // is a RATE. The superRefine below narrows only the FIXED case to cents.
+    feeValue: rateStringSchema,
     active: z.boolean().default(true),
   })
   .refine((v) => v.maxAmount === null || Money.of(v.minAmount).lte(Money.of(v.maxAmount)), {
@@ -61,6 +61,22 @@ export const sourceFeeRuleInputSchema = z
   .refine((v) => v.feeType !== CommissionType.PERCENTAGE || Money.of(v.feeValue).lte(HUNDRED), {
     message: 'a PERCENTAGE fee must be between 0 and 100',
     path: ['feeValue'],
+  })
+  // Dual-typed split, mirroring commissionTierSchema: a FIXED fee is money and
+  // takes cents; a PERCENTAGE fee is a rate and keeps full precision.
+  .superRefine((v, ctx) => {
+    const dp = v.feeValue.split('.')[1]?.length ?? 0;
+    const max = v.feeType === CommissionType.FIXED ? MONEY_INPUT_DP : RATE_INPUT_DP;
+    if (dp > max) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['feeValue'],
+        message:
+          v.feeType === CommissionType.FIXED
+            ? `a FIXED fee is an amount — at most ${MONEY_INPUT_DP} decimal places`
+            : `a PERCENTAGE rate takes at most ${RATE_INPUT_DP} decimal places`,
+      });
+    }
   });
 export type SourceFeeRuleInput = z.infer<typeof sourceFeeRuleInputSchema>;
 

@@ -2,7 +2,18 @@
 // Transactions System — Prisma Schema
 //
 // Multi-tenant fintech-style transaction platform.
-// All money fields use Decimal(20, 8). All timestamps are UTC.
+// Money columns are Decimal(20, 8) at rest, but the PLATFORM MONEY SCALE is 2 dp
+// (whole cents) — see packages/shared/src/money.ts. The wider column scale is
+// headroom for historical rows written before the scale change; nothing new is
+// ever written with more than 2 decimals.
+//
+// Two deliberate exceptions keep their precision permanently:
+//   * commission_rules.commission_value / source_fee_rules.fee_value are
+//     DUAL-TYPED — dollars when the type is FIXED, a RATE when PERCENTAGE. A rate
+//     is not money, and 0.125% is a real price, not a rounding error.
+//   * ledger_entries.amount and wallets.* stay wide: the ledger is append-only,
+//     so historical rows cannot be rewritten, and a wallet is its projection.
+// All timestamps are UTC.
 // Tenant-scoped tables carry company_id and are protected by RLS
 // policies declared in migration 0002_rls.sql.
 // =================================================================

@@ -1,6 +1,7 @@
 import { Injectable, Logger, StreamableFile } from '@nestjs/common';
 import {
   Money,
+  MONEY_SCALE_LABEL,
   type ApprovePayoutInput,
   type CancelRequestInput,
   type CreatePayoutInput,
@@ -79,9 +80,12 @@ export class PayoutsService {
     input: CreatePayoutInput,
     requestedByKeyId?: string | null,
   ): Promise<PayoutResponse> {
-    const amount = Money.of(input.amount);
-    if (!amount.round().isPositive())
-      throw new ValidationError('amount must be positive at up to 8 decimal places');
+    // Quantized at the boundary, DOWNWARD: the HTTP schema already does this, but
+    // internal callers reach this method directly. Rounding down (never up) means
+    // we can never reserve or pay out more than was actually requested.
+    const amount = Money.of(input.amount).floorToScale();
+    if (!amount.isPositive())
+      throw new ValidationError(`amount must be positive at up to ${MONEY_SCALE_LABEL}`);
 
     const row = await this.prisma.runSerializableAsTenant(companyId, async (tx) => {
       const cTx = tx as unknown as PrismaClient;
@@ -188,8 +192,9 @@ export class PayoutsService {
         );
       }
 
-      const amount = Money.of(p.amount.toString());
-      const fee = Money.of(p.feeAmount.toString());
+      // fromDb: quantize the stored inputs once; the remaining legs derive from them.
+      const amount = Money.fromDb(p.amount);
+      const fee = Money.fromDb(p.feeAmount);
       const reserved = reservedTotal(amount, fee, p.feeApplication);
       const external = netOfFee(amount, fee, p.feeApplication);
 
@@ -286,8 +291,8 @@ export class PayoutsService {
       }
 
       const reserved = reservedTotal(
-        Money.of(p.amount.toString()),
-        Money.of(p.feeAmount.toString()),
+        Money.fromDb(p.amount),
+        Money.fromDb(p.feeAmount),
         p.feeApplication,
       );
 
@@ -462,14 +467,16 @@ function mapPayout(row: {
   return {
     id: row.id,
     companyId: row.companyId,
-    amount: row.amount.toString(),
+    // Quantized on the way out so the API, the CSV export and the CRM webhook
+    // all report the same figure — and the same figure the ledger books. Deriving
+    // totalAmount from these (not from the raw columns) keeps net + fee == total
+    // exact, because a sum of two at-scale values is itself at scale.
+    amount: Money.fromDb(row.amount).toString(),
     currency: row.currency.trim(),
-    feeAmount: row.feeAmount.toString(),
+    feeAmount: Money.fromDb(row.feeAmount).toString(),
     feeApplication: row.feeApplication,
-    netAmount: row.netAmount.toString(),
-    totalAmount: Money.of(row.netAmount.toString())
-      .add(Money.of(row.feeAmount.toString()))
-      .toString(),
+    netAmount: Money.fromDb(row.netAmount).toString(),
+    totalAmount: Money.fromDb(row.netAmount).add(Money.fromDb(row.feeAmount)).toString(),
     status: row.status,
     payoutMethod: row.payoutMethod,
     payoutDetails: (row.payoutDetails as PayoutDetails | null) ?? null,

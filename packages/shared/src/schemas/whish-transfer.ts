@@ -16,6 +16,8 @@ export const whishPhoneSchema = z
 // and returns it. The same value is sent to Whish as the `note` so a Whish-app
 // transaction can be traced back to our row.
 export const sendWhishTransferSchema = z.object({
+  // Strict: an operator is typing this and it sends REAL money, so a sub-cent
+  // value is a typo worth surfacing rather than silently rounding.
   amount: moneyAmountSchema,
   recipientPhone: whishPhoneSchema,
   currency: z.enum(WHISH_CURRENCIES).default('USD'),

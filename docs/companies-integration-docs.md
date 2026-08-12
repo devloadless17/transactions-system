@@ -125,7 +125,7 @@ Example validation error:
 Monetary amounts are **decimal strings, never floats** (e.g. `"100.50"`), validated by `moneyAmountSchema`:
 
 - Pattern `^\d+(\.\d+)?$` — non-negative decimal, no sign, no exponent, no thousands separators.
-- At most **8 fractional digits** and at most **12 integer digits** (matches the ledger's `Decimal(20,8)` columns).
+- At most **2 fractional digits** (whole cents — the platform money scale) and at most **12 integer digits**. Money-moving requests do **not** reject extra precision: it is quantized to cents once on receipt (money-in rounds to nearest, money-out rounds **down**, so we never pay out more than you asked for).
 
 Always send and parse amounts as strings to avoid floating-point drift.
 
@@ -639,12 +639,12 @@ Files a `PENDING` top-up request. Returns `201` with the persisted load includin
 
 **Request body** (`createLoadSchema`):
 
-| Field      | Type             | Req | Notes                                                                                                                                          |
-| ---------- | ---------------- | --- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `amount`   | string (decimal) | yes | Non-negative decimal string, ≤ 12 integer + ≤ 8 fractional digits. Must be > 0 after rounding to 8 dp.                                         |
-| `currency` | string           | yes | Enum; currently only `"USD"`.                                                                                                                  |
-| `notes`    | string           | no  | Trimmed, ≤ 500 chars.                                                                                                                          |
-| `payout`   | object           | yes | **How the money arrived.** Discriminated on `method`; only `CASH`, `WISH`, `CRYPTO` accepted on create (`BANK_TRANSFER`/`OTHER` are rejected). |
+| Field      | Type             | Req | Notes                                                                                                                                                  |
+| ---------- | ---------------- | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `amount`   | string (decimal) | yes | Non-negative decimal string, ≤ 12 integer digits; extra fractional precision is quantized to cents, not rejected. Must be > 0 after rounding to cents. |
+| `currency` | string           | yes | Enum; currently only `"USD"`.                                                                                                                          |
+| `notes`    | string           | no  | Trimmed, ≤ 500 chars.                                                                                                                                  |
+| `payout`   | object           | yes | **How the money arrived.** Discriminated on `method`; only `CASH`, `WISH`, `CRYPTO` accepted on create (`BANK_TRANSFER`/`OTHER` are rejected).         |
 
 `payout` fields by `method`:
 
@@ -889,12 +889,12 @@ Only a `PENDING` request can be approved, rejected, or cancelled. Acting on any 
 
 **Body**
 
-| Field      | Type             | Req | Notes                                                                                                                    |
-| ---------- | ---------------- | :-: | ------------------------------------------------------------------------------------------------------------------------ |
-| `amount`   | string (decimal) |  ✓  | Money string, max 8 decimals / 12 integer digits. Must be `> 0` (zero/negative → `400 VALIDATION_ERROR`). Never a float. |
-| `currency` | enum             |  ✓  | Supported: `USD` (only value currently enabled).                                                                         |
-| `notes`    | string           |  —  | Free text, trimmed, ≤ 500 chars.                                                                                         |
-| `payout`   | object           |  ✓  | Payout-method object (discriminated by `payout.method`). See below.                                                      |
+| Field      | Type             | Req | Notes                                                                                                                                                                    |
+| ---------- | ---------------- | :-: | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `amount`   | string (decimal) |  ✓  | Money string, cents (2 decimals) / 12 integer digits; extra precision is quantized, not rejected. Must be `> 0` (zero/negative → `400 VALIDATION_ERROR`). Never a float. |
+| `currency` | enum             |  ✓  | Supported: `USD` (only value currently enabled).                                                                                                                         |
+| `notes`    | string           |  —  | Free text, trimmed, ≤ 500 chars.                                                                                                                                         |
+| `payout`   | object           |  ✓  | Payout-method object (discriminated by `payout.method`). See below.                                                                                                      |
 
 **`payout` — method-specific required fields.** On **create**, only `CASH`, `WISH`, and `CRYPTO` are accepted; `BANK_TRANSFER` and `OTHER` are **rejected** at the API (they exist only for reading legacy rows). The `method` field is the discriminator — sending fields that don't match the method is a `VALIDATION_ERROR`.
 

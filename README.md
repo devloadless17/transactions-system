@@ -68,7 +68,12 @@ The seed prints the super admin credentials. Default:
   is actually enforced; migrations connect as `txn_app` (superuser).
 - **Append-only ledger & audit** — DB triggers reject UPDATE/DELETE on
   `ledger_entries` and `audit_logs`. History is immutable at the DB layer.
-- **Money** — all amounts are `DECIMAL(20, 8)`. App-side `Money` helper in
+- **Money** — the platform money scale is **2 dp (whole cents)**; see
+  `docs/MONEY_SCALE.md` (and `docs/MONEY_SCALE_MIGRATION.md` for the remaining
+  data migration). Columns are `DECIMAL(20, 8)` at rest as headroom for
+  pre-migration rows, and two things keep their precision on purpose: PERCENTAGE
+  rule values (a rate is not money — 0.125% is a real price) and the append-only
+  `ledger_entries` / `wallets` projection. App-side `Money` helper in
   `@app/shared` wraps decimal arithmetic. Never use JS `number` for money.
 - **Auth** — argon2id passwords, JWT access (15m) + refresh (7d), refresh
   tokens stored hashed in DB and rotated on use. httpOnly cookies + CSRF

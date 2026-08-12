@@ -27,7 +27,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { apiFetch } from '@/lib/api.client';
 import { ApiClientError } from '@/lib/api';
-import { trimAmount } from '@/lib/format';
+import { trimAmount, isZeroAmount } from '@/lib/format';
 import {
   EMPTY_FLOW_FILTERS,
   feeApplicationLabel,
@@ -150,7 +150,7 @@ export function AdminWithdrawalsView({
           header: 'Fee',
           align: 'right',
           className: 'font-mono text-xs text-muted-foreground',
-          cell: (w) => (trimAmount(w.feeAmount) === '0' ? '—' : trimAmount(w.feeAmount)),
+          cell: (w) => (isZeroAmount(w.feeAmount) ? '—' : trimAmount(w.feeAmount)),
         },
         {
           key: 'net',
@@ -502,7 +502,7 @@ function ReviewDialog({
                 <div className="flex items-center justify-between">
                   <span className="text-xs text-muted-foreground">Fee (platform revenue)</span>
                   <span className="font-mono">
-                    {trimAmount(review.withdrawal.feeAmount) === '0'
+                    {isZeroAmount(review.withdrawal.feeAmount)
                       ? '—'
                       : `${trimAmount(review.withdrawal.feeAmount)} ${review.withdrawal.currency} (${feeApplicationLabel(
                           review.withdrawal.feeApplication,

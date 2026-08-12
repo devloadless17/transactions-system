@@ -167,7 +167,10 @@ Clear cookies for `localhost` (DevTools → Application → Cookies) or open a p
 ## Project conventions to know on day one
 
 - **Zod schemas in `packages/shared` are the single source of truth.** The API validates inbound payloads with `ZodPipe(<schema>)`; the web validates the same payload via `react-hook-form` + `@hookform/resolvers/zod`. If you need to change a payload shape, change the schema first.
-- **Never use JS `number` for money.** Use `Money` from `@app/shared` — all DB columns are `DECIMAL(20, 8)` and JS floats will silently corrupt amounts.
+- **Never use JS `number` for money.** Use `Money` from `@app/shared` — JS floats
+  silently corrupt amounts. The platform money scale is **2 dp (whole cents)**;
+  read money out of the DB with `Money.fromDb()` and derive dependent legs by
+  exact subtraction. See `docs/MONEY_SCALE.md` for the one-page rule.
 - **Don't throw HTTP errors from controllers.** Throw a `DomainError` subclass (`ValidationError`, `NotFoundError`, `ConflictError`, `ForbiddenError`) and the global filter maps it.
 - **Don't mock the DB in tests.** Tests hit a real ephemeral Postgres so migrations and RLS policies are exercised end-to-end.
 

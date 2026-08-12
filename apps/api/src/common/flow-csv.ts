@@ -68,7 +68,13 @@ export function flowCsvCells(r: FlowCsvRow): Array<string | null> {
   // gross = net + fee = the money that actually moves (debited for a
   // withdrawal/payout, paid in for a load); matches the API's totalAmount and
   // the app's "Debited" / "You pay" column.
-  const gross = Money.of(r.netAmount.toString()).add(Money.of(r.feeAmount.toString())).toString();
+  // Built from the SAME quantized parts the API reports, so gross == totalAmount
+  // and gross == fee + net in the exported columns. Quantizing each part and then
+  // summing is safe here precisely because a sum of at-scale values is at scale —
+  // unlike rounding a total and its parts independently, which would not tie out.
+  const fee = Money.fromDb(r.feeAmount);
+  const net = Money.fromDb(r.netAmount);
+  const gross = net.add(fee).toFixed(2);
   return [
     r.id,
     r.createdAt.toISOString(),
@@ -77,8 +83,8 @@ export function flowCsvCells(r: FlowCsvRow): Array<string | null> {
     r.status,
     r.currency.trim(),
     gross,
-    r.feeAmount.toString(),
-    r.netAmount.toString(),
+    fee.toFixed(2),
+    net.toFixed(2),
     r.feeApplication,
     r.payoutMethod,
     r.externalReference ?? '',

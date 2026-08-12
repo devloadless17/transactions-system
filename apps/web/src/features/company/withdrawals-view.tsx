@@ -46,7 +46,7 @@ import { CompanyFilter } from '@/features/admin/company-filter';
 import { ExportCsvButton } from '@/components/export-csv-button';
 import { apiFetch } from '@/lib/api.client';
 import { ApiClientError } from '@/lib/api';
-import { trimAmount } from '@/lib/format';
+import { trimAmount, isZeroAmount } from '@/lib/format';
 
 // Withdrawal/Payout/Load have the same response shape; we type the
 // shared UI against WithdrawalResponse and the per-process endpoint
@@ -336,7 +336,7 @@ export function WithdrawalsView({ config }: { config: ProcessConfig }) {
       header: 'Fee',
       align: 'right',
       className: 'font-mono text-xs text-muted-foreground',
-      cell: (w) => (trimAmount(w.feeAmount) === '0' ? '—' : trimAmount(w.feeAmount)),
+      cell: (w) => (isZeroAmount(w.feeAmount) ? '—' : trimAmount(w.feeAmount)),
     },
     {
       key: 'net',
@@ -816,7 +816,7 @@ function DetailDrawer({
                 value={`${trimAmount(withdrawal.totalAmount)} ${withdrawal.currency}`}
                 mono
               />
-              {trimAmount(withdrawal.feeAmount) !== '0' && (
+              {!isZeroAmount(withdrawal.feeAmount) && (
                 <DetailRow
                   label="Fee"
                   value={`${trimAmount(withdrawal.feeAmount)} ${withdrawal.currency} (${feeApplicationLabel(

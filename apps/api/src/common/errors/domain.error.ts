@@ -51,6 +51,22 @@ export class ValidationError extends DomainError {
   }
 }
 
+/**
+ * A ledger leg was handed to the ledger carrying more decimal places than the
+ * platform money scale. This is a PROGRAMMING error in a money builder, never
+ * user input: the builder is supposed to quantize its inputs once (Money.fromDb)
+ * and derive the rest by exact subtraction, so the set balances by construction.
+ *
+ * Its own class, and a 500, so it stands out in the logs and can be alerted on
+ * separately — an occurrence means some flow is one rounding step away from
+ * booking an unbalanced set.
+ */
+export class LedgerScaleError extends DomainError {
+  constructor(message: string, details?: Record<string, unknown>) {
+    super('LEDGER_SCALE', message, 500, details);
+  }
+}
+
 /** Per-API-key rate limit exceeded. Mapped to 429 with a clean, flat envelope. */
 export class RateLimitError extends DomainError {
   constructor(d: { limit: number; windowSeconds: number }) {

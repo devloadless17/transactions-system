@@ -67,9 +67,11 @@ export class WalletsService {
           companyId: args.companyId,
           currency: args.currency,
           attempted: {
-            newAvailable: newAvailable.toString(),
-            newPending: newPending.toString(),
-            newReserved: newReserved.toString(),
+            // Exact: quantizing the evidence would render a sub-cent overdraft
+            // as "0" and make the rejection look self-contradictory.
+            newAvailable: newAvailable.toExactString(),
+            newPending: newPending.toExactString(),
+            newReserved: newReserved.toExactString(),
           },
         });
       }
@@ -78,9 +80,18 @@ export class WalletsService {
       const res = await tx.wallet.updateMany({
         where: { id: wallet.id, version: wallet.version },
         data: {
-          availableBalance: newAvailable.toString(),
-          pendingBalance: newPending.toString(),
-          reservedBalance: newReserved.toString(),
+          // toExactString(), NOT toString(): toString() quantizes to MONEY_SCALE,
+          // which on the FIRST write after the scale change would silently truncate
+          // a legacy balance's sub-cent tail while ledger_entries keeps its full
+          // history — diverging the wallet from the ledger it is a projection of,
+          // and turning reconciliation red for every affected company.
+          //
+          // The base is carried exactly and every DELTA is already at scale, so
+          // wallet == ledger continues to hold. Revert to toString() only if and
+          // when ledger_entries.amount and wallets.* both move to numeric(20,2).
+          availableBalance: newAvailable.toExactString(),
+          pendingBalance: newPending.toExactString(),
+          reservedBalance: newReserved.toExactString(),
           version: { increment: 1 },
         },
       });

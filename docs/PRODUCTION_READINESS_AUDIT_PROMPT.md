@@ -140,7 +140,7 @@ are already transacting, ~90% via **API + CRM webhooks**.
   for ingest, load (incl. **settle-on-load**), withdrawal, payout, **reversal/clawback**,
   cancel/reject, refund.
 - Commission math: `FIXED`/`PERCENTAGE`, `DEDUCTED`/`ON_TOP`, tier boundaries (inclusive/
-  exclusive), rounding (`ROUND_HALF_EVEN`, 8dp), `commission ≤ amount`, percentage ∈ [0,100],
+  exclusive), rounding (`ROUND_HALF_EVEN` at the platform money scale — 2 dp; see docs/MONEY_SCALE.md), `commission ≤ amount`, percentage ∈ [0,100],
   the rule-group resolver's specificity/priority/overlap rules. Hunt for any path producing a
   **negative net, double-charge, or unbalanced** entry.
 - **Source fees / net revenue:** per-deposit tier selection is deterministic (no double-count on

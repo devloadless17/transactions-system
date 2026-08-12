@@ -72,16 +72,16 @@ describe('CommissionResolver determinism', () => {
 
 describe('CommissionResolver coverage contract (ingest must never 422 a real deposit)', () => {
   // The admin UI and the seed build a TOTAL ladder: zero-based, 8dp-contiguous
-  // (next.min = prev.max + 1e-8) and OPEN at the top (last maxAmount = null). With
+  // (next.min = prev.max + one cent) and OPEN at the top (last maxAmount = null). With
   // such a ladder every amount resolves, so ingest's throwing resolve() never 422s.
   // Low tier is PERCENTAGE so even sub-$1 deposits are priced below their amount
   // (a FIXED low-tier fee that exceeds a tiny amount is a separate, correct guard —
   // CommissionExceedsAmountError — not a coverage gap).
   const total: ResolvableRule[] = [
     rule({ minAmount: '0', maxAmount: '100', commissionType: 'PERCENTAGE', commissionValue: '1' }),
-    rule({ minAmount: '100.00000001', maxAmount: '300', commissionValue: '5' }),
+    rule({ minAmount: '100.01', maxAmount: '300', commissionValue: '5' }),
     rule({
-      minAmount: '300.00000001',
+      minAmount: '300.01',
       maxAmount: null,
       commissionType: 'PERCENTAGE',
       commissionValue: '2',
@@ -100,9 +100,13 @@ describe('CommissionResolver coverage contract (ingest must never 422 a real dep
 
   it('prices fractional amounts at tier boundaries (no representable gap)', () => {
     expect(price('100.50')).toBe('5'); // in the gap of a NAIVE [.,100]/[101,.] ladder → tier 2
-    expect(price('100.00000001')).toBe('5'); // exact start of tier 2
+    expect(price('100.01')).toBe('5'); // exact start of tier 2
     expect(price('100')).toBe('1'); // exact end of tier 1 (1% of 100)
-    expect(price('0.5')).toBe('0.005'); // zero-based low end (1% of 0.5)
+    // Zero-based low end: 1% of 0.50 is 0.005, i.e. HALF a cent. At the platform
+    // money scale that books as 0 (half-even, preceding digit 0 is even) — the
+    // deposit is still priced and still resolves, which is what this contract is
+    // about; it simply carries no fee at cent granularity.
+    expect(price('0.5')).toBe('0');
   });
 
   it('prices amounts above every finite tier via the open-ended top tier', () => {

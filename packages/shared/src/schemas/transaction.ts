@@ -1,8 +1,10 @@
 import { z } from 'zod';
 import { TransactionStatus } from '../enums';
-import { currencySchema, moneyAmountSchema } from './common';
+import { currencySchema, quantizedAmountSchema } from './common';
 
-const decimalString = moneyAmountSchema;
+// Money IN. A sub-cent amount is quantized, never rejected: the deposit already
+// happened at the provider, so a 400 here would strand real money.
+const decimalString = quantizedAmountSchema('in');
 
 // Recognised fields inside the ingest payload. They are PLAIN STRINGS (not
 // nested objects) so they're easy to read, display, and reason about — the

@@ -176,7 +176,7 @@ describe('autoApprovalSkipReason — Decimal-exact amount boundaries', () => {
   });
 
   it('one satoshi-scale unit over the cap is ABOVE_CAP', () => {
-    expect(reasonFor({ netAmount: '500.00000001' })).toBe('ABOVE_CAP');
+    expect(reasonFor({ netAmount: '500.01' })).toBe('ABOVE_CAP');
   });
 
   it('net exactly at the $1 minimum still auto-approves', () => {

@@ -343,7 +343,7 @@ export async function addFlowFee(
         sourceId: null,
         operationType,
         feeApplication,
-        minAmount: '0.00000001',
+        minAmount: '0.01',
         maxAmount: '100000000',
         commissionType: 'PERCENTAGE',
         commissionValue: percent,

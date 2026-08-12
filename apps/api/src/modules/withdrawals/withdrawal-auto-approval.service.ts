@@ -198,7 +198,7 @@ export class WithdrawalAutoApprovalService implements OnApplicationBootstrap, On
     // Transfer whole dollars only: floor the net "to pay" (e.g. 18.67 → 18). The
     // settle (approve floorWhole) keeps the cents as the rounding remainder, so the
     // amount sent here and the amount booked to EXTERNAL match exactly.
-    const transferAmount = Money.of(w.netAmount.toString()).floorToWhole();
+    const transferAmount = Money.fromDb(w.netAmount).floorToWhole();
 
     let result;
     try {
@@ -306,7 +306,7 @@ export class WithdrawalAutoApprovalService implements OnApplicationBootstrap, On
     reference: string,
     traceId: string | null,
   ): Promise<void> {
-    const net = Money.of(w.netAmount.toString());
+    const net = Money.fromDb(w.netAmount);
     const transferred = net.floorToWhole();
     try {
       // floorWhole: EXTERNAL = floor(net), the cents become the rounding remainder.

@@ -20,7 +20,7 @@ import {
 } from '@/components/ui/sheet';
 import { apiFetch } from '@/lib/api.client';
 import { cn } from '@/lib/cn';
-import { formatMoney, trimAmount } from '@/lib/format';
+import { formatMoney, trimAmount, isZeroAmount } from '@/lib/format';
 import {
   feeApplicationLabel,
   PayoutInstructions,
@@ -211,7 +211,7 @@ function DepositDetail({ d }: { d: TransactionDetailResponse }) {
       <Section title="Summary">
         <Row label="Status" value={<Badge variant="success">{t.status}</Badge>} />
         <Row label="Amount" value={`${trimAmount(t.amount)} ${t.currency}`} mono />
-        {trimAmount(t.commissionAmount) !== '0' && (
+        {!isZeroAmount(t.commissionAmount) && (
           <Row label="Fee" value={`${trimAmount(t.commissionAmount)} ${t.currency}`} mono />
         )}
         <Row label="Net" value={`${trimAmount(t.netAmount)} ${t.currency}`} mono />
@@ -278,7 +278,7 @@ function FlowDetail({ r }: { r: FlowRecord }) {
           }
         />
         <Row label="Amount" value={`${trimAmount(r.totalAmount)} ${r.currency}`} mono />
-        {trimAmount(r.feeAmount) !== '0' && (
+        {!isZeroAmount(r.feeAmount) && (
           <Row
             label="Fee"
             value={`${trimAmount(r.feeAmount)} ${r.currency} (${feeApplicationLabel(r.feeApplication)})`}

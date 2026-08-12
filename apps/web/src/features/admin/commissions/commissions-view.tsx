@@ -315,8 +315,18 @@ function companySummary(group: CommissionRuleGroupResponse, nameById: Map<string
   return `${names.slice(0, 2).join(', ')} +${names.length - 2}`;
 }
 
-/** Plain, grouped decimal — turns decimal.js scientific (e.g. "1e-8") into readable text. */
+/** A tier BOUND is money: cents, like every other amount on the platform. */
 function fmtAmount(s: string): string {
+  const n = Number(s);
+  if (!Number.isFinite(n)) return s;
+  return new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(n);
+}
+
+/**
+ * A PERCENTAGE value is a RATE, not money — it keeps its precision, so a real
+ * 0.125% price renders as "0.125%" instead of being rounded to "0.13%".
+ */
+function fmtRate(s: string): string {
   const n = Number(s);
   if (!Number.isFinite(n)) return s;
   return new Intl.NumberFormat('en-US', { maximumFractionDigits: 8 }).format(n);
@@ -339,5 +349,5 @@ function rangeLabel(tier: ResponseTier, nextMin: string | null, count: number): 
 }
 
 function feeLabel(type: string, value: string): string {
-  return type === 'PERCENTAGE' ? `${fmtAmount(value)}%` : `$${fmtAmount(value)}`;
+  return type === 'PERCENTAGE' ? `${fmtRate(value)}%` : `$${fmtAmount(value)}`;
 }

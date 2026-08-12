@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import crypto from 'node:crypto';
 import {
   Money,
+  MONEY_SCALE_LABEL,
   SourceFeeChannel,
   WHISH_CURRENCIES,
   type CreateWhishPaymentInput,
@@ -139,12 +140,16 @@ export class WhishPaymentsService {
       );
     }
 
-    // 1b. Amount must be positive at the 8dp money scale. The amount schema's
+    // 1b. Amount must be positive at the platform money scale. The amount schema's
     //     regex accepts "0" (and sub-unit values that round to 0), which would
     //     mint a PENDING link that can never settle and would violate the ledger
     //     amount>0 CHECK. Reject up front, same as ingest/withdrawal/payout/load.
-    if (!Money.of(input.amount).round().isPositive()) {
-      throw new ValidationError('amount must be positive at up to 8 decimal places');
+    // Quantized at the boundary — the HTTP schema already does this, but keeping
+    // it here means the persisted row is at scale no matter which caller got here,
+    // and the row is what settlement later books.
+    const amount = Money.of(input.amount).round();
+    if (!amount.isPositive()) {
+      throw new ValidationError(`amount must be positive at up to ${MONEY_SCALE_LABEL}`);
     }
 
     // 1c. Whish DOCUMENTS per-currency amount rules (v1.4.4: USD at most 2
@@ -168,7 +173,7 @@ export class WhishPaymentsService {
     //    if no LBP rule covers the amount, creation fails clearly here instead
     //    of after the customer has paid.
     const source = await this.resolveWhishSource();
-    await this.assertCommissionResolves(companyId, source.id, input.amount);
+    await this.assertCommissionResolves(companyId, source.id, amount.toString());
 
     // Idempotency: a retried create with the same key returns the original —
     // EXCEPT when the original is a linkless orphan (see isLinklessOrphan), where
@@ -194,7 +199,7 @@ export class WhishPaymentsService {
           data: {
             companyId,
             callbackToken,
-            amount: input.amount,
+            amount: amount.toString(),
             currency: input.currency,
             invoice: input.invoice,
             idempotencyKey: input.idempotencyKey ?? null,
@@ -1290,7 +1295,7 @@ function whishCsvCells(row: WhishPayment): Array<string | null> {
     row.companyId,
     row.status,
     row.currency.trim(),
-    row.amount.toString(),
+    Money.fromDb(row.amount).toFixed(2),
     row.invoice,
     row.payerPhoneNumber ?? '',
     row.transactionId ?? '',
@@ -1315,7 +1320,9 @@ function whishCsvCells(row: WhishPayment): Array<string | null> {
  */
 function assertRetryMatchesRow(row: WhishPayment, input: CreateWhishPaymentInput): void {
   const changed =
-    !Money.of(row.amount.toString()).eq(Money.of(input.amount)) ||
+    // fromDb on the row side: input.amount is already quantized by the schema,
+    // so comparing it against a RAW legacy value would reject an honest retry.
+    !Money.fromDb(row.amount).eq(Money.of(input.amount)) ||
     row.currency !== input.currency ||
     row.invoice !== input.invoice;
   if (changed) {

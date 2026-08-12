@@ -270,8 +270,9 @@ describe('CommissionResolverService', () => {
           }),
         ],
       });
-      // 2.5% of 123.45 = 3.08625
-      expect(r.commissionAmount.toString()).toBe('3.08625');
+      // 2.5% of 123.45 = 3.08625 exactly; quantized to cents (half-even, the
+      // digit past the cent is 6) that books as 3.09.
+      expect(r.commissionAmount.toString()).toBe('3.09');
     });
   });
 

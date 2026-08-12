@@ -1,9 +1,11 @@
 import { z } from 'zod';
 import { FeeApplication, PayoutMethod, WithdrawalStatus } from '../enums';
-import { currencySchema, moneyAmountSchema } from './common';
+import { currencySchema, quantizedAmountSchema } from './common';
 import { createPayoutDetailsSchema, payoutDetailsSchema } from './payout-method';
 
-const decimalString = moneyAmountSchema;
+// Money OUT. A sub-cent amount is quantized DOWNWARD, never rejected: we accept
+// the request but must never move more money than was actually asked for.
+const decimalString = quantizedAmountSchema('out');
 
 // Payouts: company withdraws funds to itself. Funds move
 // available → reserved on request, reserved → external on approval.

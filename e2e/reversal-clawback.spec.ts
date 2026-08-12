@@ -94,7 +94,7 @@ test.describe.serial('reversal / clawback (API, real stack)', () => {
         feeApplication: 'DEDUCTED',
         commissionType: 'PERCENTAGE',
         commissionValue: '10',
-        minAmount: '0.00000001',
+        minAmount: '0.01',
         maxAmount: '100000000',
         priority: 1000,
       });

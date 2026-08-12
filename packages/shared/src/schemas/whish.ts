@@ -6,10 +6,13 @@ import {
   type WhishAmountRule,
   type WhishCurrency,
 } from '../enums';
-import { moneyAmountSchema, paginationSchema } from './common';
+import { paginationSchema, quantizedAmountSchema } from './common';
 import { Money } from '../money';
 
-const decimalString = moneyAmountSchema;
+// Money IN via the payment provider. Quantized, never rejected — Whish itself
+// accepts amounts its documentation discourages, and we must not be stricter
+// than the provider that will actually collect the money.
+const decimalString = quantizedAmountSchema('in');
 
 /**
  * Whish's own DOCUMENTED per-currency amount rules (v1.4.4: USD at most 2

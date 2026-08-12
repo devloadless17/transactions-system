@@ -1,6 +1,7 @@
 import { Injectable, Logger, StreamableFile } from '@nestjs/common';
 import {
   Money,
+  MONEY_SCALE_LABEL,
   type AdminLoadInput,
   type ApproveLoadInput,
   type CancelRequestInput,
@@ -80,9 +81,11 @@ export class LoadsService {
     requestedByKeyId?: string | null,
     opts?: { silent?: boolean },
   ): Promise<LoadResponse> {
-    const amount = Money.of(input.amount);
-    if (!amount.round().isPositive())
-      throw new ValidationError('amount must be positive at up to 8 decimal places');
+    // Quantized at the boundary — the HTTP schema already does this, but internal
+    // callers (e.g. the admin direct load) reach this method directly.
+    const amount = Money.of(input.amount).round();
+    if (!amount.isPositive())
+      throw new ValidationError(`amount must be positive at up to ${MONEY_SCALE_LABEL}`);
 
     const row = await this.prisma.runSerializableAsTenant(companyId, async (tx) => {
       const cTx = tx as unknown as PrismaClient;
@@ -173,8 +176,9 @@ export class LoadsService {
         throw new ConflictError(`Load is in status ${l.status} and cannot be approved`);
       }
 
-      const amount = Money.of(l.amount.toString());
-      const fee = Money.of(l.feeAmount.toString());
+      // fromDb: quantize the stored inputs once; the remaining legs derive from them.
+      const amount = Money.fromDb(l.amount);
+      const fee = Money.fromDb(l.feeAmount);
       const externalDebit = reservedTotal(amount, fee, l.feeApplication);
       const availableCredit = netOfFee(amount, fee, l.feeApplication);
 
@@ -184,7 +188,14 @@ export class LoadsService {
       // but the platform otherwise has NO settlement path — so a top-up is how a
       // company clears its debt. Only fires when owed > 0; otherwise this is a
       // no-op and the common load path is unchanged.
-      const owed = await this.ledger.outstandingReceivable(cTx, l.companyId, l.currency);
+      // `owed` is a SUM over ledger history, so it can carry a wider tail than the
+      // money scale. floorToScale, never ceil: crediting MORE receivable than the
+      // ledger actually records would drive that account permanently negative and
+      // over-collect from the company. A sub-cent residue is left unsettled here
+      // and must be written off deliberately, not invented at settlement time.
+      const owed = (
+        await this.ledger.outstandingReceivable(cTx, l.companyId, l.currency)
+      ).floorToScale();
       const settle = owed.isPositive()
         ? owed.gt(availableCredit)
           ? availableCredit
@@ -478,14 +489,16 @@ function mapLoad(row: {
   return {
     id: row.id,
     companyId: row.companyId,
-    amount: row.amount.toString(),
+    // Quantized on the way out so the API, the CSV export and the CRM webhook
+    // all report the same figure — and the same figure the ledger books. Deriving
+    // totalAmount from these (not from the raw columns) keeps net + fee == total
+    // exact, because a sum of two at-scale values is itself at scale.
+    amount: Money.fromDb(row.amount).toString(),
     currency: row.currency.trim(),
-    feeAmount: row.feeAmount.toString(),
+    feeAmount: Money.fromDb(row.feeAmount).toString(),
     feeApplication: row.feeApplication,
-    netAmount: row.netAmount.toString(),
-    totalAmount: Money.of(row.netAmount.toString())
-      .add(Money.of(row.feeAmount.toString()))
-      .toString(),
+    netAmount: Money.fromDb(row.netAmount).toString(),
+    totalAmount: Money.fromDb(row.netAmount).add(Money.fromDb(row.feeAmount)).toString(),
     status: row.status,
     payoutMethod: row.payoutMethod,
     payoutDetails: (row.payoutDetails as PayoutDetails | null) ?? null,

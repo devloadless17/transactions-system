@@ -149,7 +149,7 @@ test.describe.serial('money flows end-to-end (API)', () => {
         feeApplication: 'DEDUCTED',
         commissionType: 'PERCENTAGE',
         commissionValue: '10',
-        minAmount: '0.00000001',
+        minAmount: '0.01',
         maxAmount: '100000000',
         priority: 1000,
       });
@@ -169,7 +169,7 @@ test.describe.serial('money flows end-to-end (API)', () => {
       feeApplication: 'DEDUCTED',
       commissionType: 'FIXED',
       commissionValue: '0',
-      minAmount: '0.00000001',
+      minAmount: '0.01',
       maxAmount: '100000000',
       priority: 1000,
     });
@@ -179,7 +179,7 @@ test.describe.serial('money flows end-to-end (API)', () => {
       feeApplication: 'DEDUCTED',
       commissionType: 'FIXED',
       commissionValue: '5',
-      minAmount: '0.00000001',
+      minAmount: '0.01',
       maxAmount: '150',
       priority: 1000,
     });
@@ -189,7 +189,7 @@ test.describe.serial('money flows end-to-end (API)', () => {
       feeApplication: 'ON_TOP',
       commissionType: 'FIXED',
       commissionValue: '5',
-      minAmount: '150.00000001',
+      minAmount: '150.01',
       maxAmount: '100000000',
       priority: 1000,
     });

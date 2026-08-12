@@ -224,3 +224,72 @@ describe('LedgerService.writeEntries', () => {
     expect(inserted).toHaveLength(0);
   });
 });
+
+// The money-scale guard: writeEntries ASSERTS the scale instead of rounding,
+// because rounding legs independently is how an unbalanced set gets booked
+// (Σ round(legᵢ) can differ from round(Σ legᵢ)). This is the behavioural change
+// most likely to page in production, so pin that it fires, that it writes
+// nothing, and that it names the offending leg.
+describe('LedgerService.writeEntries — money-scale guard', () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const svc = new LedgerService(undefined as any, undefined as any);
+  const leg = (
+    accountType: LedgerEntryInput['accountType'],
+    direction: LedgerEntryInput['direction'],
+    amount: string,
+  ): LedgerEntryInput => ({
+    companyId: COMPANY,
+    transactionId: TX,
+    accountType,
+    direction,
+    amount: Money.of(amount),
+    currency: 'USD',
+  });
+
+  it('rejects an over-scale leg and writes NOTHING', async () => {
+    const tx = mockTx();
+    await expect(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      svc.writeEntries(tx as any, [
+        leg('EXTERNAL', 'DEBIT', '0.005'),
+        leg('AVAILABLE', 'CREDIT', '0.005'),
+      ]),
+    ).rejects.toThrow(/decimal places/);
+    expect(tx.inserted).toHaveLength(0);
+  });
+
+  it('names the offending account and direction so the caller is findable', async () => {
+    const tx = mockTx();
+    const err: unknown = await svc
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .writeEntries(tx as any, [leg('FEE', 'CREDIT', '1.234'), leg('EXTERNAL', 'DEBIT', '1.234')])
+      .then(() => null)
+      .catch((e: unknown) => e);
+    expect((err as Error).message).toMatch(/FEE\/CREDIT/);
+    expect((err as Error).message).toMatch(/1\.234/);
+  });
+
+  it('does NOT silently round a partition into balance', async () => {
+    // The old code rounded each leg: 0.005 + 0.005 would each become 0.00 while
+    // the 0.01 debit stayed — booking a set that does not balance.
+    const tx = mockTx();
+    await expect(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      svc.writeEntries(tx as any, [
+        leg('EXTERNAL', 'DEBIT', '0.01'),
+        leg('AVAILABLE', 'CREDIT', '0.005'),
+        leg('FEE', 'CREDIT', '0.005'),
+      ]),
+    ).rejects.toThrow(/decimal places/);
+    expect(tx.inserted).toHaveLength(0);
+  });
+
+  it('accepts a balanced, at-scale set', async () => {
+    const inserted = await writeWithMock(svc, [
+      leg('EXTERNAL', 'DEBIT', '10.00'),
+      leg('AVAILABLE', 'CREDIT', '9.50'),
+      leg('FEE', 'CREDIT', '0.50'),
+    ]);
+    expect(inserted).toHaveLength(3);
+  });
+});

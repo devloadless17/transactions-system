@@ -1,22 +1,71 @@
 import { z } from 'zod';
 import { SUPPORTED_CURRENCIES } from '../enums';
+import { MONEY_SCALE, Money } from '../money';
 
 export const uuidSchema = z.string().uuid();
 
 export const currencySchema = z.enum(SUPPORTED_CURRENCIES);
 
+/** Max fraction digits a money AMOUNT may carry on the wire. Mirrors MONEY_SCALE. */
+export const MONEY_INPUT_DP = MONEY_SCALE;
+
 /**
- * A money amount as a decimal STRING (never a float). Bounded to the ledger's
- * scale — at most 8 fractional digits — and 12 integer digits, matching the
- * Decimal(20,8) DB columns, so out-of-range garbage is rejected at the edge
- * instead of relying on downstream rounding / DB CHECKs. Shared by every flow
- * (transaction / withdrawal / payout / load / whish) so the rule lives once.
+ * Max fraction digits a RATE may carry. A rate is not money: it is only ever
+ * multiplied by an amount, and the PRODUCT is quantized at the compute site, so
+ * keeping it precise costs nothing and lets a source price at 0.125%.
  */
-export const moneyAmountSchema = z
+export const RATE_INPUT_DP = 8;
+
+const decimalStringBase = z
   .string()
   .regex(/^\d+(\.\d+)?$/, 'must be a positive decimal')
-  .refine((v) => (v.split('.')[1]?.length ?? 0) <= 8, 'at most 8 decimal places')
   .refine((v) => v.split('.')[0]!.length <= 12, 'amount is too large');
+
+const fractionDigits = (v: string): number => v.split('.')[1]?.length ?? 0;
+
+/**
+ * A money amount as a decimal STRING (never a float). Bounded to the platform
+ * money scale — at most 2 fractional digits, i.e. whole cents — and 12 integer
+ * digits. Shared by every flow (transaction / withdrawal / payout / load /
+ * whish) so the rule lives once.
+ *
+ * NOTE this is the strict form, used where a human is at a keyboard (admin
+ * config). Money-MOVING surfaces do NOT reject a sub-cent amount — see
+ * `quantizeAmountInput`: refusing a deposit that already happened upstream, or a
+ * payment a provider is willing to collect, strands real money.
+ */
+export const moneyAmountSchema = decimalStringBase.refine(
+  (v) => fractionDigits(v) <= MONEY_INPUT_DP,
+  `at most ${MONEY_INPUT_DP} decimal places`,
+);
+
+/** A percentage rate as a decimal string — precise, because it is not money. */
+export const rateStringSchema = decimalStringBase.refine(
+  (v) => fractionDigits(v) <= RATE_INPUT_DP,
+  `at most ${RATE_INPUT_DP} decimal places`,
+);
+
+/**
+ * A money amount on a MONEY-MOVING surface: accepted even when it carries more
+ * precision than the platform scale, then quantized ONCE here so everything
+ * downstream derives from a single at-scale figure.
+ *
+ * Why accept rather than reject:
+ *   - Source ingest: the deposit already happened at the provider. A 400 strands
+ *     real money and the source cannot redeploy on our schedule.
+ *   - Whish collect: the payer has already paid, and Whish accepts amounts its
+ *     own docs discourage — we must never be stricter than the payment provider.
+ *   - Money-OUT (withdrawal / payout): accepted, but rounded DOWN, because we
+ *     must never move more money than was actually requested.
+ *
+ * `direction` picks the rounding: 'in' uses banker's rounding (no systematic
+ * bias on money we receive), 'out' floors (never overpay).
+ */
+export const quantizedAmountSchema = (direction: 'in' | 'out' = 'in') =>
+  decimalStringBase.transform((v) => {
+    const m = Money.of(v);
+    return (direction === 'out' ? m.floorToScale() : m.round()).toString();
+  });
 
 /**
  * Reject an inverted or absurdly-wide date range before any per-day bucket loop

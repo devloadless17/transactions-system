@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import type { StreamableFile } from '@nestjs/common';
 import {
   Money,
+  MONEY_SCALE_LABEL,
   type ApproveWithdrawalInput,
   type CancelRequestInput,
   type CreateWithdrawalInput,
@@ -115,9 +116,12 @@ export class WithdrawalsService {
     input: CreateWithdrawalInput,
     requestedByKeyId?: string | null,
   ): Promise<WithdrawalResponse> {
-    const amount = Money.of(input.amount);
-    if (!amount.round().isPositive())
-      throw new ValidationError('amount must be positive at up to 8 decimal places');
+    // Quantized at the boundary, DOWNWARD: the HTTP schema already does this, but
+    // internal callers reach this method directly. Rounding down (never up) means
+    // we can never reserve or pay out more than was actually requested.
+    const amount = Money.of(input.amount).floorToScale();
+    if (!amount.isPositive())
+      throw new ValidationError(`amount must be positive at up to ${MONEY_SCALE_LABEL}`);
 
     const row = await this.prisma.runSerializableAsTenant(companyId, async (tx) => {
       const cTx = tx as unknown as PrismaClient;
@@ -309,8 +313,10 @@ export class WithdrawalsService {
       // a manual approve of a PROCESSING row would book the full net to EXTERNAL
       // while only floor(net) actually left.
       const floorWhole = opts?.floorWhole === true || w.status === 'PROCESSING';
-      const amount = Money.of(w.amount.toString());
-      const fee = Money.of(w.feeAmount.toString());
+      // fromDb: a legacy row can carry a wider tail than the money scale; quantize
+      // both INPUTS once here and derive reserved/net/fee by exact subtraction.
+      const amount = Money.fromDb(w.amount);
+      const fee = Money.fromDb(w.feeAmount);
       const reserved = reservedTotal(amount, fee, w.feeApplication);
       const net = netOfFee(amount, fee, w.feeApplication);
       // The money that actually leaves. floorWhole sends whole dollars and keeps
@@ -441,8 +447,8 @@ export class WithdrawalsService {
       }
 
       const reserved = reservedTotal(
-        Money.of(w.amount.toString()),
-        Money.of(w.feeAmount.toString()),
+        Money.fromDb(w.amount),
+        Money.fromDb(w.feeAmount),
         w.feeApplication,
       );
 
@@ -810,15 +816,17 @@ function mapWithdrawal(row: {
   return {
     id: row.id,
     companyId: row.companyId,
-    amount: row.amount.toString(),
+    // Quantized on the way out so the API, the CSV export and the CRM webhook
+    // all report the same figure — and the same figure the ledger books. Deriving
+    // totalAmount from these (not from the raw columns) keeps net + fee == total
+    // exact, because a sum of two at-scale values is itself at scale.
+    amount: Money.fromDb(row.amount).toString(),
     currency: row.currency.trim(),
-    feeAmount: row.feeAmount.toString(),
+    feeAmount: Money.fromDb(row.feeAmount).toString(),
     feeApplication: row.feeApplication,
-    netAmount: row.netAmount.toString(),
-    roundingRemainder: row.roundingRemainder.toString(),
-    totalAmount: Money.of(row.netAmount.toString())
-      .add(Money.of(row.feeAmount.toString()))
-      .toString(),
+    netAmount: Money.fromDb(row.netAmount).toString(),
+    roundingRemainder: Money.fromDb(row.roundingRemainder).toString(),
+    totalAmount: Money.fromDb(row.netAmount).add(Money.fromDb(row.feeAmount)).toString(),
     status: row.status,
     payoutMethod: row.payoutMethod,
     payoutDetails: (row.payoutDetails as PayoutDetails | null) ?? null,

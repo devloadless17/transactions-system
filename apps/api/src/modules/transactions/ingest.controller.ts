@@ -12,7 +12,7 @@ import { SkipThrottle } from '@nestjs/throttler';
 import { z } from 'zod';
 import {
   currencySchema,
-  moneyAmountSchema,
+  quantizedAmountSchema,
   type IngestTransactionInput,
   type TransactionResponse,
 } from '@app/shared';
@@ -47,7 +47,10 @@ const sourcePayloadSchema = z
 const ingestSourceTransactionSchema = z.object({
   operatingId: z.string().uuid(),
   externalTransactionId: z.string().trim().min(1).max(200),
-  amount: moneyAmountSchema,
+  // Money IN: the deposit already happened at the source, so a sub-cent amount is
+  // quantized rather than rejected — a 400 here would strand real money that the
+  // source cannot re-send on our schedule.
+  amount: quantizedAmountSchema('in'),
   currency: currencySchema,
   payload: sourcePayloadSchema.default({}),
   idempotencyKey: z.string().trim().min(8).max(120).optional(),

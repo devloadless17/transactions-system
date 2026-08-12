@@ -1,9 +1,11 @@
 import { z } from 'zod';
 import { FeeApplication, PayoutMethod, WithdrawalStatus } from '../enums';
-import { currencySchema, moneyAmountSchema } from './common';
+import { currencySchema, quantizedAmountSchema } from './common';
 import { createPayoutDetailsSchema, payoutDetailsSchema } from './payout-method';
 
-const decimalString = moneyAmountSchema;
+// Money IN. A sub-cent amount is quantized, never rejected: the deposit already
+// happened at the provider, so a 400 here would strand real money.
+const decimalString = quantizedAmountSchema('in');
 
 // Loads: company tops up its own wallet (money in, not out). On request
 // we just persist the row in PENDING — no wallet or ledger move yet.

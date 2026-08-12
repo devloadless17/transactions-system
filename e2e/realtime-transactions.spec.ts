@@ -39,7 +39,7 @@ test.describe('realtime — Transactions/Deposits pages update without a refresh
       feeApplication: 'DEDUCTED',
       commissionType: 'PERCENTAGE',
       commissionValue: '0',
-      minAmount: '0.00000001',
+      minAmount: '0.01',
       maxAmount: '100000000',
       priority: 1000,
     });

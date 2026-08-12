@@ -1,6 +1,7 @@
 'use client';
 import { ArrowRight, Plus, Trash2 } from 'lucide-react';
 import {
+  MONEY_SCALE,
   CommissionType,
   FeeApplication,
   FeeOperationType,
@@ -47,9 +48,18 @@ export interface RuleDraft {
   priority: number;
 }
 
-// Smallest representable step at the ledger's Decimal(20,8) scale — a tier's max
-// is the next tier's start minus this, so brackets are contiguous with no overlap.
-const EPSILON = '0.00000001';
+// Smallest representable step at the platform money scale — a tier's max is the
+// next tier's start minus this, so brackets are contiguous with no overlap.
+// (Commission tiers must NOT touch; see validateTierLadder in schemas/commission.)
+//
+// DERIVED from MONEY_SCALE rather than hardcoded, so it can never drift from the
+// scale again: at 2 dp this is one cent. It ships together with the migration
+// that re-derives existing 8dp boundaries onto the cent grid — changing it alone
+// would open a GAP in a live ladder, and a gap makes the resolver throw
+// NO_COMMISSION_RULE, which 422s every deposit that lands in the gap.
+const EPSILON = Money.of(1)
+  .div(10 ** MONEY_SCALE)
+  .toString();
 
 const DEFAULT_TIERS: TierForm[] = [
   { minAmount: '0', commissionType: CommissionType.FIXED, commissionValue: '1' },
@@ -135,6 +145,7 @@ function buildLadder(
   | { ok: false; error: string } {
   const prefix = label ? `${label}: ` : '';
   const decimal = /^\d+(\.\d+)?$/;
+  const dp = (v: string) => v.split('.')[1]?.length ?? 0;
   for (const t of tiers) {
     if (!decimal.test(t.minAmount.trim())) {
       return {
@@ -142,8 +153,25 @@ function buildLadder(
         error: `${prefix}each tier needs a valid start amount (e.g. 0, 100, 1000).`,
       };
     }
+    // A tier START is money, so it lives on the cent grid — mirror the server
+    // rule here, or the form submits a value the API rejects AND the derived
+    // max of the tier BELOW it silently shifts.
+    if (dp(t.minAmount.trim()) > MONEY_SCALE) {
+      return {
+        ok: false,
+        error: `${prefix}tier start amounts are in cents — at most ${MONEY_SCALE} decimal places.`,
+      };
+    }
     if (!decimal.test(t.commissionValue.trim())) {
       return { ok: false, error: `${prefix}each tier needs a fee value.` };
+    }
+    // A FIXED fee is money (cents); a PERCENTAGE fee is a RATE and keeps its
+    // precision, so only the FIXED case is capped — same split as the server.
+    if (t.commissionType === CommissionType.FIXED && dp(t.commissionValue.trim()) > MONEY_SCALE) {
+      return {
+        ok: false,
+        error: `${prefix}a fixed fee is an amount — at most ${MONEY_SCALE} decimal places.`,
+      };
     }
   }
   const sorted = [...tiers].sort((a, b) =>
@@ -492,7 +520,7 @@ function TierPreview({ tiers }: { tiers: TierForm[] }) {
                   : `${fmt(t.minAmount)} to under ${fmt(next.minAmount)}`;
           const fee =
             t.commissionType === CommissionType.PERCENTAGE
-              ? `${fmt(t.commissionValue) || '0'}%`
+              ? `${fmtRate(t.commissionValue) || '0'}%`
               : `$${fmt(t.commissionValue) || '0'}`;
           return (
             <li key={i} className="flex items-center gap-2 text-muted-foreground">
@@ -507,7 +535,15 @@ function TierPreview({ tiers }: { tiers: TierForm[] }) {
   );
 }
 
+/** A tier BOUND is money: cents. */
 function fmt(s: string): string {
+  const n = Number(s);
+  if (!Number.isFinite(n)) return s;
+  return new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(n);
+}
+
+/** A PERCENTAGE value is a RATE and keeps its precision (0.125% stays 0.125%). */
+function fmtRate(s: string): string {
   const n = Number(s);
   if (!Number.isFinite(n)) return s;
   return new Intl.NumberFormat('en-US', { maximumFractionDigits: 8 }).format(n);

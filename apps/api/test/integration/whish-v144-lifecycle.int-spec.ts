@@ -507,19 +507,23 @@ describe('Whish v1.4.4 — indeterminate link creation', () => {
   // Whish DOCUMENTS a 1.00 minimum and a 2-decimal cap but enforces neither:
   // verified against the live v1.4.4 sandbox, which mints a real link for both
   // and carries a 0.50 link to the payer's OTP step. Being stricter than the
-  // payment provider would refuse money it is willing to collect.
-  it.each(['0.50', '10.005'])(
-    'forwards %o instead of blocking a payable amount',
-    async (amount) => {
-      const { companyId } = await createCompany(h);
-      await addTransactionFee(h, companyId, '0');
+  // payment provider would refuse money it is willing to collect — so a
+  // sub-cent amount is QUANTIZED, never rejected.
+  it.each([
+    ['0.50', 0.5], // under the documented minimum — still created
+    ['10.005', 10], // sub-cent precision — half-even to the cent (0 is even)
+  ])('accepts %o and asks Whish for exactly what it will book', async (amount, expected) => {
+    const { companyId } = await createCompany(h);
+    await addTransactionFee(h, companyId, '0');
 
-      const res = await create(companyId, { amount });
+    const res = await create(companyId, { amount });
 
-      expect(res.collectUrl).toBeTruthy();
-      // Compared numerically: the wire value comes from the persisted row, so a
-      // stored 0.50000000 is sent as "0.5" — which is what Whish echoes back anyway.
-      expect(Number(h.whishClient.postPaymentCalls.at(-1)!.amount)).toBe(Number(amount));
-    },
-  );
+    expect(res.collectUrl).toBeTruthy();
+    const sent = Number(h.whishClient.postPaymentCalls.at(-1)!.amount);
+    expect(sent).toBe(expected);
+    // The three must agree: what the payer is charged, what we stored, and what
+    // settlement will book. A divergence here would charge a customer one amount
+    // and credit the company from another.
+    expect(sent).toBe(Number(res.amount));
+  });
 });

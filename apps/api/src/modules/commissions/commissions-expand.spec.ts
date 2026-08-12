@@ -70,7 +70,7 @@ describe('commission group: per-operation tiers & fee application', () => {
               commissionValue: '1',
             },
             {
-              minAmount: '100.00000001',
+              minAmount: '100.01',
               maxAmount: null,
               commissionType: CommissionType.FIXED,
               commissionValue: '2',
@@ -256,7 +256,7 @@ describe('commission group: per-operation tiers & fee application', () => {
           tiers: [
             { minAmount: '0', maxAmount: '100', commissionType: 'FIXED', commissionValue: '1' },
             {
-              minAmount: '100.00000001',
+              minAmount: '100.01',
               maxAmount: null,
               commissionType: 'FIXED',
               commissionValue: '2',

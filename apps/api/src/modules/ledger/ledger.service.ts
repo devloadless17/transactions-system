@@ -2,6 +2,7 @@ import { Injectable, StreamableFile } from '@nestjs/common';
 import { Readable } from 'node:stream';
 import {
   Money,
+  MONEY_SCALE,
   type LedgerAccountType,
   type LedgerDirection,
   type LedgerEntryResponse,
@@ -11,7 +12,7 @@ import {
 import type { Prisma, PrismaClient } from '@app/db';
 import { PrismaService } from '../../database/prisma.service';
 import { CacheService } from '../cache/cache.service';
-import { ValidationError } from '../../common/errors/domain.error';
+import { LedgerScaleError, ValidationError } from '../../common/errors/domain.error';
 
 // The per-(company,filter) ledger COUNT is cached briefly so paging reuses it and
 // a high-volume tenant's COUNT(*) over the (largest) ledger table doesn't re-run
@@ -71,26 +72,38 @@ export class LedgerService {
   async writeEntries(tx: PrismaClient, entries: LedgerEntryInput[]): Promise<void> {
     if (entries.length === 0) return;
 
-    // Round every amount to the 8dp money scale up front, so the balance check
-    // and the value actually persisted are the exact same number. Otherwise a
-    // caller that hands us an unrounded Money (e.g. from a multiply/divide) could
-    // pass the in-memory balance check while Postgres rounds the Decimal(20,8)
-    // column differently on insert — silently booking an off-by-1e-8 imbalance —
-    // or persist a line that rounds to 0 and trips the amount>0 CHECK as a 500.
-    // All current callers already pass <=8dp amounts, so this is a no-op for
-    // them and pure defense-in-depth for any future flow.
-    const rounded = entries.map((e) => ({ ...e, amount: e.amount.round() }));
-
-    // Validate amounts (on the rounded value that will be stored).
-    for (const e of rounded) {
+    // ASSERT the scale; never silently round it.
+    //
+    // This used to round each leg here, which reads like defence but is the exact
+    // mechanism that books an unbalanced set: if legs partition a total, then
+    // `Σ round(legᵢ)` can differ from `round(Σ legᵢ)` (take 0.005 + 0.005 at 2dp —
+    // both legs round to 0.00 while the total rounds to 0.01). Rounding also can't
+    // fix an over-scale amount safely, because the "fix" changes the money.
+    //
+    // The contract for every caller is therefore: quantize your INPUTS once
+    // (the gross amount and the fee), then derive every remaining leg by exact
+    // subtraction, so the set balances by construction. Reaching this throw is a
+    // programming error in a builder, not bad user input — it should be
+    // unreachable, and it must page rather than be silently absorbed.
+    for (const e of entries) {
+      if (!e.amount.isAtScale()) {
+        throw new LedgerScaleError(
+          `ledger leg for ${e.accountType}/${e.direction} carries more than ${MONEY_SCALE} decimal places: ` +
+            `${e.amount.toExactString()} — the caller must quantize its inputs (Money.fromDb) and derive ` +
+            `the remaining legs by subtraction.`,
+        );
+      }
       if (!e.amount.isPositive()) {
-        throw new Error(`ledger amount must be positive at 8dp: got ${e.amount.toString()}`);
+        throw new Error(
+          `ledger amount must be positive at ${MONEY_SCALE}dp: got ${e.amount.toString()}`,
+        );
       }
     }
 
-    // Balance check per currency (on the rounded amounts that will be persisted).
+    // Balance check on the amounts AS GIVEN — now identical to what is persisted,
+    // because nothing rounds between here and createMany.
     const byCurrency = new Map<string, { dr: Money; cr: Money }>();
-    for (const e of rounded) {
+    for (const e of entries) {
       const slot = byCurrency.get(e.currency) ?? { dr: Money.zero(), cr: Money.zero() };
       if (e.direction === 'DEBIT') slot.dr = slot.dr.add(e.amount);
       else slot.cr = slot.cr.add(e.amount);
@@ -106,7 +119,7 @@ export class LedgerService {
 
     // Insert as a single createMany call for atomicity.
     await tx.ledgerEntry.createMany({
-      data: rounded.map((e) => ({
+      data: entries.map((e) => ({
         companyId: e.companyId,
         transactionId: e.transactionId ?? null,
         withdrawalId: e.withdrawalId ?? null,
@@ -295,6 +308,12 @@ export class LedgerService {
               r.createdAt.toISOString(),
               r.accountType,
               r.direction,
+              // EXACT, deliberately NOT quantized — unlike every other export.
+              // ledger_entries keeps its historical scale forever (the ledger is
+              // append-only), and rounding each leg independently would make an
+              // exported set's debit and credit columns stop tying out: the audit
+              // artifact would contradict the record it exists to prove. New rows
+              // are all at scale, so this prints identically for them.
               r.amount.toString(),
               r.currency.trim(),
               r.transactionId ?? '',

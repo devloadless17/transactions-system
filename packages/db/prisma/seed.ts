@@ -70,7 +70,7 @@ async function main() {
         data: [
           // INGEST. The bands touch at exactly 10 on purpose — the analytics
           // resolver picks the LOWEST matching min_amount, so exactly $10 lands in
-          // the flat-$1 tier ("$10 or under") and only $10.00000001+ in the 1% tier.
+          // the flat-$1 tier ("$10 or under") and only $10.01+ in the 1% tier.
           {
             sourceId: whish.id,
             channel: 'INGEST',
@@ -132,20 +132,20 @@ async function main() {
   // Ingest prices via the throwing resolver (commission-resolver.service.ts) and
   // a 422 blocks the deposit, so any uncovered amount (a gap, a sub-minimum, or
   // above a finite top) would reject real deposits out of the box. Boundaries are
-  // 8dp-adjacent (next.min = prev.max + 1e-8) — exactly what the admin UI emits —
+  // cent-adjacent (next.min = prev.max + 0.01) — exactly what the admin UI emits —
   // so the validator (which forbids touching/overlap) accepts them and no
   // representable amount falls between tiers.
   const sampleRules = [
     { minAmount: '0', maxAmount: '100', type: 'FIXED' as const, value: '1', priority: 100 },
     {
-      minAmount: '100.00000001',
+      minAmount: '100.01',
       maxAmount: '300',
       type: 'FIXED' as const,
       value: '5',
       priority: 100,
     },
     {
-      minAmount: '300.00000001',
+      minAmount: '300.01',
       maxAmount: null,
       type: 'PERCENTAGE' as const,
       value: '2',

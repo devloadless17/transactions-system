@@ -137,18 +137,18 @@ export function buildReconciliationReport(
       currency,
       walletExists: !!w,
       available: {
-        wallet: wa.toString(),
-        ledger: led.available.toString(),
+        wallet: wa.toExactString(),
+        ledger: led.available.toExactString(),
         delta: wa.sub(led.available).toString(),
       },
       pending: {
-        wallet: wp.toString(),
-        ledger: led.pending.toString(),
+        wallet: wp.toExactString(),
+        ledger: led.pending.toExactString(),
         delta: wp.sub(led.pending).toString(),
       },
       reserved: {
-        wallet: wr.toString(),
-        ledger: led.reserved.toString(),
+        wallet: wr.toExactString(),
+        ledger: led.reserved.toExactString(),
         delta: wr.sub(led.reserved).toString(),
       },
     });

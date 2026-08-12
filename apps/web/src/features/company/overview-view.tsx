@@ -76,7 +76,7 @@ export function OverviewView() {
   // come from summaryQ, so they use that response's currency (`sumCcy`).
   const sumCcy = sum?.currency ?? currency;
   // Balances/reconciliation figures use full-precision formatMoney (never rounds
-  // up) so a displayed amount can never exceed the real 8dp wallet value.
+  // up) so a displayed amount can never exceed the real wallet value.
   const money = (s: string | undefined, ccy: string = currency) =>
     s !== undefined ? `${formatMoney(s)} ${ccy}` : '—';
   // Outflows: shown with a leading minus so the right-hand column reads as a

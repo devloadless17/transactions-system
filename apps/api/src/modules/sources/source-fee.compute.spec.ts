@@ -83,23 +83,30 @@ describe('computeSourceFee', () => {
   });
 
   it('rounds the fee ROUND_HALF_EVEN (banker’s), not half-up', () => {
-    // 2.5% of 0.000001 = 0.000000025 → 8dp half-even rounds to 0.00000002
-    // (preceding digit 2 is even); half-up would give 0.00000003.
-    const lowRules: SourceFeeRuleRow[] = [
-      rule({ minAmount: '0', maxAmount: null, feeType: 'PERCENTAGE', feeValue: '2.5' }),
-    ];
-    expect(
-      computeSourceFee(lowRules, SourceFeeChannel.INGEST, Money.of('0.000001')).toString(),
-    ).toBe('0.00000002');
-
-    // 50% of 1.00000001 = 0.500000005 → 8dp half-even rounds to 0.5
-    // (preceding digit 0 is even); half-up would give 0.50000001.
+    // Half-even matters most on an exact half. 50% of 0.05 = 0.025 → at the cent
+    // scale the preceding digit (2) is EVEN, so it stays: 0.02. Half-up would
+    // give 0.03, and biasing every such fee upward would quietly overcharge.
     const halfRules: SourceFeeRuleRow[] = [
       rule({ minAmount: '0', maxAmount: null, feeType: 'PERCENTAGE', feeValue: '50' }),
     ];
-    expect(
-      computeSourceFee(halfRules, SourceFeeChannel.INGEST, Money.of('1.00000001')).toString(),
-    ).toBe('0.5');
+    expect(computeSourceFee(halfRules, SourceFeeChannel.INGEST, Money.of('0.05')).toString()).toBe(
+      '0.02',
+    );
+
+    // 50% of 0.07 = 0.035 → preceding digit (3) is ODD, so it rounds up: 0.04.
+    // Together these two pin the *even* rule rather than a fixed direction.
+    expect(computeSourceFee(halfRules, SourceFeeChannel.INGEST, Money.of('0.07')).toString()).toBe(
+      '0.04',
+    );
+
+    // A sub-basis-point RATE keeps its precision — only the resulting money is
+    // quantized. 0.125% of 1000 is exactly 1.25.
+    const rateRules: SourceFeeRuleRow[] = [
+      rule({ minAmount: '0', maxAmount: null, feeType: 'PERCENTAGE', feeValue: '0.125' }),
+    ];
+    expect(computeSourceFee(rateRules, SourceFeeChannel.INGEST, Money.of('1000')).toString()).toBe(
+      '1.25',
+    );
   });
 
   it('matches the open-ended top tier for arbitrarily large amounts', () => {

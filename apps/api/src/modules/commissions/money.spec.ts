@@ -16,10 +16,16 @@ describe('Money', () => {
       expect(a.add(b).eq(Money.of('0.3'))).toBe(true);
     });
 
-    it('keeps 8-dp precision for typical fintech amounts', () => {
+    it('persists at the platform money scale (whole cents)', () => {
       const v = Money.of('123.45678901234567');
-      // Stored at 8 dp scale.
-      expect(v.toString()).toBe('123.45678901');
+      // Half-even at 2 dp: the digit after the cent is 6, so it rounds up.
+      expect(v.toString()).toBe('123.46');
+    });
+
+    it('keeps full precision in flight — only persistence quantizes', () => {
+      // 0.125% of 1000 is 1.25 exactly; the RATE never gets rounded to 2 dp,
+      // which is what makes sub-basis-point pricing expressible.
+      expect(Money.of('1000').percent('0.125').toString()).toBe('1.25');
     });
   });
 
@@ -54,7 +60,7 @@ describe('Money', () => {
       expect(Money.of('1.015').toFixed(2)).toBe('1.02');
     });
 
-    it('round() clamps to MONEY_SCALE (8 dp)', () => {
+    it('round() clamps to MONEY_SCALE', () => {
       const long = Money.of('1.123456789012345');
       expect(long.round().toString().split('.')[1]?.length).toBeLessThanOrEqual(MONEY_SCALE);
     });
@@ -84,15 +90,45 @@ describe('Money', () => {
       expect(z.isNegative()).toBe(false);
     });
 
-    it('tiny positive (1e-8) is still positive at 8 dp', () => {
-      const tiny = Money.of('0.00000001');
+    it('one cent is still positive at the money scale', () => {
+      const tiny = Money.of('0.01');
       expect(tiny.isPositive()).toBe(true);
       expect(tiny.isZero()).toBe(false);
     });
 
-    it('values below 8 dp resolution round to zero', () => {
-      const sub = Money.of('0.000000001'); // 9th decimal
-      expect(sub.round().isZero()).toBe(true);
+    it('sub-cent values round to zero', () => {
+      expect(Money.of('0.001').round().isZero()).toBe(true);
+    });
+
+    it('floorToScale never rounds a balance UP past what is held', () => {
+      // Half-even would give 10.01 and let a flow reserve money that is not there.
+      expect(Money.of('10.005').floorToScale().toString()).toBe('10');
+      expect(Money.of('10.009').floorToScale().toString()).toBe('10');
+    });
+
+    it('ceilToScale clears a sub-cent debt completely', () => {
+      // Flooring would leave a remainder that stays isPositive() forever and
+      // keeps blocking money-out.
+      expect(Money.of('0.001').ceilToScale().toString()).toBe('0.01');
+    });
+
+    it('isAtScale distinguishes a persistable amount from an over-precise one', () => {
+      expect(Money.of('10.05').isAtScale()).toBe(true);
+      expect(Money.of('10.055').isAtScale()).toBe(false);
+    });
+
+    it('toExactString keeps every digit, unlike toString', () => {
+      const legacy = Money.of('10.00500000');
+      // Exactly half a cent, so BANKER'S rounding applies: the preceding digit
+      // (0) is even, so it stays put rather than rounding up. That is the whole
+      // point of half-even — no systematic upward bias across many rows.
+      expect(legacy.toString()).toBe('10');
+      expect(legacy.toExactString()).toBe('10.005');
+    });
+
+    it('half-even rounds toward the EVEN cent in both directions', () => {
+      expect(Money.of('10.005').toString()).toBe('10'); // 0 is even → down
+      expect(Money.of('10.015').toString()).toBe('10.02'); // 1 is odd → up
     });
   });
 });

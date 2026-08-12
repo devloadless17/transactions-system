@@ -16,7 +16,14 @@ import type { LedgerEntryInput } from './ledger.service';
  * reject/cancel — and loads (money-IN) build their own entries directly.
  */
 
-/** Gross amount that moves for a row = amount, or amount + fee when the fee is ON_TOP. */
+/**
+ * Gross amount that moves for a row = amount, or amount + fee when the fee is ON_TOP.
+ *
+ * PRECONDITION: both arguments are already at MONEY_SCALE. This does not round —
+ * sums and differences of at-scale values are exact, which is what lets the
+ * resulting ledger set balance by construction. Quantize on the way IN
+ * (Money.fromDb at the DB read), never on the way out.
+ */
 export function reservedTotal(amount: Money, fee: Money, feeApplication: FeeApplication): Money {
   return feeApplication === 'ON_TOP' ? amount.add(fee) : amount;
 }
@@ -28,6 +35,8 @@ export function reservedTotal(amount: Money, fee: Money, feeApplication: FeeAppl
  * One definition shared by withdrawals/payouts (the `net` at request, the
  * `external` at approval) and loads (the credited net), so the split can't drift
  * between the sibling flows.
+ *
+ * PRECONDITION: both arguments are already at MONEY_SCALE — see reservedTotal.
  */
 export function netOfFee(amount: Money, fee: Money, feeApplication: FeeApplication): Money {
   return feeApplication === 'ON_TOP' ? amount : amount.sub(fee);
@@ -43,7 +52,12 @@ export async function assertSufficient(
   const wallet = await tx.wallet.findUnique({
     where: { companyId_currency: { companyId, currency } },
   });
-  const available = Money.of(wallet?.availableBalance.toString() ?? '0');
+  // Money.of + floorToScale, NOT Money.fromDb: fromDb rounds half-even FIRST, so
+  // `fromDb(x).floorToScale()` is a no-op that can report a balance ABOVE what the
+  // wallet holds (9.999 -> 10.00), letting a flow reserve money that is not there
+  // and turning a clean InsufficientBalanceError into a negative-balance 409.
+  // Floor the RAW stored value — same as splitClawback does.
+  const available = Money.of(wallet?.availableBalance?.toString() ?? '0').floorToScale();
   if (available.lt(required)) {
     throw new InsufficientBalanceError({
       currency,

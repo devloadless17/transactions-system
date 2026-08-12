@@ -41,7 +41,12 @@ import { Prisma, PrismaClient, TransactionStatus } from '@prisma/client';
 
 const prisma = new PrismaClient();
 
-const MONEY_SCALE = 8;
+// Must match the platform money scale in packages/shared/src/money.ts. Hardcoded
+// (not imported) because this script talks to @prisma/client directly — so it is
+// NOT typechecked against the shared constant. If the scale moves again, this
+// line has to move with it, or the backfill re-introduces over-scale rows that
+// the ledger now refuses outright (LedgerScaleError).
+const MONEY_SCALE = 2;
 const BATCH_SIZE = Number(process.env.BACKFILL_BATCH_SIZE ?? '1000');
 
 // Channel of a source-fee rule / deposit. Mirrors @app/shared SourceFeeChannel

@@ -1,18 +1,17 @@
 import { z } from 'zod';
 import { CommissionType, FeeApplication, FeeOperationType } from '../enums';
 import { Money } from '../money';
+import { MONEY_INPUT_DP, RATE_INPUT_DP, moneyAmountSchema, rateStringSchema } from './common';
 
 // Amounts and fee values are money; they are never negative. (A negative
 // commission would credit the company on a fee, and a negative range bound is
 // meaningless.) Comparisons below use Money/Decimal — never JS float — so a
 // 20,8-digit value cannot slip past the bound through float precision loss.
-const nonNegativeDecimalString = z
-  .string()
-  .regex(/^\d+(\.\d+)?$/, 'must be a non-negative decimal string (e.g. "1.50")')
-  // Bound to the ledger's Decimal(20,8) scale (matching moneyAmountSchema) so a
-  // rule value can't be silently rounded on store or overflow the column.
-  .refine((v) => (v.split('.')[1]?.length ?? 0) <= 8, 'at most 8 decimal places')
-  .refine((v) => v.split('.')[0]!.length <= 12, 'integer part is at most 12 digits');
+// Tier BOUNDS are money amounts: cents, like every other amount on the platform.
+// The tier VALUE is dual-typed (dollars when FIXED, a rate when PERCENTAGE), so it
+// is validated per-type in the superRefine on commissionTierSchema below — a rate
+// keeps its precision, because 0.125% is a real price and not a rounding error.
+const nonNegativeDecimalString = moneyAmountSchema;
 
 const HUNDRED = Money.of('100');
 
@@ -59,7 +58,10 @@ export const commissionTierSchema = z
     minAmount: nonNegativeDecimalString,
     maxAmount: nonNegativeDecimalString.nullable(),
     commissionType: z.nativeEnum(CommissionType),
-    commissionValue: nonNegativeDecimalString,
+    // Permissive here on purpose: a PERCENTAGE value is a RATE and keeps its
+    // precision. The superRefine below narrows only the FIXED case to cents.
+    // (A field-level 2dp cap would fire FIRST and make that split unreachable.)
+    commissionValue: rateStringSchema,
   })
   .refine((t) => t.maxAmount === null || Money.of(t.minAmount).lte(Money.of(t.maxAmount)), {
     message: 'minAmount must be <= maxAmount',
@@ -68,6 +70,23 @@ export const commissionTierSchema = z
   .refine((t) => commissionValueWithinBounds(t.commissionType, t.commissionValue), {
     message: 'PERCENTAGE value must be between 0 and 100',
     path: ['commissionValue'],
+  })
+  // The dual-typed split. A FIXED value IS money, so it takes cents like any
+  // amount; a PERCENTAGE value is a RATE and keeps full precision. A field-level
+  // refine can't express this because the rule depends on the sibling type field.
+  .superRefine((t, ctx) => {
+    const dp = t.commissionValue.split('.')[1]?.length ?? 0;
+    const max = t.commissionType === CommissionType.FIXED ? MONEY_INPUT_DP : RATE_INPUT_DP;
+    if (dp > max) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['commissionValue'],
+        message:
+          t.commissionType === CommissionType.FIXED
+            ? `a FIXED commission is an amount — at most ${MONEY_INPUT_DP} decimal places`
+            : `a PERCENTAGE rate takes at most ${RATE_INPUT_DP} decimal places`,
+      });
+    }
   });
 export type CommissionTierInput = z.infer<typeof commissionTierSchema>;
 

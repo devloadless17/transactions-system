@@ -4,6 +4,7 @@ import { InjectMetric } from '@willsoto/nestjs-prometheus';
 import type { Counter } from 'prom-client';
 import {
   Money,
+  MONEY_SCALE_LABEL,
   SourceFeeChannel,
   type FeeApplication,
   type IngestCompanyListItem,
@@ -145,12 +146,20 @@ export class TransactionsService {
     // so every existing caller that just wants the transaction is unaffected;
     // only the ingest controller reads the flag.
   ): Promise<TransactionResponse & { replayed: boolean }> {
-    const amount = Money.of(input.amount);
+    // Quantize ONCE, here, at the boundary of the money engine. The HTTP schema
+    // already does this for the public ingest surface, but internal callers reach
+    // this method directly — Whish settlement passes the amount stored on a
+    // whish_payments row, and a row written before the money-scale change can
+    // carry a longer tail. An over-scale amount would flow into the ledger legs
+    // and be refused by writeEntries, failing a settlement for money the provider
+    // has ALREADY collected. Rounding here (never rejecting) keeps that money
+    // bookable, and every leg below derives from this single figure.
+    const amount = Money.of(input.amount).round();
     // Reject not just non-positive but also sub-unit amounts that round to 0 at
-    // the 8dp money scale (they would pass isPositive() yet violate the DB
+    // the platform money scale (they would pass isPositive() yet violate the DB
     // amount>0 CHECK and surface as a 500).
-    if (!amount.round().isPositive()) {
-      throw new ValidationError('amount must be positive at up to 8 decimal places');
+    if (!amount.isPositive()) {
+      throw new ValidationError(`amount must be positive at up to ${MONEY_SCALE_LABEL}`);
     }
 
     const [foundSource, company] = await this.prisma.runAsAdmin((tx) =>
@@ -450,8 +459,10 @@ export class TransactionsService {
         throw new ConflictError(`Transaction is in status ${orig.status} and cannot be reversed`);
       }
 
-      const fee = Money.of(orig.commissionAmount.toString());
-      const net = Money.of(orig.netAmount.toString());
+      // fromDb: quantize the stored amounts ONCE here, so every leg derived below
+      // is at scale and the reversal set balances by construction.
+      const fee = Money.fromDb(orig.commissionAmount);
+      const net = Money.fromDb(orig.netAmount);
       // The original EXTERNAL debit was net + fee for BOTH fee applications
       // (DEDUCTED: amount = net + fee; ON_TOP: amount + fee = net + fee), so we
       // can reconstruct it from the stored net/fee without a feeApplication
@@ -641,10 +652,10 @@ export class TransactionsService {
               r.companyId,
               r.source.code,
               csvCell(r.externalTransactionId),
-              r.amount.toString(),
+              Money.fromDb(r.amount).toFixed(2),
               r.currency.trim(),
-              r.commissionAmount.toString(),
-              r.netAmount.toString(),
+              Money.fromDb(r.commissionAmount).toFixed(2),
+              Money.fromDb(r.netAmount).toFixed(2),
               r.status,
               csvCell(payloadString(r.payload, 'customer') ?? ''),
               csvCell(payloadString(r.payload, 'target') ?? ''),
@@ -831,7 +842,12 @@ export function splitClawback(
   net: Money,
   available: Money,
 ): { fromAvailable: Money; receivable: Money } {
-  const fromAvailable = available.gte(net) ? net : available;
+  // The cap comes from a wallet balance, which may carry a wider tail than the
+  // money scale. floorToScale, never round: rounding half-even could round UP
+  // past the real balance and drive the wallet negative. The receivable is then
+  // derived by exact subtraction, so the two legs still sum to `net`.
+  const cap = available.floorToScale();
+  const fromAvailable = cap.gte(net) ? net : cap;
   return { fromAvailable, receivable: net.sub(fromAvailable) };
 }
 
@@ -858,10 +874,12 @@ function mapTxRow(
     sourceId: row.sourceId,
     sourceCode,
     externalTransactionId: row.externalTransactionId,
-    amount: row.amount.toString(),
+    // Quantized on the way out — see the flow mappers: one figure across the API,
+    // the CSV export and the CRM event.
+    amount: Money.fromDb(row.amount).toString(),
     currency: row.currency.trim(),
-    commissionAmount: row.commissionAmount.toString(),
-    netAmount: row.netAmount.toString(),
+    commissionAmount: Money.fromDb(row.commissionAmount).toString(),
+    netAmount: Money.fromDb(row.netAmount).toString(),
     status: row.status,
     customer: payloadString(row.payload, 'customer'),
     target: payloadString(row.payload, 'target'),

@@ -3,15 +3,6 @@
  * must stay strings — these only format for display, never for calculation.
  */
 
-/** Drop trailing fractional zeros: "10.500" → "10.5", "10.00" → "10".
- * Tolerates a missing/non-string value (returns '—') so a display-only formatter
- * can never throw and take a whole page down via the error boundary. */
-export function trimAmount(s: string | null | undefined): string {
-  if (typeof s !== 'string') return '—';
-  if (!s.includes('.')) return s;
-  return s.replace(/\.?0+$/, '');
-}
-
 /**
  * Truncate a decimal STRING to at most `dp` fraction digits — by slicing, never
  * by rounding, and without going through a float (so a Decimal(20,8) value can
@@ -25,26 +16,45 @@ function truncateDecimal(s: string, dp: number): string {
 }
 
 /**
- * Full-precision money display: groups the integer part with locale separators
- * and keeps EVERY fraction digit the value carries (trailing zeros trimmed),
- * rounding NOTHING. Use this for balances and any figure a customer reconciles
- * against their real wallet — the platform money scale is 8 dp, so a 2 dp
- * rounded display could show more money than the wallet actually holds.
- * "1234.50000000" → "1,234.5"; "0.005" → "0.005"; non-numeric passes through.
+ * THE money formatter. Exactly 2 fraction digits, locale-grouped integer part,
+ * TRUNCATED and never rounded up — a displayed figure must never claim more money
+ * than the value actually holds. "1234.5" → "1,234.50"; "0.005" → "0.00";
+ * non-numeric passes through, and a missing value renders "—" so a display-only
+ * helper can never throw and take a page down through the error boundary.
+ *
+ * Once every money column is at the platform scale the truncation is a no-op; it
+ * stays as the safety property for legacy rows that still carry a longer tail.
  */
-export function formatMoney(s: string | null | undefined): string {
+export function formatAmount(s: string | null | undefined): string {
   if (typeof s !== 'string') return '—';
-  if (Number.isNaN(Number(s))) return s;
-  const negative = s.trim().startsWith('-');
-  const abs = negative ? s.trim().slice(1) : s.trim();
-  const dot = abs.indexOf('.');
-  const intPart = dot === -1 ? abs : abs.slice(0, dot);
-  // Trailing zeros are noise, not precision — drop them, but never round.
-  const fracPart = dot === -1 ? '' : abs.slice(dot + 1).replace(/0+$/, '');
+  const t = s.trim();
+  if (t === '' || Number.isNaN(Number(t))) return s;
+  const negative = t.startsWith('-');
+  const abs = negative ? t.slice(1) : t;
+  const [intPart = '0', fracPart = ''] = truncateDecimal(abs, 2).split('.');
   const grouped = Number(intPart || '0').toLocaleString('en-US');
-  const out = fracPart ? `${grouped}.${fracPart}` : grouped;
-  return negative && out !== '0' ? `-${out}` : out;
+  const out = `${grouped}.${(fracPart + '00').slice(0, 2)}`;
+  // Sign is decided on the TRUNCATED value, not the raw one: otherwise a
+  // sub-cent negative renders as the nonsense string "-0.00". (Truncating the
+  // magnitude also means a negative reads slightly toward zero — deliberate:
+  // an outflow shown smaller than reality is the safe direction here, the same
+  // rule the positive case follows.)
+  return negative && out !== '0.00' ? `-${out}` : out;
 }
+
+/**
+ * True when a money STRING is zero. Use this instead of comparing a FORMATTED
+ * string against '0' — the formatter now emits "0.00", so the old
+ * `trimAmount(x) === '0'` sentinels silently stopped matching.
+ */
+export function isZeroAmount(s: string | null | undefined): boolean {
+  return typeof s === 'string' && s.trim() !== '' && Number(s) === 0;
+}
+
+/** @deprecated alias of formatAmount — kept so existing call sites need no edit. */
+export const trimAmount = formatAmount;
+/** @deprecated alias of formatAmount. */
+export const formatMoney = formatAmount;
 
 /**
  * Locale-grouped display of a decimal string (e.g. "1234.5" → "1,234.5"), for
