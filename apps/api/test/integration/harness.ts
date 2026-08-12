@@ -36,7 +36,11 @@ import type { NotificationsService } from '../../src/modules/notifications/notif
 import type { CrmDispatchService } from '../../src/modules/crm/crm-dispatch.service';
 import type { AutoApprovalConfigStore } from '../../src/modules/withdrawals/auto-approval-config.store';
 import type { WhishTransfersService } from '../../src/modules/whish/whish-transfers.service';
-import type { WhishClient, WhishCollectStatus } from '../../src/modules/whish/whish.client';
+import type {
+  PostPaymentInput,
+  WhishClient,
+  WhishCollectStatus,
+} from '../../src/modules/whish/whish.client';
 import type { WhishWebhookService } from '../../src/modules/whish/whish-webhook.service';
 import type { TransactionLogsService } from '../../src/modules/transaction-logs/transaction-logs.service';
 import type { ConfigService } from '@nestjs/config';
@@ -53,23 +57,73 @@ export interface Harness {
   whish: WhishPaymentsService;
   /** Controllable stand-in for the external Whish API — set `.status` per test. */
   whishClient: FakeWhishClient;
+  /** Records every CRM dispatch, so tests can assert WHICH event fired. */
+  crm: FakeCrmDispatch;
 }
 
 /**
- * Controllable fake of the external Whish HTTP client. The reconcile path only
- * calls `isConfigured()` + `getStatus()`, so tests drive settlement by setting
- * `.status` ('success' | 'failed' | 'pending') before invoking the service —
- * no real network, no Whish account.
+ * Controllable fake of the external Whish HTTP client. Tests drive settlement by
+ * setting `.status` (any WhishCollectStatus — so `refunded`/`unknown` are covered
+ * automatically) before invoking the service, and can force either upstream call
+ * to throw via `failPostPaymentWith` / `failGetStatusWith` — no real network, no
+ * Whish account.
  */
 export class FakeWhishClient {
   configured = true;
   status: WhishCollectStatus = 'success';
   payerPhoneNumber: string | null = '+96170000000';
+  /** Every postPayment call, so a test can assert the on-the-wire shape. */
+  postPaymentCalls: PostPaymentInput[] = [];
+  /** When set, the next postPayment/getStatus rejects with it. */
+  failPostPaymentWith: Error | null = null;
+  failGetStatusWith: Error | null = null;
+
   isConfigured(): boolean {
     return this.configured;
   }
+
+  postPayment(input: PostPaymentInput): Promise<{ collectUrl: string }> {
+    this.postPaymentCalls.push(input);
+    if (this.failPostPaymentWith) return Promise.reject(this.failPostPaymentWith);
+    return Promise.resolve({ collectUrl: `https://whish.example/collect/${input.externalId}` });
+  }
+
   getStatus(): Promise<{ collectStatus: WhishCollectStatus; payerPhoneNumber: string | null }> {
+    if (this.failGetStatusWith) return Promise.reject(this.failGetStatusWith);
     return Promise.resolve({ collectStatus: this.status, payerPhoneNumber: this.payerPhoneNumber });
+  }
+}
+
+/** One CRM dispatch observed during a test. */
+export interface RecordedCrmEvent {
+  kind: 'whish' | 'transaction' | 'withdrawal';
+  event: string;
+  payload: Record<string, unknown>;
+}
+
+/**
+ * Recording CRM dispatcher. The real one is fire-and-forget over HTTP, but WHICH
+ * event fires is load-bearing behaviour (a `transaction.failed` on a link that
+ * may still be payable is a wrong signal to the company), so tests need to see
+ * them rather than have them swallowed.
+ */
+export class FakeCrmDispatch {
+  events: RecordedCrmEvent[] = [];
+  emitWhish(payload: Record<string, unknown>): void {
+    this.events.push({ kind: 'whish', event: String(payload.event), payload });
+  }
+  emitFromTransaction(_txn: unknown, event: string): void {
+    this.events.push({ kind: 'transaction', event, payload: {} });
+  }
+  emitWithdrawal(payload: Record<string, unknown>): void {
+    this.events.push({ kind: 'withdrawal', event: String(payload.event), payload });
+  }
+  /** Every event name seen so far, in order. */
+  names(): string[] {
+    return this.events.map((e) => e.event);
+  }
+  reset(): void {
+    this.events = [];
   }
 }
 
@@ -100,13 +154,6 @@ const fakeNotifications = {
 
 const fakeCounter = { inc: () => undefined } as unknown as Counter<string>;
 
-// CRM dispatch is a fire-and-forget side effect; no-op it in the harness.
-const fakeCrm = {
-  emitFromTransaction: () => undefined,
-  emitWhish: () => undefined,
-  emitWithdrawal: () => undefined,
-} as unknown as CrmDispatchService;
-
 // Withdrawal auto-approval ships OFF, so mirror that here: every withdrawal is
 // treated as needing a human. Read post-commit by `resolveManualReason()`.
 const fakeAutoApprovalConfig = {
@@ -134,7 +181,14 @@ const fakeTransfers = {
 const fakeWhishWebhooks = { deliverPaid: async () => undefined } as unknown as WhishWebhookService;
 const fakeTxLogs = { record: () => undefined } as unknown as TransactionLogsService;
 const fakeWhishConfig = {
-  get: (key: string) => (key === 'WHISH_ENABLED_CURRENCIES' ? ['USD'] : undefined),
+  get: (key: string) =>
+    key === 'WHISH_ENABLED_CURRENCIES'
+      ? ['USD']
+      : key === 'WHISH_CALLBACK_BASE'
+        ? 'https://api.example.test/v1'
+        : key === 'WEB_ORIGIN'
+          ? 'https://portal.example.test'
+          : undefined,
 } as unknown as ConfigService<Env, true>;
 
 export function buildHarness(): Harness {
@@ -146,6 +200,9 @@ export function buildHarness(): Harness {
   }
 
   const prisma = new PrismaService();
+  // Per-harness (not module-level) so each test sees only its own CRM events.
+  const crmRecorder = new FakeCrmDispatch();
+  const fakeCrm = crmRecorder as unknown as CrmDispatchService;
   const ledger = new LedgerService(prisma, fakeCache);
   const wallets = new WalletsService(prisma);
   const resolver = new CommissionResolverService();
@@ -213,7 +270,18 @@ export function buildHarness(): Harness {
     fakeTxLogs,
   );
 
-  return { prisma, transactions, withdrawals, payouts, loads, ledger, wallets, whish, whishClient };
+  return {
+    prisma,
+    transactions,
+    withdrawals,
+    payouts,
+    loads,
+    ledger,
+    wallets,
+    whish,
+    whishClient,
+    crm: crmRecorder,
+  };
 }
 
 // ---- unique-id helpers (tests isolate by company, so ids must not collide) ----

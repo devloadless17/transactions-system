@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -383,15 +383,40 @@ function CreatePaymentDialog({
     }
   }, [currencies, currency, setValue]);
 
+  // One idempotency key per creation ATTEMPT, held until that attempt succeeds.
+  // It is what makes a retry recoverable: if the API answers WHISH_PENDING (we
+  // could not confirm the outcome with Whish), pressing Create again re-attempts
+  // the SAME payment instead of minting a second link for the same order.
+  const attemptKey = useRef<string | null>(null);
+
   const mu = useMutation({
-    mutationFn: (input: CreateWhishPaymentInput) =>
-      apiFetch<WhishPaymentResponse>('/company/whish/payments', { method: 'POST', body: input }),
+    mutationFn: (input: CreateWhishPaymentInput) => {
+      attemptKey.current ??= `ui-${crypto.randomUUID()}`;
+      return apiFetch<WhishPaymentResponse>('/company/whish/payments', {
+        method: 'POST',
+        body: { ...input, idempotencyKey: attemptKey.current },
+      });
+    },
     onSuccess: (res) => {
+      attemptKey.current = null; // next Create is a genuinely new payment
       reset();
       setCreated(res);
       onCreated();
     },
-    onError: (err) => toast.error(err instanceof ApiClientError ? err.message : 'Failed'),
+    onError: (err) => {
+      // ONLY an unconfirmed outcome keeps the key: pressing Create again then
+      // recovers that same payment. Every other error (including a definite
+      // WHISH_ERROR, which already marked the row FAILED) must drop it, or the
+      // retry would replay a dead row back as if it were a fresh link.
+      if (err instanceof ApiClientError && err.code === 'WHISH_PENDING') {
+        toast.error(
+          "We couldn't confirm this payment with Whish. Press Create again to retry the same payment — don't start a new one.",
+        );
+        return;
+      }
+      attemptKey.current = null;
+      toast.error(err instanceof ApiClientError ? err.message : 'Failed');
+    },
   });
 
   function handleOpenChange(v: boolean) {
@@ -401,6 +426,10 @@ function CreatePaymentDialog({
       reset();
       setOvSuccess('');
       setOvFailure('');
+      // The dialog is reused, not remounted. Closing it ends this attempt, so
+      // drop the idempotency key — carrying it into the NEXT order would make
+      // that order collide with this one (a 400, or worse a replayed link).
+      attemptKey.current = null;
     }
   }
 

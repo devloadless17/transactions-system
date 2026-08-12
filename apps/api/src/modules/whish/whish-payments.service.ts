@@ -14,6 +14,7 @@ import {
   type WhishPaymentResponse,
   type WhishRedirectConfig,
   WhishPaymentStatus,
+  whishAmountIssue,
 } from '@app/shared';
 import { Prisma } from '@app/db';
 import type { WhishPayment } from '@app/db';
@@ -31,7 +32,8 @@ import { streamCsvKeyset } from '../../common/csv';
 import { TransactionsService } from '../transactions/transactions.service';
 import { CommissionResolverService } from '../commissions/commission-resolver.service';
 import { CommissionsRepository } from '../commissions/commissions.repository';
-import { WhishClient, WhishError } from './whish.client';
+import { WhishClient, WhishError, WhishIndeterminateError } from './whish.client';
+import type { WhishCollectStatus } from './whish.client';
 import { WhishWebhookService } from './whish-webhook.service';
 import { RealtimeService } from '../realtime/realtime.service';
 import { CrmDispatchService } from '../crm/crm-dispatch.service';
@@ -145,6 +147,21 @@ export class WhishPaymentsService {
       throw new ValidationError('amount must be positive at up to 8 decimal places');
     }
 
+    // 1c. Whish DOCUMENTS per-currency amount rules (v1.4.4: USD at most 2
+    //     decimals, minimum 1.00) but does not enforce them: verified against the
+    //     live sandbox, it mints a real link for "0.50" and "10.005", and the
+    //     hosted page takes a 0.50 link to the OTP step. So this is a WARNING,
+    //     never a rejection — refusing here would block money the provider is
+    //     willing to collect. If Whish ever starts enforcing it, these log lines
+    //     are the early warning.
+    const amountIssue = whishAmountIssue(input.amount, input.currency);
+    if (amountIssue) {
+      this.logger.warn(
+        `Whish amount outside the documented range (company ${companyId}): ${amountIssue}. ` +
+          `Forwarding ${input.amount} ${input.currency} anyway — Whish accepts it today.`,
+      );
+    }
+
     // 2. Commission must resolve up front — never mint a link that can't
     //    settle. (Without this, a paid payment with no matching rule would be
     //    stuck PENDING forever.) This is also what makes enabling LBP safe:
@@ -153,12 +170,19 @@ export class WhishPaymentsService {
     const source = await this.resolveWhishSource();
     await this.assertCommissionResolves(companyId, source.id, input.amount);
 
-    // Idempotency: a retried create with the same key returns the original.
+    // Idempotency: a retried create with the same key returns the original —
+    // EXCEPT when the original is a linkless orphan (see isLinklessOrphan), where
+    // the retry re-attempts the mint instead of handing back a payment that can
+    // never be paid.
     if (input.idempotencyKey) {
       const prior = await this.prisma.runAsTenant(companyId, (tx) =>
         tx.whishPayment.findFirst({ where: { companyId, idempotencyKey: input.idempotencyKey } }),
       );
-      if (prior) return mapWhishPayment(prior);
+      if (prior) {
+        if (!isLinklessOrphan(prior)) return mapWhishPayment(prior);
+        assertRetryMatchesRow(prior, input);
+        return this.mintLink(companyId, prior, input);
+      }
     }
 
     const callbackToken = crypto.randomBytes(24).toString('base64url');
@@ -192,12 +216,40 @@ export class WhishPaymentsService {
             where: { companyId, idempotencyKey: input.idempotencyKey },
           }),
         );
-        if (existing) return mapWhishPayment(existing);
+        if (existing) {
+          if (!isLinklessOrphan(existing)) return mapWhishPayment(existing);
+          assertRetryMatchesRow(existing, input);
+          return this.mintLink(companyId, existing, input);
+        }
       }
       throw err;
     }
 
-    const externalId = Number(created.externalId);
+    return this.mintLink(companyId, created, input);
+  }
+
+  /**
+   * Ask Whish for the collect URL and finish the row. Split out of createPayment
+   * so an idempotent retry of a linkless orphan (a create whose outcome Whish
+   * could not confirm) can re-attempt the SAME externalId rather than handing
+   * back a payment with no payable link. Whish replays the original result for a
+   * repeated externalId, so this recovers the link if it was in fact minted.
+   */
+  private async mintLink(
+    companyId: string,
+    created: WhishPayment,
+    input: CreateWhishPaymentInput,
+  ): Promise<WhishPaymentResponse> {
+    const callbackToken = created.callbackToken;
+    // Whish v1.4.4 documents externalId as a String, so keep it a digit string
+    // from here on — it is also what every downstream consumer already wants
+    // (the ledger reference, the CRM `whish:<id>` reference, the API response).
+    const externalId = created.externalId.toString();
+    // The persisted row is the source of truth for what we ask Whish to collect:
+    // it is what settlement will credit, and on a retry it is what already exists.
+    const amount = created.amount.toString();
+    const currency = created.currency;
+    const invoice = created.invoice;
     const apiBase = this.config.get('WHISH_CALLBACK_BASE', { infer: true });
     const webBase = this.config.get('WEB_ORIGIN', { infer: true });
     const q = `token=${callbackToken}&externalId=${externalId}`;
@@ -224,9 +276,13 @@ export class WhishPaymentsService {
 
     try {
       const { collectUrl } = await this.whish.postPayment({
-        amount: input.amount,
-        currency: input.currency,
-        invoice: input.invoice,
+        // From the ROW, never the request body. On an orphan retry the two can
+        // disagree, and settlement always credits the row — minting a link for a
+        // different amount than we would book is how a payment silently collects
+        // the wrong money.
+        amount: amount,
+        currency: currency,
+        invoice: invoice,
         externalId,
         successCallbackUrl: `${apiBase}/whish/callback/success?${q}`,
         failureCallbackUrl: `${apiBase}/whish/callback/failure?${q}`,
@@ -292,14 +348,66 @@ export class WhishPaymentsService {
           code: err instanceof WhishError ? err.code : 'WHISH_ERROR',
           message: err instanceof Error ? err.message : 'unknown',
           upstream: upstreamResponse ?? details?.upstreamMessage ?? null,
+          indeterminate: err instanceof WhishIndeterminateError,
         },
       });
+
+      // INDETERMINATE (Whish v1.4.4 `code:500`, a timeout, or a 5xx): the link
+      // MAY exist upstream, so this is NOT a failure. Leave the row PENDING —
+      // it already is, and it carries the externalId the reconciler polls by —
+      // and let the 60s reconciler resolve it (24h timeout as the backstop).
+      //
+      // Marking it FAILED here would be UNRECOVERABLE: the poller only selects
+      // PENDING rows, so a FAILED row is never re-checked, and if Whish did mint
+      // the link and the customer pays, settlement lands in the paid-after-expiry
+      // branch and needs a human. For the same reason the CRM gets
+      // `transaction.pending` (which truthfully mirrors the row and shares the
+      // `whish:<externalId>` reference the eventual terminal event will use), NOT
+      // `transaction.failed` — that would assert a settled non-collection that
+      // has not happened.
+      if (err instanceof WhishIndeterminateError) {
+        await this.prisma.runAsTenant(companyId, (tx) =>
+          tx.whishPayment.update({
+            where: { id: created.id },
+            data: {
+              metadata: mergeMetadata(created.metadata, {
+                linkCreateIndeterminate: true,
+                error: err instanceof Error ? err.message : 'unknown',
+              }),
+            },
+          }),
+        );
+        this.logger.warn(
+          `Whish link creation INDETERMINATE: company=${companyId} externalId=${externalId} — ` +
+            `row left PENDING for the reconciler (${err.message})`,
+        );
+        this.realtime.company(companyId, ['whish']);
+        this.crm.emitWhish({
+          companyId,
+          externalId,
+          amount: input.amount,
+          currency: input.currency,
+          invoice: input.invoice,
+          event: 'transaction.pending',
+        });
+        // Re-thrown carrying the identifiers, because the create call returns no
+        // body: without these the caller cannot look the payment up, and both
+        // recovery routes we document would dead-end.
+        throw new WhishIndeterminateError(
+          err.message,
+          { ...err.details, externalId, paymentId: created.id },
+          err.upstreamResponse,
+        );
+      }
+
       await this.prisma.runAsTenant(companyId, (tx) =>
         tx.whishPayment.update({
           where: { id: created.id },
           data: {
             status: WhishPaymentStatus.FAILED,
-            metadata: { error: err instanceof Error ? err.message : 'unknown' },
+            metadata: mergeMetadata(created.metadata, {
+              error: err instanceof Error ? err.message : 'unknown',
+            }),
           },
         }),
       );
@@ -449,7 +557,67 @@ export class WhishPaymentsService {
       tx.whishPayment.findUnique({ where: { id } }),
     );
     if (!payment) throw new NotFoundError('WhishPayment', id);
+    // A PAID row is normally never re-polled (reconcile returns early), so a
+    // refund of an ALREADY-SETTLED payment would be invisible. On this
+    // admin-only path, check for it explicitly: flag it loudly and book NOTHING.
+    // Reversing the ledger must stay a deliberate operator action — never an
+    // automatic side effect of refreshing a status.
+    if (payment.status === WhishPaymentStatus.PAID) {
+      try {
+        const flagged = await this.detectRefundAfterSettlement(payment);
+        if (flagged) return flagged;
+      } catch (err) {
+        // This probe is a bonus, not the job. Refreshing an already-settled
+        // payment used to be a guaranteed no-op, so an upstream outage must not
+        // turn it into a 502 for the operator.
+        this.logger.warn(
+          `Whish refund probe failed for ${payment.externalId} (${err instanceof Error ? err.message : 'unknown'}) — ` +
+            `returning the settled row unchanged.`,
+        );
+      }
+      return mapWhishPayment(payment);
+    }
     return this.reconcile(payment);
+  }
+
+  /**
+   * Admin-only probe: is this SETTLED payment now `refunded` upstream? Returns
+   * the flagged row when so, otherwise null (caller continues normally). Kept
+   * off the poller and the company refresh so we don't add an upstream call per
+   * PAID row.
+   */
+  private async detectRefundAfterSettlement(
+    payment: WhishPayment,
+  ): Promise<WhishPaymentResponse | null> {
+    const { collectStatus } = await this.whish.getStatus({
+      currency: payment.currency.trim(),
+      externalId: payment.externalId.toString(),
+    });
+    if (collectStatus !== 'refunded') return null;
+    this.logger.error(
+      `Whish payment ${payment.externalId} was REFUNDED after settling (company ${payment.companyId}, ` +
+        `transaction ${payment.transactionId ?? 'none'}) — wallet still credited; needs an operator reversal.`,
+    );
+    const flagged = await this.prisma.runAsAdmin((tx) =>
+      tx.whishPayment.update({
+        where: { id: payment.id },
+        // Merged, not replaced: a row can already carry `paidAfterExpiry` or a
+        // settlement breadcrumb, and losing it hides half the story.
+        data: {
+          metadata: mergeMetadata(payment.metadata, {
+            needsAttention: true,
+            refundedAfterSettlement: true,
+            // needsAttention is surfaced to the company as "settlement needs
+            // attention — read settlementError", so it must never be flagged
+            // with a null reason.
+            settlementError:
+              'Whish reports this payment as refunded after it settled — the wallet credit needs an operator reversal.',
+          }),
+        },
+      }),
+    );
+    this.realtime.company(payment.companyId, ['whish']);
+    return mapWhishPayment(flagged);
   }
 
   /** Admin: fetch one payment by id across companies (e.g. an audit-log deep link). */
@@ -478,6 +646,79 @@ export class WhishPaymentsService {
   }
 
   /**
+   * Remember the last NOT-settled status Whish reported, so the 24h backstop can
+   * tell "the customer simply never paid" (`pending`) from "Whish could not tell
+   * us whether it collected" (`unknown`). Only writes when the value actually
+   * changes, so a link sitting pending for a day costs no extra writes. Never
+   * touches `needsAttention` — that would stop the poller from re-checking it.
+   */
+  private async noteLastCollectStatus(
+    payment: WhishPayment,
+    collectStatus: 'pending' | 'unknown',
+  ): Promise<WhishPaymentResponse> {
+    const meta = payment.metadata as { lastCollectStatus?: string } | null;
+    if (meta?.lastCollectStatus === collectStatus) return mapWhishPayment(payment);
+    // Guarded on still-PENDING like every other write on this path: `payment` is
+    // a snapshot, and a concurrent success callback may have settled the row in
+    // the meantime. An unguarded update would stamp stale metadata (potentially a
+    // resurrected needsAttention) onto a PAID payment.
+    await this.prisma.runAsAdmin((tx) =>
+      tx.whishPayment.updateMany({
+        where: { id: payment.id, status: WhishPaymentStatus.PENDING },
+        data: { metadata: mergeMetadata(payment.metadata, { lastCollectStatus: collectStatus }) },
+      }),
+    );
+    const current = await this.prisma.runAsAdmin((tx) =>
+      tx.whishPayment.findUniqueOrThrow({ where: { id: payment.id } }),
+    );
+    return mapWhishPayment(current);
+  }
+
+  /**
+   * Close a link as a settled NON-collection — Whish reported either `failed`
+   * (the link expired unpaid, or the attempt was declined and the link has since
+   * lapsed) or `refunded` (a successful payment was refunded). Both mean the
+   * money is not ours, and both surface to the company as `transaction.failed`;
+   * the exact upstream status is kept in metadata so ops can tell them apart.
+   */
+  private async closeAsNotCollected(
+    payment: WhishPayment,
+    collectStatus: 'failed' | 'refunded',
+    currency: string,
+    payerPhoneNumber: string | null,
+  ): Promise<WhishPaymentResponse> {
+    // Guard on still-PENDING: a delayed 'failed' status from Whish must never
+    // overwrite a payment a concurrent callback/settle already moved to PAID.
+    const res = await this.prisma.runAsAdmin((tx) =>
+      tx.whishPayment.updateMany({
+        where: { id: payment.id, status: WhishPaymentStatus.PENDING },
+        data: {
+          status: WhishPaymentStatus.FAILED,
+          payerPhoneNumber,
+          metadata: mergeMetadata(payment.metadata, { collectStatus }),
+        },
+      }),
+    );
+    const current = await this.prisma.runAsAdmin((tx) =>
+      tx.whishPayment.findUniqueOrThrow({ where: { id: payment.id } }),
+    );
+    if (res.count === 1) {
+      this.logger.log(`Whish payment ${payment.externalId} closed as ${collectStatus}`);
+      this.realtime.company(payment.companyId, ['whish']);
+      this.crm.emitWhish({
+        companyId: payment.companyId,
+        externalId: payment.externalId,
+        amount: payment.amount.toString(),
+        currency,
+        invoice: payment.invoice,
+        payerPhoneNumber,
+        event: 'transaction.failed',
+      });
+    }
+    return mapWhishPayment(current);
+  }
+
+  /**
    * Authoritative settlement: ask Whish for the real collect status and act on
    * it. Idempotent — a PAID payment is left alone, and settlement re-uses the
    * existing ingest path whose (source, externalId) unique constraint prevents
@@ -487,65 +728,89 @@ export class WhishPaymentsService {
     if (payment.status === WhishPaymentStatus.PAID) return mapWhishPayment(payment);
 
     const currency = payment.currency.trim();
-    const { collectStatus, payerPhoneNumber } = await this.whish.getStatus({
-      currency,
-      externalId: Number(payment.externalId),
-    });
-
-    if (collectStatus === 'pending') {
-      return mapWhishPayment(payment);
-    }
-
-    if (collectStatus === 'failed') {
-      // Guard on still-PENDING: a delayed 'failed' status from Whish must never
-      // overwrite a payment a concurrent callback/settle already moved to PAID.
-      const res = await this.prisma.runAsAdmin((tx) =>
-        tx.whishPayment.updateMany({
-          where: { id: payment.id, status: WhishPaymentStatus.PENDING },
-          data: { status: WhishPaymentStatus.FAILED, payerPhoneNumber },
-        }),
-      );
-      const current = await this.prisma.runAsAdmin((tx) =>
-        tx.whishPayment.findUniqueOrThrow({ where: { id: payment.id } }),
-      );
-      if (res.count === 1) {
-        this.logger.log(`Whish payment ${payment.externalId} FAILED`);
-        this.realtime.company(payment.companyId, ['whish']);
-        this.crm.emitWhish({
-          companyId: payment.companyId,
-          externalId: payment.externalId,
-          amount: payment.amount.toString(),
-          currency,
-          invoice: payment.invoice,
-          payerPhoneNumber,
-          event: 'transaction.failed',
-        });
+    let collectStatus: WhishCollectStatus;
+    let payerPhoneNumber: string | null;
+    try {
+      ({ collectStatus, payerPhoneNumber } = await this.whish.getStatus({
+        currency,
+        externalId: payment.externalId.toString(),
+      }));
+    } catch (err) {
+      // `external_id.not_exists` on a LINKLESS ORPHAN is the definitive answer we
+      // were waiting for: the create was indeterminate, and Whish is now telling
+      // us it never minted that id. Close it out instead of re-throwing every
+      // tick forever — the timeout backstop sits after this call, so a row that
+      // always throws here would otherwise never expire.
+      //
+      // Guarded hard on collectUrl === null. The same code on a row that DOES
+      // have a link means Whish lost a payment we know exists — an operator case,
+      // never a silent close.
+      const code = err instanceof WhishError ? err.details?.code : undefined;
+      if (code === 'external_id.not_exists' && isLinklessOrphan(payment)) {
+        this.logger.warn(
+          `Whish payment ${payment.externalId} was never minted (external_id.not_exists after an ` +
+            `indeterminate create) — closing it out.`,
+        );
+        return this.closeAsNotCollected(payment, 'failed', currency, null);
       }
-      return mapWhishPayment(current);
+      throw err;
     }
 
-    // Settlement is OPT-IN: ONLY an explicit 'success' credits money. The client
-    // already validates collectStatus against z.enum(['success','failed','pending']),
-    // so by type this is 'success' here — the cast keeps this as a runtime
-    // backstop should the contract ever widen or the client guard be removed: an
-    // off-contract status must NEVER fall through to the credit path. Treat it
-    // like paid-but-unsettled: log, flag for an operator, leave PENDING for
-    // retry, and do NOT touch the wallet/ledger.
-    if ((collectStatus as string) !== 'success') {
-      this.logger.error(
-        `Whish payment ${payment.externalId} returned unexpected collectStatus '${String(collectStatus)}' ` +
-          `(company ${payment.companyId}) — NOT crediting; flagging for operator and leaving PENDING for retry.`,
-      );
-      const flagged = await this.prisma.runAsAdmin((tx) =>
-        tx.whishPayment.update({
-          where: { id: payment.id },
-          data: {
-            metadata: { needsAttention: true, unknownStatus: String(collectStatus) },
-          },
-        }),
-      );
-      this.realtime.company(payment.companyId, ['whish']);
-      return mapWhishPayment(flagged);
+    // Whish Pay v1.4.4 collect statuses. Only 'success' and 'failed' are SETTLED
+    // outcomes; 'pending' and 'unknown' both mean "not settled yet, keep polling".
+    switch (collectStatus) {
+      case 'pending':
+        // Stays payable even AFTER a failed attempt (v1.4.4 is explicit: "a
+        // failure callback is not the end of the payment"), so this is not a
+        // settled outcome. Leave the row PENDING and keep polling —
+        // EXPIRE_AGE_MS is the backstop.
+        return this.noteLastCollectStatus(payment, 'pending');
+
+      case 'unknown':
+        // Whish could not determine the final state — it may or may not have
+        // collected. Also not settled, so keep polling exactly like 'pending'.
+        // Deliberately NOT flagged needsAttention: the poller SKIPS flagged rows,
+        // which would freeze the payment instead of resolving it. The status is
+        // recorded so that if this link is still unresolved at the 24h backstop
+        // we can close it as an operator case rather than a silent lapse.
+        return this.noteLastCollectStatus(payment, 'unknown');
+
+      case 'failed':
+      case 'refunded':
+        // Settled non-collection: the money is not (or is no longer) ours.
+        return this.closeAsNotCollected(payment, collectStatus, currency, payerPhoneNumber);
+
+      case 'success':
+        break; // falls through to the credit path below
+
+      default: {
+        // Unreachable by type — the client rejects any status outside the five
+        // documented values. Runtime backstop only: an UNRECOGNIZED status must
+        // NEVER fall through to the credit path. Treat it like paid-but-unsettled:
+        // log, flag for an operator, leave PENDING, and do NOT touch the ledger.
+        const unrecognized: string = collectStatus;
+        this.logger.error(
+          `Whish payment ${payment.externalId} returned unexpected collectStatus '${unrecognized}' ` +
+            `(company ${payment.companyId}) — NOT crediting; flagging for operator and leaving PENDING for retry.`,
+        );
+        const flagged = await this.prisma.runAsAdmin((tx) =>
+          tx.whishPayment.update({
+            where: { id: payment.id },
+            // NOTE the key: `unrecognizedCollectStatus`, not `unknownStatus`.
+            // 'unknown' is now a RECOGNISED Whish value handled above and must
+            // stay pollable; this flag is for a value we have never seen, and it
+            // sets needsAttention (which the poller skips) on purpose.
+            data: {
+              metadata: mergeMetadata(payment.metadata, {
+                needsAttention: true,
+                unrecognizedCollectStatus: unrecognized,
+              }),
+            },
+          }),
+        );
+        this.realtime.company(payment.companyId, ['whish']);
+        return mapWhishPayment(flagged);
+      }
     }
 
     // success → the customer paid. Before crediting, re-check the CURRENT row
@@ -568,7 +833,12 @@ export class WhishPaymentsService {
       const flagged = await this.prisma.runAsAdmin((tx) =>
         tx.whishPayment.update({
           where: { id: payment.id },
-          data: { metadata: { needsAttention: true, paidAfterExpiry: true } },
+          data: {
+            metadata: mergeMetadata(before.metadata, {
+              needsAttention: true,
+              paidAfterExpiry: true,
+            }),
+          },
         }),
       );
       this.realtime.company(payment.companyId, ['whish']);
@@ -657,9 +927,15 @@ export class WhishPaymentsService {
           tx.whishPayment.update({
             where: { id: payment.id },
             data: {
-              metadata: park
-                ? { needsAttention: true, paidButUnsettled: true, settlementError: safeError }
-                : { paidButUnsettled: true, settlementAttempts: priorAttempts },
+              // Merged: an already-parked row that hits a transient blip on an
+              // admin Refresh must not lose its needsAttention/settlementError
+              // and silently rejoin the poller.
+              metadata: mergeMetadata(
+                payment.metadata,
+                park
+                  ? { needsAttention: true, paidButUnsettled: true, settlementError: safeError }
+                  : { paidButUnsettled: true, settlementAttempts: priorAttempts },
+              ),
             },
           }),
         );
@@ -709,7 +985,10 @@ export class WhishPaymentsService {
             transactionId: txn.id,
             payerPhoneNumber,
             paidAt: new Date(),
-            metadata: { needsAttention: true, paidAfterExpiry: true },
+            metadata: mergeMetadata(updated.metadata, {
+              needsAttention: true,
+              paidAfterExpiry: true,
+            }),
           },
         }),
       );
@@ -787,15 +1066,36 @@ export class WhishPaymentsService {
       try {
         // Always ask Whish for the authoritative status first — never time out a
         // payment that actually settled just before the cutoff.
+        //
+        // INVARIANT: the timeout below MUST stay inside this try and AFTER
+        // reconcile(). An indeterminate upstream (v1.4.4 code:500 / timeout /
+        // 5xx) throws, skipping the timeout entirely — so we never expire a link
+        // whose status we could not read. Moving the timeout out of the try would
+        // silently start failing payments on an upstream blip.
         const result = await this.reconcile(p);
-        // Whish only ever reports success | failed | pending — it has NO "expired"
-        // status, so we can't tell a decline from a lapsed link. A link still
-        // PENDING past our cutoff is one Whish never resolved; we collapse it into
-        // the same terminal as a Whish 'failed' (one non-success signal for the
-        // CRM). Never do this to a paid-but-unsettled link (needsAttention): Whish
-        // HAS the money but we couldn't book it — that needs an operator, not a
-        // silent fail.
+        // Whish reports success | failed | pending | refunded | unknown — it has
+        // NO "expired" status, so we can't tell a decline from a lapsed link. A
+        // link still PENDING past our cutoff is one Whish never resolved (either
+        // still 'pending' — it stays payable even after a failed attempt — or
+        // 'unknown'); we collapse it into the same terminal as a Whish 'failed'
+        // (one non-success signal for the CRM). Never do this to a
+        // paid-but-unsettled link (needsAttention): Whish HAS the money but we
+        // couldn't book it — that needs an operator, not a silent fail.
         if (tooOld && result.status === WhishPaymentStatus.PENDING && !result.needsAttention) {
+          // A link whose LAST reading was 'unknown' is not the same as one the
+          // customer simply never paid: Whish told us it could not determine
+          // whether it collected, so it may be holding the money. Still close it
+          // (the backstop exists so nothing pends forever) but flag it, so it
+          // lands in the operator queue instead of quietly becoming a lapse.
+          // Re-read: reconcile() just wrote lastCollectStatus, so `p` is stale.
+          // Everything below merges onto THIS value, not the stale snapshot.
+          const fresh = await this.prisma.runAsAdmin((tx) =>
+            tx.whishPayment.findUnique({ where: { id: p.id }, select: { metadata: true } }),
+          );
+          const freshMeta = fresh?.metadata ?? null;
+          const indeterminate =
+            (freshMeta as { lastCollectStatus?: string } | null)?.lastCollectStatus === 'unknown';
+
           // Guard on the row STILL being PENDING. reconcile() acted on a stale
           // snapshot; a success callback may have settled it to PAID meanwhile.
           // Without the status guard we'd overwrite a real PAID payment — a
@@ -803,10 +1103,28 @@ export class WhishPaymentsService {
           const res = await this.prisma.runAsAdmin((tx) =>
             tx.whishPayment.updateMany({
               where: { id: p.id, status: WhishPaymentStatus.PENDING },
-              data: { status: WhishPaymentStatus.FAILED },
+              data: {
+                status: WhishPaymentStatus.FAILED,
+                ...(indeterminate
+                  ? {
+                      metadata: mergeMetadata(freshMeta, {
+                        needsAttention: true,
+                        closedFromUnknown: true,
+                        settlementError:
+                          'Whish never resolved this link (last status: unknown) — verify with Whish whether it collected before treating it as failed.',
+                      }),
+                    }
+                  : {}),
+              },
             }),
           );
           if (res.count === 1) {
+            if (indeterminate) {
+              this.logger.error(
+                `Whish payment ${p.externalId} timed out while its status was UNKNOWN (company ${p.companyId}) — ` +
+                  `closed FAILED and flagged for an operator; Whish may have collected.`,
+              );
+            }
             this.realtime.company(p.companyId, ['whish']);
             this.crm.emitWhish({
               companyId: p.companyId,
@@ -983,7 +1301,59 @@ function whishCsvCells(row: WhishPayment): Array<string | null> {
 }
 
 /** Append `ref=<externalId>` to a redirect URL, respecting any existing query. */
-function withRef(base: string, externalId: number): string {
+/**
+ * A PENDING payment whose link was never confirmed minted: the create call to
+ * Whish came back INDETERMINATE, so we kept the row (and its externalId) but
+ * have no collectUrl. It is not payable as-is, so an idempotent retry must
+ * re-attempt the mint rather than hand the same dead row back.
+ */
+/**
+ * Reusing an idempotency key with a DIFFERENT body is a client bug, and on the
+ * orphan-retry path it is a dangerous one: we would mint a Whish link for the
+ * new amount while settlement still credits the amount stored on the row. Fail
+ * loudly instead of silently picking one of the two.
+ */
+function assertRetryMatchesRow(row: WhishPayment, input: CreateWhishPaymentInput): void {
+  const changed =
+    !Money.of(row.amount.toString()).eq(Money.of(input.amount)) ||
+    row.currency !== input.currency ||
+    row.invoice !== input.invoice;
+  if (changed) {
+    throw new ValidationError(
+      'idempotencyKey was already used for a different payment (amount, currency or invoice differs). ' +
+        'Retry with the original body to recover that payment, or use a new idempotencyKey.',
+      { externalId: row.externalId.toString(), paymentId: row.id },
+    );
+  }
+}
+
+function isLinklessOrphan(row: WhishPayment): boolean {
+  return (
+    row.status === WhishPaymentStatus.PENDING &&
+    row.collectUrl === null &&
+    (row.metadata as { linkCreateIndeterminate?: boolean } | null)?.linkCreateIndeterminate === true
+  );
+}
+
+/**
+ * Merge into the existing metadata rather than replacing it. Prisma's Json
+ * update overwrites the whole document, so a plain assignment silently drops
+ * markers a previous step wrote (`paidAfterExpiry`, `settlementError`, …) —
+ * exactly the breadcrumbs an operator needs when two odd things happened to the
+ * same payment.
+ */
+function mergeMetadata(
+  current: WhishPayment['metadata'],
+  patch: Record<string, unknown>,
+): Prisma.InputJsonValue {
+  const base =
+    current && typeof current === 'object' && !Array.isArray(current)
+      ? (current as Record<string, unknown>)
+      : {};
+  return { ...base, ...patch } as Prisma.InputJsonValue;
+}
+
+function withRef(base: string, externalId: string): string {
   const sep = base.includes('?') ? '&' : '?';
   return `${base}${sep}ref=${externalId}`;
 }

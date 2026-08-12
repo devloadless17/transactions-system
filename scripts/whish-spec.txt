@@ -1,3 +1,22 @@
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+SUPERSEDED — this is the v1.4.2 vendor transcript, kept for history only.
+DO NOT rely on it: Whish Pay is now v1.4.4 and this text contradicts the code
+in at least four places.
+
+  * Sandbox base URL is now  https://partner.api.sbx.whish.money/itel-service/api
+    (this document still says api.sandbox.whish.money). Production is unchanged.
+  * externalId is documented as a String, not a Long.
+  * collectStatus gained `refunded` and `unknown`; `pending` explicitly persists
+    after a FAILED attempt (the link stays payable).
+  * `status:false` with `code:"500"` means PENDING — "do not mark it failed".
+  * Refund (POST /payment/whish/refund) exists since v1.4.3, and localhost /
+    loopback callback + redirect URLs are rejected with HTTP 403.
+
+Current sources of truth:
+  * Whish/whish-pay.postman_collection.json (vendor collection, v1.4.4)
+  * https://whish-partners.pages.dev/whish-pay-9z366gc6922w/
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
 
 ===== PAGE 1 =====
   

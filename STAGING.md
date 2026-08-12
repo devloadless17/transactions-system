@@ -151,7 +151,17 @@ docker logs -f txn_web_staging
   running — it never affects the prod site.
 - `edge` is external on purpose: a prod `docker compose down` won't remove it,
   and staging attaches independently.
-- Staging uses the SANDBOX: `WHISH_BASE_URL=https://api.sandbox.whish.money/...`,
+- Staging uses the SANDBOX: `WHISH_BASE_URL=https://partner.api.sbx.whish.money/itel-service/api`
+  (Whish Pay **v1.4.4** moved the sandbox off `api.sandbox.whish.money`),
   `WHISH_ALLOW_SANDBOX=true`, and the sandbox channel/secret. Prod stays live.
+  This value lives in `.env.staging` **on the server**, not in the repo — a
+  redeploy will not change it for you.
+- The prod guard now allowlists the one live host (`api.whish.money`) instead of
+  blacklisting the substring `sandbox`, so `WHISH_ALLOW_SANDBOX=true` is
+  **required** on staging — without it the API refuses to boot. That is the
+  point: the old check silently stopped matching when the sandbox became `sbx`.
 - Whish sandbox callbacks hit `https://staging.portal.rivalpayments.com/v1` — make
   sure the sandbox account is configured for that host.
+- Whish rejects `localhost`/loopback callback and redirect URLs with HTTP 403
+  (v1.4.4), so staging is the only place the real sandbox can be exercised.
+  Local development uses `node scripts/fake-whish.cjs` instead.

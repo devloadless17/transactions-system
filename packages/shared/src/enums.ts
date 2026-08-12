@@ -246,6 +246,27 @@ export type WhishPaymentStatus = (typeof WhishPaymentStatus)[keyof typeof WhishP
 export const WHISH_CURRENCIES = ['USD'] as const;
 export type WhishCurrency = (typeof WHISH_CURRENCIES)[number];
 
+/** Per-currency amount rules Whish enforces upstream (Whish Pay v1.4.4). */
+export interface WhishAmountRule {
+  /** Smallest amount Whish will mint a link for, as a decimal string. */
+  minAmount: string;
+  /** Fraction digits Whish accepts for this currency. */
+  maxDecimals: number;
+}
+
+/**
+ * Whish Pay v1.4.4 amount rules. Enforced at create time so an integrator gets
+ * a clean 400 naming the real limit instead of an opaque 502 relayed from Whish.
+ *
+ * Enabling a currency means uncommenting its rule here AND adding it to
+ * WHISH_CURRENCIES + WHISH_ENABLED_CURRENCIES — the `satisfies` below fails to
+ * typecheck until every enabled currency has a rule, so the two cannot drift.
+ */
+export const WHISH_AMOUNT_RULES = {
+  USD: { minAmount: '1', maxDecimals: 2 },
+  // LBP: { minAmount: '1000', maxDecimals: 0 },
+} as const satisfies Record<WhishCurrency, WhishAmountRule>;
+
 // Lifecycle of an outbound whish-to-whish (W2W) transfer. Whish returns no
 // transfer id, so we record every attempt and reconcile by our own reference.
 //   PENDING — row committed, the upstream call hasn't resolved yet

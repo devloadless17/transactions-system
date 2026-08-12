@@ -109,16 +109,42 @@ Companies mint Whish payment links; a paid link settles into the company wallet
 through the existing ingest pipeline (commission + ledger + wallet credit).
 We are the _outbound_ caller (the inverse of source-key ingest).
 
-- **Config** — single platform Whish account via `WHISH_*` env vars (sandbox by
-  default). `WHISH_CALLBACK_BASE` must be internet-reachable so Whish can call back.
+- **Config** — single platform Whish account via `WHISH_*` env vars (Whish Pay
+  **v1.4.4**; sandbox `https://partner.api.sbx.whish.money/itel-service/api` by
+  default, live `https://api.whish.money/itel-service/api`). In production the base
+  URL must be the live host — the guard allowlists it rather than blacklisting
+  "sandbox", so a renamed sandbox can never slip through; `WHISH_ALLOW_SANDBOX=true`
+  is the explicit opt-in for staging. `WHISH_CALLBACK_BASE` must be
+  internet-reachable so Whish can call back.
+- **Local development** — Whish rejects `localhost`/loopback in **any** of the four
+  URLs it is sent, with HTTP 403 (confirmed against the live v1.4.4 sandbox). Note
+  that this covers **two** settings: `WHISH_CALLBACK_BASE` builds the callback URLs
+  and `WEB_ORIGIN` builds the payer redirect URLs — a public callback base with a
+  localhost `WEB_ORIGIN` is still refused. So the real sandbox cannot complete a
+  round trip from a dev machine: run `node scripts/fake-whish.cjs` and point
+  `WHISH_BASE_URL` at `http://localhost:4100/itel-service/api` instead. It can be
+  driven through every `collectStatus` (`/__set-status?s=…`) and the indeterminate
+  envelope (`/__set-envelope?mode=indeterminate`).
+- **Amount rules** — Whish _documents_ per-currency limits (USD: at most 2 decimals,
+  minimum 1.00) in `WHISH_AMOUNT_RULES`, but does **not** enforce them: the live
+  sandbox mints a real link for `0.50` and `10.005`, and carries a `0.50` link to the
+  payer's OTP step. So we log a warning and forward the amount — we must never be
+  stricter than the payment provider and refuse money it would collect. That table
+  is also the seam for enabling LBP.
 - **Enabled currencies** — `WHISH_ENABLED_CURRENCIES` (default `USD`). Link creation
   rejects disabled currencies and, crucially, **pre-checks that a commission rule
   resolves for the amount** — so a link that couldn't settle is never minted. To
   activate LBP: set `WHISH_ENABLED_CURRENCIES=USD,LBP` **and** add commission rules
   covering LBP amounts. The enabled set is served at `GET /v1/company/whish/config`.
-- **Reference** — each payment gets a numeric `externalId` (BIGINT identity). It is
-  sent to Whish, echoed on callbacks, and reused as the settled transaction's
-  `external_transaction_id`, making settlement idempotent against duplicate callbacks.
+- **Reference** — each payment gets a numeric `externalId` (BIGINT identity), sent
+  to Whish as a digit **string** (v1.4.4 documents the field as a String), echoed on
+  callbacks, and reused as the settled transaction's `external_transaction_id`,
+  making settlement idempotent against duplicate callbacks.
+- **Statuses** — Whish returns `success | failed | pending | refunded | unknown`.
+  Only `success` and `failed` are settled; `pending` persists **after a failed
+  attempt** (the link stays payable) and `unknown` means the outcome could not be
+  determined, so both keep polling. A `status:false` + `code:"500"` reply likewise
+  means _pending_, surfaced as `WHISH_PENDING` — never treated as a failure.
 - **Flow** — `POST /v1/company/whish/payments` → Whish `POST /payment/whish` →
   `collectUrl`. Customer pays → Whish `GET /v1/whish/callback/{success,failure}`
   (token-guarded, **verified** via `POST /payment/collect/status` before crediting).

@@ -174,10 +174,12 @@ There are two independent limiters:
 - Auth routes are stricter via per-route overrides: **login = 10/60s**, **token refresh = 30/60s**.
 - Fails **open** if Redis is down (no limit rather than locking everyone out).
 
-**2. Per-API-key limiter** (`ApiKeyRateLimitGuard`) — applies to the `integrations/whish` endpoints, keyed on the API key (not IP), so one high-volume integration behind a single IP isn't capped by the per-IP limiter.
+**2. Per-API-key limiter** (`ApiKeyRateLimitGuard`) — applies to the source **ingest** endpoint and the `integrations/whish` endpoints **only**, keyed on the API key (not IP), so one high-volume integration behind a single IP isn't capped by the per-IP limiter.
 
 - **300 requests / 60s** per key (`MAX_PER_WINDOW = 300`, `WINDOW_SECONDS = 60`), fixed-window.
 - Fails **open** if Redis is unavailable.
+
+> **Which limiter applies to you.** Every `/v1/company/*` route — including `/company/whish/payments`, `/company/withdrawals` and `/company/transactions` — is governed by limiter 1 **only**, even when you call it with an API key. Only `/v1/integrations/whish/*` and the source ingest endpoint get the per-key 300/60s allowance and the `RateLimit-*` headers below. If you drive `company/*` at volume, pace against the per-IP budget (default 100/60s).
 
 Both emit HTTP **429** with `error.code = "RATE_LIMITED"`. The per-key limiter returns the standard flat envelope, with the limit in `error.details`:
 
@@ -207,17 +209,21 @@ Key format: `tsk_<prefix>_<secret>` — `tsk` product tag, an 8-char lookup pref
 
 Your integration uses a **company API key**, scoped to your company (tenant):
 
-| Auth header      | Can call                                      | Notes                                                                                                          |
-| ---------------- | --------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `Bearer tsk_...` | All `company/*` endpoints                     | The same endpoints the dashboard uses (`CompanyAccessGuard` accepts a company key **or** a dashboard session). |
-| `Bearer tsk_...` | `integrations/whish` (server-to-server Whish) | Company API key **only** — a browser session is not accepted here.                                             |
+| Auth header      | Can call                                              | Notes                                                                                                          |
+| ---------------- | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `Bearer tsk_...` | `company/*` endpoints, except the dashboard-only ones | The same endpoints the dashboard uses (`CompanyAccessGuard` accepts a company key **or** a dashboard session). |
+| `Bearer tsk_...` | `integrations/whish` (server-to-server Whish)         | Company API key **only** — a browser session is not accepted here.                                             |
+
+**Dashboard-only routes** (an API key gets `403 FORBIDDEN` — these manage _who can move money_, so a leaked integration key must not reach them): `company/api-keys/*`, `company/team/*`, `PUT`/`DELETE /company/crm/config`, `POST /company/crm/demo/enable`, and `PUT`/`DELETE`/`rotate-secret` on `company/whish/webhook`. Reading (`GET`) those configs with a key is fine.
 
 Rules and trust model:
 
 - A **company key is scoped to exactly one company** (tenant). It can only ever read or act on that company's own data — isolation is enforced at the database layer (row-level security), not just in application code.
 - **API-key requests skip CSRF** (no `x-csrf-token` needed) — CSRF only applies to cookie/session calls from the web app.
 - A request authenticates as an API key whenever the `Authorization` header starts with `Bearer tsk_`; otherwise the cookie-session path is used.
-- Keys can carry an optional expiry; expired or revoked keys verify as `UNAUTHORIZED`.
+- **The header must match exactly — it is case-sensitive.** `Authorization: Bearer tsk_<prefix>_<secret>`, one space between the scheme and the key. `bearer tsk_...`, `BEARER tsk_...`, `Bearer TSK_...`, a bare `tsk_...` with no scheme, or a quoted value are **not** recognised as API keys: they fall to the session path and return `401 UNAUTHORIZED` with the message _"Malformed API key credential…"_. If you get a 401 while the same key works elsewhere, compare the header byte-for-byte before rotating the key — and check your client actually substituted the key variable.
+- Keys can carry an optional expiry; expired or revoked keys verify as `UNAUTHORIZED` with _"Invalid or revoked API key"_. Keys are created without an expiry unless one is chosen.
+- **No IP allowlisting.** There is no IP allowlist to register, and no IP-based check anywhere — calls are accepted from any egress IP, so you can move or scale your servers freely. Inbound security is the Bearer key over HTTPS (plus rate limiting); outbound webhooks are authenticated by an HMAC signature you verify (see [Outbound CRM Notifications](#outbound-crm-notifications-webhooks)), not by source IP. Treat the key as the credential: keep it server-side and rotate it if exposed.
 
 **Authenticated request example:**
 
@@ -608,6 +614,8 @@ The fee is resolved from the company's commission rules for `operationType = LOA
 
 Unlike the ingest boundary, the load endpoints **do** expose `feeAmount`/`netAmount` to a company key — this is correct, because the company is the party paying the fee on its own top-up.
 
+> **`feeApplication` is not a request field.** Whether a fee is `DEDUCTED` or charged `ON_TOP` is a property of the commission rule your operator configures for your company and operation type; you cannot select it per call, and sending it in the body has no effect. To switch a flow (for example, so a payout recipient receives the full amount and the fee is billed to your wallet instead), ask your account manager to set the rule to `ON_TOP`.
+
 ---
 
 ### What a company API key can call
@@ -645,6 +653,8 @@ Files a `PENDING` top-up request. Returns `201` with the persisted load includin
 | `CASH`   | `recipientName` (2–120), `recipientPhone` (4–30)                                                               | `pickupLocation` (≤200), `instructions` (≤500) |
 | `WISH`   | `recipientName` (2–120), `recipientPhone` (a phone number — 6–15 digits; optional `+`, spaces, dashes, parens) | `instructions` (≤500)                          |
 | `CRYPTO` | `network` (2–40), `walletAddress` (20–200)                                                                     | `memo` (≤120), `instructions` (≤500)           |
+
+> **`recipientPhone` — one extra rule for Lebanese numbers.** The formatting in these examples is illustrative, not required: send the number however is convenient (plain international like `+96170000000` is simplest — separators are stripped before use). On **create**, a number carrying the Lebanese country code (`961…` or `00961…`) must have exactly **8 digits** after the country code, or **7** when the national part starts with `3`. So `+96170000000` and `+9613702825` are accepted, while `9617075183` is rejected with `400 VALIDATION_ERROR`. Numbers with any other country code, and bare local numbers, are checked for shape only (6–15 digits). The rule applies to withdrawals, payouts **and** loads, is **not** re-applied when you read a record back, and does **not** apply to `CASH.recipientPhone` (4–30 characters, free-form).
 
 ```bash
 curl -X POST "https://portal.rivalpayments.com/v1/company/loads" \
@@ -857,13 +867,19 @@ A company API key is mapped to a surrogate `COMPANY_OWNER` role and is **scoped 
 - **`DEDUCTED`** — the recipient receives `amount − fee`; the reserved/charged total equals `amount`. `totalAmount == amount`.
 - **`ON_TOP`** — the recipient receives the full `amount`; the company is charged `amount + fee`. The reserved total (and `totalAmount`) is `amount + fee`.
 
+Which of the two applies is set on the commission rule your operator configures for your company and operation type — it is **not** a request field and cannot be chosen per call. If you want recipients to receive the full requested amount and the fee billed to your wallet instead, ask your account manager to configure the rule as `ON_TOP`.
+
 The reservation is checked against your **available** balance at request time, and **re-checked at approval**. If your available balance can't cover the reserved total you get a `409 INSUFFICIENT_BALANCE` (see error example). If your company **owes the platform** (an outstanding receivable from a reversal clawback), all money-out is blocked at both request and approve with a `409 CONFLICT` until the debt is settled.
 
 ### Statuses
 
 `PENDING` → `COMPLETED` (approve) · `PENDING` → `REJECTED` (operator reject) · `PENDING` → `CANCELLED` (company cancel).
 
-Only a `PENDING` request can be approved, rejected, or cancelled. Acting on any other status returns `409 CONFLICT`. (`APPROVED` and `PROCESSING` exist in the shared status enum but are not produced by these flows today — approval goes straight to `COMPLETED`.)
+Only a `PENDING` request can be approved, rejected, or cancelled. Acting on any other status returns `409 CONFLICT`.
+
+**`PROCESSING` (withdrawals only).** When the automatic transfer pipeline is enabled for your account, a withdrawal may pass through `PENDING` → `PROCESSING` → `COMPLETED`. `PROCESSING` means a transfer is in flight; it is transient and returns to `PENDING` if the transfer doesn't go through, so treat it as "still in progress", not as a terminal state. **While a request is `PROCESSING` you cannot cancel it** — `POST /company/withdrawals/:id/cancel` returns `409 CONFLICT` (_"Withdrawal is in status PROCESSING and cannot be cancelled"_). Poll until it leaves the state, then cancel if it is back to `PENDING`. Payouts and loads never enter `PROCESSING`.
+
+`APPROVED` exists in the shared status enum but is never produced by any of these flows — approval settles straight to `COMPLETED`. It is accepted as a `?status=` filter value but will always match zero rows.
 
 ---
 
@@ -889,6 +905,8 @@ Only a `PENDING` request can be approved, rejected, or cancelled. Acting on any 
 | `CRYPTO`        | `network` (2–40), `walletAddress` (20–200)                                                                                             | `memo` (≤120), `instructions` (≤500)                           |
 | `BANK_TRANSFER` | `accountHolder` (2–120), `accountNumber` (4–40), `bankName` (2–120) (+ optional `swiftBic` 8–11, `routingNumber` 3–20, `instructions`) | **Read-only — not accepted on create**                         |
 | `OTHER`         | `description` (2–500)                                                                                                                  | `instructions` (≤500) · **Read-only — not accepted on create** |
+
+> **`recipientPhone` — one extra rule for Lebanese numbers.** The `+961-70-000-000` formatting used in these examples is illustrative, not required: send the number however is convenient (plain international like `+96170000000` is simplest — separators are stripped before the payout is executed). On **create**, a number carrying the Lebanese country code (`961…` or `00961…`) must have exactly **8 digits** after the country code, or **7** when the national part starts with `3`. So `+96170000000` and `+9613702825` are accepted, while `9617075183` is rejected with `400 VALIDATION_ERROR`. Numbers with any other country code, and bare local numbers, are checked for shape only (6–15 digits). The rule applies to withdrawals, payouts **and** loads, is **not** re-applied when you read a record back, and does **not** apply to `CASH.recipientPhone` (4–30 characters, free-form).
 
 ```bash
 curl -X POST "https://portal.rivalpayments.com/v1/company/withdrawals" \
@@ -1003,7 +1021,7 @@ curl -X POST "https://portal.rivalpayments.com/v1/company/withdrawals" \
 
 ### Cancel a pending request
 
-`POST https://portal.rivalpayments.com/v1/company/{flow}/:id/cancel` → **200**. Company-initiated; releases the reserved funds back to available. **`PENDING` only** — once approved it cannot be cancelled.
+`POST https://portal.rivalpayments.com/v1/company/{flow}/:id/cancel` → **200**. Company-initiated; releases the reserved funds back to available. **`PENDING` only** — once approved it cannot be cancelled. A withdrawal that is momentarily `PROCESSING` (an automatic transfer in flight) also refuses cancellation with the same `409 CONFLICT`; wait for it to leave that state and retry if it returns to `PENDING`.
 
 | Field   | Type   | Req | Notes                         |
 | ------- | ------ | :-: | ----------------------------- |
@@ -1087,7 +1105,9 @@ Your CRM cannot call these (company keys get 403). They are listed so you unders
 
 ### Notes for integrators
 
-- **Idempotency:** there is **no idempotency key**. A retried `POST /company/{flow}` creates a **second** request and reserves funds again. De-duplicate on your side (e.g. track your own request id and check the list before retrying on a network timeout).
+- **Idempotency:** there is **no idempotency key** on these endpoints. A retried `POST /company/{flow}` creates a **second** request and reserves funds again. De-duplicate on your side: if a create times out or you get no response, do **not** blindly retry — call `GET /company/{flow}?status=PENDING` (optionally with `from=`) and match on `amount` + `payoutDetails` + `notes` first; only create again if nothing matches. A `409 WRITE_CONFLICT` is the one failure that is always safe to retry as-is.
+- **Carrying your own order number:** there is no dedicated field for a client/merchant order id. Put yours in **`notes`** (≤ 500 chars) on create — it is stored immutably, returned on every read of the request, and echoed as `note` in the matching `withdrawal.*` CRM event, so it round-trips end to end. For matching platform records the authoritative key is the withdrawal `id` returned by the create call (the CRM event's `reference` is simply `withdrawal:<id>`).
+- **Determining success:** a request succeeded when the response is `success: true` with `statusCode` **201** (the HTTP status matches the body). Anything else is a failure carrying `success: false` and an `error.code`; the two fields never disagree, so testing `success` alone is enough.
 - **Two key types:** these endpoints take a **company** key (`tsk_...` bound to your company). Source/ingest keys are rejected (`401`).
 - **CSRF:** API-key requests skip CSRF. Session (dashboard) requests need the CSRF token.
 - **Rate limits:** company endpoints use the global per-IP throttler (`RATE_LIMIT_MAX`, default 100/60s); a `429 RATE_LIMITED` is returned when exceeded.
@@ -1402,7 +1422,7 @@ Returned (under the `data` envelope) by every create / get / refresh call.
 | `id`               | string (UUID)             | Internal payment id. URL reference for the `company/whish/payments/*` family.                                                                                                                                                                                                   |
 | `companyId`        | string (UUID)             | Your company id.                                                                                                                                                                                                                                                                |
 | `externalId`       | string (numeric)          | The **reference**. Serialized as a string (DB bigint). URL reference for the `integrations/whish/*` family. Also the `whish:<externalId>` transaction reference once settled.                                                                                                   |
-| `status`           | enum                      | `PENDING` \| `PAID` \| `FAILED`. See lifecycle below. (`EXPIRED` is a legacy value retained only for old records; lapsed links now report as `FAILED`.)                                                                                                                         |
+| `status`           | enum                      | `PENDING` \| `PAID` \| `FAILED`. See lifecycle below. (`EXPIRED` exists in the enum but **no code path writes it** — no response or event ever carries it; a lapsed link reports as `FAILED`.)                                                                                  |
 | `amount`           | string (decimal)          | The amount to collect, as a decimal string.                                                                                                                                                                                                                                     |
 | `currency`         | string                    | Always `USD` by default.                                                                                                                                                                                                                                                        |
 | `invoice`          | string                    | Your free-text invoice/description (1–200 chars).                                                                                                                                                                                                                               |
@@ -1418,11 +1438,26 @@ Returned (under the `data` envelope) by every create / get / refresh call.
 
 #### Status lifecycle
 
-| Status    | Meaning                                                                                                                                                             |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PENDING` | Link created; customer has not completed payment yet. (Also the transient state while a paid-but-unsettled payment awaits operator action — see `needsAttention`.)  |
-| `PAID`    | Confirmed by Whish; a ledger transaction was written and your wallet credited. Terminal.                                                                            |
-| `FAILED`  | Whish reported failure, the link lapsed unpaid, or the link could not be created. Terminal. (Whish reports no separate "expired" — a lapsed link is also `FAILED`.) |
+| Status    | Meaning                                                                                                                                                                                                                                                                                                                       |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PENDING` | Link created; customer has not completed payment yet. **A failed attempt does not close the link** — the customer can retry on the same link until it lapses, so do not treat one failed attempt as a lost sale. (Also the transient state while a paid-but-unsettled payment awaits operator action — see `needsAttention`.) |
+| `PAID`    | Confirmed by Whish; a ledger transaction was written and your wallet credited. Terminal.                                                                                                                                                                                                                                      |
+| `FAILED`  | The payment will not be collected: the link lapsed unpaid, a completed payment was **refunded**, or the link could not be created. Terminal. (Whish reports no separate "expired" — a lapsed link is also `FAILED`.)                                                                                                          |
+
+#### These are payment-link statuses — not transaction or withdrawal statuses
+
+A single deposit is visible through two objects with **different status vocabularies**, which is the most common source of integration confusion. The payment link (this section) tracks collection; the ledger **transaction** tracks the money once collected. They map one-to-one:
+
+| Payment link `status` | Transaction `status` (`GET /company/transactions`) | CRM event               | Notes                                                                    |
+| --------------------- | -------------------------------------------------- | ----------------------- | ------------------------------------------------------------------------ |
+| `PENDING`             | _(no transaction row yet)_                         | `transaction.pending`   | The event's `transaction.id` / this object's `transactionId` are `null`. |
+| `PAID`                | `COMPLETED`                                        | `transaction.completed` | Fee and net are known only now.                                          |
+| `FAILED`              | _(no transaction row)_                             | `transaction.failed`    | Declined, refunded before settlement, or lapsed unpaid.                  |
+| —                     | `REVERSED`                                         | `transaction.reversed`  | An operator reversed an already-settled deposit.                         |
+
+So **`PAID` and `COMPLETED` are the same event seen from two sides**, and a lapsed link surfaces as `FAILED` / `transaction.failed` — there is no `EXPIRED` status or `transaction.expired` event in practice.
+
+**Withdrawals are a third, separate vocabulary**: `PENDING` → `COMPLETED` / `REJECTED` / `CANCELLED` (plus the transient `PROCESSING`). The sets do not overlap — a withdrawal is never `PAID` and a payment link is never `CANCELLED`. If you are validating statuses against a fixed list, key it off the object you actually queried.
 
 ---
 
@@ -1436,12 +1471,20 @@ Mints a PENDING payment, calls Whish to get a `collectUrl`, and returns the paym
 
 | Field                | Type             | Req | Notes                                                                                                                                                                                                                                                                                                        |
 | -------------------- | ---------------- | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `amount`             | string (decimal) | yes | Non-negative decimal string; ≤ 8 fractional digits, ≤ 12 integer digits. Never a float. (Note: the money validator accepts `"0"`; a zero/uncovered amount is rejected by the commission dry-run below, not by field validation.)                                                                             |
+| `amount`             | string (decimal) | yes | Decimal string, never a float. Whish recommends **USD — at most 2 decimal places (cents), minimum 1.00**; amounts outside that are still forwarded (Whish accepts them today), so treat the range as guidance, not a hard limit. Must be > 0, ≤ 12 integer digits, and covered by a commission rule.         |
 | `currency`           | enum             | yes | Must be an enabled currency — `USD` only by default. Other values → `VALIDATION_ERROR`.                                                                                                                                                                                                                      |
 | `invoice`            | string           | yes | 1–200 chars (trimmed). Your reference/description shown to the payer.                                                                                                                                                                                                                                        |
-| `idempotencyKey`     | string           | no  | 8–120 chars (trimmed). A retry with the same key returns the **original** payment instead of minting a duplicate link (safe to retry on network failure). Scoped per company.                                                                                                                                |
+| `idempotencyKey`     | string           | no  | 8–120 chars (trimmed). A retry with the same key returns the **original** payment instead of minting a duplicate link (safe to retry on network failure). Scoped per company. Replay is matched on the **key alone** — see the note below.                                                                   |
 | `successRedirectUrl` | string (URL)     | no  | Where the **payer's browser** is sent after a **successful** payment. Must be `http(s)`, ≤ 2048 chars. Overrides your saved default **for this link**; if omitted, your company default is used, then the platform's confirmation page. We append `?ref=<externalId>` so your page can identify the payment. |
 | `failureRedirectUrl` | string (URL)     | no  | Same, for a **failed/abandoned** payment.                                                                                                                                                                                                                                                                    |
+
+> **The amount is fixed on the hosted link.** Your customer pays exactly the `amount` you created — the Whish page does not let them enter or alter it, so partial payments and over-payments cannot occur. Consequently the settlement and every callback always carry the **order amount**, and the gross credited to your wallet always equals the `amount` you sent. There is no "amount actually paid" field to reconcile against.
+
+> **`idempotencyKey` replay is key-only.** Reusing a key returns the original payment **unchanged and without an error**, even if you send a different `amount` or `invoice` — the new values are ignored rather than rejected. Use one fresh key per logical order and never recycle a key across orders, or a second order can silently return the first order's link.
+>
+> **One exception**, for the `WHISH_PENDING` recovery above: if the original payment is still waiting for its link (`PENDING` with `collectUrl: null`), the retry actually re-contacts Whish, so the body must match. A different `amount`, `currency` or `invoice` is rejected with `400 VALIDATION_ERROR` rather than minting a link for one amount while we would settle another. Retry with the original body.
+
+> **`successRedirectUrl` / `failureRedirectUrl` are browser redirects, not callbacks.** They control where the payer lands after paying; they are never called server-to-server and are not a substitute for the CRM webhook or polling. The URL your platform events are delivered to is configured separately (see [Outbound CRM Notifications](#outbound-crm-notifications-webhooks)) and cannot be set per request.
 
 ```bash
 curl -X POST "https://portal.rivalpayments.com/v1/integrations/whish/payments" \
@@ -1529,6 +1572,50 @@ Both endpoints accept **either** a company API key (`Authorization: Bearer tsk_�
 ```
 
 (A bad `currency` enum value fails earlier at zod validation, also `VALIDATION_ERROR` with zod issues in `details`. An upstream Whish outage surfaces as `WHISH_ERROR`, HTTP 502.)
+
+**Error — amount out of range (400):**
+
+```json
+{
+  "success": false,
+  "statusCode": 400,
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Request validation failed",
+    "details": [{ "path": ["amount"], "message": "USD amounts must be at least 1" }]
+  }
+}
+```
+
+> **`WHISH_PENDING` (502) is NOT a failure.** If we could not confirm the outcome
+> with Whish — the upstream timed out, or answered "unknown" — you get HTTP 502
+> with `error.code: "WHISH_PENDING"` instead of `WHISH_ERROR`. The payment may
+> well exist upstream. **Do not mark the order failed, and do not create a second
+> payment with a new idempotency key.**
+>
+> The error carries the identifiers you need, because the create call returned no
+> body: `error.details.externalId` and `error.details.paymentId`.
+>
+> ```json
+> {
+>   "success": false,
+>   "statusCode": 502,
+>   "error": {
+>     "code": "WHISH_PENDING",
+>     "message": "…",
+>     "details": { "externalId": "1042", "paymentId": "8f3c…" }
+>   }
+> }
+> ```
+>
+> To recover, do either of these:
+>
+> 1. **Retry the create with the same `idempotencyKey`.** We re-attempt the link
+>    against the _same_ `externalId` rather than minting a second payment, so a
+>    successful retry returns the original payment now carrying its `collectUrl`.
+> 2. **Look it up** with `GET /company/whish/payments/{paymentId}`. The payment is
+>    `PENDING` with `collectUrl: null` until the retry succeeds; we also poll it in
+>    the background and will close it out if Whish never minted the link.
 
 ---
 
@@ -1692,7 +1779,16 @@ There are **two independent outbound channels** — do not confuse them:
 
 ### How a company configures its CRM callback
 
-All routes are under `https://portal.rivalpayments.com/v1/company/crm` and are reachable with **either** a dashboard session **or** a company API key (`Authorization: Bearer tsk_...`). API-key callers act as `COMPANY_OWNER`, so an integration can fully manage this config programmatically; API-key requests skip CSRF. Session callers need role `COMPANY_OWNER` to mutate (`PUT`/`DELETE`/demo); `COMPANY_MANAGER`/`COMPANY_VIEWER` may read (`GET`).
+All routes are under `https://portal.rivalpayments.com/v1/company/crm`, but **reads and writes differ in what they accept**:
+
+| Route                                                    | Dashboard session          | Company API key |
+| -------------------------------------------------------- | -------------------------- | --------------- |
+| `GET /company/crm/config`, `GET /company/crm/demo/inbox` | Yes (OWNER/MANAGER/VIEWER) | **Yes**         |
+| `PUT /company/crm/config`                                | Yes (`COMPANY_OWNER`)      | **No — 403**    |
+| `DELETE /company/crm/config`                             | Yes (`COMPANY_OWNER`)      | **No — 403**    |
+| `POST /company/crm/demo/enable`                          | Yes (`COMPANY_OWNER`)      | **No — 403**    |
+
+**Changing this config is dashboard-only.** An API key may read it, but any attempt to set, clear, or demo-enable it returns `403 FORBIDDEN` ("This endpoint requires a dashboard session, not an API key"). This is deliberate and matches the Whish webhook config: your event stream carries money data, so a leaked integration key must not be able to repoint it at an attacker's server. Configure the endpoint once in the dashboard (Documentation → CRM), then let your integration run on the key. Session callers need role `COMPANY_OWNER` to mutate; `COMPANY_MANAGER`/`COMPANY_VIEWER` may read (`GET`). Session writes need the CSRF token; API-key requests skip CSRF.
 
 #### `GET /company/crm/config` — read current config
 
@@ -1738,10 +1834,13 @@ Request body (`setCrmConfigSchema`):
 
 Setting config implicitly sets `enabled: true`. Returns the same shape as `GET`.
 
+**Dashboard session required** — this call is normally made from the dashboard UI. Driving it with a company API key returns `403 FORBIDDEN`.
+
 ```bash
 curl -X PUT https://portal.rivalpayments.com/v1/company/crm/config \
-  -H "Authorization: Bearer tsk_live_xxx" \
   -H "Content-Type: application/json" \
+  -H "x-csrf-token: <token>" \
+  --cookie "txn_access=<session>" \
   -d '{"apiUrl":"https://crm.acme.example/hooks/loadless","apiKey":"acme_crm_secret_123"}'
 ```
 
@@ -1830,6 +1929,20 @@ x-crm-signature: t=1750579200,sha256=9f86d0818...e3b0c44298fc1c149afbf4c8996fb
 | `withdrawal`  | object \| absent  | The withdrawal body — present on `withdrawal.*` events, absent on deposit events. See **Withdrawal events** below.                                                                                                                                                                                                                                    |
 
 > Exactly one of `transaction` / `withdrawal` is present on any event, selected by the event family. Branch on the `event` prefix (or on which body is present).
+
+#### Which id to match on
+
+Three identifiers appear on a deposit event and they are not interchangeable:
+
+| Field                               | What it is                                                                                                                                                                         | Use it to…                                                        |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `reference`                         | Our stable correlation key for the record's whole lifecycle — `"<source>:<externalTransactionId>"` for deposits (e.g. `whish:184523`), always `"withdrawal:<id>"` for withdrawals. | **Match/upsert on this.** It never changes and is always present. |
+| `transaction.externalTransactionId` | The provider's (or your) id for the deposit — for Whish, the numeric `externalId` you got when creating the link, and the tail of `reference`.                                     | Reconcile against the payment provider, or search our API.        |
+| `transaction.id`                    | Our ledger transaction UUID. **`null` on `transaction.pending` and `transaction.failed`** — no ledger row exists until the money settles.                                          | Reference a settled transaction. **Never use it as a match key.** |
+
+For withdrawals, `withdrawal.id` is the UUID returned by `POST /company/withdrawals`; the event's `reference` is simply `withdrawal:` + that id, so the create response alone is enough to correlate — you do not need to store the reference separately.
+
+**Statuses match the Query API.** The `status` on a webhook body is the same value the REST endpoints return for that object: a `withdrawal.*` event agrees field-for-field with `GET /company/withdrawals/:id`, and a `transaction.*` event's `status` is the same `TransactionStatus` you get from `GET /company/transactions`. You can use webhooks and polling interchangeably, or webhooks with polling as a fallback, without translating status values. (The one exception is the Whish **payment-link** object, which has its own vocabulary — see [These are payment-link statuses](#these-are-payment-link-statuses--not-transaction-or-withdrawal-statuses).)
 
 **`transaction` fields** (`crmEventTransactionSchema`) — deposit events only:
 
@@ -1931,6 +2044,8 @@ x-crm-signature: t=1750579200,sha256=…
 
 > A Whish payment therefore typically produces two events with the **same `reference`** (`whish:<externalId>`): `transaction.pending` then `transaction.completed`. Upsert on `reference` so it becomes one evolving record, not two.
 
+> **`transaction.expired` is never emitted.** It exists in the shared event enum (as does the `EXPIRED` status) but no code path produces it — a link that lapses unpaid arrives as `transaction.failed`. Do not wait for an expiry event, and do not treat an unknown event name as fatal: ignore unrecognised events so future additions can't break your endpoint.
+
 **Withdrawal events** (`withdrawal.*`):
 
 | Event                  | Trigger (verified in code)                                                                          | `status`  |
@@ -1941,6 +2056,8 @@ x-crm-signature: t=1750579200,sha256=…
 | `withdrawal.cancelled` | The company cancels its own still-pending request (`POST /company/withdrawals/:id/cancel`).         | CANCELLED |
 
 > A withdrawal produces a `withdrawal.pending` then exactly one terminal event (`completed` / `rejected` / `cancelled`), all sharing the `reference` `withdrawal:<id>`. **Payouts and loads emit no CRM events** — read their status over the REST API.
+
+> **No event is emitted for the transient `PROCESSING` state** (an automatic transfer in flight). A withdrawal being auto-processed stays visibly `PENDING` in your CRM until it reaches a terminal event, so nothing is missed — but if you poll during that window `GET /company/withdrawals/:id` may legitimately report `PROCESSING`, which is why your status handling should tolerate it.
 
 ---
 

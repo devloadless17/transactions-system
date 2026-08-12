@@ -131,11 +131,11 @@ function ApiSection() {
   const fields: [string, string][] = [
     [
       'amount',
-      'A decimal string in quotes — "25.00", never the bare number 25.00. Up to 8 decimal places, must be greater than 0. A commission rule (set by your platform admin) must cover it, otherwise you get 422 NO_COMMISSION_RULE.',
+      'A decimal string in quotes — "25.00", never the bare number 25.00. Whish recommends at most 2 decimal places (cents) and a minimum of 1.00 for USD; other amounts are still accepted. A commission rule (set by your platform admin) must cover it, otherwise you get 422 NO_COMMISSION_RULE. The amount is fixed on the hosted page: your customer cannot pay more or less, so partial and over-payments are impossible and every callback carries this exact figure.',
     ],
     [
       'currency',
-      'Exactly "USD" (uppercase) — the only currency Whish supports. Anything else is a 400 VALIDATION_ERROR.',
+      'Exactly "USD" (uppercase) — the only currency this platform currently enables for Whish links. Anything else is a 400 VALIDATION_ERROR.',
     ],
     [
       'invoice',
@@ -143,7 +143,7 @@ function ApiSection() {
     ],
     [
       'idempotencyKey',
-      'Optional (8–120 chars). A retried create with the same key returns the original link instead of minting a duplicate — safe to retry on a network error.',
+      'Optional (8–120 chars). A retried create with the same key returns the original link instead of minting a duplicate — safe to retry on a network error. Matching is on the key alone: reuse it with a different amount and you silently get the first payment back, so use a fresh key per order.',
     ],
     [
       'successRedirectUrl',
@@ -152,11 +152,14 @@ function ApiSection() {
     ['failureRedirectUrl', 'Optional. Same, for a failed or abandoned payment.'],
   ];
   const statuses: [string, string][] = [
-    ['PENDING', 'Link created, waiting for the customer to pay.'],
+    [
+      'PENDING',
+      'Link created, waiting for the customer to pay. A failed attempt does not close the link — the customer can try again on the same link until it lapses.',
+    ],
     ['PAID', 'Customer paid — settled into your wallet (net of commission); transactionId is set.'],
     [
       'FAILED',
-      'The payment did not go through — declined, or the link lapsed unpaid. (Whish reports no separate “expired”, so both arrive as FAILED.)',
+      'The payment will not be collected — the link lapsed unpaid, or a completed payment was refunded. (Whish reports no separate “expired”, so a lapsed link also arrives as FAILED.)',
     ],
   ];
   const errors: [string, string][] = [
@@ -175,6 +178,10 @@ function ApiSection() {
     [
       '502 WHISH_ERROR',
       'Whish itself errored or was unreachable. Safe to retry (reuse your idempotencyKey); if it persists, contact support.',
+    ],
+    [
+      '502 WHISH_PENDING',
+      'We could not confirm the outcome with Whish — do NOT treat this as a failure, and do NOT create a second payment under a new key. error.details carries externalId and paymentId. Retry the create with the SAME idempotencyKey and we re-attempt the same payment (returning it with its collectUrl once Whish answers), or look it up by paymentId.',
     ],
     [
       'needsAttention: true',
@@ -267,6 +274,25 @@ function ApiSection() {
               </div>
             ))}
           </div>
+          <p className="mt-2 rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+            <strong className="text-foreground">These are payment-link statuses.</strong> The same
+            deposit also exists as a ledger transaction with different names: link{' '}
+            <code className="font-mono">PAID</code> = transaction{' '}
+            <code className="font-mono">COMPLETED</code> (event{' '}
+            <code className="font-mono">transaction.completed</code>), link{' '}
+            <code className="font-mono">FAILED</code> = event{' '}
+            <code className="font-mono">transaction.failed</code>, link{' '}
+            <code className="font-mono">PENDING</code> = event{' '}
+            <code className="font-mono">transaction.pending</code> (no transaction row yet). There
+            is no <code className="font-mono">EXPIRED</code> status in practice — nothing writes it.
+            Withdrawals use a third set again (<code className="font-mono">PENDING</code>,{' '}
+            <code className="font-mono">PROCESSING</code>,{' '}
+            <code className="font-mono">COMPLETED</code>,{' '}
+            <code className="font-mono">REJECTED</code>,{' '}
+            <code className="font-mono">CANCELLED</code>), so a withdrawal is never{' '}
+            <code className="font-mono">PAID</code> and a link is never{' '}
+            <code className="font-mono">CANCELLED</code>.
+          </p>
         </div>
 
         <div>

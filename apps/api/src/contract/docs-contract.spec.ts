@@ -6,6 +6,7 @@ import {
   createPayoutSchema,
   createWhishPaymentSchema,
   createWithdrawalSchema,
+  WHISH_AMOUNT_RULES,
   listNotificationsQuerySchema,
   listWhishPaymentsQuerySchema,
   loadResponseSchema,
@@ -80,6 +81,41 @@ describe('docs ↔ API schema contract (anti-drift)', () => {
       expect(GUIDE).toContain('"invoice"');
       expect(GUIDE).not.toContain('"externalId": "order-9912"');
       expect(GUIDE).not.toContain('"description": "Payment for order #9912"');
+    });
+
+    // Whish DOCUMENTS per-currency amount rules but does not enforce them (the
+    // live sandbox mints a link for "0.50" and "10.005"), so we must not be
+    // stricter than the payment provider and refuse money it would collect.
+    it.each(['0.50', '0.99', '10.005', '25.000', '1', '1.00', '50.00'])(
+      'accepts the amount %o rather than being stricter than Whish',
+      (amount) => {
+        const body = { amount, currency: 'USD', invoice: 'Order #9912' };
+        expect(createWhishPaymentSchema.safeParse(body).success).toBe(true);
+      },
+    );
+
+    // Read the limit from config, so changing the rule FORCES a docs change.
+    it('the guide states the amounts Whish recommends', () => {
+      expect(GUIDE).toContain(`minimum ${WHISH_AMOUNT_RULES.USD.minAmount}`);
+      expect(GUIDE).toContain(`${WHISH_AMOUNT_RULES.USD.maxDecimals} decimal places`);
+    });
+
+    // BOTH public guides, not just the companies one. The developer guide was
+    // silently left on the old contract by the v1.4.4 pass, which would have sent
+    // integrators down the WHISH_ERROR "safe to retry" path and minted duplicates.
+    it.each([
+      ['companies-integration-docs.md', () => GUIDE],
+      ['company-developer-guide.md', () => DEV_GUIDE],
+    ])('%s explains that WHISH_PENDING is not a failure', (_name, doc) => {
+      expect(doc()).toContain('WHISH_PENDING');
+    });
+
+    it.each([
+      ['companies-integration-docs.md', () => GUIDE],
+      ['company-developer-guide.md', () => DEV_GUIDE],
+    ])('%s states the real amount limits, not the old 8-decimal rule', (_name, doc) => {
+      expect(doc()).toContain(`${WHISH_AMOUNT_RULES.USD.maxDecimals} decimal places`);
+      expect(doc()).not.toMatch(/Up to 8 decimal places, must be greater than 0/);
     });
   });
 
@@ -208,6 +244,9 @@ describe('docs ↔ API schema contract (anti-drift)', () => {
         'NO_COMMISSION_RULE',
         'WRITE_CONFLICT',
         'WHISH_ERROR',
+        // v1.4.4: an indeterminate Whish outcome. Documented separately from
+        // WHISH_ERROR because it must NOT be treated as a failure.
+        'WHISH_PENDING',
         'FORBIDDEN',
       ]) {
         expect(GUIDE, `companies guide should document ${code}`).toContain(code);
@@ -362,5 +401,144 @@ describe('docs ↔ API schema contract (anti-drift)', () => {
         expect(table, `status ${status} is undocumented in the guide`).toContain(`\`${status}\``);
       }
     });
+  });
+});
+
+/**
+ * Client-question regressions (2026-08).
+ *
+ * Every assertion below pins a fact a real integrator got wrong because the docs
+ * were silent, stale, or contradicted the code. They are cheap string/schema
+ * checks, and each names the question it prevents so the intent survives.
+ */
+describe('docs contract — facts clients asked about', () => {
+  const WEB_COMPANY_API = read('apps/web/src/features/company/company-api-view.tsx');
+  const WEB_GETTING_STARTED = read('apps/web/src/features/company/getting-started-view.tsx');
+
+  it('does not claim CRM config can be managed with an API key (it is SessionOnlyGuard)', () => {
+    // The guide used to say "an integration can fully manage this config
+    // programmatically", which is false and would have a partner build against a 403.
+    expect(GUIDE).not.toMatch(/fully manage this config programmatically/);
+    const crmSection = GUIDE.slice(GUIDE.indexOf('### How a company configures its CRM callback'));
+    expect(crmSection).toMatch(/dashboard[- ]only|dashboard session/i);
+    expect(crmSection).toMatch(/403 FORBIDDEN/);
+  });
+
+  it('the in-app Company API page does not claim every company/* route takes a key', () => {
+    // Same dangerous claim the markdown is already pinned against; the React
+    // mirror is not covered by any other test, so it drifted.
+    expect(WEB_COMPANY_API).not.toMatch(
+      /Every[\s\S]{0,60}company\/\*[\s\S]{0,60}accepts your company key/,
+    );
+    expect(WEB_COMPANY_API).toMatch(/403 FORBIDDEN/);
+    expect(WEB_COMPANY_API).toMatch(/dashboard session/i);
+    expect(WEB_GETTING_STARTED).toMatch(/dashboard[- ]only/i);
+  });
+
+  it('withdrawals still have no idempotency key, and both guides say so', () => {
+    // If one is ever added, this fails and the "retry double-reserves" warning
+    // must be rewritten rather than left as a lie.
+    expect('idempotencyKey' in createWithdrawalSchema.shape).toBe(false);
+    expect(GUIDE).toMatch(/no idempotency key/i);
+    expect(DEV_GUIDE).toMatch(/[Nn]o idempotency key/);
+  });
+
+  it('documents the create-only Lebanese phone rule that the schema enforces', () => {
+    const wish = (phone: string) => ({
+      amount: '100',
+      currency: 'USD',
+      payout: { method: 'WISH', recipientName: 'John Doe', recipientPhone: phone },
+    });
+    expect(createWithdrawalSchema.safeParse(wish('+96170000000')).success).toBe(true);
+    expect(createWithdrawalSchema.safeParse(wish('+9613702825')).success).toBe(true);
+    // 9 national digits — the shape check alone would accept this.
+    expect(createWithdrawalSchema.safeParse(wish('9617075183')).success).toBe(false);
+
+    for (const [name, doc] of [
+      ['companies guide', GUIDE],
+      ['developer guide', DEV_GUIDE],
+    ] as const) {
+      expect(doc, `${name} must document the 961 rule`).toMatch(/961/);
+      expect(doc, `${name} must state the digit count`).toMatch(/8 digits/);
+    }
+  });
+
+  it('documents PROCESSING as reachable for withdrawals and blocking cancel', () => {
+    // The guide used to say PROCESSING "is not produced by these flows today",
+    // which stopped being true once the auto-transfer pipeline landed.
+    expect(GUIDE).not.toMatch(
+      /`APPROVED` and `PROCESSING` exist in the shared status enum but are not produced/,
+    );
+    expect(read('apps/api/src/modules/withdrawals/withdrawals.service.ts')).toContain(
+      "status: 'PROCESSING'",
+    );
+    // `PROCESSING` is mentioned in several sections (transactions, loads), so
+    // require that at least ONE mention explains the cancel conflict rather than
+    // anchoring on whichever happens to come first.
+    for (const [name, doc] of [
+      ['companies guide', GUIDE],
+      ['developer guide', DEV_GUIDE],
+    ] as const) {
+      const windows: string[] = [];
+      for (let i = doc.indexOf('PROCESSING'); i !== -1; i = doc.indexOf('PROCESSING', i + 1)) {
+        windows.push(doc.slice(i, i + 600));
+      }
+      expect(windows.length, `${name} never mentions PROCESSING`).toBeGreaterThan(0);
+      expect(
+        windows.some((w) => /409/.test(w) && /cancel/i.test(w)),
+        `${name} must state that PROCESSING blocks cancel with a 409`,
+      ).toBe(true);
+    }
+  });
+
+  it('does not promise a Whish EXPIRED status or transaction.expired event', () => {
+    // Both exist in the enums but nothing ever writes/emits them; a lapsed link
+    // closes as FAILED. Clients waited for an expiry event that never comes.
+    expect(read('apps/api/src/modules/whish/whish-payments.service.ts')).not.toContain(
+      'WhishPaymentStatus.EXPIRED',
+    );
+    expect(GUIDE).toMatch(/no code path writes it|never emitted/i);
+    expect(DEV_GUIDE).toMatch(/no `EXPIRED` status|never emitted/i);
+  });
+
+  it('scopes the per-key rate limiter to the endpoints that actually mount it', () => {
+    const keyLimited = [
+      'apps/api/src/modules/whish/integrations-whish.controller.ts',
+      'apps/api/src/modules/transactions/ingest.controller.ts',
+    ];
+    for (const rel of keyLimited) {
+      expect(read(rel), `${rel} should mount ApiKeyRateLimitGuard`).toContain(
+        'ApiKeyRateLimitGuard',
+      );
+    }
+    // company/* routes are per-IP only — the docs must not imply the 300/60s allowance.
+    for (const rel of [
+      'apps/api/src/modules/withdrawals/withdrawals.controller.ts',
+      'apps/api/src/modules/whish/whish-payments.controller.ts',
+    ]) {
+      expect(read(rel), `${rel} is per-IP throttled only`).not.toContain('ApiKeyRateLimitGuard');
+    }
+    expect(GUIDE).toMatch(/per-IP/);
+    expect(DEV_GUIDE).toMatch(/per IP|per-IP/);
+  });
+
+  it('tells integrators the Authorization header is matched exactly', () => {
+    // A valid key sent as `bearer tsk_…` fell through to the session guard and
+    // reported an access-token error, costing a partner two days.
+    expect(read('apps/api/src/modules/api-keys/guards/company-access.guard.ts')).toContain(
+      "startsWith('Bearer tsk_')",
+    );
+    expect(GUIDE).toMatch(/case-sensitive/i);
+    expect(DEV_GUIDE).toMatch(/case-sensitive/i);
+  });
+
+  it('states that no IP allowlisting exists or is required', () => {
+    expect(GUIDE).toMatch(/IP allowlist/i);
+    expect(DEV_GUIDE).toMatch(/IP allowlist/i);
+  });
+
+  it('states the Whish link amount is fixed (no partial or over-payment)', () => {
+    expect(GUIDE).toMatch(/fixed on the hosted link/i);
+    expect(DEV_GUIDE).toMatch(/fixed on the hosted page/i);
   });
 });

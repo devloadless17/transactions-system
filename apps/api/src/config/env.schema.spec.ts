@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { listCompaniesQuerySchema } from '@app/shared';
-import { validateEnv } from './env.schema';
+import { isLiveWhishBaseUrl, validateEnv } from './env.schema';
 
 describe('listCompaniesQuerySchema.withBalances is permissive', () => {
   // A perf opt-in must never 400 the whole list on an unexpected value; only
@@ -126,45 +126,97 @@ describe('validateEnv', () => {
     ).toThrow(/WHISH_WEBSITE_URL/);
   });
 
-  it('rejects the Whish sandbox in production by default', () => {
-    expect(() =>
-      validateEnv({
-        ...prodOk,
-        WHISH_CHANNEL: '10200239',
-        WHISH_SECRET: 'whish-secret',
-        WHISH_BASE_URL: 'https://api.sandbox.whish.money/itel-service/api',
-        WHISH_CALLBACK_BASE: 'https://api.example.com/v1',
-        WHISH_WEBSITE_URL: 'rival.com',
-      }),
-    ).toThrow(/WHISH_BASE_URL/);
+  // The production base-URL guard is an ALLOWLIST of the one live Whish host, not
+  // a blacklist of "sandbox". The old blacklist matched the substring 'sandbox',
+  // which the v1.4.4 sandbox host (partner.api.sbx.whish.money) slips past — a
+  // prod build could then boot pointed at the sandbox and collect no real money.
+  const whishProd = (over: Record<string, string>) => ({
+    ...prodOk,
+    WHISH_CHANNEL: '10200239',
+    WHISH_SECRET: 'whish-secret',
+    WHISH_CALLBACK_BASE: 'https://api.example.com/v1',
+    WHISH_WEBSITE_URL: 'rival.com',
+    ...over,
   });
 
-  it('allows the Whish sandbox + bare website host when WHISH_ALLOW_SANDBOX=true', () => {
+  it.each([
+    ['the live host', 'https://api.whish.money/itel-service/api'],
+    ['the live host, uppercased', 'https://API.WHISH.MONEY/itel-service/api'],
+  ])('accepts %s in production', (_label, WHISH_BASE_URL) => {
     expect(() =>
-      validateEnv({
-        ...prodOk,
-        WHISH_ALLOW_SANDBOX: 'true',
-        WHISH_CHANNEL: '10200239',
-        WHISH_SECRET: 'whish-secret',
-        WHISH_BASE_URL: 'https://api.sandbox.whish.money/itel-service/api',
-        WHISH_CALLBACK_BASE: 'https://api.example.com/v1',
-        WHISH_WEBSITE_URL: 'rival.com',
-      }),
+      validateEnv(whishProd({ WHISH_BASE_URL, WHISH_WEBSITE_URL: 'https://portal.example.com' })),
+    ).not.toThrow();
+  });
+
+  it.each([
+    ['the legacy sandbox host', 'https://api.sandbox.whish.money/itel-service/api'],
+    // The v1.4.4 sandbox: contains 'sbx', not 'sandbox' — the regression this guard fix exists for.
+    ['the v1.4.4 sandbox host', 'https://partner.api.sbx.whish.money/itel-service/api'],
+    // Allowlist, not blacklist: a host we have never heard of must fail closed.
+    ['an unknown future host', 'https://partner.api.uat.whish.money/itel-service/api'],
+    ['a lookalike host', 'https://api.whish.money.evil.com/itel-service/api'],
+    ['a subdomain lookalike', 'https://notapi.whish.money/itel-service/api'],
+    // http would put the `secret:` header on the wire in cleartext.
+    ['a plaintext http live host', 'http://api.whish.money/itel-service/api'],
+  ])('rejects %s in production by default', (_label, WHISH_BASE_URL) => {
+    expect(() => validateEnv(whishProd({ WHISH_BASE_URL }))).toThrow(/WHISH_BASE_URL/);
+  });
+
+  it('allows a non-production Whish host + bare website host when WHISH_ALLOW_SANDBOX=true', () => {
+    expect(() =>
+      validateEnv(
+        whishProd({
+          WHISH_ALLOW_SANDBOX: 'true',
+          WHISH_BASE_URL: 'https://partner.api.sbx.whish.money/itel-service/api',
+        }),
+      ),
     ).not.toThrow();
   });
 
   it('still rejects a localhost callback even with WHISH_ALLOW_SANDBOX=true', () => {
     expect(() =>
+      validateEnv(
+        whishProd({
+          WHISH_ALLOW_SANDBOX: 'true',
+          WHISH_BASE_URL: 'https://partner.api.sbx.whish.money/itel-service/api',
+          WHISH_CALLBACK_BASE: 'http://localhost:3001/v1',
+        }),
+      ),
+    ).toThrow(/WHISH_CALLBACK_BASE/);
+  });
+
+  it('does not apply the base-URL guard when Whish is unconfigured', () => {
+    expect(() =>
       validateEnv({
         ...prodOk,
-        WHISH_ALLOW_SANDBOX: 'true',
-        WHISH_CHANNEL: '10200239',
-        WHISH_SECRET: 'whish-secret',
-        WHISH_BASE_URL: 'https://api.sandbox.whish.money/itel-service/api',
-        WHISH_CALLBACK_BASE: 'http://localhost:3001/v1',
-        WHISH_WEBSITE_URL: 'rival.com',
+        WHISH_BASE_URL: 'https://partner.api.sbx.whish.money/itel-service/api',
       }),
-    ).toThrow(/WHISH_CALLBACK_BASE/);
+    ).not.toThrow();
+  });
+
+  it('trims a trailing slash off WHISH_BASE_URL', () => {
+    const env = validateEnv({
+      ...prodOk,
+      WHISH_BASE_URL: 'https://api.whish.money/itel-service/api/',
+    });
+    expect(env.WHISH_BASE_URL).toBe('https://api.whish.money/itel-service/api');
+  });
+});
+
+describe('isLiveWhishBaseUrl', () => {
+  it.each([
+    ['https://api.whish.money/itel-service/api', true],
+    ['https://API.WHISH.MONEY/itel-service/api', true],
+    ['https://api.whish.money:443/itel-service/api', true],
+    ['https://api.whish.money:8443/itel-service/api', false],
+    ['http://api.whish.money/itel-service/api', false],
+    ['https://partner.api.sbx.whish.money/itel-service/api', false],
+    ['https://api.sandbox.whish.money/itel-service/api', false],
+    ['https://api.whish.money.evil.com/itel-service/api', false],
+    ['not a url', false],
+    ['', false],
+  ])('%s → %s', (url, expected) => {
+    expect(isLiveWhishBaseUrl(url)).toBe(expected);
   });
 });
 

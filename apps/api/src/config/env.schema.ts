@@ -1,5 +1,39 @@
 import { z } from 'zod';
 
+/**
+ * The ONLY host that serves live Whish money. Everything else — the legacy
+ * sandbox (api.sandbox.whish.money), the v1.4.4 sandbox
+ * (partner.api.sbx.whish.money), a future rename, a local fake, a typo — is a
+ * non-production upstream.
+ */
+export const WHISH_PROD_HOST = 'api.whish.money';
+
+/**
+ * True only for the live Whish API base. Deliberately an ALLOWLIST, not a
+ * blacklist: the previous guard matched the substring 'sandbox', which the
+ * v1.4.4 sandbox host (`partner.api.sbx.whish.money`) slips past — a production
+ * build could then boot pointed at the sandbox, mint sandbox links for real
+ * customers and collect nothing. Matching the one known-live host instead means
+ * any future rename fails CLOSED.
+ *
+ * - hostname equality, so `api.whish.money.evil.com` / `notapi.whish.money` fail
+ * - case-insensitive (URL already lowercases, belt-and-braces)
+ * - https only: an http base would put the `secret:` header on the wire in clear
+ * - unparseable input ⇒ not live ⇒ fail closed
+ */
+export function isLiveWhishBaseUrl(raw: string): boolean {
+  try {
+    const u = new URL(raw);
+    return (
+      u.protocol === 'https:' &&
+      u.hostname.toLowerCase() === WHISH_PROD_HOST &&
+      (u.port === '' || u.port === '443')
+    );
+  } catch {
+    return false;
+  }
+}
+
 export const envSchema = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -53,9 +87,16 @@ export const envSchema = z
     METRICS_TOKEN: z.string().default(''),
 
     // ---- Whish Pay integration (single platform account) ----
-    // Sandbox base by default; flip to https://api.whish.money/itel-service/api
-    // for production. `channel` + `secret` are issued by Whish.
-    WHISH_BASE_URL: z.string().url().default('https://api.sandbox.whish.money/itel-service/api'),
+    // Sandbox base by default (Whish Pay v1.4.4 moved it to partner.api.sbx…);
+    // flip to https://api.whish.money/itel-service/api for production.
+    // `channel` + `secret` are issued by Whish. Trailing slashes are trimmed
+    // because WhishClient concatenates `${base}${path}` — a stray slash would
+    // produce `…/api//payment/whish`.
+    WHISH_BASE_URL: z
+      .string()
+      .url()
+      .default('https://partner.api.sbx.whish.money/itel-service/api')
+      .transform((v) => v.replace(/\/+$/, '')),
     WHISH_CHANNEL: z.string().default(''),
     WHISH_SECRET: z.string().default(''),
     WHISH_WEBSITE_URL: z.string().default('http://localhost:3000'),
@@ -238,13 +279,15 @@ export const envSchema = z
           'must be a publicly reachable host in production, not localhost',
         );
       }
-      // WHISH_ALLOW_SANDBOX is the explicit opt-in for running the Whish sandbox
-      // against a prod build while testing — it relaxes ONLY the sandbox-base and
-      // website-https checks below; the callback must still be a public https host.
-      if (!env.WHISH_ALLOW_SANDBOX && env.WHISH_BASE_URL.includes('sandbox')) {
+      // WHISH_ALLOW_SANDBOX is the explicit opt-in for running a NON-PRODUCTION
+      // Whish upstream against a prod build while testing — it relaxes ONLY the
+      // live-base and website-https checks below; the callback must still be a
+      // public https host.
+      if (!env.WHISH_ALLOW_SANDBOX && !isLiveWhishBaseUrl(env.WHISH_BASE_URL)) {
         fail(
           'WHISH_BASE_URL',
-          'must not point at the Whish sandbox in production (set WHISH_ALLOW_SANDBOX=true to test the sandbox on prod)',
+          `must be the live Whish API (https://${WHISH_PROD_HOST}/itel-service/api) in production — got '${env.WHISH_BASE_URL}'. ` +
+            'Set WHISH_ALLOW_SANDBOX=true to run a non-production Whish upstream (e.g. the sandbox) against a production build.',
         );
       }
       // WHISH_WEBSITE_URL is an auth header Whish matches against the registered

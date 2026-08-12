@@ -1,0 +1,193 @@
+{
+  "info": {
+    "_postman_id": "whish-pay",
+    "name": "Whish \u00b7 Whish Pay (v1.4.4)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Whish Pay API (itel-service). Set channel, secret and websiteUrl as collection variables (or use an environment). Create a payment generates a unique externalId on every send; Get payment status and Refund reuse that same id, so run Create first. Never reuse an externalId for a new payment: the API would replay the original result. Note: the reference page marks User-Agent required and your integration must send it. This collection deliberately omits it because Postman always sends its own User-Agent and would override the value anyway."
+  },
+  "item": [
+    {
+      "name": "Get account balance",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "channel",
+            "value": "{{channel}}"
+          },
+          {
+            "key": "secret",
+            "value": "{{secret}}"
+          },
+          {
+            "key": "websiteUrl",
+            "value": "{{websiteUrl}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/payment/account/balance?currency=USD",
+          "host": ["{{baseUrl}}"],
+          "path": ["payment", "account", "balance"],
+          "query": [
+            {
+              "key": "currency",
+              "value": "USD"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Create a payment",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "channel",
+            "value": "{{channel}}"
+          },
+          {
+            "key": "secret",
+            "value": "{{secret}}"
+          },
+          {
+            "key": "websiteUrl",
+            "value": "{{websiteUrl}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/payment/whish",
+          "host": ["{{baseUrl}}"],
+          "path": ["payment", "whish"]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"amount\": \"1\",\n  \"currency\": \"USD\",\n  \"invoice\": \"Order #1\",\n  \"externalId\": \"{{externalId}}\",\n  \"successCallbackUrl\": \"https://example.com/api/payment/success\",\n  \"failureCallbackUrl\": \"https://example.com/api/payment/failure\",\n  \"successRedirectUrl\": \"https://example.com/thank-you\",\n  \"failureRedirectUrl\": \"https://example.com/payment-error\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// externalId must be UNIQUE per transaction. Reusing one replays the original",
+              "// result instead of creating a new transaction.",
+              "// Millisecond clock + a monotonic counter: Date.now() alone repeats when the Collection",
+              "// Runner fires several requests inside the same millisecond, so the counter guarantees",
+              "// each send differs. Digits only, and the body quotes it because externalId is a String.",
+              "var seq = (parseInt(pm.collectionVariables.get('_seq'), 10) || 0) + 1;",
+              "pm.collectionVariables.set('_seq', seq);",
+              "pm.collectionVariables.set('externalId', String(Date.now()) + String(seq % 10000).padStart(4, '0'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Get payment status",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "channel",
+            "value": "{{channel}}"
+          },
+          {
+            "key": "secret",
+            "value": "{{secret}}"
+          },
+          {
+            "key": "websiteUrl",
+            "value": "{{websiteUrl}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/payment/collect/status",
+          "host": ["{{baseUrl}}"],
+          "path": ["payment", "collect", "status"]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"currency\": \"USD\",\n  \"externalId\": \"{{externalId}}\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "Refund a payment",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "channel",
+            "value": "{{channel}}"
+          },
+          {
+            "key": "secret",
+            "value": "{{secret}}"
+          },
+          {
+            "key": "websiteUrl",
+            "value": "{{websiteUrl}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/payment/whish/refund",
+          "host": ["{{baseUrl}}"],
+          "path": ["payment", "whish", "refund"]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"currency\": \"USD\",\n  \"externalId\": \"{{externalId}}\",\n  \"refundReason\": \"Customer canceled order\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "https://partner.api.sbx.whish.money/itel-service/api",
+      "description": "Base URL for this environment. Correct as shipped; attach an environment to switch."
+    },
+    {
+      "key": "channel",
+      "value": "",
+      "description": "Your channel id, issued by Whish Money. Replace this before sending."
+    },
+    {
+      "key": "secret",
+      "value": "",
+      "description": "Your secret, issued by Whish Money. Replace this before sending."
+    },
+    {
+      "key": "websiteUrl",
+      "value": "",
+      "description": "The website URL registered with your Whish Money account. Replace this before sending."
+    },
+    {
+      "key": "externalId",
+      "value": "",
+      "description": "Set automatically before every send by the pre-request script, and must be unique per transaction. Leave this empty."
+    },
+    {
+      "key": "_seq",
+      "value": "",
+      "description": "Internal counter used by the pre-request script to keep generated ids unique. Leave this empty."
+    }
+  ]
+}

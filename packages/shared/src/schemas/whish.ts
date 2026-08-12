@@ -1,8 +1,46 @@
 import { z } from 'zod';
-import { WHISH_CURRENCIES, WhishPaymentStatus } from '../enums';
+import {
+  WHISH_AMOUNT_RULES,
+  WHISH_CURRENCIES,
+  WhishPaymentStatus,
+  type WhishAmountRule,
+  type WhishCurrency,
+} from '../enums';
 import { moneyAmountSchema, paginationSchema } from './common';
+import { Money } from '../money';
 
 const decimalString = moneyAmountSchema;
+
+/**
+ * Whish's own DOCUMENTED per-currency amount rules (v1.4.4: USD at most 2
+ * decimals, minimum 1.00). Returns a human description of how an amount departs
+ * from them, or null when it is within them.
+ *
+ * ADVISORY ONLY — deliberately not enforced. Verified against the live v1.4.4
+ * sandbox on 2026-08-12: Whish accepts `"0.50"` and `"10.005"`, mints a real
+ * collectUrl for both, and the hosted payment page takes a `0.50` link all the
+ * way to the OTP step. Rejecting those here would block payments the provider
+ * is perfectly willing to collect. We log the divergence instead, so it stays
+ * visible if Whish ever starts enforcing what it documents.
+ */
+export function whishAmountIssue(amount: string, currency: string): string | null {
+  // Widened to WhishAmountRule on purpose: WHISH_AMOUNT_RULES is `as const`, so
+  // with a single currency configured TypeScript narrows maxDecimals to the
+  // literal `2` and calls the zero-decimal branch below unreachable. That branch
+  // is for LBP, one line away from being enabled.
+  const rule: WhishAmountRule | undefined = WHISH_AMOUNT_RULES[currency as WhishCurrency];
+  if (!rule) return null; // unknown currency — the enum already rejected it
+  const decimals = amount.split('.')[1]?.length ?? 0;
+  if (decimals > rule.maxDecimals) {
+    return rule.maxDecimals === 0
+      ? `${currency} amounts must be whole numbers (no decimal places)`
+      : `${currency} amounts support at most ${rule.maxDecimals} decimal places`;
+  }
+  if (Money.of(amount).lt(Money.of(rule.minAmount))) {
+    return `${currency} amounts must be at least ${rule.minAmount}`;
+  }
+  return null;
+}
 
 // A customer-facing redirect URL. Must be a real http(s) URL (no javascript:,
 // data:, etc.) and bounded in length. Used for where the PAYER lands after a
