@@ -395,3 +395,25 @@ describe('WhishTransfersService.map — response exposes the withdrawal linkage'
     expect(res.upstreamMessage).toBe('Whish: recipient not found');
   });
 });
+
+describe('WhishTransfersService.sendTransfer (audit) — recipient phone normalization', () => {
+  // The payout schemas accept parens (`wishRecipientPhoneSchema`), and auto-approval
+  // forwards `payoutDetails.recipientPhone` verbatim, so anything the schema allows
+  // must survive normalization as a bare msisdn — Whish rejects the rest.
+  it.each([
+    ['+961 (3) 000000', '9613000000'],
+    ['+961-70-000-000', '96170000000'],
+    ['(03) 000 000', '03000000'],
+    ['00961 3 000 000', '009613000000'],
+  ])('normalizes %s to %s before submitting', async (input, expected) => {
+    const { svc, rows, client } = build({});
+    const res = await svc.sendTransfer(
+      { amount: '20', recipientPhone: input, currency: 'USD' },
+      ORIGIN,
+    );
+
+    expect(client.submit).toHaveBeenCalledWith(expect.objectContaining({ phone: expected }));
+    // The audit row records the same destination we actually submitted.
+    expect(rows.get(res.id)!.recipientPhone).toBe(expected);
+  });
+});

@@ -9,6 +9,28 @@ import { PrismaService } from '../../../database/prisma.service';
 import { assertCompanyActive } from '../../../common/company-status';
 
 /**
+ * Returned when a request carries something that is clearly meant to be an API key
+ * but not in the one accepted form. Every layer matches `Bearer ` / `tsk_` exactly,
+ * so a lowercase scheme or a stray quote silently looks like "no key at all" —
+ * naming the fault saves integrators from debugging a healthy key.
+ */
+export const MALFORMED_API_KEY_MESSAGE =
+  'Malformed API key credential. Send it exactly as `Authorization: Bearer tsk_<prefix>_<secret>` — ' +
+  'the `Bearer` scheme and the `tsk_` prefix are case-sensitive, separated by a single space.';
+
+/**
+ * True when the credential carries a `tsk_`-shaped token under any scheme or casing
+ * (`bearer tsk_…`, `Bearer TSK_…`, `Token tsk_…`, a bare `tsk_…`). Purely a shape
+ * check on what the caller sent — it never looks a key up, so it leaks nothing.
+ */
+export function looksLikeApiKey(auth: string | undefined): boolean {
+  if (!auth) return false;
+  const parts = auth.trim().split(/\s+/);
+  const token = (parts.length > 1 ? parts.slice(1).join('') : parts[0]) ?? '';
+  return token.toLowerCase().startsWith('tsk_');
+}
+
+/**
  * Authenticates server-to-server integration endpoints (a company's CRM) with
  * `Authorization: Bearer tsk_...`. Requires a COMPANY-scoped key — source keys
  * are rejected. On success sets a synthetic principal carrying the companyId so
@@ -26,7 +48,11 @@ export class CompanyApiKeyAuthGuard implements CanActivate {
     const req = ctx.switchToHttp().getRequest<Request>();
     const auth = req.headers.authorization;
     if (!auth || !auth.startsWith('Bearer ')) {
-      throw new UnauthorizedError('Missing API key');
+      // Distinguish "sent nothing" from "sent a key the wrong way" — the latter used
+      // to report "Missing API key" for e.g. a lowercase `bearer tsk_...`.
+      throw new UnauthorizedError(
+        looksLikeApiKey(auth) ? MALFORMED_API_KEY_MESSAGE : 'Missing API key',
+      );
     }
     const plaintext = auth.slice('Bearer '.length).trim();
     const result = await this.apiKeys.verify(plaintext);

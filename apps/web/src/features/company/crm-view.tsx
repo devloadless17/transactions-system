@@ -155,6 +155,9 @@ function ConfigCard() {
             <CardDescription>
               The POST URL of your CRM and the API key it expects. We send the key as{' '}
               <span className="font-mono">Authorization: Bearer &lt;key&gt;</span> on every request.
+              Setting or clearing this config is <strong>dashboard-only</strong> — an API key can
+              read it but gets <span className="font-mono">403 FORBIDDEN</span> on writes, so a
+              leaked key can never repoint your event stream.
             </CardDescription>
           </div>
           <Badge variant={cfg?.enabled ? 'success' : 'secondary'}>
@@ -407,6 +410,37 @@ x-crm-signature: t=1781018591,sha256=<hex>
             Deposit event — body: <span className="font-mono lowercase">transaction</span>
           </p>
           <CodeBlock code={depositExample} />
+          <div className="mt-2 rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+            <p className="mb-1 font-medium text-foreground">Which id to match on</p>
+            <ul className="ml-4 list-disc space-y-1">
+              <li>
+                <code className="font-mono">reference</code> — our stable key for the record&apos;s
+                whole lifecycle:{' '}
+                <code className="font-mono">
+                  &quot;&lt;source&gt;:&lt;externalTransactionId&gt;&quot;
+                </code>{' '}
+                for deposits, always{' '}
+                <code className="font-mono">&quot;withdrawal:&lt;id&gt;&quot;</code> for
+                withdrawals. <strong className="text-foreground">Match on this.</strong>
+              </li>
+              <li>
+                <code className="font-mono">externalTransactionId</code> — the provider&apos;s id
+                (for Whish, the <code className="font-mono">externalId</code> from create, and the
+                tail of <code className="font-mono">reference</code>).
+              </li>
+              <li>
+                <code className="font-mono">id</code> — our ledger transaction UUID. It is{' '}
+                <strong className="text-foreground">
+                  null on transaction.pending and transaction.failed
+                </strong>{' '}
+                (no ledger row exists until the money settles), so never use it as a match key.
+              </li>
+            </ul>
+            <p className="mt-2">
+              Statuses on events are the same values the REST endpoints return, so webhooks and
+              polling never need translating.
+            </p>
+          </div>
         </div>
         <div>
           <p className="mb-1 text-xs font-medium uppercase text-muted-foreground">
@@ -438,6 +472,13 @@ x-crm-signature: t=1781018591,sha256=<hex>
               <EventRow key={e} event={e} desc={d} />
             ))}
           </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            <code className="font-mono">transaction.expired</code> exists in our shared enums but is
+            never emitted — a lapsed link arrives as{' '}
+            <code className="font-mono">transaction.failed</code>. There is also no event for the
+            transient <code className="font-mono">PROCESSING</code> withdrawal state. Ignore event
+            names you don&apos;t recognise rather than erroring.
+          </p>
         </div>
         <div>
           <p className="mb-1 text-xs font-medium uppercase text-muted-foreground">

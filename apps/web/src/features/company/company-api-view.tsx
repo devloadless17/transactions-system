@@ -183,6 +183,19 @@ export function CompanyApiView() {
                 optional="memo, instructions"
               />
             </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              <strong className="text-foreground">recipientPhone format:</strong> the formatting in
+              these examples is illustrative — send 6–15 digits with optional{' '}
+              <code className="font-mono">+</code>, spaces, dashes or parens (plain international
+              like <code className="font-mono">+96170000000</code> is simplest). One extra rule on
+              create for <strong>Lebanese</strong> numbers: after the{' '}
+              <code className="font-mono">961</code> country code there must be exactly{' '}
+              <strong>8 digits</strong>, or <strong>7</strong> when the national part starts with{' '}
+              <code className="font-mono">3</code> — so{' '}
+              <code className="font-mono">9617075183</code> is rejected with{' '}
+              <code className="font-mono">400 VALIDATION_ERROR</code>. CASH recipient phones are
+              free-form.
+            </p>
           </div>
 
           <div>
@@ -205,6 +218,36 @@ export function CompanyApiView() {
             </p>
             <CodeBlock code={WITHDRAWAL_RESPONSE} />
           </div>
+          <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+            <ul className="ml-4 list-disc space-y-1">
+              <li>
+                <strong className="text-foreground">
+                  You can&apos;t choose feeApplication per request.
+                </strong>{' '}
+                It comes from the commission rule your platform admin configures; sending it in the
+                body has no effect. Want recipients to receive the full amount with the fee billed
+                to your wallet? Ask your account manager to set that rule to{' '}
+                <code className="font-mono">ON_TOP</code>.
+              </li>
+              <li>
+                <strong className="text-foreground">
+                  No idempotency key, and no field for your own order number.
+                </strong>{' '}
+                Retrying a create after a timeout makes a <em>second</em> request and reserves the
+                funds again — so on an ambiguous failure, call{' '}
+                <code className="font-mono">GET /company/withdrawals?status=PENDING</code> and match
+                before retrying. Carry your own reference in{' '}
+                <code className="font-mono">notes</code> (≤ 500 chars): it is stored immutably,
+                returned on every read, and echoed on the matching CRM event.
+              </li>
+              <li>
+                <strong className="text-foreground">Determining success:</strong> a create succeeded
+                when the response is <code className="font-mono">success: true</code> with{' '}
+                <code className="font-mono">statusCode 201</code>. The two never disagree, so
+                testing <code className="font-mono">success</code> alone is enough.
+              </li>
+            </ul>
+          </div>
         </CardContent>
       </Card>
 
@@ -219,6 +262,10 @@ export function CompanyApiView() {
           <div className="space-y-1 text-sm">
             <StatusRow status="PENDING" desc="Submitted — awaiting platform-admin review." />
             <StatusRow
+              status="PROCESSING"
+              desc="Withdrawals only: a transfer is in flight. Transient — it settles to COMPLETED, or returns to PENDING if the transfer doesn't go through. You cannot cancel while PROCESSING (409 CONFLICT); wait for it to leave the state."
+            />
+            <StatusRow
               status="COMPLETED"
               desc="Admin approved and funds delivered — approval settles in one step. Ledger entry finalised."
             />
@@ -230,7 +277,18 @@ export function CompanyApiView() {
               status="CANCELLED"
               desc="You cancelled it (only possible while PENDING). Reserved funds released."
             />
+            <StatusRow
+              status="APPROVED"
+              desc="Exists in the status enum but is not produced today — approvals settle straight to COMPLETED. Accepted as a ?status= filter, it simply matches nothing."
+            />
           </div>
+          <p className="mt-3 text-xs text-muted-foreground">
+            Handle unknown statuses gracefully rather than failing, so a future status can&apos;t
+            break your integration. These are the same values the CRM events carry, so polling and
+            webhooks never need translating — but note Whish payment links use a different set (
+            <code className="font-mono">PENDING</code> / <code className="font-mono">PAID</code> /{' '}
+            <code className="font-mono">FAILED</code>).
+          </p>
           <p className="mt-4 rounded-md border-l-4 border-primary bg-primary/5 p-3 text-xs text-muted-foreground">
             <strong className="text-foreground">Withdrawals push to your CRM.</strong> Every
             withdrawal status change — pending, completed, rejected, cancelled — is delivered to
@@ -301,8 +359,9 @@ export function CompanyApiView() {
         <CardHeader>
           <CardTitle>All endpoints at a glance</CardTitle>
           <CardDescription>
-            Every <code className="font-mono font-semibold text-foreground">company/*</code> route
-            accepts your company key. Whish Pay and CRM have their own tabs.
+            These <code className="font-mono font-semibold text-foreground">company/*</code> routes
+            accept your company key, except the dashboard-only ones noted below. Whish Pay and CRM
+            have their own tabs.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -334,14 +393,26 @@ export function CompanyApiView() {
               endpoints="GET /company/loads · GET /:id · POST · POST /:id/cancel"
             />
             <EndpointGroup
-              label="API keys"
+              label="API keys (dashboard session only)"
               endpoints="GET · POST /company/api-keys · POST /:id/rotate · /:id/revoke"
             />
             <EndpointGroup
-              label="Team"
+              label="Team (dashboard session only)"
               endpoints="GET · POST /company/team · PATCH · DELETE /:id"
             />
           </div>
+          <p className="mt-3 rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+            <strong className="text-foreground">
+              Dashboard session only — these reject an API key with 403 FORBIDDEN:
+            </strong>{' '}
+            <code className="font-mono">company/api-keys</code>,{' '}
+            <code className="font-mono">company/team</code>, <code className="font-mono">PUT</code>/
+            <code className="font-mono">DELETE</code>{' '}
+            <code className="font-mono">/company/crm/config</code>, and{' '}
+            <code className="font-mono">POST /company/crm/demo/enable</code>. Reading the CRM config
+            with a key does work. This is deliberate: a leaked key must not be able to mint keys,
+            add users, or redirect your CRM traffic.
+          </p>
           <p className="mt-3 text-xs text-muted-foreground">
             Collecting payments?{' '}
             <Link href="/app/documentation?tab=whish" className="text-primary hover:underline">

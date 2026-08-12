@@ -112,8 +112,13 @@ export class WhishTransfersService {
     }
 
     const reference = input.reference ?? `wt_${crypto.randomBytes(16).toString('base64url')}`;
-    // Whish wants a bare msisdn; keep the operator-entered formatting minimal.
-    const phone = input.recipientPhone.replace(/[\s-]/g, '').replace(/^\+/, '');
+    // Whish wants a bare msisdn, so drop every separator the payout schemas accept
+    // — spaces, dashes, parens and a leading `+`. Stripping only spaces/dashes let
+    // parens through: an auto-approved withdrawal carries the recipient phone
+    // straight from `payoutDetails` (validated by the tolerant
+    // `wishRecipientPhoneSchema`, which permits them), so "+961 (3) 000000" used to
+    // reach Whish as "(3)000000". A leading `00` country prefix is preserved.
+    const phone = input.recipientPhone.replace(/\D/g, '');
     const amount2dp = money.toFixed(2);
     const amountFull = money.toString();
 

@@ -78,11 +78,36 @@ export function GettingStartedView() {
             <KeyType
               name="Company key"
               who="You — the company"
-              desc="Full access to your own company: wallets, transactions, withdrawals, payouts, loads, Whish Pay, CRM, team, and keys. This is the key you'll use for every call in the Company API tab."
+              desc="Full access to your own company's money and data: wallets, transactions, withdrawals, payouts, loads, Whish Pay, and activity. This is the key you'll use for every call in the Company API tab."
             />
           </div>
+          <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+            <ul className="ml-4 list-disc space-y-1">
+              <li>
+                <strong className="text-foreground">Management actions are dashboard-only.</strong>{' '}
+                Minting/rotating/revoking keys, managing team members, and setting or clearing your
+                CRM webhook config need a signed-in dashboard session — an API key gets{' '}
+                <code className="font-mono">403 FORBIDDEN</code>. That way a leaked key can never
+                mint more keys, add users, or redirect your CRM traffic.
+              </li>
+              <li>
+                <strong className="text-foreground">Send the header exactly as shown</strong> — it
+                is case-sensitive. <code className="font-mono">bearer tsk_…</code>,{' '}
+                <code className="font-mono">Bearer TSK_…</code>, or a bare key with no scheme are
+                not recognised and return <code className="font-mono">401 UNAUTHORIZED</code>. If
+                one call 401s while others with the same key work, compare that request&apos;s
+                header before rotating the key.
+              </li>
+              <li>
+                <strong className="text-foreground">No IP allowlisting.</strong> There is nothing to
+                register and no IP check — call us from any server. Your credential is the key; our
+                webhooks prove themselves with an HMAC signature, not a source IP.
+              </li>
+            </ul>
+          </div>
           <p className="text-xs text-muted-foreground">
-            Secrets are shown once, at creation. Mint, rotate, or revoke a company key under{' '}
+            Secrets are shown once, at creation. Keys don&apos;t expire unless you set an expiry.
+            Mint, rotate, or revoke a company key under{' '}
             <Link href="/app/settings" className="text-primary hover:underline">
               Settings → API keys
             </Link>
@@ -150,11 +175,16 @@ export function GettingStartedView() {
         <CardHeader>
           <CardTitle>Rate limits</CardTitle>
           <CardDescription>
-            The per-key integration endpoints (Whish Pay and transaction ingest) allow{' '}
+            The per-key integration endpoints —{' '}
+            <code className="font-mono">/v1/integrations/whish</code> and transaction ingest — allow{' '}
             <strong>300 requests per 60 seconds, per key</strong>. Go over and you get a{' '}
             <code className="font-mono">429 RATE_LIMITED</code> with the limit echoed in{' '}
-            <code className="font-mono">error.details</code>. The rest of the API sits behind a
-            global safety throttle.
+            <code className="font-mono">error.details</code>, plus{' '}
+            <code className="font-mono">RateLimit-*</code> headers to pace against. Everything under{' '}
+            <code className="font-mono">/v1/company/*</code> — including{' '}
+            <code className="font-mono">/company/whish/payments</code> — uses the global throttle
+            instead: <strong>100 requests per 60 seconds, per IP</strong>, with no{' '}
+            <code className="font-mono">RateLimit-*</code> headers.
           </CardDescription>
         </CardHeader>
       </Card>

@@ -4,6 +4,7 @@ import { LoggerModule as PinoModule } from 'nestjs-pino';
 import { nanoid } from 'nanoid';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Env } from '../../config/env.schema';
+import { clientIp } from './client-ip';
 import { redactUrl } from './redact-url';
 
 const CORRELATION_HEADER = 'x-request-id';
@@ -44,7 +45,7 @@ const CORRELATION_HEADER = 'x-request-id';
                 id: req.id,
                 method: req.method,
                 url: redactUrl(req.url),
-                ip: req.remoteAddress,
+                ip: clientIp(req),
               }),
               res: (res) => ({ statusCode: res.statusCode }),
             },
