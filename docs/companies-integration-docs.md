@@ -1484,6 +1484,14 @@ Mints a PENDING payment, calls Whish to get a `collectUrl`, and returns the paym
 >
 > **One exception**, for the `WHISH_PENDING` recovery above: if the original payment is still waiting for its link (`PENDING` with `collectUrl: null`), the retry actually re-contacts Whish, so the body must match. A different `amount`, `currency` or `invoice` is rejected with `400 VALIDATION_ERROR` rather than minting a link for one amount while we would settle another. Retry with the original body.
 
+> **Redirect URLs must be publicly reachable.** `localhost`, `127.0.0.1`, `[::1]`
+> and `0.0.0.0` are rejected with a `400 VALIDATION_ERROR` when you save them.
+> They only resolve on the machine that typed them, so your customer's phone
+> cannot open them — and the payment provider refuses to mint a link for one at
+> all, answering with a bare `403` that surfaces much later as an opaque error.
+> While developing locally, leave these empty: payers then land on the platform's
+> own confirmation pages, and you can set your real URLs when you deploy.
+>
 > **`successRedirectUrl` / `failureRedirectUrl` are browser redirects, not callbacks.** They control where the payer lands after paying; they are never called server-to-server and are not a substitute for the CRM webhook or polling. The URL your platform events are delivered to is configured separately (see [Outbound CRM Notifications](#outbound-crm-notifications-webhooks)) and cannot be set per request.
 
 ```bash

@@ -45,17 +45,59 @@ export function whishAmountIssue(amount: string, currency: string): string | nul
   return null;
 }
 
+/**
+ * True when a URL points at THIS machine — a loopback or unspecified address.
+ *
+ * Such a URL is only ever reachable by the process that wrote it, so as a payer
+ * redirect it dead-ends every customer, and as a webhook target it is an SSRF
+ * shape we refuse at dispatch anyway.
+ *
+ * Verified against the live Whish sandbox: Whish itself answers a bare HTTP 403
+ * (an HTML error page, not JSON) for `localhost` and `127.0.0.1` in any of the
+ * four URLs it is given — which surfaced to companies as the opaque toast
+ * "Whish returned a non-JSON response (HTTP 403)" long after the URL was saved.
+ *
+ * We go slightly BEYOND Whish here, and deliberately: Whish accepts `[::1]` and
+ * `0.0.0.0`, but a payer's phone can no more reach those than it can localhost,
+ * so accepting them just trades a clear error for a link that silently dies
+ * after payment. Private LAN addresses (192.168.x, 10.x) are NOT rejected —
+ * Whish accepts them and an intranet flow is at least conceivable.
+ */
+function isLoopbackUrl(raw: string): boolean {
+  let host: string;
+  try {
+    host = new URL(raw).hostname.toLowerCase();
+  } catch {
+    return false; // not parseable — the .url() check reports that instead
+  }
+  const bare = host.replace(/^\[|\]$/g, ''); // new URL() keeps IPv6 brackets
+  return (
+    host === 'localhost' ||
+    host.endsWith('.localhost') ||
+    bare === '::1' ||
+    bare === '::' ||
+    bare === '0.0.0.0' ||
+    /^127\./.test(bare)
+  );
+}
+
 // A customer-facing redirect URL. Must be a real http(s) URL (no javascript:,
-// data:, etc.) and bounded in length. Used for where the PAYER lands after a
-// Whish payment — never for any server-side fetch, so this is about input
-// hygiene, not SSRF (the browser, not the platform, follows it).
+// data:, etc.), bounded in length, and reachable by someone other than the
+// machine that saved it. Used for where the PAYER lands after a Whish payment,
+// and for the company's outbound webhook target.
 export const redirectUrlSchema = z
   .string()
   .trim()
   .min(1)
   .max(2048)
   .url('must be a valid URL')
-  .refine((u) => /^https?:\/\//i.test(u), 'must start with http:// or https://');
+  .refine((u) => /^https?:\/\//i.test(u), 'must start with http:// or https://')
+  .refine(
+    (u) => !isLoopbackUrl(u),
+    'must be a publicly reachable address — localhost and 127.0.0.1 only work on your own machine, ' +
+      'so your customers (and the payment provider) cannot open them. Use your real domain, or leave ' +
+      'this empty to use the platform pages.',
+  );
 
 // What a company submits to mint a Whish payment link.
 export const createWhishPaymentSchema = z.object({

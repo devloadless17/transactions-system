@@ -147,7 +147,7 @@ function ApiSection() {
     ],
     [
       'successRedirectUrl',
-      'Optional (http/https). Where your customer is sent after a successful payment — overrides your saved default for this one link. We append ?ref=<externalId> so your page can identify it.',
+      'Optional (http/https). Where your customer is sent after a successful payment — overrides your saved default for this one link. We append ?ref=<externalId> so your page can identify it. Must be publicly reachable — localhost / 127.0.0.1 are rejected, because a payer browser (and Whish itself) cannot open them. Leave empty while developing locally to use the platform pages.',
     ],
     ['failureRedirectUrl', 'Optional. Same, for a failed or abandoned payment.'],
   ];
