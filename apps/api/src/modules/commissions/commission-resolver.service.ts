@@ -37,7 +37,14 @@ export interface ResolvableRule {
   priority: number;
   active: boolean;
   // Optional: caller can pass this for stable tie-break. Older first.
-  createdAt?: Date;
+  /**
+   * `Date | string`, deliberately: these rules cross a Redis/JSON cache
+   * boundary, and a cache HIT hands back the serialized string. The resolver
+   * must never assume the hydrated shape — `a.createdAt.getTime()` inside the
+   * sort comparator threw on cached rules and turned every payment create
+   * into a 500 for the cache's TTL whenever two rules tied on priority.
+   */
+  createdAt?: Date | string;
 }
 
 export interface CommissionResolution {
@@ -134,8 +141,8 @@ export class CommissionResolverService {
       const sb = specificity(b);
       if (sa !== sb) return sb - sa;
       if (a.priority !== b.priority) return b.priority - a.priority;
-      const ta = a.createdAt?.getTime() ?? 0;
-      const tb = b.createdAt?.getTime() ?? 0;
+      const ta = epochOf(a.createdAt);
+      const tb = epochOf(b.createdAt);
       if (ta !== tb) return ta - tb;
       // Final deterministic tie-break: equal specificity, priority AND createdAt
       // (e.g. two rules created in the same tick, or createdAt unset) must still
@@ -165,6 +172,16 @@ export class CommissionResolverService {
       netAmount: net,
     };
   }
+}
+
+/** Epoch millis from whatever shape the cache handed us; 0 when absent/invalid. */
+function epochOf(value: Date | string | undefined): number {
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === 'string') {
+    const t = Date.parse(value);
+    return Number.isNaN(t) ? 0 : t;
+  }
+  return 0;
 }
 
 function specificity(rule: ResolvableRule): number {

@@ -358,3 +358,65 @@ describe('CommissionResolverService', () => {
     });
   });
 });
+
+describe('rules that crossed a JSON cache boundary', () => {
+  /*
+   * Regression: `loadCandidates` caches rules in Redis, and a cache HIT hands
+   * back `createdAt` as the serialized STRING. The comparator called
+   * `.getTime()` on it inside Array.sort, so whenever two rules tied on
+   * specificity and priority, every payment create 500'd for the cache's
+   * whole TTL. Found live: two overlapping global rules at priority 100.
+   */
+  it('resolves without throwing when createdAt is a string, and the tie-break still orders by it', () => {
+    const older = rule({
+      id: 'older',
+      priority: 100,
+      minAmount: '0',
+      maxAmount: '100',
+      commissionValue: '1',
+      // What JSON.parse actually returns after the Redis round trip:
+      createdAt: '2026-06-24T07:32:27.035Z' as unknown as Date,
+    });
+    const newer = rule({
+      id: 'newer',
+      priority: 100,
+      minAmount: '0',
+      maxAmount: '99.99999999',
+      commissionValue: '2',
+      createdAt: '2026-08-01T10:50:55.317Z' as unknown as Date,
+    });
+
+    const resolution = svc.resolve({
+      companyId: 'c-1',
+      sourceId: null,
+      operationType: 'TRANSACTION',
+      amount: Money.of('40'),
+      rules: [newer, older],
+    });
+
+    // Equal specificity and priority → the OLDER rule wins the createdAt
+    // ASC tie-break, exactly as it does when both values are real Dates.
+    expect(resolution.rule.id).toBe('older');
+  });
+
+  it('treats a mix of Date and string createdAt consistently', () => {
+    const asDate = rule({
+      id: 'as-date',
+      priority: 5,
+      createdAt: new Date('2026-01-01T00:00:00Z'),
+    });
+    const asString = rule({
+      id: 'as-string',
+      priority: 5,
+      createdAt: '2025-01-01T00:00:00Z' as unknown as Date,
+    });
+    const resolution = svc.resolve({
+      companyId: 'c-1',
+      sourceId: null,
+      operationType: 'TRANSACTION',
+      amount: Money.of('10'),
+      rules: [asDate, asString],
+    });
+    expect(resolution.rule.id).toBe('as-string'); // 2025 < 2026, ASC wins
+  });
+});
