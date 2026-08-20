@@ -21,7 +21,14 @@ export const UTF8_BOM = '\uFEFF';
  */
 export function csvCell(value: string | number | null | undefined): string {
   const s = value == null ? '' : String(value);
-  const v = /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
+  // `=`/`@`/tab/CR starts are always escaped. `+`/`-` starts are escaped only
+  // when the remainder could actually form a formula (contains letters/symbols,
+  // e.g. the DDE payload `+cmd|' /C calc'!A0`): a purely numeric/phone-shaped
+  // cell like `+96176851162` or `-12.50` cannot execute anything, and the guard
+  // quote would otherwise surface as literal data — a stray leading `'` on
+  // every exported phone number.
+  const needsPrefix = /^[=@\t\r]/.test(s) || (/^[+-]/.test(s) && !/^[+-][\d\s().-]*$/.test(s));
+  const v = needsPrefix ? `'${s}` : s;
   if (v.includes(',') || v.includes('"') || v.includes('\n')) {
     return `"${v.replace(/"/g, '""')}"`;
   }
