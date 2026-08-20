@@ -68,7 +68,7 @@ export class CommissionsRepository {
         },
         { singleFlight: false },
       )
-      .then((rules) =>
+      .then((rules) => {
         /*
          * Re-hydrate AFTER the cache, not inside the miss callback. The earlier
          * fix hydrated inside the callback — which runs only on a MISS, so every
@@ -76,17 +76,18 @@ export class CommissionsRepository {
          * resolver's comparator threw for the cache's whole TTL. The resolver is
          * hardened too (`epochOf`); this keeps the declared Date shape honest
          * for any other consumer.
+         *
+         * In place, not a clone-map: the array is exclusively ours (fresh
+         * JSON.parse on a hit, the miss callback's own build otherwise), and
+         * this runs inside the SERIALIZABLE money tx on every payment create.
          */
-        rules.map((r) => ({
-          ...r,
-          createdAt:
-            r.createdAt instanceof Date
-              ? r.createdAt
-              : r.createdAt
-                ? new Date(r.createdAt as unknown as string)
-                : r.createdAt,
-        })),
-      );
+        for (const r of rules) {
+          if (typeof (r.createdAt as unknown) === 'string') {
+            (r as { createdAt: Date }).createdAt = new Date(r.createdAt as unknown as string);
+          }
+        }
+        return rules;
+      });
   }
 
   async invalidate(): Promise<void> {

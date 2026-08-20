@@ -37,6 +37,14 @@ describe('payer redirect URLs must be publicly reachable', () => {
     (u) => expect(cfg(u)).toBe(false),
   );
 
+  // Loopback spellings the WHATWG parser does NOT normalize away — each of
+  // these previously slipped past the check while still resolving to loopback.
+  it.each([
+    'http://[::ffff:127.0.0.1]:5173/x', // IPv4-mapped IPv6 (parses to [::ffff:7f00:1])
+    'http://[::ffff:7f00:1]:5173/x', // same address, hex-group spelling
+    'http://localhost.:5173/x', // trailing root dot
+  ])('rejects the exotic loopback spelling %s', (u) => expect(cfg(u)).toBe(false));
+
   // NOT rejected: Whish accepts them and an intranet flow is conceivable. Being
   // stricter than the payment provider without cause is its own failure mode.
   it.each([

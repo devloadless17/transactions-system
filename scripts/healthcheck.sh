@@ -80,7 +80,12 @@ else
     name=$(basename "$crt" .crt)
     end=$(docker exec "$CADDY" cat "$crt" 2>/dev/null | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)
     if [ -z "$end" ]; then notice "could not read expiry of cert $name"; continue; fi
-    days=$(( ( $(date -d "$end" +%s) - now ) / 86400 ))
+    # Guard the date parse too: an unparseable enddate would make the command
+    # substitution empty and the arithmetic degrade to (-now)/86400 ≈ -20700d,
+    # firing a nonsense URGENT instead of the notice this deserves.
+    end_s=$(date -d "$end" +%s 2>/dev/null) || end_s=""
+    if [ -z "$end_s" ]; then notice "could not parse expiry date '$end' of cert $name"; continue; fi
+    days=$(( (end_s - now) / 86400 ))
     if [ "$days" -lt "$CERT_URGENT_DAYS" ]; then
       urgent "TLS cert $name expires in ${days}d — automatic renewal is NOT working"
     else

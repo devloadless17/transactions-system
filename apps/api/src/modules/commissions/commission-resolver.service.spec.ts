@@ -419,4 +419,36 @@ describe('rules that crossed a JSON cache boundary', () => {
     });
     expect(resolution.rule.id).toBe('as-string'); // 2025 < 2026, ASC wins
   });
+
+  it('an Invalid Date createdAt falls back to the deterministic id tie-break, never NaN ordering', () => {
+    // The repository hydrates cached strings with `new Date(...)`; a corrupted
+    // cache value becomes an Invalid Date whose getTime() is NaN. A NaN
+    // comparator result would disable the createdAt ordering AND the final id
+    // tie-break, making the winning rule depend on array position.
+    const corrupt = rule({
+      id: 'a-corrupt',
+      priority: 5,
+      createdAt: new Date('not-a-date'),
+    });
+    const healthy = rule({
+      id: 'b-healthy',
+      priority: 5,
+      createdAt: new Date('2026-01-01T00:00:00Z'),
+    });
+    for (const rules of [
+      [corrupt, healthy],
+      [healthy, corrupt],
+    ]) {
+      const resolution = svc.resolve({
+        companyId: 'c-1',
+        sourceId: null,
+        operationType: 'TRANSACTION',
+        amount: Money.of('10'),
+        rules,
+      });
+      // Invalid → epoch 0 → strictly older than any real date → wins ASC,
+      // identically for both input orders.
+      expect(resolution.rule.id).toBe('a-corrupt');
+    }
+  });
 });

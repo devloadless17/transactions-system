@@ -21,13 +21,15 @@ export const UTF8_BOM = '\uFEFF';
  */
 export function csvCell(value: string | number | null | undefined): string {
   const s = value == null ? '' : String(value);
-  // `=`/`@`/tab/CR starts are always escaped. `+`/`-` starts are escaped only
-  // when the remainder could actually form a formula (contains letters/symbols,
-  // e.g. the DDE payload `+cmd|' /C calc'!A0`): a purely numeric/phone-shaped
-  // cell like `+96176851162` or `-12.50` cannot execute anything, and the guard
-  // quote would otherwise surface as literal data — a stray leading `'` on
-  // every exported phone number.
-  const needsPrefix = /^[=@\t\r]/.test(s) || (/^[+-]/.test(s) && !/^[+-][\d\s().-]*$/.test(s));
+  // `=`/`@`/tab/CR starts are always escaped. `+`/`-` starts are escaped unless
+  // the cell is ONE pure signed number (`+96176851162`, `-12.50`): that renders
+  // as the same numeric value everywhere, and the guard quote would otherwise
+  // surface as literal data — a stray leading `'` on every exported phone.
+  // Anything looser is unsafe BOTH ways: `+cmd|' /C calc'!A0` is the classic
+  // DDE payload, and even a digits-and-separators cell like `+961-70-000-000`
+  // is silently EVALUATED by Excel as arithmetic (it renders as 891), so
+  // separator-carrying phones keep the quote — that is data protection, not noise.
+  const needsPrefix = /^[=@\t\r]/.test(s) || (/^[+-]/.test(s) && !/^[+-]\d+(\.\d+)?$/.test(s));
   const v = needsPrefix ? `'${s}` : s;
   if (v.includes(',') || v.includes('"') || v.includes('\n')) {
     return `"${v.replace(/"/g, '""')}"`;

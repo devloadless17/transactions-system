@@ -63,6 +63,25 @@ interface ActivityRow {
  * single paginated, chronologically-merged list; RLS (via runAsScoped) isolates
  * company callers while admins see everything. Nothing here mutates money.
  */
+
+// Counterparty projection for the three payout-carrying flows, ONE fragment so
+// the export's four union branches can never drift apart. The fallback order
+// MUST stay in lockstep with `recipient()` in ../../common/flow-csv.ts — the
+// per-flow CSVs derive the same two columns from that TS twin, and an
+// integrating client already caught the two exports disagreeing once.
+const FLOW_RECIPIENT_SQL = `
+             COALESCE(o.payout_details->>'recipientName', o.payout_details->>'accountHolder',
+                      o.payout_details->>'network', o.payout_details->>'description') AS recipient_name,
+             COALESCE(o.payout_details->>'recipientPhone', o.payout_details->>'walletAddress',
+                      o.payout_details->>'accountNumber', o.payout_details->>'bankName') AS recipient_contact,
+             NULL::text AS target`.trim();
+
+// Deposit twin: the paying customer + phone, plus the trading account (target).
+const DEPOSIT_RECIPIENT_SQL = `
+             o.payload->>'note' AS notes, NULL::text AS admin_notes,
+             o.payload->>'customer' AS recipient_name, o.payload->>'phone' AS recipient_contact,
+             o.payload->>'target' AS target`.trim();
+
 @Injectable()
 export class ActivityService {
   constructor(
@@ -273,9 +292,7 @@ export class ActivityService {
              COALESCE(o.payload->>'customer', o.payload->>'target', o.payload->>'phone') AS details,
              o.external_transaction_id AS reference,
              o.created_at, o.processed_at, o.company_id, c.name AS company_name,
-             o.payload->>'note' AS notes, NULL::text AS admin_notes,
-             o.payload->>'customer' AS recipient_name, o.payload->>'phone' AS recipient_contact,
-             o.payload->>'target' AS target
+             ${DEPOSIT_RECIPIENT_SQL}
       FROM transactions o
       LEFT JOIN sources s ON s.id = o.source_id
       LEFT JOIN companies c ON c.id = o.company_id
@@ -290,11 +307,7 @@ export class ActivityService {
                       o.external_reference),
              o.external_reference,
              o.created_at, o.processed_at, o.company_id, c.name, o.notes, o.admin_notes,
-             COALESCE(o.payout_details->>'recipientName', o.payout_details->>'accountHolder',
-                      o.payout_details->>'network', o.payout_details->>'description') AS recipient_name,
-             COALESCE(o.payout_details->>'recipientPhone', o.payout_details->>'walletAddress',
-                      o.payout_details->>'accountNumber', o.payout_details->>'bankName') AS recipient_contact,
-             NULL::text AS target
+             ${FLOW_RECIPIENT_SQL}
       FROM loads o
       LEFT JOIN companies c ON c.id = o.company_id
       WHERE o.status = 'COMPLETED'
@@ -308,11 +321,7 @@ export class ActivityService {
                       o.external_reference),
              o.external_reference,
              o.created_at, o.processed_at, o.company_id, c.name, o.notes, o.admin_notes,
-             COALESCE(o.payout_details->>'recipientName', o.payout_details->>'accountHolder',
-                      o.payout_details->>'network', o.payout_details->>'description') AS recipient_name,
-             COALESCE(o.payout_details->>'recipientPhone', o.payout_details->>'walletAddress',
-                      o.payout_details->>'accountNumber', o.payout_details->>'bankName') AS recipient_contact,
-             NULL::text AS target
+             ${FLOW_RECIPIENT_SQL}
       FROM withdrawals o
       LEFT JOIN companies c ON c.id = o.company_id
       WHERE o.status = 'COMPLETED'
@@ -326,11 +335,7 @@ export class ActivityService {
                       o.external_reference),
              o.external_reference,
              o.created_at, o.processed_at, o.company_id, c.name, o.notes, o.admin_notes,
-             COALESCE(o.payout_details->>'recipientName', o.payout_details->>'accountHolder',
-                      o.payout_details->>'network', o.payout_details->>'description') AS recipient_name,
-             COALESCE(o.payout_details->>'recipientPhone', o.payout_details->>'walletAddress',
-                      o.payout_details->>'accountNumber', o.payout_details->>'bankName') AS recipient_contact,
-             NULL::text AS target
+             ${FLOW_RECIPIENT_SQL}
       FROM payouts o
       LEFT JOIN companies c ON c.id = o.company_id
       WHERE o.status = 'COMPLETED'
@@ -348,6 +353,11 @@ export class ActivityService {
   // ledger row of an operation already shares that operation's company_id, so
   // COALESCE(la.net, 0) equals the old subquery exactly (operations with no
   // AVAILABLE entry contribute 0).
+  // NOTE: this union deliberately does NOT project the notes/recipient/target
+  // columns the other two builders carry — balance mode only feeds mapRow,
+  // which never reads them. If ActivityItem ever starts exposing those fields,
+  // add ${FLOW_RECIPIENT_SQL}/${DEPOSIT_RECIPIENT_SQL} here too, or balance-mode
+  // pages will silently return undefined where normal pages have data.
   private balanceUnionSql(companyPh: string): string {
     const netJoin = (fk: string) => `LEFT JOIN (
         SELECT ${fk} AS oid,
@@ -439,11 +449,7 @@ export class ActivityService {
              o.external_reference AS reference,
              o.created_at, o.processed_at, o.company_id, c.name AS company_name,
              o.notes, o.admin_notes,
-             COALESCE(o.payout_details->>'recipientName', o.payout_details->>'accountHolder',
-                      o.payout_details->>'network', o.payout_details->>'description') AS recipient_name,
-             COALESCE(o.payout_details->>'recipientPhone', o.payout_details->>'walletAddress',
-                      o.payout_details->>'accountNumber', o.payout_details->>'bankName') AS recipient_contact,
-             NULL::text AS target
+             ${FLOW_RECIPIENT_SQL}
       FROM ${table} o
       LEFT JOIN companies c ON c.id = o.company_id
       WHERE ${branchWhere('o.external_reference', 'o.payout_method::text', PAYOUT_DETAILS)}
@@ -459,9 +465,7 @@ export class ActivityService {
              COALESCE(o.payload->>'customer', o.payload->>'target', o.payload->>'phone') AS details,
              o.external_transaction_id AS reference,
              o.created_at, o.processed_at, o.company_id, c.name AS company_name,
-             o.payload->>'note' AS notes, NULL::text AS admin_notes,
-             o.payload->>'customer' AS recipient_name, o.payload->>'phone' AS recipient_contact,
-             o.payload->>'target' AS target
+             ${DEPOSIT_RECIPIENT_SQL}
       FROM transactions o
       LEFT JOIN sources s ON s.id = o.source_id
       LEFT JOIN companies c ON c.id = o.company_id

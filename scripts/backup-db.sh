@@ -77,7 +77,10 @@ PG_DB=$(grep -E '^POSTGRES_DB=' "$ENV_FILE" | head -1 | cut -d= -f2-)
 docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null | grep -q true \
   || fail "$CONTAINER is not running"
 
-STAMP=$(date -u '+%Y-%m-%d')
+# Stamp in the SCHEDULE's timezone, not UTC: the timer fires at 00:00
+# Asia/Beirut, which is still "yesterday" in UTC — a UTC stamp would name every
+# nightly dump with the previous day's date and mislead an operator mid-incident.
+STAMP=$(TZ=Asia/Beirut date '+%Y-%m-%d')
 TMP="$DIR/.txn-$STAMP.dump.partial"
 OUT="$DIR/txn-$STAMP.dump"
 IN_CONTAINER=/tmp/txn-backup.dump

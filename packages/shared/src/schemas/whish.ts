@@ -63,21 +63,30 @@ export function whishAmountIssue(amount: string, currency: string): string | nul
  * after payment. Private LAN addresses (192.168.x, 10.x) are NOT rejected —
  * Whish accepts them and an intranet flow is at least conceivable.
  */
-function isLoopbackUrl(raw: string): boolean {
+export function isLoopbackUrl(raw: string): boolean {
   let host: string;
   try {
     host = new URL(raw).hostname.toLowerCase();
   } catch {
     return false; // not parseable — the .url() check reports that instead
   }
-  const bare = host.replace(/^\[|\]$/g, ''); // new URL() keeps IPv6 brackets
+  // new URL() keeps IPv6 brackets and does NOT normalize an IPv4-mapped
+  // address away: `[::ffff:127.0.0.1]` parses to `[::ffff:7f00:1]`. Strip the
+  // brackets, the mapping prefix, and any trailing root dot (`localhost.`)
+  // so every spelling of loopback lands on the same checks. (Decimal/hex
+  // IPv4 forms like `http://2130706433/` are already normalized to 127.x by
+  // the WHATWG parser itself.)
+  const bare = host.replace(/^\[|\]$/g, '').replace(/\.$/, '');
+  const unmapped = bare.replace(/^::ffff:/, '');
   return (
-    host === 'localhost' ||
-    host.endsWith('.localhost') ||
+    bare === 'localhost' ||
+    bare.endsWith('.localhost') ||
     bare === '::1' ||
     bare === '::' ||
-    bare === '0.0.0.0' ||
-    /^127\./.test(bare)
+    unmapped === '0.0.0.0' ||
+    /^127\./.test(unmapped) ||
+    // IPv4-mapped loopback in hex-group form: ::ffff:7f00:1 (7f = 127).
+    /^7f[0-9a-f]{2}:/.test(unmapped)
   );
 }
 

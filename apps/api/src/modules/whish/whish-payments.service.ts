@@ -2,6 +2,7 @@ import { Injectable, Logger, type StreamableFile } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import crypto from 'node:crypto';
 import {
+  isLoopbackUrl,
   Money,
   MONEY_SCALE_LABEL,
   SourceFeeChannel,
@@ -270,12 +271,23 @@ export class WhishPaymentsService {
         select: { whishSuccessRedirectUrl: true, whishFailureRedirectUrl: true },
       }),
     );
+    // Loopback defaults saved BEFORE validation existed (or that slipped past
+    // it) would make Whish reject the link with a bare 403 on EVERY payment —
+    // the original incident. Treat such a stored default as absent so old rows
+    // self-heal onto the platform pages instead of failing forever; the schema
+    // still rejects new saves, and the dashboard shows the stale value to fix.
+    const usable = (url: string | null | undefined): string | null =>
+      url && !isLoopbackUrl(url) ? url : null;
     const successRedirectUrl = withRef(
-      input.successRedirectUrl ?? defaults?.whishSuccessRedirectUrl ?? `${webBase}/pay/success`,
+      input.successRedirectUrl ??
+        usable(defaults?.whishSuccessRedirectUrl) ??
+        `${webBase}/pay/success`,
       externalId,
     );
     const failureRedirectUrl = withRef(
-      input.failureRedirectUrl ?? defaults?.whishFailureRedirectUrl ?? `${webBase}/pay/failure`,
+      input.failureRedirectUrl ??
+        usable(defaults?.whishFailureRedirectUrl) ??
+        `${webBase}/pay/failure`,
       externalId,
     );
 

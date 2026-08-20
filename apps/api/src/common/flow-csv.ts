@@ -54,6 +54,10 @@ export interface FlowCsvRow {
 // Best-effort recipient name + contact across the payout-method variants
 // (cash/Whish → name + phone; crypto → network + wallet; bank → holder +
 // account; other → description). Reads the JSON detail defensively.
+// TWIN: the unified activity export derives the same two columns in SQL —
+// FLOW_RECIPIENT_SQL in ../modules/activity/activity.service.ts. Keep the
+// fallback ORDER identical in both places or the per-flow CSVs and the
+// activity CSV will disagree about the same row's counterparty.
 function recipient(details: unknown): { name: string; contact: string } {
   if (!details || typeof details !== 'object') return { name: '', contact: '' };
   const d = details as Record<string, string | undefined>;

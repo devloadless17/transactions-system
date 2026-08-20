@@ -176,7 +176,14 @@ export class CommissionResolverService {
 
 /** Epoch millis from whatever shape the cache handed us; 0 when absent/invalid. */
 function epochOf(value: Date | string | undefined): number {
-  if (value instanceof Date) return value.getTime();
+  if (value instanceof Date) {
+    // An Invalid Date (e.g. the repository hydrating a corrupted cached string)
+    // yields NaN, and a NaN comparator result silently disables BOTH this
+    // ordering and the final deterministic id tie-break — guard it like the
+    // string branch below.
+    const t = value.getTime();
+    return Number.isNaN(t) ? 0 : t;
+  }
   if (typeof value === 'string') {
     const t = Date.parse(value);
     return Number.isNaN(t) ? 0 : t;

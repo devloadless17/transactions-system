@@ -552,7 +552,7 @@ curl -s "https://portal.rivalpayments.com/v1/company/transactions/8b1f0e2a-1c3d-
 
 Stream **all** matching transactions as CSV (no row cap; streamed in keyset chunks). Accepts the **same query parameters** as the list endpoint (`status`, `sourceId`, `currency`, `from`, `to`, `search`; `page`/`pageSize` are accepted/validated but ignored — the export is not paginated, and the page-too-deep cap does not apply). This endpoint is exempt from the JSON envelope: on success you get a raw `text/csv` body with `Content-Disposition: attachment`. Errors (e.g. validation) still return the JSON error envelope.
 
-Columns (header row): `id, created_at, company_id, source_code, external_transaction_id, amount, currency, commission_amount, net_amount, status, customer, target, phone, note`. User-derived cells are CSV-escaped and formula-injection–neutralized.
+Columns (header row): `id, created_at, company_id, source_code, external_transaction_id, amount, currency, commission_amount, net_amount, status, customer, target, phone, note, processed_at`. New columns are only ever **appended**, so parse by header name rather than a fixed column count. User-derived cells are CSV-escaped; cells that could execute as spreadsheet formulas are neutralized with a leading `'` (a cell that is one pure signed number — a phone like `+96176851162`, an amount — exports verbatim).
 
 ```bash
 curl -s "https://portal.rivalpayments.com/v1/company/transactions/export.csv?status=COMPLETED&from=2026-06-01T00:00:00Z" \
