@@ -283,11 +283,21 @@ describe('activity feed — gross amounts with non-zero fees', () => {
 
     const dep = await h.transactions.ingest(
       { kind: 'source', sourceId: sourceC },
-      ingestInput(companyC, '1000'),
+      ingestInput(companyC, '1000', {
+        payload: {
+          customer: 'Jane Payer',
+          phone: '+96170001122',
+          note: 'inv-9001',
+          target: 'ACC-777',
+        },
+      }),
     );
     idDepositC = dep.id; // available: 900
 
-    const wd = await h.withdrawals.request(companyC, userC, cashWithdrawalInput('150'));
+    const wd = await h.withdrawals.request(companyC, userC, {
+      ...cashWithdrawalInput('150'),
+      notes: 'client-ref-77',
+    });
     await h.withdrawals.approve(wd.id, userC, { externalReference: 'wd-ontop-1' });
     idWithdrawalC = wd.id; // gross 165 leaves → available: 735
 
@@ -349,19 +359,45 @@ describe('activity feed — gross amounts with non-zero fees', () => {
     expect(header).not.toContain('fee');
     expect(header).not.toContain('net');
 
-    // Money columns are the CSV's last four cells (currency, gross, fee, net,
-    // fee_application) — index from the end so free-text cells can't shift them.
+    // Look money columns up BY HEADER NAME, parsing quotes properly: free-text
+    // cells (description/details/notes) may contain commas, and columns get
+    // appended over time, so neither a naive split nor an index-from-either-end
+    // is safe.
     const moneyTail = (line: string) => {
-      const cells = line.split(',');
+      const cells = parseCsvLine(line);
+      const at = (name: string) => cells[header.indexOf(name)];
       return {
-        gross: cells[cells.length - 4],
-        fee: cells[cells.length - 3],
-        net: cells[cells.length - 2],
-        feeApplication: cells[cells.length - 1],
+        gross: at('gross_amount'),
+        fee: at('fee_amount'),
+        net: at('net_amount'),
+        feeApplication: at('fee_application'),
       };
     };
 
+    // The counterparty/notes columns must mirror the per-flow exports — their
+    // absence here is exactly what an integrating client reported.
+    expect(header).toContain('recipient_name');
+    expect(header).toContain('recipient_contact');
+    expect(header).toContain('notes');
+    expect(header).toContain('admin_notes');
+    const cellOf = (line: string, name: string) => parseCsvLine(line)[header.indexOf(name)];
+
     const wdLine = lines.find((l) => l.startsWith(idWithdrawalC))!;
+    expect(cellOf(wdLine, 'recipient_name')).toBe('Test Payee');
+    // No formula-injection apostrophe: a phone-shaped `+…` cell is benign and
+    // must export verbatim (the guard used to corrupt every phone number).
+    expect(cellOf(wdLine, 'recipient_contact')).toBe('+9610000000');
+    expect(cellOf(wdLine, 'notes')).toBe('client-ref-77');
+
+    const depLineC = lines.find((l) => l.startsWith(idDepositC))!;
+    expect(cellOf(depLineC, 'recipient_name')).toBe('Jane Payer');
+    expect(cellOf(depLineC, 'recipient_contact')).toBe('+96170001122');
+    expect(cellOf(depLineC, 'notes')).toBe('inv-9001');
+    expect(cellOf(depLineC, 'target')).toBe('ACC-777');
+    expect(cellOf(depLineC, 'admin_notes')).toBe('');
+    // Flow rows have no trading account — the column is empty, never misaligned.
+    expect(cellOf(wdLine, 'target')).toBe('');
+
     const wd = moneyTail(wdLine);
     expect(moneyEq(wd.gross, '165')).toBe(true);
     expect(moneyEq(wd.fee, '15')).toBe(true);
@@ -431,9 +467,44 @@ describe('activity feed — ON_TOP deposit reports the gross that actually moved
       .trim()
       .split('\n')
       .find((l) => l.startsWith(idDepositD))!;
-    const cells = line.split(',');
-    expect(moneyEq(cells[cells.length - 4], '1100')).toBe(true); // gross_amount
-    expect(moneyEq(cells[cells.length - 3], '100')).toBe(true); // fee_amount
-    expect(moneyEq(cells[cells.length - 2], '1000')).toBe(true); // net_amount
+    const head = csv
+      .trim()
+      .split('\n')[0]
+      .replace(/^\uFEFF/, '')
+      .split(',');
+    const cells = parseCsvLine(line);
+    const at = (name: string) => cells[head.indexOf(name)];
+    expect(moneyEq(at('gross_amount'), '1100')).toBe(true);
+    expect(moneyEq(at('fee_amount'), '100')).toBe(true);
+    expect(moneyEq(at('net_amount'), '1000')).toBe(true);
   });
 });
+
+/**
+ * Minimal RFC-4180 line parser: splits on commas that are OUTSIDE quotes and
+ * unescapes doubled quotes. The export quotes any cell containing a comma
+ * (notes, descriptions), so a naive `split(',')` misaligns every column after
+ * the first such value.
+ */
+function parseCsvLine(line: string): string[] {
+  const cells: string[] = [];
+  let cur = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (line[i + 1] === '"') {
+          cur += '"';
+          i++;
+        } else inQuotes = false;
+      } else cur += ch;
+    } else if (ch === '"') inQuotes = true;
+    else if (ch === ',') {
+      cells.push(cur);
+      cur = '';
+    } else cur += ch;
+  }
+  cells.push(cur);
+  return cells;
+}

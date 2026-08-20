@@ -35,6 +35,7 @@ import {
   NotFoundError,
   ValidationError,
 } from '../../common/errors/domain.error';
+import { csvCell } from '../../common/csv';
 
 // The per-tenant list COUNT is cached briefly so paging reuses it and a whale
 // tenant's COUNT(*) doesn't re-run on every page load. The total can lag by up
@@ -594,6 +595,9 @@ export class TransactionsService {
       'target',
       'phone',
       'note',
+      // Appended last (positions above stay stable for existing parsers):
+      // when the transaction settled — mirrors the flow exports' processed_at.
+      'processed_at',
     ];
 
     const where: Prisma.TransactionWhereInput = {};
@@ -661,6 +665,7 @@ export class TransactionsService {
               csvCell(payloadString(r.payload, 'target') ?? ''),
               csvCell(payloadString(r.payload, 'phone') ?? ''),
               csvCell(payloadString(r.payload, 'note') ?? ''),
+              r.processedAt?.toISOString() ?? '',
             ].join(',') + '\n';
         }
         yield buf;
@@ -902,17 +907,4 @@ function payloadString(payload: unknown, key: string): string | null {
     if (typeof v === 'string' && v.length > 0) return v;
   }
   return null;
-}
-
-function csvCell(s: string): string {
-  // Neutralize spreadsheet formula injection: Excel/Sheets execute a cell that
-  // begins with = + - @ (or a leading tab/CR). The user-derived columns
-  // (externalTransactionId, customer/target/phone/note) come verbatim from
-  // untrusted source-provider payloads, so prefix any such value with a single
-  // quote before RFC-4180 quoting. (Ledger CSV is system-controlled, so unaffected.)
-  const v = /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
-  if (v.includes(',') || v.includes('"') || v.includes('\n')) {
-    return `"${v.replace(/"/g, '""')}"`;
-  }
-  return v;
 }
