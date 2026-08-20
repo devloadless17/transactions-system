@@ -120,21 +120,49 @@ being due. That gap is what makes the alert worth trusting.
 Password login and direct root login are **intentionally on** — the "never locked out"
 rule, with a long random root password and the hPanel browser console as fallbacks. That
 choice is only safe with brute-force protection in front of it, so **fail2ban** guards
-sshd: 5 failures in 10 minutes earns a 1-hour ban, on ports 22 and 2222.
+sshd on both ports (22 and 2222): 10 failures in 10 minutes earns a 15-minute ban.
 
-Config lives in `/etc/fail2ban/jail.local` — never `jail.conf`, which package upgrades
-overwrite. It sets `backend = systemd` because this host's SSH unit is `ssh.service` and
-fail2ban's default log path does not apply.
+### It cannot block a deploy
+
+Worth knowing precisely, because "will this lock out my CI?" is the obvious fear:
+
+- The active filter (`mode = normal`) matches only **`Failed password`** and
+  **`Invalid user`**. It does not match connection-closed or reset events.
+- GitHub Actions authenticates by **key**: 0 failed-publickey events in 30 days across
+  49 successful logins. Successful auth is never counted.
+- The workflow's reachability retry loop is a raw TCP probe
+  (`exec 3<>/dev/tcp/$HOST/$PORT`). It never reaches authentication, so it produces no
+  failure line no matter how many times it retries.
+
+`maxretry` is 10 rather than 5 purely as margin for the one case that _could_ generate
+real failures — debugging a broken deploy key across several re-runs. Brute-forcers here
+make hundreds of attempts, so 10 still stops them immediately. The ban is deliberately
+short: a false positive costs one re-run, never a blocked release.
+
+**What actually blocks deploys is Hostinger's edge scrub**, not fail2ban — it is
+IP-based, hits the runner before it ever reaches your server, and is exactly what the
+`Wait for VPS SSH to be reachable` step in `deploy.yml` rides out. Removing fail2ban
+would not help with it at all.
+
+### Config
+
+Settings live in the `[sshd]` **section** of `/etc/fail2ban/jail.local`, not `[DEFAULT]`
+— a jail-specific value always wins, whereas `[DEFAULT]` there loses to
+`/etc/fail2ban/jail.d/defaults-debian.conf` and your `bantime` silently reverts to the
+stock 600s. Never edit `jail.conf`; upgrades overwrite it. `backend = systemd` is
+required because this host's unit is `ssh.service`.
+
+Always verify after editing — a jail that runs but matches nothing is the normal failure:
 
 ```bash
+fail2ban-client get sshd bantime               # did the setting actually apply?
+fail2ban-regex systemd-journal /etc/fail2ban/filter.d/sshd.conf   # "matched" must be > 0
 fail2ban-client status sshd                    # who is banned right now
 fail2ban-client set sshd unbanip <ip>          # if it ever catches you
 ```
 
 If it does catch you, do not keep retrying — that extends the ban. Use the hPanel
 console, which bypasses SSH entirely.
-
----
 
 ## Deploying
 
