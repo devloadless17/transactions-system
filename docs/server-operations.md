@@ -180,6 +180,28 @@ git merge-base --is-ancestor origin/production origin/main && echo "fast-forward
 git diff --name-only origin/production..origin/main | grep -i migration || echo "no migrations"
 ```
 
+### Two things worth knowing
+
+**If a run ever sits at `action_required`, it is not broken and it is not billing.**
+Normally pushes to `staging` and `production` start on their own — 11 of 12 staging
+pushes ran unattended. It happened once, on 2026-08-20, in the same hour that Actions
+came back from a billing block, which is what GitHub gates after a payment
+interruption. The symptom is confusing because it looks exactly like the billing failure
+itself: zero jobs, 0s duration, and `gh run rerun` refusing with "cannot be retried
+through the API". Approve it once in the Actions UI and it proceeds. Do not go hunting
+for a protection rule — there are no environments configured on this repo.
+
+**The Postgres container can be replaced by any deploy.** `docker-compose.prod.yml`
+pins `postgres:16-alpine`, a _floating_ tag, so `docker compose pull` may fetch a newer
+build and `up -d` then recreates the container — observed on 2026-08-20, which moved the
+engine to 16.15. The named volume survives and the data is untouched (verified: ledger
+still nets to exactly 0), but it means the database briefly goes down on deploys you
+expected to be api/web-only, and the engine version is not reproducible.
+
+If that matters, pin the patch — `postgres:16.15-alpine` — and bump deliberately. Same
+applies to `redis:7-alpine` and `caddy:2-alpine`. Do it at a calm moment: changing the
+pin itself causes one more recreate.
+
 A deploy with no migrations is code-only: images swap, Caddy rides out the gap with
 `lb_try_duration`, and the health gate rolls you back if the new release is unhealthy
 (`./rollback.sh` on the server). A deploy _with_ migrations changes the database and
