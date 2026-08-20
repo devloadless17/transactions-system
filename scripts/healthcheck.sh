@@ -117,7 +117,19 @@ case "$code" in
   *)     urgent "public site returned $code — clients cannot reach the dashboard" ;;
 esac
 
-# --- 6. carry forward the monthly restore drill's verdict --------------------
+# --- 6. brute-force protection ---------------------------------------------
+# Password + root SSH login are intentionally enabled here ("never locked out"),
+# which is only safe while fail2ban is actually running. If it dies, nothing
+# announces it and the box quietly reverts to unprotected. Notice, not urgent:
+# it weakens defence rather than breaking anything for clients today.
+if systemctl is-active --quiet fail2ban; then
+  banned=$(fail2ban-client status sshd 2>/dev/null | awk -F: '/Currently banned/{gsub(/[^0-9]/,"",$2); print $2}')
+  ok "fail2ban active (${banned:-0} IP(s) currently banned)"
+else
+  notice "fail2ban is NOT running — SSH brute-force protection is off"
+fi
+
+# --- 7. carry forward the monthly restore drill's verdict --------------------
 # The drill never messages Telegram itself; it leaves its result here so it is
 # surfaced as a notice rather than as an interruption.
 if [ -f /home/deploy/.drill-status ]; then

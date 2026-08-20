@@ -115,6 +115,27 @@ being due. That gap is what makes the alert worth trusting.
 
 ---
 
+## SSH & brute force
+
+Password login and direct root login are **intentionally on** — the "never locked out"
+rule, with a long random root password and the hPanel browser console as fallbacks. That
+choice is only safe with brute-force protection in front of it, so **fail2ban** guards
+sshd: 5 failures in 10 minutes earns a 1-hour ban, on ports 22 and 2222.
+
+Config lives in `/etc/fail2ban/jail.local` — never `jail.conf`, which package upgrades
+overwrite. It sets `backend = systemd` because this host's SSH unit is `ssh.service` and
+fail2ban's default log path does not apply.
+
+```bash
+fail2ban-client status sshd                    # who is banned right now
+fail2ban-client set sshd unbanip <ip>          # if it ever catches you
+```
+
+If it does catch you, do not keep retrying — that extends the ban. Use the hPanel
+console, which bypasses SSH entirely.
+
+---
+
 ## Deploying
 
 `main` is the integration branch; **only `production` deploys**.
