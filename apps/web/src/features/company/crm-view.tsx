@@ -533,8 +533,8 @@ function DemoInbox() {
       <CardContent>
         {events.length === 0 ? (
           <div className="py-10 text-center text-sm text-muted-foreground">
-            No events yet. Enable the demo CRM above, then create a Whish payment link or ingest a
-            transaction.
+            No events yet. Enable the demo CRM above, then create a Whish payment link or wait for
+            the next provider deposit.
           </div>
         ) : (
           <ul className="space-y-2">

@@ -35,8 +35,9 @@ export function SourcesView() {
       <div>
         <h1 className="text-2xl font-semibold">Sources</h1>
         <p className="text-sm text-muted-foreground">
-          Active providers you can send transactions from. Use the{' '}
-          <code className="font-mono">code</code> field in the ingestion payload.
+          Active providers that can send deposits to your account. The{' '}
+          <code className="font-mono">code</code> matches the{' '}
+          <code className="font-mono">sourceCode</code> on your transactions.
         </p>
       </div>
       <Card>

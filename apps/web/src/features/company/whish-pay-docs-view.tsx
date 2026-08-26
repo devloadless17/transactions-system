@@ -172,6 +172,10 @@ function ApiSection() {
       'No commission rule covers this amount for your company, so the link is refused before any customer pays. Ask your platform admin to add a rule covering your amounts.',
     ],
     [
+      '422 COMMISSION_EXCEEDS_AMOUNT',
+      'The configured fee for this amount is larger than the amount itself, so the link is refused before any customer pays. Ask your platform admin to review the rule for small amounts.',
+    ],
+    [
       '401 / 403',
       'Auth failed. Send your company key as Authorization: Bearer tsk_… — these are server-to-server (no cookies/session).',
     ],
