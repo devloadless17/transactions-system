@@ -167,7 +167,7 @@ Endpoints for external payment/transfer providers ("sources" — OMT, Whish, ban
 - **No CSRF.** API-key requests skip CSRF entirely.
 - **Rate limit:** per-API-key, **300 requests / 60s** (`ApiKeyRateLimitGuard`), _not_ the global per-IP throttler — a single high-volume provider egresses from one IP and would otherwise be capped too low. Over budget → `429 RATE_LIMITED` (flat envelope; `error.details` carries `{ limit: 300, windowSeconds: 60 }`). Every response sets `RateLimit-Limit` / `RateLimit-Remaining` / `RateLimit-Reset` (seconds), and a 429 adds `Retry-After` (seconds) — use them to self-pace. The limiter **fails open**: if Redis is unavailable, requests are allowed through unmetered.
 - **Envelope:** standard `{ success, statusCode, data }` on success, `{ success, statusCode, error }` on failure. `POST` returns **201**, `GET` returns **200**.
-- Every ingest attempt — success **and** 4xx/5xx rejection — is recorded server-side as a `TransactionLog` (raw request body + the exact response envelope you received), best-effort and off the money path.
+- Every ingest attempt that reaches the endpoint handler — success **and** 4xx/5xx rejection — is recorded server-side as a `TransactionLog` (raw request body + the exact response envelope you received), best-effort and off the money path. Guard-stage rejections (401 invalid key, 403 wrong source, 429) happen before the handler and are captured in the server logs, not in `transaction_logs`.
 
 ---
 

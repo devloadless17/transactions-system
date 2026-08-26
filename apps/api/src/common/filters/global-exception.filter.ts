@@ -154,6 +154,18 @@ export class GlobalExceptionFilter implements ExceptionFilter {
           status: 409,
           error: { code: 'WRITE_CONFLICT', message: 'Write conflict, please retry' },
         };
+      // TRANSIENT infrastructure faults must surface as retryable 5xx, never as
+      // a permanent-looking 4xx: the integration docs tell sources to retry 5xx
+      // and NEVER retry 400s, so a 400 here would strand an already-collected
+      // deposit behind a DB blip. P2024 = connection-pool timeout, P2028 =
+      // interactive-transaction timeout/expiry.
+      case 'P2024':
+      case 'P2028':
+        this.logger.error(`transient Prisma ${e.code} mapped to 500: ${e.message}`);
+        return {
+          status: 500,
+          error: { code: 'INTERNAL_ERROR', message: 'Temporary server error, please retry' },
+        };
       default:
         // Unknown known-error: surface the Prisma code but not internals.
         return {

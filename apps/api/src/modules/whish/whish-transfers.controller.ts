@@ -21,6 +21,7 @@ import {
 import { ZodPipe } from '../../common/pipes/zod-validation.pipe';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { CsrfGuard } from '../auth/guards/csrf.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Audited } from '../audit/audit.decorator';
@@ -34,7 +35,10 @@ import { WhishSessionStore } from './whish-session.store';
  * the editor for the captured Whish consumer-app session that signs them. Shares
  * the /admin/whish prefix with WhishAdminController (no route collisions).
  */
-@UseGuards(JwtAuthGuard, RolesGuard)
+// CsrfGuard: these endpoints move REAL money on a session credential — they
+// must carry the same double-submit CSRF check as every other session-
+// authenticated mutation surface (the web client already sends x-csrf-token).
+@UseGuards(JwtAuthGuard, RolesGuard, CsrfGuard)
 @Roles(UserRole.SUPER_ADMIN)
 @Controller('admin/whish')
 export class WhishTransfersController {

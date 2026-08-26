@@ -100,3 +100,19 @@ describe('22003 matching is anchored (no substring false positives)', () => {
     expect(body.error.code).toBe('INTERNAL_ERROR');
   });
 });
+
+describe('transient Prisma faults stay retryable 5xx', () => {
+  it.each(['P2024', 'P2028'])(
+    '%s (pool/transaction timeout) maps to 500 INTERNAL_ERROR, never a do-not-retry 400',
+    async (code) => {
+      const { Prisma } = await import('@app/db');
+      const err = new Prisma.PrismaClientKnownRequestError('timeout', {
+        code,
+        clientVersion: '0.0.0',
+      });
+      const { status, body } = capture(err);
+      expect(status).toBe(500);
+      expect(body.error.code).toBe('INTERNAL_ERROR');
+    },
+  );
+});

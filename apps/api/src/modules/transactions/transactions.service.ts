@@ -56,10 +56,11 @@ const CSV_EXPORT_CHUNK = 1000;
 // browsing hits it (100k rows at pageSize 100 = page 1,000).
 const MAX_LIST_OFFSET = 100_000;
 
-// A company with no matching commission rule blocks EVERY ingest for it (a
-// transaction can't be booked unpriced). That's a silent money-stopper, so we
-// alert ops — but re-alert at most once per (company, source) per this window so
-// a source retrying the same blocked transaction can't flood the error log.
+// A pricing gap on ingest no longer blocks the deposit — it books at net 0
+// (full amount withheld as fee, `pricing_issue` stamped) — but the company is
+// credited NOTHING until an operator fixes the rule and compensates, so we
+// alert ops loudly. Re-alert at most once per (kind, company, source) per this
+// window so a busy source can't flood the error log.
 const NO_RULE_ALERT_TTL_MS = 10 * 60_000;
 
 // Source-fee schedules are admin-only static config that changes rarely, yet the

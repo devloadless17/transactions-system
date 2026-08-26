@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "f7c0a6b2-9d40-4cda-9c01-7d5b1ec23a91",
     "name": "Transactions System",
-    "description": "Full end-to-end test flow for the multi-tenant transaction platform.\n\nTwo distinct API key types:\n- **Source key** \u2014 held by external providers (OMT, Wish). Can POST transactions on behalf of any company via `/ingest/:sourceCode/transactions`, and discover companies via `GET /ingest/companies`.\n- **Company key** \u2014 held by the company itself. READ-ONLY. Used for programmatic dashboards/exports against `/company/*` endpoints.\n\nRun the requests **in order** from the top folder down:\n\n1. **00 \u2014 Health** \u2014 sanity check the API is up\n2. **01 \u2014 Admin** \u2014 log in as super admin, create a test company\n3. **02 \u2014 Company Owner** \u2014 log in as the new owner, create a read-only company key\n4. **02b \u2014 Admin: Source Keys** \u2014 mint a source key for a provider (e.g. OMT)\n5. **03 \u2014 Ingestion (external provider)** \u2014 discover companies, then POST a transaction using the source key + companySlug\n6. **04 \u2014 Owner reads** \u2014 wallets, transactions, ledger\n7. **05 \u2014 Withdrawals** \u2014 request one, then admin approves with a reference\n8. **07 \u2014 Analytics** \u2014 admin dashboards\n9. **08 \u2014 Negative tests** \u2014 confirm validation/auth errors fire correctly\n\nThe collection has **test scripts that auto-capture** the CSRF token, company ID, owner credentials, source/company API keys, and withdrawal ID into collection variables \u2014 so you just click Send in order and everything flows.\n\n**Cookies**: Postman manages them per-host. When you switch from admin to owner login, the older session is overwritten automatically. If you want to log out fully, click the Cookies icon and clear `localhost`.",
+    "description": "Full end-to-end test flow for the multi-tenant transaction platform.\n\nTwo distinct API key types:\n- **Source key** — held by external providers (OMT, Wish). Can POST transactions on behalf of any company via `/ingest/:sourceCode/transactions`, and discover companies via `GET /ingest/companies`.\n- **Company key** — held by the company itself. READ-ONLY. Used for programmatic dashboards/exports against `/company/*` endpoints.\n\nRun the requests **in order** from the top folder down:\n\n1. **00 — Health** — sanity check the API is up\n2. **01 — Admin** — log in as super admin, create a test company\n3. **02 — Company Owner** — log in as the new owner, create a read-only company key\n4. **02b — Admin: Source Keys** — mint a source key for a provider (e.g. OMT)\n5. **03 — Ingestion (external provider)** — discover companies, then POST a transaction using the source key + companySlug\n6. **04 — Owner reads** — wallets, transactions, ledger\n7. **05 — Withdrawals** — request one, then admin approves with a reference\n8. **07 — Analytics** — admin dashboards\n9. **08 — Negative tests** — confirm validation/auth errors fire correctly\n\nThe collection has **test scripts that auto-capture** the CSRF token, company ID, owner credentials, source/company API keys, and withdrawal ID into collection variables — so you just click Send in order and everything flows.\n\n**Cookies**: Postman manages them per-host. When you switch from admin to owner login, the older session is overwritten automatically. If you want to log out fully, click the Cookies icon and clear `localhost`.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -80,7 +80,7 @@
       "key": "keyId",
       "value": "",
       "type": "string",
-      "description": "API key id \u2014 set from list/create response"
+      "description": "API key id — set from list/create response"
     }
   ],
   "event": [
@@ -110,7 +110,7 @@
   ],
   "item": [
     {
-      "name": "00 \u2014 Health",
+      "name": "00 — Health",
       "item": [
         {
           "name": "GET /health",
@@ -128,7 +128,7 @@
       ]
     },
     {
-      "name": "01 \u2014 Admin",
+      "name": "01 — Admin",
       "item": [
         {
           "name": "Login as super admin",
@@ -242,7 +242,7 @@
       ]
     },
     {
-      "name": "02 \u2014 Company Owner",
+      "name": "02 — Company Owner",
       "item": [
         {
           "name": "Login as company owner",
@@ -278,7 +278,7 @@
               "host": ["{{baseUrl}}"],
               "path": ["auth", "login"]
             },
-            "description": "Overwrites the admin cookies. Subsequent cookie-authed requests are made as this company's owner.\n\n`mustChangePassword` is `true` on first login \u2014 for API testing you can ignore it, the access token still works."
+            "description": "Overwrites the admin cookies. Subsequent cookie-authed requests are made as this company's owner.\n\n`mustChangePassword` is `true` on first login — for API testing you can ignore it, the access token still works."
           }
         },
         {
@@ -304,7 +304,7 @@
                   "pm.test('201 Created', () => pm.expect([200, 201]).to.include(pm.response.code));",
                   "const j = pm.response.json().data; // responses are enveloped: { success, statusCode, data }",
                   "pm.collectionVariables.set('apiKey', j.plaintext);",
-                  "console.log('Saved apiKey =', j.plaintext.slice(0, 24) + '\u2026');"
+                  "console.log('Saved apiKey =', j.plaintext.slice(0, 24) + '…');"
                 ]
               }
             }
@@ -330,7 +330,7 @@
               "host": ["{{baseUrl}}"],
               "path": ["company", "api-keys"]
             },
-            "description": "**Read-only** company key. Use it to GET your company's transactions, wallets, ledger, withdrawals, etc. from a script or internal tool.\n\n**NOT for ingestion** \u2014 ingestion requires a source API key minted by the admin (see folder 02b \u2014 Admin: Source Keys). Attempting to POST /ingest with a company key returns 403.\n\nThe plaintext is shown **only once**. Auto-saved to {{apiKey}}."
+            "description": "**Read-only** company key. Use it to GET your company's transactions, wallets, ledger, withdrawals, etc. from a script or internal tool.\n\n**NOT for ingestion** — ingestion requires a source API key minted by the admin (see folder 02b — Admin: Source Keys). Attempting to POST /ingest with a company key returns 403.\n\nThe plaintext is shown **only once**. Auto-saved to {{apiKey}}."
           }
         },
         {
@@ -348,8 +348,8 @@
       ]
     },
     {
-      "name": "02b \u2014 Admin: Source Keys",
-      "description": "Mint a source API key for an external provider (OMT, Wish, \u2026). Source keys are the **only** way to POST transactions to the platform.\n\nRun the **Login as super admin** request first if your admin session expired.",
+      "name": "02b — Admin: Source Keys",
+      "description": "Mint a source API key for an external provider (OMT, Wish, …). Source keys are the **only** way to POST transactions to the platform.\n\nRun the **Login as super admin** request first if your admin session expired.",
       "item": [
         {
           "name": "(switch to admin) Login as super admin",
@@ -399,7 +399,7 @@
                   "  pm.collectionVariables.set('sourceId', match.id);",
                   "  console.log('Saved sourceId for', wanted, '=', match.id);",
                   "} else {",
-                  "  console.warn('Could not find source code', wanted, '\u2014 pick one from the response and set {{sourceCode}} accordingly');",
+                  "  console.warn('Could not find source code', wanted, '— pick one from the response and set {{sourceCode}} accordingly');",
                   "}"
                 ]
               }
@@ -419,7 +419,7 @@
                 }
               ]
             },
-            "description": "Looks up the sourceId for `{{sourceCode}}` (default: `omt`) and saves it to `{{sourceId}}`. You can change `{{sourceCode}}` in collection variables to target any other source (wish_money_code, bank_transfer, crypto_gateway, \u2026)."
+            "description": "Looks up the sourceId for `{{sourceCode}}` (default: `omt`) and saves it to `{{sourceId}}`. You can change `{{sourceCode}}` in collection variables to target any other source (wish_money_code, bank_transfer, crypto_gateway, …)."
           }
         },
         {
@@ -433,7 +433,7 @@
                   "pm.test('201 Created', () => pm.expect([200, 201]).to.include(pm.response.code));",
                   "const j = pm.response.json().data; // responses are enveloped: { success, statusCode, data }",
                   "pm.collectionVariables.set('sourceApiKey', j.plaintext);",
-                  "console.log('Saved sourceApiKey =', j.plaintext.slice(0, 24) + '\u2026');"
+                  "console.log('Saved sourceApiKey =', j.plaintext.slice(0, 24) + '…');"
                 ]
               }
             }
@@ -477,8 +477,8 @@
       ]
     },
     {
-      "name": "03 \u2014 Ingestion (external provider)",
-      "description": "Run **02b \u2014 Admin: Source Keys** first to mint `{{sourceApiKey}}`. These requests use only the Bearer API key \u2014 no cookies, no CSRF. This simulates the real external integration where OMT / Wish / banks POST to the platform.\n\nKey identifies the **source**. The body's `companyId` identifies which company the transaction is **for**.",
+      "name": "03 — Ingestion (external provider)",
+      "description": "Run **02b — Admin: Source Keys** first to mint `{{sourceApiKey}}`. These requests use only the Bearer API key — no cookies, no CSRF. This simulates the real external integration where OMT / Wish / banks POST to the platform.\n\nKey identifies the **source**. The body's `companyId` identifies which company the transaction is **for**.",
       "item": [
         {
           "name": "Discover companies",
@@ -553,7 +553,7 @@
               "host": ["{{baseUrl}}"],
               "path": ["ingest", "{{sourceCode}}", "transactions"]
             },
-            "description": "Matches the **1\u2013100 USD FIXED 1** seeded commission rule. The `{{$timestamp}}` keeps the externalTransactionId unique on re-run.\n\n**Payload fields** (the API recognises these plain-string fields; any extra keys are preserved):\n- `customer` \u2014 the *sender* / payer name\n- `tradingAccount` \u2014 the *recipient* / beneficiary account\n- `phone` \u2014 a contact phone number\n- `note` \u2014 free-text comment from the provider\n- any other keys under `payload` are preserved as-is"
+            "description": "Matches the **1–100 USD FIXED 1** seeded commission rule. The `{{$timestamp}}` keeps the externalTransactionId unique on re-run.\n\n**Payload fields** (the API recognises these plain-string fields; any extra keys are preserved):\n- `customer` — the *sender* / payer name\n- `tradingAccount` — the *recipient* / beneficiary account\n- `phone` — a contact phone number\n- `note` — free-text comment from the provider\n- any other keys under `payload` are preserved as-is"
           }
         },
         {
@@ -579,7 +579,7 @@
               "host": ["{{baseUrl}}"],
               "path": ["ingest", "{{sourceCode}}", "transactions"]
             },
-            "description": "**101\u2013300 USD FIXED 5** bracket."
+            "description": "**101–300 USD FIXED 5** bracket."
           }
         },
         {
@@ -605,7 +605,7 @@
               "host": ["{{baseUrl}}"],
               "path": ["ingest", "{{sourceCode}}", "transactions"]
             },
-            "description": "**301\u20131000 PERCENTAGE 2%** \u2192 fee 10, net 490."
+            "description": "**301–1000 PERCENTAGE 2%** → fee 10, net 490."
           }
         },
         {
@@ -631,13 +631,13 @@
               "host": ["{{baseUrl}}"],
               "path": ["ingest", "{{sourceCode}}", "transactions"]
             },
-            "description": "**Send this twice.** The second response should return the **same `id`** as the first \u2014 proving the dedup works. No duplicate row is created."
+            "description": "**Send this twice.** The second response should return the **same `id`** as the first — proving the dedup works. No duplicate row is created."
           }
         }
       ]
     },
     {
-      "name": "04 \u2014 Owner reads",
+      "name": "04 — Owner reads",
       "item": [
         {
           "name": "Wallets",
@@ -737,7 +737,7 @@
       ]
     },
     {
-      "name": "05 \u2014 Withdrawals",
+      "name": "05 — Withdrawals",
       "item": [
         {
           "name": "Request CRYPTO withdrawal (owner)",
@@ -777,7 +777,7 @@
               "host": ["{{baseUrl}}"],
               "path": ["company", "withdrawals"]
             },
-            "description": "Run **02 \u2014 Login as company owner** first so the cookie is the owner's.\n\nMoves 50 USD from `available` to `reserved`. Status PENDING until admin approves."
+            "description": "Run **02 — Login as company owner** first so the cookie is the owner's.\n\nMoves 50 USD from `available` to `reserved`. Status PENDING until admin approves."
           }
         },
         {
@@ -905,7 +905,7 @@
               "host": ["{{baseUrl}}"],
               "path": ["admin", "withdrawals", "{{withdrawalId}}", "approve"]
             },
-            "description": "Approves the most-recently-created withdrawal (auto-captured into {{withdrawalId}}).\n\n**Required**: `externalReference` (\u22652 chars). This represents the off-platform proof \u2014 bank wire id, crypto tx hash, receipt number \u2014 that the admin **already sent the money**. The platform doesn't move the money; it records the accounting around that movement."
+            "description": "Approves the most-recently-created withdrawal (auto-captured into {{withdrawalId}}).\n\n**Required**: `externalReference` (≥2 chars). This represents the off-platform proof — bank wire id, crypto tx hash, receipt number — that the admin **already sent the money**. The platform doesn't move the money; it records the accounting around that movement."
           }
         },
         {
@@ -924,20 +924,20 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"notes\": \"KYC mismatch \u2014 please update bank details\"\n}"
+              "raw": "{\n  \"notes\": \"KYC mismatch — please update bank details\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/admin/withdrawals/{{withdrawalId}}/reject",
               "host": ["{{baseUrl}}"],
               "path": ["admin", "withdrawals", "{{withdrawalId}}", "reject"]
             },
-            "description": "Use instead of approve. Funds return from reserved \u2192 available."
+            "description": "Use instead of approve. Funds return from reserved → available."
           }
         }
       ]
     },
     {
-      "name": "05b \u2014 Company API Key (no session)",
+      "name": "05b — Company API Key (no session)",
       "item": [
         {
           "name": "Request withdrawal via API key",
@@ -977,7 +977,7 @@
               "host": ["{{baseUrl}}"],
               "path": ["company", "withdrawals"]
             },
-            "description": "Uses **company API key** (`Authorization: Bearer tsk_...`) \u2014 no session cookie or CSRF token required.\n\nGet the key from: `POST /v1/company/api-keys` (run **02 \u2014 Create API key** first to mint one and save it as `companyApiKey`)."
+            "description": "Uses **company API key** (`Authorization: Bearer tsk_...`) — no session cookie or CSRF token required.\n\nGet the key from: `POST /v1/company/api-keys` (run **02 — Create API key** first to mint one and save it as `companyApiKey`)."
           }
         },
         {
@@ -995,7 +995,7 @@
               "host": ["{{baseUrl}}"],
               "path": ["company", "withdrawals"]
             },
-            "description": "List company withdrawals using an API key \u2014 no session required."
+            "description": "List company withdrawals using an API key — no session required."
           }
         },
         {
@@ -1061,7 +1061,7 @@
               "host": ["{{baseUrl}}"],
               "path": ["company", "payouts"]
             },
-            "description": "Uses **company API key** \u2014 no session cookie or CSRF token required."
+            "description": "Uses **company API key** — no session cookie or CSRF token required."
           }
         },
         {
@@ -1119,7 +1119,7 @@
               "host": ["{{baseUrl}}"],
               "path": ["company", "loads"]
             },
-            "description": "Uses **company API key** \u2014 no session cookie or CSRF token required."
+            "description": "Uses **company API key** — no session cookie or CSRF token required."
           }
         },
         {
@@ -1148,7 +1148,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('403 Forbidden \u2014 source key rejected', () => pm.expect(pm.response.code).to.equal(403));"
+                  "pm.test('403 Forbidden — source key rejected', () => pm.expect(pm.response.code).to.equal(403));"
                 ]
               }
             }
@@ -1174,11 +1174,11 @@
               "host": ["{{baseUrl}}"],
               "path": ["company", "withdrawals"]
             },
-            "description": "A **source** key (the kind used for ingest) must not be accepted on company endpoints \u2014 only company-scoped keys are allowed."
+            "description": "A **source** key (the kind used for ingest) must not be accepted on company endpoints — only company-scoped keys are allowed."
           }
         },
         {
-          "name": "Wallets \u2014 list balances",
+          "name": "Wallets — list balances",
           "request": {
             "method": "GET",
             "header": [
@@ -1196,7 +1196,7 @@
           }
         },
         {
-          "name": "Transactions \u2014 list",
+          "name": "Transactions — list",
           "request": {
             "method": "GET",
             "header": [
@@ -1214,7 +1214,7 @@
           }
         },
         {
-          "name": "Transactions \u2014 detail (id + ledger entries)",
+          "name": "Transactions — detail (id + ledger entries)",
           "request": {
             "method": "GET",
             "header": [
@@ -1232,7 +1232,7 @@
           }
         },
         {
-          "name": "Transactions \u2014 export CSV",
+          "name": "Transactions — export CSV",
           "request": {
             "method": "GET",
             "header": [
@@ -1250,7 +1250,7 @@
           }
         },
         {
-          "name": "Ledger \u2014 append-only audit trail",
+          "name": "Ledger — append-only audit trail",
           "request": {
             "method": "GET",
             "header": [
@@ -1268,7 +1268,7 @@
           }
         },
         {
-          "name": "Analytics \u2014 overview",
+          "name": "Analytics — overview",
           "request": {
             "method": "GET",
             "header": [
@@ -1286,7 +1286,7 @@
           }
         },
         {
-          "name": "Analytics \u2014 wallet summary",
+          "name": "Analytics — wallet summary",
           "request": {
             "method": "GET",
             "header": [
@@ -1304,7 +1304,7 @@
           }
         },
         {
-          "name": "CRM \u2014 get config",
+          "name": "CRM — get config",
           "request": {
             "method": "GET",
             "header": [
@@ -1322,7 +1322,7 @@
           }
         },
         {
-          "name": "CRM \u2014 save config",
+          "name": "CRM — save config (403 — dashboard-only)",
           "request": {
             "method": "PUT",
             "header": [
@@ -1344,11 +1344,22 @@
               "host": ["{{baseUrl}}"],
               "path": ["company", "crm", "config"]
             },
-            "description": "Save CRM webhook URL + API key. Enables delivery immediately."
-          }
+            "description": "Deliberate negative demo: SessionOnlyGuard blocks company API keys from key/team/CRM-webhook management — a leaked key must not be able to mint keys, change the webhook, or touch the team. These actions require an interactive dashboard session."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403 Forbidden — SessionOnlyGuard: key/team/CRM-webhook management is dashboard-only', () => pm.expect(pm.response.code).to.equal(403));"
+                ]
+              }
+            }
+          ]
         },
         {
-          "name": "API keys \u2014 list",
+          "name": "API keys — list (403 — dashboard-only)",
           "request": {
             "method": "GET",
             "header": [
@@ -1362,11 +1373,22 @@
               "host": ["{{baseUrl}}"],
               "path": ["company", "api-keys"]
             },
-            "description": "List all API keys for this company (prefixes only \u2014 secrets are never returned)."
-          }
+            "description": "Deliberate negative demo: SessionOnlyGuard blocks company API keys from key/team/CRM-webhook management — a leaked key must not be able to mint keys, change the webhook, or touch the team. These actions require an interactive dashboard session."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403 Forbidden — SessionOnlyGuard: key/team/CRM-webhook management is dashboard-only', () => pm.expect(pm.response.code).to.equal(403));"
+                ]
+              }
+            }
+          ]
         },
         {
-          "name": "API keys \u2014 create new key",
+          "name": "API keys — create new key (403 — dashboard-only)",
           "request": {
             "method": "POST",
             "header": [
@@ -1388,7 +1410,7 @@
               "host": ["{{baseUrl}}"],
               "path": ["company", "api-keys"]
             },
-            "description": "Create a new company API key. The plaintext secret is returned ONCE \u2014 save it."
+            "description": "Deliberate negative demo: SessionOnlyGuard blocks company API keys from key/team/CRM-webhook management — a leaked key must not be able to mint keys, change the webhook, or touch the team. These actions require an interactive dashboard session."
           },
           "event": [
             {
@@ -1396,17 +1418,14 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('201 Created', () => pm.expect([200, 201]).to.include(pm.response.code));",
-                  "const j = pm.response.json().data;",
-                  "pm.test('plaintext returned once', () => pm.expect(j).to.have.property('plaintext'));",
-                  "// Optionally capture: pm.collectionVariables.set('apiKey', j.plaintext);"
+                  "pm.test('403 Forbidden — SessionOnlyGuard: key/team/CRM-webhook management is dashboard-only', () => pm.expect(pm.response.code).to.equal(403));"
                 ]
               }
             }
           ]
         },
         {
-          "name": "API keys \u2014 rotate key",
+          "name": "API keys — rotate key (403 — dashboard-only)",
           "request": {
             "method": "POST",
             "header": [
@@ -1428,11 +1447,22 @@
               "host": ["{{baseUrl}}"],
               "path": ["company", "api-keys", "{{keyId}}", "rotate"]
             },
-            "description": "Atomically mints a new key and revokes the old one. New plaintext returned once."
-          }
+            "description": "Deliberate negative demo: SessionOnlyGuard blocks company API keys from key/team/CRM-webhook management — a leaked key must not be able to mint keys, change the webhook, or touch the team. These actions require an interactive dashboard session."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403 Forbidden — SessionOnlyGuard: key/team/CRM-webhook management is dashboard-only', () => pm.expect(pm.response.code).to.equal(403));"
+                ]
+              }
+            }
+          ]
         },
         {
-          "name": "API keys \u2014 revoke key",
+          "name": "API keys — revoke key (403 — dashboard-only)",
           "request": {
             "method": "POST",
             "header": [
@@ -1454,11 +1484,22 @@
               "host": ["{{baseUrl}}"],
               "path": ["company", "api-keys", "{{keyId}}", "revoke"]
             },
-            "description": "Permanently revoke a key. Immediate effect \u2014 any in-flight requests using it will fail."
-          }
+            "description": "Deliberate negative demo: SessionOnlyGuard blocks company API keys from key/team/CRM-webhook management — a leaked key must not be able to mint keys, change the webhook, or touch the team. These actions require an interactive dashboard session."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403 Forbidden — SessionOnlyGuard: key/team/CRM-webhook management is dashboard-only', () => pm.expect(pm.response.code).to.equal(403));"
+                ]
+              }
+            }
+          ]
         },
         {
-          "name": "Team \u2014 list members",
+          "name": "Team — list members (403 — dashboard-only)",
           "request": {
             "method": "GET",
             "header": [
@@ -1472,13 +1513,24 @@
               "host": ["{{baseUrl}}"],
               "path": ["company", "team"]
             },
-            "description": "List all team members (users) in this company."
-          }
+            "description": "Deliberate negative demo: SessionOnlyGuard blocks company API keys from key/team/CRM-webhook management — a leaked key must not be able to mint keys, change the webhook, or touch the team. These actions require an interactive dashboard session."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403 Forbidden — SessionOnlyGuard: key/team/CRM-webhook management is dashboard-only', () => pm.expect(pm.response.code).to.equal(403));"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
     {
-      "name": "07 \u2014 Analytics (admin)",
+      "name": "07 — Analytics (admin)",
       "item": [
         {
           "name": "Platform multi-currency rollup",
@@ -1503,7 +1555,7 @@
               "host": ["{{baseUrl}}"],
               "path": ["admin", "analytics", "operations"]
             },
-            "description": "Pending withdrawals + recent reversals \u2014 everything that needs an operator."
+            "description": "Pending withdrawals + recent reversals — everything that needs an operator."
           }
         },
         {
@@ -1567,7 +1619,7 @@
       ]
     },
     {
-      "name": "08 \u2014 Negative tests",
+      "name": "08 — Negative tests",
       "description": "Confirm the platform rejects bad input safely.",
       "item": [
         {
@@ -1614,7 +1666,7 @@
               "host": ["{{baseUrl}}"],
               "path": ["ingest", "{{sourceCode}}", "transactions"]
             },
-            "description": "Uses the company-owned key `{{apiKey}}` (read-only) to try to ingest. Must return 403 \u2014 only source keys can ingest."
+            "description": "Uses the company-owned key `{{apiKey}}` (read-only) to try to ingest. Must return 403 — only source keys can ingest."
           }
         },
         {
@@ -1738,7 +1790,7 @@
               "host": ["{{baseUrl}}"],
               "path": ["company", "api-keys"]
             },
-            "description": "Run as company owner. Send WITHOUT the `x-csrf-token` header \u2014 the CSRF guard should return 403."
+            "description": "Run as company owner. Send WITHOUT the `x-csrf-token` header — the CSRF guard should return 403."
           }
         }
       ]

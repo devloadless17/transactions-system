@@ -329,8 +329,8 @@ Returned by the list, get-one, and (nested under `transaction`) the detail endpo
 | `sourceId`              | string (uuid)    | The source that ingested it. Use as the `sourceId` list filter.                             |
 | `sourceCode`            | string           | Human-readable source code (e.g. the provider short code).                                  |
 | `externalTransactionId` | string           | The id your source supplied at ingest. Target of the `search` filter.                       |
-| `amount`                | string (decimal) | Gross amount as ingested. Decimal string, up to 8 dp. Never a float.                        |
-| `commissionAmount`      | string (decimal) | Platform fee applied. `"0"` when no rule matched.                                           |
+| `amount`                | string (decimal) | Gross amount as ingested. Decimal string, quantized to 2 dp (whole cents). Never a float.   |
+| `commissionAmount`      | string (decimal) | Platform fee applied.                                                                       |
 | `netAmount`             | string (decimal) | Amount credited to your available balance (gross − fee for `DEDUCTED`; gross for `ON_TOP`). |
 | `currency`              | string           | ISO-4217, 3 chars. Currently only `USD` is supported.                                       |
 | `status`                | enum             | See lifecycle below.                                                                        |

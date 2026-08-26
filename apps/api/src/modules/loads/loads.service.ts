@@ -97,6 +97,16 @@ export class LoadsService {
       });
       // Net credited to the wallet on approval.
       const net = netOfFee(amount, fee, feeApplication);
+      // Mirror withdrawals/payouts: a fee that consumes the ENTIRE amount is a
+      // surely-misconfigured rule, and unlike a deposit (already-collected
+      // money that must book), a load REQUEST can safely be rejected up front —
+      // before the company hands over real cash for a net-0 credit.
+      if (!net.isPositive()) {
+        throw new ValidationError(
+          `The ${fee.toString()} ${input.currency} fee consumes the entire amount — nothing would be credited. Increase the amount or fix the fee rule.`,
+          { amount: amount.toString(), fee: fee.toString() },
+        );
+      }
 
       return cTx.load.create({
         data: {

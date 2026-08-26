@@ -94,7 +94,7 @@ Branch on the stable `error.code`, never on the message.
 
 ### Rate limits
 
-The per-key integration endpoints — `/v1/integrations/whish/*` and transaction ingest — allow **300 requests per 60 seconds, per key**. Go over and you get a `429 RATE_LIMITED` with the limit echoed in `error.details`, plus `RateLimit-*` headers on every response so you can self-pace.
+The per-key integration endpoint — `/v1/integrations/whish/*` — allows **300 requests per 60 seconds, per key**. Go over and you get a `429 RATE_LIMITED` with the limit echoed in `error.details`, plus `RateLimit-*` headers on every response so you can self-pace.
 
 Everything under `/v1/company/*` (wallets, transactions, withdrawals, payouts, loads, and `/company/whish/payments`) sits behind the global safety throttle instead — **100 requests per 60 seconds, per IP** by default, with no `RateLimit-*` headers. Note that `/v1/company/whish/payments` is the dashboard-side twin of the Whish Pay endpoints and is throttled per IP, not per key.
 
