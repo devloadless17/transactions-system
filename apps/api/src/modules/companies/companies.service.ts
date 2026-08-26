@@ -15,7 +15,7 @@ import {
 } from '@app/shared';
 import { PrismaService } from '../../database/prisma.service';
 import { RealtimeService } from '../realtime/realtime.service';
-import { ConflictError, NotFoundError } from '../../common/errors/domain.error';
+import { ConflictError, ForbiddenError, NotFoundError } from '../../common/errors/domain.error';
 import { assertListOffset } from '../../common/pagination';
 import { expand } from '../commissions/commissions.service';
 import type { Prisma } from '@app/db';
@@ -33,6 +33,14 @@ export class CompaniesService {
     const result = await this.prisma.runAsAdmin(async (tx) => {
       const slugTaken = await tx.company.findUnique({ where: { slug: input.slug } });
       if (slugTaken) throw new ConflictError(`Slug '${input.slug}' is already in use`);
+      // A slug that EVER belonged to a company is retired forever for everyone
+      // else: sources ingest by slug, so re-issuing a freed slug would silently
+      // route their deposits into the wrong tenant. (A brand-new company can
+      // never own a history entry, so any hit blocks.)
+      const retired = await tx.companySlugHistory.findUnique({ where: { slug: input.slug } });
+      if (retired) {
+        throw new ConflictError(`Slug '${input.slug}' was previously used and cannot be reissued`);
+      }
 
       const emailTaken = await tx.user.findUnique({
         where: { email: input.ownerEmail.toLowerCase() },
@@ -207,14 +215,48 @@ export class CompaniesService {
     return mapCompany(row);
   }
 
-  async update(id: string, input: UpdateCompanyInput): Promise<CompanyResponse> {
+  async update(
+    id: string,
+    input: UpdateCompanyInput,
+    opts?: { actorRole?: UserRole },
+  ): Promise<CompanyResponse> {
     const row = await this.prisma.runAsAdmin(async (tx) => {
       const existing = await tx.company.findUnique({ where: { id } });
       if (!existing) throw new NotFoundError('Company', id);
+      // Slug rename. The slug is the PUBLIC identifier external sources ingest
+      // with, so a rename cuts them over instantly — authorization lives HERE,
+      // next to the write, so no other caller of update() can gain the power
+      // by accident: changing it requires an explicit SUPER_ADMIN actor.
+      if (input.slug !== undefined && input.slug !== existing.slug) {
+        if (opts?.actorRole !== UserRole.SUPER_ADMIN) {
+          throw new ForbiddenError('only a SUPER_ADMIN can change a company slug');
+        }
+        // Pre-check uniqueness (mirrors create) for a clean 409; the DB unique
+        // index is the real backstop.
+        const slugTaken = await tx.company.findUnique({ where: { slug: input.slug } });
+        if (slugTaken) throw new ConflictError(`Slug '${input.slug}' is already in use`);
+        // Never reissue a slug another company once held — a source still
+        // posting to it would book real money into the wrong tenant. A company
+        // MAY reclaim its own former slug.
+        const retired = await tx.companySlugHistory.findUnique({ where: { slug: input.slug } });
+        if (retired && retired.companyId !== id) {
+          throw new ConflictError(
+            `Slug '${input.slug}' was previously used by another company and cannot be reissued`,
+          );
+        }
+        // Tombstone the slug being renamed AWAY, so it can never be claimed by
+        // a different company later.
+        await tx.companySlugHistory.upsert({
+          where: { slug: existing.slug },
+          create: { slug: existing.slug, companyId: id },
+          update: { companyId: id },
+        });
+      }
       return tx.company.update({
         where: { id },
         data: {
           name: input.name ?? undefined,
+          slug: input.slug ?? undefined,
           status: input.status ?? undefined,
           visible: input.visible ?? undefined,
         },

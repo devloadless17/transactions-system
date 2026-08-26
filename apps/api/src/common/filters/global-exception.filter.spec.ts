@@ -69,3 +69,34 @@ describe('GlobalExceptionFilter envelope', () => {
     });
   });
 });
+
+describe('numeric overflow (SQLSTATE 22003) maps to a clean 400', () => {
+  it('translates a Prisma unknown ConnectorError carrying 22003 instead of leaking a 500', async () => {
+    const { Prisma } = await import('@app/db');
+    const overflow = new Prisma.PrismaClientUnknownRequestError(
+      'ConnectorError(PostgresError { code: "22003", message: "numeric field overflow" })',
+      { clientVersion: '0.0.0' },
+    );
+    const { status, body } = capture(overflow);
+    expect(status).toBe(400);
+    expect(body.error.code).toBe('VALIDATION_ERROR');
+    expect(body.error.message).toBe('A monetary value exceeds the supported range');
+    // No internals leak (no SQLSTATE, table, or Prisma wording in the envelope).
+    expect(JSON.stringify(body)).not.toMatch(/22003|Prisma|Connector/i);
+  });
+});
+
+describe('22003 matching is anchored (no substring false positives)', () => {
+  it('does NOT remap an unknown error that merely CONTAINS the digits 22003', async () => {
+    const { Prisma } = await import('@app/db');
+    const lookalike = new Prisma.PrismaClientUnknownRequestError(
+      'ConnectorError(QueryError { message: "duplicate reference INV-22003 on connection 122003" })',
+      { clientVersion: '0.0.0' },
+    );
+    const { status, body } = capture(lookalike);
+    // A transient/unknown DB fault must stay a 500 (retryable per the docs),
+    // never a permanent-looking 400.
+    expect(status).toBe(500);
+    expect(body.error.code).toBe('INTERNAL_ERROR');
+  });
+});

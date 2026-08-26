@@ -39,7 +39,7 @@ test.describe('withdrawal lifecycle (request + approve through the UI)', () => {
 
     // Ingest 100 → $1 fixed fee → net 99 credited to available.
     const ingest = await ingestTransaction('omt', sourceKey, {
-      companyId,
+      companySlug: slug,
       externalTransactionId: `e2e-wd-${Date.now()}`,
       amount: '100',
       currency: 'USD',

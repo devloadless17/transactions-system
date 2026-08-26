@@ -28,7 +28,7 @@ test.describe('realtime — Transactions/Deposits pages update without a refresh
   test('a newly ingested deposit appears live on both pages (no reload)', async ({ page }) => {
     const admin = await adminApiContext();
     const { api, csrf } = admin;
-    const { companyId } = await provisionCompanyOwner(admin);
+    const { companyId, slug } = await provisionCompanyOwner(admin);
     const omtId = await findSourceId(api, 'omt');
     await enableSourceForCompany(api, csrf, omtId, companyId);
     const key = await createSourceKey(api, csrf, omtId, `rt-txn-${Date.now()}`);
@@ -55,7 +55,7 @@ test.describe('realtime — Transactions/Deposits pages update without a refresh
 
     const ref1 = `rt-live-${Date.now()}`;
     const ing1 = await ingestTransaction('omt', key, {
-      companyId,
+      companySlug: slug,
       externalTransactionId: ref1,
       amount: '123.45',
       currency: 'USD',
@@ -77,7 +77,7 @@ test.describe('realtime — Transactions/Deposits pages update without a refresh
 
     const ref2 = `rt-live-dep-${Date.now()}`;
     const ing2 = await ingestTransaction('omt', key, {
-      companyId,
+      companySlug: slug,
       externalTransactionId: ref2,
       amount: '77.77',
       currency: 'USD',

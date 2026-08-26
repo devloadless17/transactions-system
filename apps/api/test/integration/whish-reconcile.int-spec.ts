@@ -135,3 +135,40 @@ describe('Whish reconcile — late success on a terminal link (#3)', () => {
     expect(Number(snap.wallet?.available)).toBe(50);
   });
 });
+
+describe('Whish settlement keeps STRICT pricing (parks, never books net 0)', () => {
+  let h: Harness;
+  beforeAll(async () => {
+    h = buildHarness();
+    await provisionWhishSource(h);
+  });
+
+  it('a paid link for an UNPRICED company parks as needsAttention instead of settling at net 0', async () => {
+    // Unlike the external HTTP ingest (which books pricing gaps at net 0 and
+    // can never bounce), settlement deliberately stays strict: a parked link
+    // later settles AT THE CORRECT FEE via admin Refresh once pricing exists —
+    // strictly better than an irreversible net-0 booking plus a completed CRM
+    // event while the company is credited nothing.
+    const { companyId } = await createCompany(h);
+    // Deliberately NO commission rule.
+    const p = await insertPayment(h, companyId, WhishPaymentStatus.PENDING);
+    h.whishClient.status = 'success';
+
+    await expect(h.whish.refreshStatus(companyId, p.id)).rejects.toMatchObject({
+      code: 'NO_COMMISSION_RULE',
+    });
+
+    const row = await h.prisma.runAsAdmin((tx) =>
+      tx.whishPayment.findUnique({ where: { id: p.id } }),
+    );
+    const meta = row?.metadata as { needsAttention?: boolean } | null;
+    expect(row?.status).toBe(WhishPaymentStatus.PENDING);
+    expect(meta?.needsAttention).toBe(true);
+    expect(row?.transactionId ?? null).toBeNull();
+
+    // No money moved: nothing was booked at net 0 behind the park.
+    const snap = await snapshot(h, companyId);
+    expect(Number(snap.totalCredit)).toBe(0);
+    expect(Number(snap.wallet?.available ?? '0')).toBe(0);
+  });
+});

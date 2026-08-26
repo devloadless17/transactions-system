@@ -219,6 +219,7 @@ export function buildHarness(): Harness {
     fakeRealtime,
     fakeCounter, // txn_ingest_total
     fakeCounter, // txn_ingest_no_rule_total
+    fakeCounter, // txn_ingest_pricing_issue_total
     fakeCache,
     fakeCrm,
   );

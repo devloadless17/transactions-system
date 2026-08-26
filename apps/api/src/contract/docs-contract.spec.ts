@@ -156,9 +156,25 @@ describe('docs ↔ API schema contract (anti-drift)', () => {
   });
 
   describe('Documented outcomes & query params match reality', () => {
-    it('the ingest docs list the 422 NO_COMMISSION_RULE outcome (audit #6)', () => {
+    // Deposits never bounce on pricing: an unpriced or over-fee'd ingest books
+    // at net 0 (full amount withheld as fee) instead of throwing, and the
+    // sources doc documents exactly that. The company-facing guide still
+    // documents NO_COMMISSION_RULE for the create-time Whish dry-run, where
+    // rejecting BEFORE money moves is correct.
+    it('the ingest docs document the net-0 booking for pricing gaps (deposits never bounce)', () => {
+      expect(INGEST_DOC).toMatch(/net 0|net-0/);
       expect(INGEST_DOC).toContain('NO_COMMISSION_RULE');
       expect(GUIDE).toContain('NO_COMMISSION_RULE');
+    });
+
+    // Sources must never see the commission model: the sources doc documents
+    // the neutral ENTITY_NOT_READY translation (behavior itself is pinned by
+    // ingest-source-errors.spec.ts), and the partner-facing doc mentions no
+    // pricing concept at all — deposits cannot bounce on pricing there.
+    it('the source boundary hides the commission model (docs)', () => {
+      expect(INGEST_DOC).toContain('ENTITY_NOT_READY');
+      const partnerDoc = read('docs/rival-ingest-api-integration.md');
+      expect(partnerDoc).not.toMatch(/422|ENTITY_NOT_READY|COMMISSION/i);
     });
 
     it('the whish payments list documents its REAL query params (audit #12)', () => {

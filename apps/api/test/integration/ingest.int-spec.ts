@@ -8,7 +8,7 @@
  *     Prisma error.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { Money } from '@app/shared';
+import { Money, UserRole } from '@app/shared';
 import { CompaniesService } from '../../src/modules/companies/companies.service';
 import { RealtimeService } from '../../src/modules/realtime/realtime.service';
 import {
@@ -107,18 +107,34 @@ describe('ingest idempotency & replay', () => {
     ).rejects.toMatchObject({ code: 'DUPLICATE_TRANSACTION', httpStatus: 409 });
   });
 
-  it('rejects an ingest for a company with no commission rule (NO_COMMISSION_RULE 422)', async () => {
+  it('books an ingest for a company with NO commission rule at net 0 — deposits never bounce', async () => {
     const { companyId } = await createCompany(h);
     const sourceId = await createEnabledSource(h, companyId);
-    // Deliberately NO commission rule configured for this company → the ingest
-    // can't be priced. It must fail 422 (and, in production, increments
-    // txn_ingest_no_rule_total + emits a deduped operator alert).
-    await expect(
-      h.transactions.ingest(
-        { kind: 'source', sourceId },
-        ingestInput(companyId, '100', { externalTransactionId: 'ext-norule-1' }),
-      ),
-    ).rejects.toMatchObject({ code: 'NO_COMMISSION_RULE', httpStatus: 422 });
+    // Deliberately NO commission rule configured for this company. The deposit
+    // already happened at the source, so it must BOOK, not 422: the full amount
+    // is withheld as platform fee (net 0) and, in production, ops is alerted
+    // (txn_ingest_no_rule_total + deduped operator alert) to fix pricing and
+    // compensate. Withholding is recoverable by a later credit; bouncing would
+    // strand money the source cannot re-send.
+    const txn = await h.transactions.ingest(
+      { kind: 'source', sourceId },
+      ingestInput(companyId, '100', { externalTransactionId: 'ext-norule-1' }),
+    );
+    expect(txn.status).toBe('COMPLETED');
+    expect(Money.of(txn.amount).eq(Money.of('100'))).toBe(true);
+    expect(Money.of(txn.commissionAmount).eq(Money.of('100'))).toBe(true);
+    expect(Money.of(txn.netAmount).eq(Money.of('0'))).toBe(true);
+
+    // Durable compensation marker: the row is queryable via pricing_issue.
+    const row = await h.prisma.runAsAdmin((tx) =>
+      tx.transaction.findUnique({ where: { id: txn.id }, select: { pricingIssue: true } }),
+    );
+    expect(row?.pricingIssue).toBe('unpriced');
+
+    const snap = await snapshot(h, companyId);
+    expect(snap.balanced).toBe(true);
+    expect(Money.of(snap.availableLedger).eq(Money.zero())).toBe(true);
+    expect(snap.wallet === null || Money.of(snap.wallet.available).eq(Money.zero())).toBe(true);
   });
 
   it('a company created WITH a starter commission rule can ingest immediately (prevents the trap)', async () => {
@@ -154,7 +170,8 @@ describe('ingest idempotency & replay', () => {
     const sourceId = await createEnabledSource(h, companyId);
 
     // No addTransactionFee() call here — the starter rule from company creation
-    // is what prices this ingest. It must succeed, not throw NO_COMMISSION_RULE.
+    // is what prices this ingest. Net 100 (0% rule) proves it was priced by the
+    // starter rule and did NOT fall into the unpriced net-0 fallback.
     const txn = await h.transactions.ingest(
       { kind: 'source', sourceId },
       ingestInput(companyId, '100', { externalTransactionId: 'starter-ext-1' }),
@@ -189,5 +206,96 @@ describe('ingest idempotency & replay', () => {
 
     const snap = await snapshot(h, companyId);
     expect(Money.of(snap.wallet!.available).eq(Money.of('100'))).toBe(true);
+  });
+
+  it('books a deposit smaller than a fixed DEDUCTED fee at net 0 (fee capped at amount) — deposits never bounce', async () => {
+    // Money-IN policy: the deposit already happened at the source. A DEDUCTED
+    // fixed fee larger than the amount used to 422 the ingest and strand the
+    // money; now the fee is capped AT the amount — the platform keeps all of
+    // it, the company nets 0, and the ledger stays balanced with no AVAILABLE
+    // leg (EXTERNAL debit == FEE credit).
+    const { companyId } = await createCompany(h);
+    const sourceId = await createEnabledSource(h, companyId);
+    await h.prisma.runAsAdmin((tx) =>
+      tx.commissionRule.create({
+        data: {
+          companyId,
+          sourceId: null,
+          operationType: 'TRANSACTION',
+          feeApplication: 'DEDUCTED',
+          minAmount: '0.01',
+          maxAmount: '100000000',
+          commissionType: 'FIXED',
+          commissionValue: '3',
+          priority: 100,
+          active: true,
+        },
+      }),
+    );
+
+    const txn = await h.transactions.ingest(
+      { kind: 'source', sourceId },
+      ingestInput(companyId, '1', { externalTransactionId: 'capped-fee-ext-1' }),
+    );
+    expect(txn.status).toBe('COMPLETED');
+    expect(Money.of(txn.amount).eq(Money.of('1'))).toBe(true);
+    expect(Money.of(txn.commissionAmount).eq(Money.of('1'))).toBe(true);
+    expect(Money.of(txn.netAmount).eq(Money.of('0'))).toBe(true);
+    const capRow = await h.prisma.runAsAdmin((tx) =>
+      tx.transaction.findUnique({ where: { id: txn.id }, select: { pricingIssue: true } }),
+    );
+    expect(capRow?.pricingIssue).toBe('capped');
+
+    const snap = await snapshot(h, companyId);
+    expect(snap.balanced).toBe(true);
+    // Company received nothing; the full amount is platform fee revenue.
+    expect(Money.of(snap.availableLedger).eq(Money.zero())).toBe(true);
+    expect(snap.wallet === null || Money.of(snap.wallet.available).eq(Money.zero())).toBe(true);
+
+    // A normal-sized deposit for the same company still prices normally.
+    const ok = await h.transactions.ingest(
+      { kind: 'source', sourceId },
+      ingestInput(companyId, '50', { externalTransactionId: 'capped-fee-ext-2' }),
+    );
+    expect(Money.of(ok.commissionAmount).eq(Money.of('3'))).toBe(true);
+    expect(Money.of(ok.netAmount).eq(Money.of('47'))).toBe(true);
+  });
+});
+
+describe('slug tombstones — a renamed-away slug can never route to another tenant', () => {
+  const SUPER = { actorRole: UserRole.SUPER_ADMIN };
+  const companies = () => new CompaniesService(h.prisma, fakeRealtime);
+
+  it('blocks another company from claiming a retired slug (create AND rename), but lets the owner reclaim it', async () => {
+    const a = await createCompany(h);
+    const b = await createCompany(h);
+    const aSlug = (await h.prisma.runAsAdmin((tx) =>
+      tx.company.findUnique({ where: { id: a.companyId }, select: { slug: true } }),
+    ))!.slug;
+
+    // A renames away — old slug is tombstoned.
+    const renamed = `${aSlug}-v2`;
+    await companies().update(a.companyId, { slug: renamed }, SUPER);
+
+    // B cannot take A's old slug by rename…
+    await expect(companies().update(b.companyId, { slug: aSlug }, SUPER)).rejects.toMatchObject({
+      code: 'CONFLICT',
+      httpStatus: 409,
+    });
+
+    // …nor can a brand-new company be created with it.
+    const uniq = `${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
+    await expect(
+      companies().create({
+        name: `Squatter ${uniq}`,
+        slug: aSlug,
+        defaultCurrency: 'USD',
+        ownerEmail: `squatter-${uniq}@example.test`,
+      }),
+    ).rejects.toMatchObject({ code: 'CONFLICT', httpStatus: 409 });
+
+    // The original owner MAY reclaim its own retired slug.
+    const back = await companies().update(a.companyId, { slug: aSlug }, SUPER);
+    expect(back.slug).toBe(aSlug);
   });
 });

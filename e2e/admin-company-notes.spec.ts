@@ -20,12 +20,12 @@ const NEW_PASSWORD = 'newpass-123';
 const COMPANY_NOTE = 'COMPANY-ORIGINAL-please-keep-me';
 
 async function seedWithCompanyNote(admin: { api: APIRequestContext; csrf: string }) {
-  const { companyId, ownerEmail, tempPassword } = await provisionCompanyOwner(admin);
+  const { companyId, ownerEmail, tempPassword, slug } = await provisionCompanyOwner(admin);
   const omtId = await findSourceId(admin.api, 'omt');
   await enableSourceForCompany(admin.api, admin.csrf, omtId, companyId);
   const key = await createSourceKey(admin.api, admin.csrf, omtId, `acn-${Date.now()}`);
   const ingest = await ingestTransaction('omt', key, {
-    companyId,
+    companySlug: slug,
     externalTransactionId: `acn-${Date.now()}`,
     amount: '100',
     currency: 'USD',

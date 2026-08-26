@@ -198,8 +198,8 @@ async function main() {
           authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
-          // The source-facing ingest API names the company field `operatingId`.
-          operatingId: companyId,
+          // The source-facing ingest API identifies the company by slug.
+          companySlug: slug,
           externalTransactionId: `lt-${slug}-${i}`,
           amount: '2',
           currency: 'USD',

@@ -32,7 +32,7 @@ test.describe('company isolation (RLS end-to-end)', () => {
 
     const extId = `e2e-iso-${Date.now()}`;
     const ingest = await ingestTransaction('omt', keyA, {
-      companyId: a.companyId,
+      companySlug: a.slug,
       externalTransactionId: extId,
       amount: '50',
       currency: 'USD',

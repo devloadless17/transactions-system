@@ -242,9 +242,25 @@ model Company {
   companySources    CompanySource[]
   webhookDeliveries WebhookDelivery[]
   crmDemoEvents     CrmDemoEvent[]
+  slugHistory       CompanySlugHistory[]
 
   @@index([status])
   @@map("companies")
+}
+
+// Tombstones for renamed-away slugs. The slug is the PUBLIC identifier sources
+// ingest with, so a freed slug must NEVER be claimable by a DIFFERENT company:
+// a source still posting to the old slug would silently book real money into
+// the wrong tenant (201, not 400). Create/rename check this table and reject a
+// slug that ever belonged to another company; a company may reclaim its own.
+model CompanySlugHistory {
+  slug      String   @id
+  companyId String   @map("company_id") @db.Uuid
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([companyId])
+  @@map("company_slug_history")
 }
 
 // --------------------------- Sources -----------------------------
@@ -314,7 +330,7 @@ model CompanySource {
 
 // API keys come in two flavours:
 //   - SOURCE keys (sourceId set, companyId null): held by external providers
-//     like OMT/wish. Caller posts to /v1/ingest/transactions with a
+//     like OMT/wish. Caller posts to /v1/ingest/:sourceCode/transactions with a
 //     `companySlug` in the body. Can target any ACTIVE company — `visible`
 //     only governs discovery listing, not ingest (sources are system-wide; see
 //     CompanySource above).
@@ -395,6 +411,12 @@ model Transaction {
   // never exposed to companies. Not a ledger account — a recorded cost estimate.
   sourceFeeAmount       Decimal           @default(0) @map("source_fee_amount") @db.Decimal(20, 8)
   status                TransactionStatus @default(PENDING)
+  // Set when the deposit was booked despite a pricing gap ('unpriced' — no
+  // commission rule matched; 'capped' — a DEDUCTED fee larger than the amount
+  // was capped at it). Both book at net 0 with the full amount withheld as fee,
+  // so this column is the durable, queryable record of which transactions an
+  // operator must compensate once pricing is fixed. NULL for normal bookings.
+  pricingIssue          String?           @map("pricing_issue")
   payload               Json              @db.JsonB
   idempotencyKey        String?           @map("idempotency_key")
   processedAt           DateTime?         @map("processed_at") @db.Timestamptz(6)

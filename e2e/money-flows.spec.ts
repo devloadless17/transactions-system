@@ -117,12 +117,14 @@ test.describe.serial('money flows end-to-end (API)', () => {
   let ownerA: APIRequestContext;
   let ownerACsrf: string;
   let companyA: string;
+  let slugA: string;
   let sourceKeyA: string;
   // Company B: funded fee-free, with two withdrawal brackets — DEDUCTED (≤150)
   // and ON_TOP (>150) — to contrast the two fee applications.
   let ownerB: APIRequestContext;
   let ownerBCsrf: string;
   let companyB: string;
+  let slugB: string;
   let sourceKeyB: string;
 
   test.beforeAll(async () => {
@@ -138,6 +140,7 @@ test.describe.serial('money flows end-to-end (API)', () => {
     // --- Company A ---
     const a = await provisionCompanyOwner({ api: admin, csrf: adminCsrf });
     companyA = a.companyId;
+    slugA = a.slug;
     ownerA = await loginOwnerApiContext(a.ownerEmail, a.tempPassword, 'newpass-A-12345');
     ownerACsrf = await getCsrf(ownerA);
     await enableSourceForCompany(admin, adminCsrf, omtId, companyA);
@@ -158,6 +161,7 @@ test.describe.serial('money flows end-to-end (API)', () => {
     // --- Company B ---
     const b = await provisionCompanyOwner({ api: admin, csrf: adminCsrf });
     companyB = b.companyId;
+    slugB = b.slug;
     ownerB = await loginOwnerApiContext(b.ownerEmail, b.tempPassword, 'newpass-B-12345');
     ownerBCsrf = await getCsrf(ownerB);
     await enableSourceForCompany(admin, adminCsrf, omtId, companyB);
@@ -211,7 +215,7 @@ test.describe.serial('money flows end-to-end (API)', () => {
 
     // 1) Ingest 100 → 10% fee 10, net 90 credited to available.
     const ing = await ingestTransaction('omt', sourceKeyA, {
-      companyId: companyA,
+      companySlug: slugA,
       externalTransactionId: `e2e-lc-${Date.now()}`,
       amount: '100',
       currency: 'USD',
@@ -350,7 +354,7 @@ test.describe.serial('money flows end-to-end (API)', () => {
   test('ON_TOP vs DEDUCTED: totalAmount, reserved, and platform volumeOut', async () => {
     // Fund company B fee-free.
     const ing = await ingestTransaction('omt', sourceKeyB, {
-      companyId: companyB,
+      companySlug: slugB,
       externalTransactionId: `e2e-fees-${Date.now()}`,
       amount: '1000',
       currency: 'USD',

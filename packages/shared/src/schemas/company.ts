@@ -3,22 +3,31 @@ import { CompanyStatus } from '../enums';
 import { currencySchema } from './common';
 import { companyScopedCommissionRuleSchema } from './commission';
 
-// slugs: lowercase alphanumeric + dashes, 2-50 chars
-const slugRegex = /^[a-z0-9][a-z0-9-]{1,48}[a-z0-9]$/;
+// Slugs: lowercase alphanumeric + dashes, 2-50 chars, no leading/trailing dash.
+// (first char + 0-48 middle chars + last char = 2..50.)
+const slugRegex = /^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$/;
+
+/**
+ * THE slug rule — the single definition shared by company create, company
+ * update (rename), the source-facing ingest boundary, and the admin UI. The
+ * slug is the public identifier external sources ingest with, so every surface
+ * must accept/reject exactly the same values.
+ */
+export const slugSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .regex(slugRegex, 'slug must be 2-50 chars, lowercase, alphanumeric or dashes');
 
 export const createCompanySchema = z.object({
   name: z.string().trim().min(2).max(120),
-  slug: z
-    .string()
-    .trim()
-    .toLowerCase()
-    .regex(slugRegex, 'slug must be 2-50 chars, lowercase, alphanumeric or dashes'),
+  slug: slugSchema,
   defaultCurrency: currencySchema,
   ownerEmail: z.string().email(),
   ownerName: z.string().trim().min(2).max(120).optional(),
   // Optional starter commission rule, created atomically with the company so it
   // can accept (and price) transactions immediately — preventing the "company
-  // exists but every ingest fails NO_COMMISSION_RULE" trap. Omit to rely on a
+  // exists but every deposit books unpriced at net 0" trap. Omit to rely on a
   // global default rule or to configure pricing later on the Commissions page.
   commission: companyScopedCommissionRuleSchema.optional(),
 });
@@ -26,6 +35,11 @@ export type CreateCompanyInput = z.infer<typeof createCompanySchema>;
 
 export const updateCompanySchema = z.object({
   name: z.string().trim().min(2).max(120).optional(),
+  // The slug is the PUBLIC identifier external sources ingest with — renaming
+  // it breaks their requests until they switch to the new slug. SUPER_ADMIN
+  // only, enforced in CompaniesService.update via the actor's role (the route
+  // itself is shared with roles that may only toggle the other fields).
+  slug: slugSchema.optional(),
   status: z.nativeEnum(CompanyStatus).optional(),
   visible: z.boolean().optional(),
 });

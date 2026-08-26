@@ -38,8 +38,13 @@ const metricProviders = [
   }),
   makeCounterProvider({
     name: 'txn_ingest_no_rule_total',
-    help: 'Ingest attempts BLOCKED because no commission rule matched (company has no pricing configured) — alert on any sustained rate',
+    help: 'Deposits booked UNPRICED at net 0 because no commission rule matched (company has no pricing configured) — alert on any occurrence',
     labelNames: ['source_code', 'currency'],
+  }),
+  makeCounterProvider({
+    name: 'txn_ingest_pricing_issue_total',
+    help: 'Deposits booked at net 0 due to a pricing gap, by kind (unpriced: no rule matched; capped: DEDUCTED fee > amount capped at it) — every one needs operator compensation, alert on any occurrence',
+    labelNames: ['source_code', 'currency', 'issue'],
   }),
   makeGaugeProvider({
     name: 'ledger_wallet_divergent',

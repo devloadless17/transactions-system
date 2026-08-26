@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Logger,
   Param,
   Post,
   Req,
@@ -13,13 +14,14 @@ import { z } from 'zod';
 import {
   currencySchema,
   quantizedAmountSchema,
+  slugSchema,
   type IngestTransactionInput,
   type TransactionResponse,
 } from '@app/shared';
 import { ZodPipe } from '../../common/pipes/zod-validation.pipe';
 import { ApiKeyAuthGuard } from '../api-keys/guards/api-key-auth.guard';
 import { ApiKeyRateLimitGuard } from '../api-keys/guards/api-key-rate-limit.guard';
-import { ForbiddenError, ValidationError } from '../../common/errors/domain.error';
+import { DomainError, ForbiddenError, ValidationError } from '../../common/errors/domain.error';
 import { PrismaService } from '../../database/prisma.service';
 import { TransactionsService } from './transactions.service';
 import { IngestLogInterceptor } from './interceptors/ingest-log.interceptor';
@@ -30,10 +32,12 @@ import type { AuthenticatedRequest } from '../../common/types/request.types';
 const SOURCE_CODE_PATTERN = /^[a-z0-9][a-z0-9_-]{0,49}$/;
 
 // ---------------------------------------------------------------------------
-// External (source-facing) field names. The outside world speaks `operatingId`
-// + `tradingAccount`; internally these are still `companyId` + `target`. The
-// rename lives ONLY at this HTTP boundary — backend, DB and every other API are
-// untouched. Requests are translated in, responses are translated back out.
+// External (source-facing) field names. The outside world speaks `companySlug`
+// + `tradingAccount`; internally these are `companyId` (UUID) + `target`. The
+// translation lives ONLY at this HTTP boundary — backend, DB and every other
+// API are untouched. Company UUIDs are deliberately NEVER exposed to sources:
+// the slug (handed to each provider by Rival Payments) is their identifier in
+// both requests and responses.
 // ---------------------------------------------------------------------------
 const sourcePayloadSchema = z
   .object({
@@ -45,7 +49,10 @@ const sourcePayloadSchema = z
   .passthrough();
 
 const ingestSourceTransactionSchema = z.object({
-  operatingId: z.string().uuid(),
+  // The shared slug rule (same definition company create/rename validate with),
+  // so the two ends of the slug contract can never drift; the DB lookup is
+  // still the authority on whether the slug exists.
+  companySlug: slugSchema,
   externalTransactionId: z.string().trim().min(1).max(200),
   // Money IN: the deposit already happened at the source, so a sub-cent amount is
   // quantized rather than rejected — a 400 here would strand real money that the
@@ -58,10 +65,13 @@ const ingestSourceTransactionSchema = z.object({
 type IngestSourceTransactionInput = z.infer<typeof ingestSourceTransactionSchema>;
 
 /** Translate a source-facing payload into the internal one (tradingAccount -> target). */
-function toInternalInput(body: IngestSourceTransactionInput): IngestTransactionInput {
+function toInternalInput(
+  body: IngestSourceTransactionInput,
+  companyId: string,
+): IngestTransactionInput {
   const { tradingAccount, ...payloadRest } = body.payload;
   return {
-    companyId: body.operatingId,
+    companyId,
     externalTransactionId: body.externalTransactionId,
     amount: body.amount,
     currency: body.currency,
@@ -71,16 +81,41 @@ function toInternalInput(body: IngestSourceTransactionInput): IngestTransactionI
   };
 }
 
+// Internal pricing-configuration failures that must not cross the source
+// boundary as-is: their codes name our commission model, and their `details`
+// carry internal identifiers (company/source UUIDs, rule ids) and fee figures.
+// Sources see one neutral, actionable 422 instead; the ORIGINAL error is
+// still thrown inside the service, so the operator alert, the
+// txn_ingest_no_rule_total metric, and the server logs keep the real cause.
+const INTERNAL_PRICING_ERROR_CODES = new Set(['NO_COMMISSION_RULE', 'COMMISSION_EXCEEDS_AMOUNT']);
+
+/**
+ * Map an internal pricing-config error to the neutral source-facing 422.
+ * Everything else passes through unchanged. Exported for unit tests.
+ */
+export function toSourceFacingError(e: unknown, companySlug: string): unknown {
+  if (e instanceof DomainError && INTERNAL_PRICING_ERROR_CODES.has(e.code)) {
+    return new DomainError(
+      'ENTITY_NOT_READY',
+      `Entity '${companySlug}' cannot accept transactions right now. Contact Rival Payments.`,
+      422,
+      { companySlug },
+    );
+  }
+  return e;
+}
+
 /**
  * Translate an internal transaction response back to source-facing names.
- * Deliberately OMITS `commissionAmount` and `netAmount`: sources must not see
- * the fee Rival takes (netAmount would also reveal it as `amount − netAmount`).
+ * Deliberately OMITS `commissionAmount` and `netAmount` (sources must not see
+ * the fee Rival takes — netAmount would also reveal it as `amount − netAmount`)
+ * and every internal UUID: the company is identified by its slug, the source by
+ * its code.
  */
-function toSourceTransaction(r: TransactionResponse, replayed: boolean) {
+function toSourceTransaction(r: TransactionResponse, companySlug: string, replayed: boolean) {
   return {
     id: r.id,
-    operatingId: r.companyId,
-    sourceId: r.sourceId,
+    companySlug,
     sourceCode: r.sourceCode,
     externalTransactionId: r.externalTransactionId,
     amount: r.amount,
@@ -115,6 +150,8 @@ function toSourceTransaction(r: TransactionResponse, replayed: boolean) {
 @UseGuards(ApiKeyAuthGuard, ApiKeyRateLimitGuard)
 @Controller('ingest')
 export class IngestController {
+  private readonly logger = new Logger(IngestController.name);
+
   constructor(
     private readonly transactions: TransactionsService,
     private readonly prisma: PrismaService,
@@ -136,26 +173,66 @@ export class IngestController {
       throw new ForbiddenError('this endpoint requires a source API key');
     }
 
-    // Verify the key belongs to the source named in the URL.
-    const urlSource = await this.prisma.runAsAdmin((tx) =>
-      tx.source.findUnique({ where: { code: sourceCode } }),
+    // Verify the key belongs to the source named in the URL, and resolve the
+    // body's companySlug to the internal company UUID. Both by natural key,
+    // under runAsAdmin — no tenant scope exists yet at this point.
+    const [urlSource, company] = await this.prisma.runAsAdmin((tx) =>
+      Promise.all([
+        tx.source.findUnique({ where: { code: sourceCode } }),
+        tx.company.findUnique({ where: { slug: body.companySlug } }),
+      ]),
     );
+    // Hand the resolved UUID to IngestLogInterceptor as soon as it is known —
+    // the log's company_id column is UUID-typed and the body only carries the
+    // slug. Set BEFORE the guard checks below so even a rejected attempt (e.g.
+    // a source/URL mismatch) is attributed to the company it targeted.
+    if (company) req.ingestCompanyId = company.id;
+
     if (!urlSource) throw new ValidationError(`source '${sourceCode}' not found`);
     if (urlSource.id !== principal.sourceId) {
       throw new ForbiddenError('API key is not bound to this source');
     }
+    // NOTE deliberately no `visible` filter: visible gates ONLY the discovery
+    // list below. Deactivation (status !== ACTIVE) is the real off-switch.
+    if (!company || company.status !== 'ACTIVE') {
+      throw new ValidationError(`company '${body.companySlug}' not found or inactive`);
+    }
 
-    const tx = await this.transactions.ingest(
-      { kind: 'source', sourceId: principal.sourceId },
-      toInternalInput(body),
-    );
-    return toSourceTransaction(tx, tx.replayed);
+    try {
+      const tx = await this.transactions.ingest(
+        {
+          kind: 'source',
+          sourceId: principal.sourceId,
+          // Both rows were resolved + ACTIVE-checked just above — skip the
+          // service's duplicate lookup round-trip on this hot path.
+          preloaded: { source: urlSource, company },
+        },
+        toInternalInput(body, company.id),
+      );
+      return toSourceTransaction(tx, company.slug, tx.replayed);
+    } catch (e) {
+      const translated = toSourceFacingError(e, company.slug);
+      if (translated !== e) {
+        // The neutral wire error (also mirrored into transaction_logs) hides
+        // the internal cause on purpose — so record it HERE, or the original
+        // pricing error would leave no server-side trace of which rule
+        // misfired.
+        const cause = e as DomainError;
+        this.logger.warn(
+          `ingest pricing 422 translated to ENTITY_NOT_READY: co=${company.id} ` +
+            `slug=${company.slug} src=${sourceCode} ${cause.code}: ${cause.message}`,
+        );
+      }
+      throw translated;
+    }
   }
 
   /**
    * Discovery endpoint for sources. Returns every ACTIVE + visible company so
-   * the provider can cache the `operatingId` and use it in subsequent POSTs.
-   * Source-key-authenticated; company keys (legacy) are rejected.
+   * the provider can cache the `slug` and use it in subsequent POSTs. Company
+   * UUIDs are never exposed here. Source-key-authenticated; company keys
+   * (legacy) are rejected. Kept live but no longer part of the partner docs —
+   * providers are normally handed their slugs directly.
    */
   @Get('companies')
   async listCompanies(@Req() req: AuthenticatedRequest) {
@@ -165,7 +242,6 @@ export class IngestController {
     const { data } = await this.transactions.listVisibleCompanies();
     return {
       data: data.map((c) => ({
-        operatingId: c.id,
         slug: c.slug,
         name: c.name,
         defaultCurrency: c.defaultCurrency,

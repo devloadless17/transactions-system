@@ -47,8 +47,11 @@ const RECONCILE_MIN_AGE_MS = 60_000; // don't poll links younger than this
 // A TRANSIENT settlement failure (DB blip, exhausted serializable retries — NOT a
 // DomainError) stays in the poller's retry set; only after this many consecutive
 // failed attempts is it parked as needsAttention for an operator. Permanent
-// config errors (DomainError, e.g. NO_COMMISSION_RULE) park immediately —
-// retrying every 60s can't fix pricing.
+// config errors (DomainError, e.g. NO_COMMISSION_RULE or a deactivated company)
+// park immediately — retrying every 60s can't fix configuration. Settlement
+// deliberately keeps STRICT pricing (unlike the external HTTP ingest, which
+// books pricing gaps at net 0): a parked link settles AT THE CORRECT FEE via
+// admin Refresh once pricing is fixed, which beats an irreversible net-0 booking.
 const TRANSIENT_SETTLE_PARK_AFTER = 10;
 const EXPIRE_AGE_MS = 24 * 3600_000; // give up (EXPIRED) after this
 // Max stale-pending links polled per reconciliation tick. Whish never pushes a
@@ -915,8 +918,9 @@ export class WhishPaymentsService {
       } else {
         // Genuine failure: Whish has the customer's money but we can't settle it.
         // NEVER let collected money sit invisibly stuck — but distinguish WHY:
-        //  - PERMANENT (DomainError, e.g. NO_COMMISSION_RULE): retrying every 60s
-        //    can't fix pricing → park as needsAttention immediately (the poller
+        //  - PERMANENT (DomainError, e.g. NO_COMMISSION_RULE or a deactivated
+        //    company): retrying every 60s can't fix config → park as
+        //    needsAttention immediately (the poller
         //    skips parked rows; the admin Refresh recovers once config is fixed).
         //  - TRANSIENT (DB blip, exhausted serializable retries, anything else):
         //    the next poller tick will likely succeed → leave it in the retry set
@@ -935,8 +939,8 @@ export class WhishPaymentsService {
               ? 'Parked as needsAttention — operator action required (admin Refresh re-settles once the cause is fixed).'
               : `Left PENDING for automatic retry (attempt ${priorAttempts}/${TRANSIENT_SETTLE_PARK_AFTER}).`),
         );
-        // Company-facing: only surface intentional DomainError messages (e.g.
-        // NO_COMMISSION_RULE — actionable + safe). An unexpected internal error
+        // Company-facing: only surface intentional DomainError messages
+        // (actionable + safe). An unexpected internal error
         // (Prisma, etc.) must not leak schema/internal detail into the company's
         // response — the raw message stays in the log above for operators.
         const safeError = isPermanent ? err.message : 'Settlement failed — please contact support.';

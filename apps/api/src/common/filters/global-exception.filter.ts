@@ -72,6 +72,34 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         error: { code: 'VALIDATION_ERROR', message: 'Invalid database query input' },
       };
     }
+    // Postgres numeric overflow (SQLSTATE 22003) reaches Prisma as an UNKNOWN
+    // request error (a raw ConnectorError), not a P-coded one. It means a value
+    // exceeded a numeric column's range — e.g. a wallet balance approaching
+    // 10^12 — and the surrounding transaction has already rolled back atomically.
+    // Surface it as a clean 400 instead of an opaque 500: the request is the
+    // problem (a magnitude the platform doesn't support), not the server.
+    //
+    // Matching is ANCHORED to the connector's structured shape (`code: "22003"`)
+    // or the exact Postgres phrase — a bare '22003' substring probe would
+    // misclassify any error message merely containing those digits (an echoed
+    // reference like 'INV-22003', a duration, a connection id) as an overflow,
+    // and per the retry policy sources never retry 400s.
+    if (
+      exception instanceof Prisma.PrismaClientUnknownRequestError &&
+      (/code:\s*"22003"/.test(exception.message) ||
+        exception.message.includes('numeric field overflow'))
+    ) {
+      // A 400 takes the no-stack logging branch, so preserve the diagnostic
+      // here — operators need to know WHICH column/value overflowed.
+      this.logger.error(`numeric overflow (22003) mapped to 400: ${exception.message}`);
+      return {
+        status: 400,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'A monetary value exceeds the supported range',
+        },
+      };
+    }
 
     if (exception instanceof HttpException) {
       const status = exception.getStatus();

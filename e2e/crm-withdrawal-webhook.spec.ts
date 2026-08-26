@@ -86,14 +86,17 @@ test.describe('withdrawal CRM webhooks (demo inbox)', () => {
 
   test('pushes pending → completed (+ rejected); payouts/loads emit nothing', async () => {
     const { api, csrf } = await adminApiContext();
-    const { companyId, ownerEmail, tempPassword } = await provisionCompanyOwner({ api, csrf });
+    const { companyId, ownerEmail, tempPassword, slug } = await provisionCompanyOwner({
+      api,
+      csrf,
+    });
 
     // Fund the wallet via ingest: 300 → omt's $1 fixed fee → ~299 available.
     const omtId = await findSourceId(api, 'omt');
     await enableSourceForCompany(api, csrf, omtId, companyId);
     const sourceKey = await createSourceKey(api, csrf, omtId, `e2e-crmwd-${Date.now()}`);
     const ingest = await ingestTransaction('omt', sourceKey, {
-      companyId,
+      companySlug: slug,
       externalTransactionId: `e2e-crmwd-${Date.now()}`,
       amount: '300',
       currency: 'USD',

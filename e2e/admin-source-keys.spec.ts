@@ -86,7 +86,7 @@ test.describe('admin: source API keys', () => {
     const ingest = await ingestRes.post('/v1/ingest/omt/transactions', {
       headers: { Authorization: `Bearer ${plaintext}` },
       data: {
-        operatingId: targetId,
+        companySlug: targetSlug,
         externalTransactionId: `e2e-${Date.now()}`,
         amount: '120.00',
         currency: 'USD',
@@ -103,7 +103,7 @@ test.describe('admin: source API keys', () => {
     const mismatch = await ingestRes.post('/v1/ingest/whish/transactions', {
       headers: { Authorization: `Bearer ${plaintext}` },
       data: {
-        operatingId: targetId,
+        companySlug: targetSlug,
         externalTransactionId: `e2e-mismatch-${Date.now()}`,
         amount: '10',
         currency: 'USD',
@@ -117,11 +117,57 @@ test.describe('admin: source API keys', () => {
     });
     expect(discover.status()).toBe(200);
     const list = unwrap(await discover.json()).data as Array<{
-      operatingId: string;
       slug: string;
       name: string;
     }>;
-    expect(list.some((c) => c.operatingId === targetId)).toBeTruthy();
+    expect(list.some((c) => c.slug === targetSlug)).toBeTruthy();
+    // Company UUIDs must never be exposed to sources.
+    expect(list.every((c) => !('operatingId' in c))).toBeTruthy();
+
+    // Unknown slug → 400 VALIDATION_ERROR (never a UUID leak, never a 500).
+    const badSlug = await ingestRes.post('/v1/ingest/omt/transactions', {
+      headers: { Authorization: `Bearer ${plaintext}` },
+      data: {
+        companySlug: 'no-such-company-slug',
+        externalTransactionId: `e2e-bad-${Date.now()}`,
+        amount: '10',
+        currency: 'USD',
+      },
+    });
+    expect(badSlug.status()).toBe(400);
+
+    // --- SUPER_ADMIN renames the slug; ingest follows the new slug ---
+    const renamedSlug = uniqueSlug('e2e-renamed');
+    const rename = await api.patch(`/v1/admin/companies/${targetId}`, {
+      headers: { 'x-csrf-token': csrf! },
+      data: { slug: renamedSlug },
+    });
+    expect(rename.status(), await rename.text()).toBe(200);
+    expect(unwrap(await rename.json()).slug).toBe(renamedSlug);
+
+    const newSlugIngest = await ingestRes.post('/v1/ingest/omt/transactions', {
+      headers: { Authorization: `Bearer ${plaintext}` },
+      data: {
+        companySlug: renamedSlug,
+        externalTransactionId: `e2e-renamed-${Date.now()}`,
+        amount: '15',
+        currency: 'USD',
+      },
+    });
+    expect(newSlugIngest.status(), await newSlugIngest.text()).toBe(201);
+    expect(unwrap(await newSlugIngest.json()).companySlug).toBe(renamedSlug);
+
+    // The old slug is gone immediately.
+    const oldSlugIngest = await ingestRes.post('/v1/ingest/omt/transactions', {
+      headers: { Authorization: `Bearer ${plaintext}` },
+      data: {
+        companySlug: targetSlug,
+        externalTransactionId: `e2e-old-slug-${Date.now()}`,
+        amount: '10',
+        currency: 'USD',
+      },
+    });
+    expect(oldSlugIngest.status()).toBe(400);
 
     await api.dispose();
     await ingestRes.dispose();

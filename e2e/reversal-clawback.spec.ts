@@ -72,6 +72,7 @@ test.describe.serial('reversal / clawback (API, real stack)', () => {
   let owner: APIRequestContext;
   let ownerCsrf: string;
   let companyId: string;
+  let companySlug: string;
   let sourceKey: string;
 
   test.beforeAll(async () => {
@@ -82,6 +83,7 @@ test.describe.serial('reversal / clawback (API, real stack)', () => {
     const omt = await findSourceId(admin, 'omt');
     const co = await provisionCompanyOwner({ api: admin, csrf: adminCsrf });
     companyId = co.companyId;
+    companySlug = co.slug;
     owner = await loginOwnerApiContext(co.ownerEmail, co.tempPassword, 'rev-pass-12345');
     ownerCsrf = await getCsrf(owner);
     await enableSourceForCompany(admin, adminCsrf, omt, companyId);
@@ -109,7 +111,7 @@ test.describe.serial('reversal / clawback (API, real stack)', () => {
   test('reverse a fully-funded deposit: claws net back, REVERSED, reconciles, idempotent', async () => {
     const ext = `e2e-rev-${Date.now()}`;
     const ing = await ingestTransaction('omt', sourceKey, {
-      companyId,
+      companySlug,
       externalTransactionId: ext,
       amount: '100',
       currency: 'USD',
@@ -147,7 +149,7 @@ test.describe.serial('reversal / clawback (API, real stack)', () => {
     // Fresh deposit of 100 → net 90 available.
     const ext = `e2e-rev2-${Date.now()}`;
     const ing = await ingestTransaction('omt', sourceKey, {
-      companyId,
+      companySlug,
       externalTransactionId: ext,
       amount: '100',
       currency: 'USD',

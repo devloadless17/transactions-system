@@ -36,7 +36,7 @@ test.describe('realtime analytics — live dashboard updates', () => {
 
       const admin = await adminApiContext();
       const { api, csrf } = admin;
-      const { companyId, ownerEmail, tempPassword } = await provisionCompanyOwner(admin);
+      const { companyId, ownerEmail, tempPassword, slug } = await provisionCompanyOwner(admin);
       const omtId = await findSourceId(api, 'omt');
       const key = await createSourceKey(api, csrf, omtId, `rt-${Date.now()}`);
 
@@ -62,7 +62,7 @@ test.describe('realtime analytics — live dashboard updates', () => {
 
       // Live update #1: 0 → 137 (no reload).
       await ingestTransaction('omt', key, {
-        companyId,
+        companySlug: slug,
         externalTransactionId: `rt-a-${Date.now()}`,
         amount: '137',
         currency: 'USD',
@@ -76,7 +76,7 @@ test.describe('realtime analytics — live dashboard updates', () => {
 
       // Live update #2: 137 → 337 (no reload).
       await ingestTransaction('omt', key, {
-        companyId,
+        companySlug: slug,
         externalTransactionId: `rt-b-${Date.now()}`,
         amount: '200',
         currency: 'USD',
@@ -100,7 +100,7 @@ test.describe('realtime analytics — live dashboard updates', () => {
       await expect(depositsAfter).toContainText('337', { timeout: 20_000 });
 
       await ingestTransaction('omt', key, {
-        companyId,
+        companySlug: slug,
         externalTransactionId: `rt-c-${Date.now()}`,
         amount: '50',
         currency: 'USD',
@@ -134,7 +134,7 @@ test.describe('realtime analytics — live dashboard updates', () => {
 
     const admin = await adminApiContext();
     const { api, csrf } = admin;
-    const { companyId } = await provisionCompanyOwner(admin);
+    const { companyId, slug } = await provisionCompanyOwner(admin);
     const omtId = await findSourceId(api, 'omt');
     const key = await createSourceKey(api, csrf, omtId, `rt-adm-${Date.now()}`);
 
@@ -144,7 +144,7 @@ test.describe('realtime analytics — live dashboard updates', () => {
 
     const ingest100 = (tag: string) =>
       ingestTransaction('omt', key, {
-        companyId,
+        companySlug: slug,
         externalTransactionId: `rt-adm-${tag}-${Date.now()}`,
         amount: '100',
         currency: 'USD',

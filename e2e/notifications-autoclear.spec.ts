@@ -42,12 +42,12 @@ async function hasResolved(api: APIRequestContext, entityId: string): Promise<bo
 /** Provision → credit (ingest 100) → owner requests one CASH withdrawal.
  *  Returns the owner ctx + withdrawal id. */
 async function seedWithdrawal(admin: { api: APIRequestContext; csrf: string }) {
-  const { companyId, ownerEmail, tempPassword } = await provisionCompanyOwner(admin);
+  const { companyId, ownerEmail, tempPassword, slug } = await provisionCompanyOwner(admin);
   const omtId = await findSourceId(admin.api, 'omt');
   await enableSourceForCompany(admin.api, admin.csrf, omtId, companyId);
   const key = await createSourceKey(admin.api, admin.csrf, omtId, `nac-${Date.now()}`);
   const ingest = await ingestTransaction('omt', key, {
-    companyId,
+    companySlug: slug,
     externalTransactionId: `nac-${Date.now()}`,
     amount: '100',
     currency: 'USD',

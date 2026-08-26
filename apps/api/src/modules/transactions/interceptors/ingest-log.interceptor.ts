@@ -34,10 +34,12 @@ export class IngestLogInterceptor implements NestInterceptor {
         // innermost, before the global ResponseEnvelopeInterceptor wraps it), so
         // extract the ids off the raw object — then store the envelope the client
         // actually received so the log mirrors the wire response.
+        // The body carries only the companySlug; the log's company_id column is
+        // UUID-typed, so read the UUID the controller resolved onto the request.
         const r = asRecord(response);
         this.logs.record({
           kind: 'INGEST',
-          companyId: str(r?.operatingId) ?? str(asRecord(body)?.operatingId),
+          companyId: req.ingestCompanyId ?? null,
           sourceCode,
           reference: str(r?.externalTransactionId) ?? str(asRecord(body)?.externalTransactionId),
           transactionId: str(r?.id),
@@ -48,10 +50,13 @@ export class IngestLogInterceptor implements NestInterceptor {
         });
       }),
       catchError((err: unknown) => {
+        // req.ingestCompanyId is set only once the slug resolved — for earlier
+        // failures (bad body, unknown slug) it stays null; the raw request JSON
+        // stored below still carries the slug the caller sent.
         const { statusCode, payload } = mapError(err);
         this.logs.record({
           kind: 'INGEST',
-          companyId: str(asRecord(body)?.operatingId),
+          companyId: req.ingestCompanyId ?? null,
           sourceCode,
           reference: str(asRecord(body)?.externalTransactionId),
           transactionId: null,

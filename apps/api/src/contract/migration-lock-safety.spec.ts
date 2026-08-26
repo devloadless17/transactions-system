@@ -91,6 +91,11 @@ const ALLOWLIST = new Set<string>([
   '20260703120000_analytics_settled_and_processed_indexes:withdrawals_completed_processed_idx',
   '20260703120000_analytics_settled_and_processed_indexes:payouts_completed_processed_idx',
   '20260703120000_analytics_settled_and_processed_indexes:loads_completed_processed_idx',
+  // Partial index over pricing_issue IS NOT NULL rows (net-0 compensation
+  // queries): the resulting index is tiny by construction, and the migration
+  // file carries the CONCURRENTLY out-of-band command for large deployments
+  // (build it first and the in-migration IF NOT EXISTS no-ops).
+  '20260826130000_pricing_issue_and_slug_history:transactions_pricing_issue_idx',
 ]);
 
 function migrationsDir(): string {

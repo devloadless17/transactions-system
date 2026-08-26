@@ -52,6 +52,9 @@ export interface CommissionResolution {
   feeApplication: FeeApplication;
   commissionAmount: Money;
   netAmount: Money;
+  /** True when a DEDUCTED fee larger than the amount was capped AT the amount
+   *  (net 0) instead of rejected — only ever set under `capFeeAtAmount`. */
+  capped?: boolean;
 }
 
 export class NoMatchingCommissionRuleError extends DomainError {
@@ -89,6 +92,16 @@ interface ResolveArgs {
   operationType: FeeOperationType;
   amount: Money;
   rules: ResolvableRule[];
+  /**
+   * Money-IN escape hatch: when true, a DEDUCTED fee that computes LARGER than
+   * the amount is capped at the amount (company nets 0, platform takes the full
+   * amount) instead of throwing COMMISSION_EXCEEDS_AMOUNT. A deposit is money
+   * that already entered the system — it must book, never bounce, and the worst
+   * case is the platform keeping all of it. Money-OUT flows must NOT set this:
+   * there, rejecting is safe (nothing is stranded) and mispricing moves real
+   * money out the door.
+   */
+  capFeeAtAmount?: boolean;
 }
 
 @Injectable()
@@ -151,14 +164,22 @@ export class CommissionResolverService {
     });
 
     const rule = candidates[0]!;
-    const commission = computeCommission(amount, rule);
+    let commission = computeCommission(amount, rule);
 
-    // Defense-in-depth: a DEDUCTED fee can never exceed the amount it is taken
-    // from. Reject here so a misconfigured rule fails with a clear 422 rather
-    // than as an opaque unbalanced-ledger 500 downstream. (ON_TOP fees are
+    // A DEDUCTED fee can never exceed the amount it is taken from — that would
+    // make the net negative and the ledger set unbalanced. (ON_TOP fees are
     // added on top, so a fee > amount is legitimate there.)
+    let capped = false;
     if (rule.feeApplication === 'DEDUCTED' && commission.gt(amount)) {
-      throw new CommissionExceedsAmountError(rule.id, amount.toString(), commission.toString());
+      if (args.capFeeAtAmount) {
+        // Money-IN: cap at the amount (net 0) so the deposit still books.
+        commission = amount;
+        capped = true;
+      } else {
+        // Reject with a clear 422 rather than as an opaque unbalanced-ledger
+        // 500 downstream.
+        throw new CommissionExceedsAmountError(rule.id, amount.toString(), commission.toString());
+      }
     }
 
     // ON_TOP: recipient gets the full amount (fee is added on top); DEDUCTED:
@@ -170,6 +191,7 @@ export class CommissionResolverService {
       feeApplication: rule.feeApplication,
       commissionAmount: commission,
       netAmount: net,
+      capped: capped || undefined,
     };
   }
 }

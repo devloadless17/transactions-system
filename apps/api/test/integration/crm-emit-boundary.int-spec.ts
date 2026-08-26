@@ -125,6 +125,7 @@ beforeAll(async () => {
     fakeRealtime,
     fakeCounter,
     fakeCounter,
+    fakeCounter,
     fakeCache,
     crmSpy, // real spy: ingest WILL call emitFromTransaction (the control)
   );
@@ -188,6 +189,7 @@ describe('CRM emit boundary (invariant 5: loads/payouts never emitted)', () => {
       new WalletsService(prisma),
       fakeAnalytics,
       fakeRealtime,
+      fakeCounter,
       fakeCounter,
       fakeCounter,
       fakeCache,

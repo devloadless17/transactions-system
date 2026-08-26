@@ -20,4 +20,8 @@ export interface AuthenticatedRequest extends Request {
   // company API key. CsrfGuard reads this to skip the double-submit check —
   // API keys are not susceptible to CSRF so the check is unnecessary.
   apiKeyAuth?: true;
+  // Set by IngestController once the companySlug in the body has been resolved
+  // to a company UUID. IngestLogInterceptor reads it to fill the UUID-typed
+  // transaction_logs.company_id column — the body itself only carries the slug.
+  ingestCompanyId?: string;
 }

@@ -108,7 +108,7 @@ test.describe.serial('negative & security guardrails (API, real stack)', () => {
     try {
       const res = await ctx.post('/v1/ingest/omt/transactions', {
         data: {
-          operatingId: '00000000-0000-0000-0000-000000000000',
+          companySlug: 'no-such-company',
           externalTransactionId: 'x',
           amount: '1',
           currency: 'USD',

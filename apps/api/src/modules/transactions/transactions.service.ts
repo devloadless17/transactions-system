@@ -17,10 +17,7 @@ import { computeSourceFee } from '../sources/source-fee.compute';
 import { Prisma } from '@app/db';
 import type { PrismaClient } from '@app/db';
 import { PrismaService } from '../../database/prisma.service';
-import {
-  CommissionResolverService,
-  NoMatchingCommissionRuleError,
-} from '../commissions/commission-resolver.service';
+import { CommissionResolverService } from '../commissions/commission-resolver.service';
 import { CommissionsRepository } from '../commissions/commissions.repository';
 import { LedgerService } from '../ledger/ledger.service';
 import { netOfFee, reservedTotal } from '../ledger/flow-ledger';
@@ -87,6 +84,8 @@ export class TransactionsService {
     @InjectMetric('txn_ingest_total') private readonly ingestCounter: Counter<string>,
     @InjectMetric('txn_ingest_no_rule_total')
     private readonly noRuleCounter: Counter<string>,
+    @InjectMetric('txn_ingest_pricing_issue_total')
+    private readonly pricingIssueCounter: Counter<string>,
     private readonly cache: CacheService,
     private readonly crm: CrmDispatchService,
   ) {}
@@ -128,7 +127,8 @@ export class TransactionsService {
    * Ingest a transaction posted by an external source provider.
    *
    * Atomic, inside one serializable DB transaction:
-   *   1. Resolve source by id (from the API key) and target company by slug (from body)
+   *   1. Resolve source by id (from the API key) and target company by id (the
+   *      HTTP boundary already resolved the body's companySlug to a UUID)
    *   2. Honour idempotency (explicit key OR natural (source, externalId) pair)
    *   3. Resolve the matching commission rule
    *   4. Insert the `transactions` row with status = COMPLETED
@@ -141,7 +141,20 @@ export class TransactionsService {
     // caller is the Whish collect-link settlement (the whish_payments link isn't
     // attached until after this insert, so it can't be inferred here), else INGEST
     // for a direct ingest-API deposit. Internal-only — never set by external input.
-    ctx: { kind: 'source'; sourceId: string; channel?: SourceFeeChannel },
+    ctx: {
+      kind: 'source';
+      sourceId: string;
+      channel?: SourceFeeChannel;
+      // The HTTP ingest controller has ALREADY resolved + ACTIVE-checked both
+      // rows (source by code, company by slug) milliseconds earlier — passing
+      // them here skips a duplicate runAsAdmin round-trip on the hottest
+      // endpoint. Internal callers (Whish settlement) omit it and the service
+      // resolves as before. Rows must match ctx.sourceId / input.companyId.
+      preloaded?: {
+        source: { id: string; code: string; status: string };
+        company: { id: string; status: string };
+      };
+    },
     input: IngestTransactionInput,
     // `replayed` is attached to the returned transaction (rather than a wrapper)
     // so every existing caller that just wants the transaction is unaffected;
@@ -163,17 +176,26 @@ export class TransactionsService {
       throw new ValidationError(`amount must be positive at up to ${MONEY_SCALE_LABEL}`);
     }
 
-    const [foundSource, company] = await this.prisma.runAsAdmin((tx) =>
-      Promise.all([
-        tx.source.findUnique({ where: { id: ctx.sourceId } }),
-        tx.company.findUnique({ where: { id: input.companyId } }),
-      ]),
-    );
+    const [foundSource, company] =
+      ctx.preloaded &&
+      ctx.preloaded.source.id === ctx.sourceId &&
+      ctx.preloaded.company.id === input.companyId
+        ? [ctx.preloaded.source, ctx.preloaded.company]
+        : await this.prisma.runAsAdmin((tx) =>
+            Promise.all([
+              tx.source.findUnique({ where: { id: ctx.sourceId } }),
+              tx.company.findUnique({ where: { id: input.companyId } }),
+            ]),
+          );
     if (!foundSource || foundSource.status !== 'ACTIVE') {
       throw new ValidationError('source not found or inactive');
     }
     if (!company || company.status !== 'ACTIVE') {
-      throw new ValidationError(`company '${input.companyId}' not found or inactive`);
+      // No identifier in the message: this error can cross the source-facing
+      // boundary (an admin deactivates the company mid-request), and internal
+      // UUIDs must never reach a source. The id lives in the server log below.
+      this.logger.warn(`ingest rejected: company ${input.companyId} not found or inactive`);
+      throw new ValidationError('company not found or inactive');
     }
     // `company.visible` is intentionally NOT an ingest gate. It controls one thing
     // only: whether the company appears in the source-facing discovery list
@@ -226,8 +248,9 @@ export class TransactionsService {
     // Run the whole financial mutation scoped to the target company, so RLS
     // WITH CHECK validates that every row written (transaction, ledger, wallet)
     // belongs to `companyId` — a bug can't mis-book into another tenant.
-    const { result, replayed } = await this.prisma
-      .runSerializableAsTenant(companyId, async (tx) => {
+    const { result, replayed, pricingIssue } = await this.prisma.runSerializableAsTenant(
+      companyId,
+      async (tx) => {
         const cTx = tx as unknown as PrismaClient;
 
         // ---- idempotency: explicit key OR natural (source,external) pair ----
@@ -236,7 +259,11 @@ export class TransactionsService {
             where: { companyId, idempotencyKey: input.idempotencyKey },
           });
           if (existing) {
-            return { result: await this.mapTransaction(cTx, existing), replayed: true };
+            return {
+              result: await this.mapTransaction(cTx, existing),
+              replayed: true,
+              pricingIssue: null,
+            };
           }
         }
         // Natural idempotency: a repeat of the same (source, externalId) for this
@@ -248,33 +275,55 @@ export class TransactionsService {
           where: { sourceId: source.id, externalTransactionId: input.externalTransactionId },
         });
         if (dup) {
-          return { result: await this.mapTransaction(cTx, dup), replayed: true };
+          return {
+            result: await this.mapTransaction(cTx, dup),
+            replayed: true,
+            pricingIssue: null,
+          };
         }
 
         // ---- commission ----
+        // Channel-split pricing policy:
+        //   - INGEST (external HTTP push): the deposit already happened at the
+        //     source and CANNOT bounce. Pricing gaps book at net 0 — the full
+        //     amount withheld as platform fee (recoverable by a later operator
+        //     credit; the reverse, giving money away, would need a clawback):
+        //       * capFeeAtAmount: DEDUCTED fee > amount → capped AT the amount;
+        //       * no matching rule (resolveOptional → null) → fee = amount.
+        //     Both marked on the row (`pricing_issue`) and alerted OUTSIDE the
+        //     tx (see `pricingIssue` below).
+        //   - WHISH_PAY (internal collect-link settlement): STRICT resolve.
+        //     A pricing throw here parks the paid link as needsAttention, and
+        //     an admin Refresh settles it AT THE CORRECT FEE once pricing is
+        //     fixed — strictly better than an irreversible net-0 booking that
+        //     would also push a completed CRM event while crediting nothing.
+        const neverBounce = channel === SourceFeeChannel.INGEST;
         const rules = await this.commissionsRepo.loadCandidates(cTx, {
           companyId,
           sourceId: source.id,
           operationType: 'TRANSACTION',
         });
-        const resolution = this.resolver.resolve({
+        const resolveArgs = {
           companyId,
           sourceId: source.id,
-          operationType: 'TRANSACTION',
+          operationType: 'TRANSACTION' as const,
           amount,
           rules,
-        });
+        };
+        const resolution = neverBounce
+          ? this.resolver.resolveOptional({ ...resolveArgs, capFeeAtAmount: true })
+          : this.resolver.resolve(resolveArgs);
+        const pricingIssue: 'unpriced' | 'capped' | null =
+          resolution === null ? 'unpriced' : resolution.capped ? 'capped' : null;
 
         // Honour the rule's fee application (mirrors loads.approve):
         //   DEDUCTED: external = amount,       company credited amount − fee
         //   ON_TOP:   external = amount + fee, company credited the full amount
         // `availableCredit` is the persisted netAmount (what the wallet receives).
-        const fee = resolution.commissionAmount;
-        const { externalDebit, availableCredit } = ingestSplit(
-          amount,
-          fee,
-          resolution.feeApplication,
-        );
+        // Unpriced falls back to DEDUCTED with fee = amount (net 0).
+        const feeApplication = resolution?.feeApplication ?? 'DEDUCTED';
+        const fee = resolution?.commissionAmount ?? amount;
+        const { externalDebit, availableCredit } = ingestSplit(amount, fee, feeApplication);
 
         // ---- insert transaction row ----
         // A different company reusing the same (source, externalTransactionId)
@@ -294,6 +343,9 @@ export class TransactionsService {
               netAmount: availableCredit.toString(),
               sourceFeeAmount: sourceFeeAmount.toString(),
               status: 'COMPLETED',
+              // Durable, queryable marker of a net-0 pricing-gap booking — the
+              // operator compensation query is `WHERE pricing_issue IS NOT NULL`.
+              pricingIssue,
               payload: (input.payload ?? {}) as Prisma.InputJsonValue,
               idempotencyKey: input.idempotencyKey ?? null,
               processedAt: new Date(),
@@ -354,22 +406,36 @@ export class TransactionsService {
         this.logger.log(
           `ingest tx=${txRow.id} co=${companyId} src=${source.code} ` +
             `amount=${amount.toString()} fee=${fee.toString()} ` +
-            `net=${availableCredit.toString()} app=${resolution.feeApplication} ${input.currency}`,
+            `net=${availableCredit.toString()} app=${feeApplication}` +
+            `${pricingIssue ? ` pricing=${pricingIssue}` : ''} ${input.currency}`,
         );
 
-        return { result: await this.mapTransaction(cTx, txRow), replayed: false };
-      })
-      .catch((e: unknown) => {
-        // A blocked-on-pricing ingest is a silent money-stopper: the source's
-        // transaction can't be booked until an operator configures a commission
-        // rule. Surface it loudly (counter + deduped log) so ops can fix pricing,
-        // then rethrow the original 422 — the caller's behaviour is unchanged.
-        if (e instanceof NoMatchingCommissionRuleError) {
-          this.noRuleCounter.inc({ source_code: source.code, currency: input.currency });
-          void this.warnNoCommissionRule(companyId, source.code, source.id, input);
-        }
-        throw e;
+        return { result: await this.mapTransaction(cTx, txRow), replayed: false, pricingIssue };
+      },
+    );
+
+    // A pricing gap no longer blocks the deposit (it books at net 0), but it is
+    // still an operator problem: the company is credited nothing until the rule
+    // is fixed and the flagged rows (pricing_issue IS NOT NULL) compensated.
+    // Surface EVERY kind loudly — per-kind counter + deduped operator alert —
+    // OUTSIDE the serializable tx so a retry can't double-fire, and only for a
+    // genuinely new booking (replays carry none).
+    if (pricingIssue) {
+      this.logger.warn(
+        `ingest booked at net 0 (${pricingIssue}): co=${companyId} src=${source.code} ` +
+          `amount=${amount.toString()} — fix the commission rule`,
+      );
+      this.pricingIssueCounter.inc({
+        source_code: source.code,
+        currency: input.currency,
+        issue: pricingIssue,
       });
+      // Legacy metric kept incrementing for existing dashboards/alerts.
+      if (pricingIssue === 'unpriced') {
+        this.noRuleCounter.inc({ source_code: source.code, currency: input.currency });
+      }
+      void this.warnPricingIssue(pricingIssue, companyId, source.code, source.id, input);
+    }
 
     // An idempotent replay (explicit key or natural (source,externalId) pair)
     // books NO new money — the ledger/wallet writes were skipped above — so it
@@ -398,12 +464,17 @@ export class TransactionsService {
   }
 
   /**
-   * Best-effort operator alert when an ingest is blocked because the company has
-   * no commission rule. Deduped per (company, source) via a TTL'd cache lock so a
-   * retrying source can't flood the log. Never throws — alerting must not affect
-   * the ingest path.
+   * Best-effort operator alert when an ingest books at net 0 because of a
+   * pricing gap ('unpriced': no commission rule matched; 'capped': a DEDUCTED
+   * fee larger than the amount was capped at it). The deposit still BOOKS —
+   * see the pricing block in ingest() — but the company is credited nothing
+   * until an operator fixes pricing and compensates the rows flagged with
+   * `pricing_issue`. Deduped per (kind, company, source) via a TTL'd cache
+   * lock so a busy source can't flood the log. Never throws — alerting must
+   * not affect the money path.
    */
-  private async warnNoCommissionRule(
+  private async warnPricingIssue(
+    kind: 'unpriced' | 'capped',
     companyId: string,
     sourceCode: string,
     sourceId: string,
@@ -411,14 +482,19 @@ export class TransactionsService {
   ): Promise<void> {
     try {
       const token = await this.cache.tryLock(
-        `ingest-no-rule:${companyId}:${sourceId}`,
+        `ingest-pricing:${kind}:${companyId}:${sourceId}`,
         NO_RULE_ALERT_TTL_MS,
       );
       if (!token) return; // already alerted within the window
+      const cause =
+        kind === 'unpriced'
+          ? `has no commission rule for source ${sourceCode}`
+          : `has a DEDUCTED commission rule whose fee exceeds small deposits from source ${sourceCode}`;
       this.logger.error(
-        `Ingest BLOCKED — company ${companyId} has no commission rule for source ${sourceCode}; ` +
-          `${input.currency} ${input.amount} could not be booked. No transactions will be accepted for ` +
-          `this company until a commission rule is configured (admin → Commissions, or a global default rule).`,
+        `Ingest ${kind.toUpperCase()} — company ${companyId} ${cause}; ` +
+          `${input.currency} ${input.amount} was booked at net 0 (full amount withheld as fee). ` +
+          `The company is credited NOTHING until pricing is fixed (admin → Commissions) and the ` +
+          `flagged transactions (pricing_issue IS NOT NULL) are compensated.`,
       );
     } catch {
       // Best-effort: alerting must never affect the money path.

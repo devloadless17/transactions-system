@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { UserRole } from '@app/shared';
 import type { PrismaService } from '../../database/prisma.service';
 import type { RealtimeService } from '../realtime/realtime.service';
 import { CompaniesService } from './companies.service';
@@ -220,5 +221,110 @@ describe('CompaniesService.list — balances are SUPER_ADMIN-only', () => {
     const res = await svc.list(query, { includeBalances: false });
     expect(res.data.map((c) => c.name)).toEqual(['Alpha', 'Beta']);
     expect(res.meta.total).toBe(2);
+  });
+});
+
+/**
+ * Slug rename contract: the slug is the PUBLIC identifier external sources
+ * ingest with, so update() must (a) allow renaming it, (b) 409 on a collision
+ * with another company, and (c) not run the collision check when the slug is
+ * untouched.
+ */
+describe('CompaniesService.update — slug rename', () => {
+  const SUPER = { actorRole: UserRole.SUPER_ADMIN };
+
+  function makeUpdateService(opts: {
+    existing: ReturnType<typeof COMPANY>;
+    slugTakenBy?: ReturnType<typeof COMPANY>;
+    retiredBy?: string; // companyId that once held the requested slug
+  }) {
+    const findUnique = vi.fn((args: { where: { id?: string; slug?: string } }) => {
+      if (args.where.id) return Promise.resolve(opts.existing);
+      if (args.where.slug) return Promise.resolve(opts.slugTakenBy ?? null);
+      return Promise.resolve(null);
+    });
+    const update = vi.fn((args: { where: { id: string }; data: Record<string, unknown> }) =>
+      Promise.resolve({ ...opts.existing, ...args.data }),
+    );
+    const historyFindUnique = vi.fn((args: { where: { slug: string } }) =>
+      Promise.resolve(opts.retiredBy ? { slug: args.where.slug, companyId: opts.retiredBy } : null),
+    );
+    const historyUpsert = vi.fn(() => Promise.resolve({}));
+    const tx = {
+      company: { findUnique, update },
+      companySlugHistory: { findUnique: historyFindUnique, upsert: historyUpsert },
+    };
+    const prisma = {
+      runAsAdmin: vi.fn((cb: (t: typeof tx) => unknown) => cb(tx)),
+    } as unknown as PrismaService;
+    const realtime = { admin: vi.fn() } as unknown as RealtimeService;
+    return { svc: new CompaniesService(prisma, realtime), findUnique, update, historyUpsert };
+  }
+
+  it('renames the slug when the new slug is free, tombstoning the old one', async () => {
+    const { svc, update, historyUpsert } = makeUpdateService({ existing: COMPANY('c1', 'Alpha') });
+    const res = await svc.update('c1', { slug: 'alpha-renamed' }, SUPER);
+    expect(res.slug).toBe('alpha-renamed');
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ slug: 'alpha-renamed' }) }),
+    );
+    // The renamed-AWAY slug is retired so no other company can ever claim it.
+    expect(historyUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { slug: 'alpha' } }),
+    );
+  });
+
+  it('403s a slug change without an explicit SUPER_ADMIN actor (any caller of update())', async () => {
+    const { svc, update } = makeUpdateService({ existing: COMPANY('c1', 'Alpha') });
+    await expect(svc.update('c1', { slug: 'alpha-renamed' })).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+      httpStatus: 403,
+    });
+    await expect(
+      svc.update('c1', { slug: 'alpha-renamed' }, { actorRole: UserRole.ADMIN_OPERATOR }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('409s when the new slug already belongs to another company', async () => {
+    const { svc, update } = makeUpdateService({
+      existing: COMPANY('c1', 'Alpha'),
+      slugTakenBy: COMPANY('c2', 'Beta'),
+    });
+    await expect(svc.update('c1', { slug: 'beta' }, SUPER)).rejects.toMatchObject({
+      code: 'CONFLICT',
+      httpStatus: 409,
+    });
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("409s when the new slug is another company's RETIRED slug (tombstone)", async () => {
+    const { svc, update } = makeUpdateService({
+      existing: COMPANY('c1', 'Alpha'),
+      retiredBy: 'c2',
+    });
+    await expect(svc.update('c1', { slug: 'beta-old' }, SUPER)).rejects.toMatchObject({
+      code: 'CONFLICT',
+      httpStatus: 409,
+    });
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('allows a company to reclaim its OWN retired slug', async () => {
+    const { svc } = makeUpdateService({
+      existing: COMPANY('c1', 'Alpha'),
+      retiredBy: 'c1',
+    });
+    const res = await svc.update('c1', { slug: 'alpha-old' }, SUPER);
+    expect(res.slug).toBe('alpha-old');
+  });
+
+  it('skips slug gating entirely when the slug is unchanged (operators can PATCH other fields)', async () => {
+    const existing = COMPANY('c1', 'Alpha');
+    const { svc, findUnique } = makeUpdateService({ existing });
+    await svc.update('c1', { slug: existing.slug, name: 'Alpha Renamed' });
+    // Only the by-id lookup ran — no by-slug query, and no Forbidden despite
+    // the missing actorRole, because nothing privileged was changed.
+    expect(findUnique.mock.calls.filter(([a]) => 'slug' in a.where)).toHaveLength(0);
   });
 });

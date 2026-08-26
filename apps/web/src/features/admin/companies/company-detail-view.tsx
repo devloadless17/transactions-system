@@ -5,6 +5,7 @@ import { toast } from '@/lib/toast';
 import Link from 'next/link';
 import {
   SUPPORTED_CURRENCIES,
+  slugSchema,
   type AuditLogResponse,
   type CompanyResponse,
   type OverviewResponse,
@@ -18,6 +19,16 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Switch } from '@/components/ui/switch';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { DataTable, type Column } from '@/components/ui/data-table';
 import { apiFetch } from '@/lib/api.client';
 import { ApiClientError } from '@/lib/api';
@@ -35,10 +46,23 @@ import {
 } from '@/features/analytics/date-range';
 import { CompanyUsersCard } from './company-users-card';
 
-export function CompanyDetailView({ companyId }: { companyId: string }) {
+export function CompanyDetailView({
+  companyId,
+  canEditSlug = false,
+}: {
+  companyId: string;
+  canEditSlug?: boolean;
+}) {
   const qc = useQueryClient();
   const [chartCurrency, setChartCurrency] = useState<string>('USD');
   const [range, setRange] = useState<DateRange>(DEFAULT_RANGE);
+  const [slugDialogOpen, setSlugDialogOpen] = useState(false);
+  const [slugDraft, setSlugDraft] = useState('');
+  // Validated with the SHARED schema (same rule the API enforces) so the
+  // dialog shows the real error inline instead of a post-submit 400 toast.
+  const slugParse = slugSchema.safeParse(slugDraft);
+  const slugError =
+    slugDraft.trim() && !slugParse.success ? slugParse.error.issues[0]?.message : null;
 
   const companyQ = useQuery({
     queryKey: ['admin', 'company', companyId],
@@ -91,6 +115,21 @@ export function CompanyDetailView({ companyId }: { companyId: string }) {
       apiFetch<CompanyResponse>(`/admin/companies/${companyId}/activate`, { method: 'POST' }),
     onSuccess: () => {
       toast.success('Company activated');
+      qc.invalidateQueries({ queryKey: ['admin', 'company', companyId] });
+      qc.invalidateQueries({ queryKey: ['admin', 'companies'] });
+    },
+    onError: (err) => toast.error(err instanceof ApiClientError ? err.message : 'Failed'),
+  });
+
+  const slugMu = useMutation({
+    mutationFn: (slug: string) =>
+      apiFetch<CompanyResponse>(`/admin/companies/${companyId}`, {
+        method: 'PATCH',
+        body: { slug },
+      }),
+    onSuccess: (c) => {
+      toast.success(`Slug changed to ${c.slug}`);
+      setSlugDialogOpen(false);
       qc.invalidateQueries({ queryKey: ['admin', 'company', companyId] });
       qc.invalidateQueries({ queryKey: ['admin', 'companies'] });
     },
@@ -259,8 +298,20 @@ export function CompanyDetailView({ companyId }: { companyId: string }) {
           </h1>
           {companyQ.data ? (
             <p className="text-sm text-muted-foreground">
-              slug: <span className="font-mono break-all">{companyQ.data.slug}</span> · default
-              currency: {companyQ.data.defaultCurrency} · created{' '}
+              slug: <span className="font-mono break-all">{companyQ.data.slug}</span>
+              {canEditSlug && (
+                <button
+                  type="button"
+                  className="ml-1 align-baseline text-xs underline-offset-2 hover:underline"
+                  onClick={() => {
+                    setSlugDraft(companyQ.data?.slug ?? '');
+                    setSlugDialogOpen(true);
+                  }}
+                >
+                  edit
+                </button>
+              )}{' '}
+              · default currency: {companyQ.data.defaultCurrency} · created{' '}
               {new Date(companyQ.data.createdAt).toLocaleDateString()}
             </p>
           ) : companyQ.isError ? null : (
@@ -305,6 +356,54 @@ export function CompanyDetailView({ companyId }: { companyId: string }) {
             ))}
         </div>
       </div>
+
+      {canEditSlug && (
+        <Dialog open={slugDialogOpen} onOpenChange={setSlugDialogOpen}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Edit slug</DialogTitle>
+              <DialogDescription>
+                Sources ingest transactions using this slug — renaming it breaks their requests
+                until they switch to the new slug. Share the new value with every source that posts
+                for this company.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-2">
+              <Label htmlFor="company-slug">Slug</Label>
+              <Input
+                id="company-slug"
+                className="font-mono"
+                value={slugDraft}
+                onChange={(e) => setSlugDraft(e.target.value)}
+                placeholder="acme-corp"
+                autoComplete="off"
+              />
+              {slugError ? (
+                <p className="text-xs text-destructive">{slugError}</p>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  2–50 characters, lowercase letters, numbers and dashes.
+                </p>
+              )}
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setSlugDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                onClick={() => slugParse.success && slugMu.mutate(slugParse.data)}
+                disabled={
+                  slugMu.isPending ||
+                  !slugParse.success ||
+                  (slugParse.success && slugParse.data === companyQ.data?.slug)
+                }
+              >
+                {slugMu.isPending ? 'Saving…' : 'Save slug'}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
 
       {companyQ.data && (
         <Card>

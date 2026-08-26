@@ -55,8 +55,8 @@ export interface RuleDraft {
 // DERIVED from MONEY_SCALE rather than hardcoded, so it can never drift from the
 // scale again: at 2 dp this is one cent. It ships together with the migration
 // that re-derives existing 8dp boundaries onto the cent grid — changing it alone
-// would open a GAP in a live ladder, and a gap makes the resolver throw
-// NO_COMMISSION_RULE, which 422s every deposit that lands in the gap.
+// would open a GAP in a live ladder, and a deposit landing in a gap resolves no
+// rule, so it books UNPRICED at net 0 (the company is credited nothing).
 const EPSILON = Money.of(1)
   .div(10 ** MONEY_SCALE)
   .toString();

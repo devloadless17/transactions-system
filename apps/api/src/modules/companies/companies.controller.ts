@@ -81,8 +81,13 @@ export class CompaniesController {
   async update(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body(new ZodPipe(updateCompanySchema)) body: UpdateCompanyInput,
+    @CurrentUser() user: AuthPrincipal,
   ) {
-    return this.companies.update(id, body);
+    // Slug renames are SUPER_ADMIN-only; the check lives in the service, next
+    // to the write, keyed on the actor role passed here. Per-field (not
+    // per-route) because ADMIN_OPERATOR legitimately PATCHes the other fields
+    // (e.g. the visibility toggle).
+    return this.companies.update(id, body, { actorRole: user.role });
   }
 
   @Post(':id/disable')

@@ -233,15 +233,15 @@ export async function createSourceKey(
 export async function ingestTransaction(
   sourceCode: string,
   plaintext: string,
-  data: { companyId: string; externalTransactionId: string; amount: string; currency: string },
+  data: { companySlug: string; externalTransactionId: string; amount: string; currency: string },
 ): Promise<{ status: number; body: any }> {
   const ctx = await pwRequest.newContext({ baseURL: API_BASE });
   try {
-    // The source-facing API names the company field `operatingId`.
-    const { companyId, ...rest } = data;
+    // The source-facing API identifies the company by `companySlug` — UUIDs
+    // are never exposed to sources.
     const res = await ctx.post(`/v1/ingest/${sourceCode}/transactions`, {
       headers: { Authorization: `Bearer ${plaintext}` },
-      data: { operatingId: companyId, ...rest },
+      data,
     });
     const text = await res.text();
     // unwrap returns the inner transaction on 201, or the error body on 4xx.

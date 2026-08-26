@@ -85,10 +85,12 @@ export const transactionDetailResponseSchema = z.object({
 export type TransactionDetailResponse = z.infer<typeof transactionDetailResponseSchema>;
 
 // ----- Discovery endpoint -----
-// External providers (Wish, OMT, ...) call GET /v1/ingest/companies once on
-// startup to discover which companies they can ingest for. They cache the
-// ids and use them as `companyId` in the POST body. `slug` and `name` are
-// returned for human-friendly display only.
+// External providers (Wish, OMT, ...) may call GET /v1/ingest/companies to
+// discover which companies they can ingest for; they cache the slugs and use
+// them as `companySlug` in the POST body. This is the SERVICE-side shape — the
+// `id` here is internal and the ingest controller strips it at the HTTP
+// boundary (company UUIDs are never exposed to sources; the wire item is just
+// { slug, name, defaultCurrency }).
 export const ingestCompanyListItemSchema = z.object({
   id: z.string().uuid(),
   slug: z.string(),

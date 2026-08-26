@@ -39,7 +39,7 @@ async function seedWithdrawal(
   await enableSourceForCompany(admin.api, admin.csrf, omtId, companyId);
   const key = await createSourceKey(admin.api, admin.csrf, omtId, `e2e-qr-${Date.now()}`);
   const ingest = await ingestTransaction('omt', key, {
-    companyId,
+    companySlug: slug,
     externalTransactionId: `e2e-qr-${Date.now()}`,
     amount: '100',
     currency: 'USD',

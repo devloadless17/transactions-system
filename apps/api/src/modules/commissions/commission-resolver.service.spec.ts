@@ -357,6 +357,81 @@ describe('CommissionResolverService', () => {
       expect(r.commissionAmount.toString()).toBe('150');
     });
   });
+
+  // Money-IN escape hatch: a deposit already entered the system, so under
+  // `capFeeAtAmount` an oversized DEDUCTED fee books at net 0 (platform keeps
+  // the full amount) instead of bouncing the deposit with a 422.
+  describe('capFeeAtAmount (money-IN: deposits must book, never bounce)', () => {
+    const oversizedFixed = rule({
+      minAmount: '0',
+      maxAmount: '1000',
+      commissionType: 'FIXED',
+      commissionValue: '3',
+      feeApplication: 'DEDUCTED',
+    });
+
+    it('caps a DEDUCTED fee larger than the amount AT the amount (net 0, capped flag set)', () => {
+      const r = svc.resolve({
+        companyId: company,
+        sourceId: source,
+        operationType: 'TRANSACTION',
+        amount: Money.of('1'),
+        rules: [oversizedFixed],
+        capFeeAtAmount: true,
+      });
+      expect(r.commissionAmount.toString()).toBe('1');
+      expect(r.netAmount.toString()).toBe('0');
+      expect(r.capped).toBe(true);
+    });
+
+    it('leaves a fee that fits untouched (no capped flag)', () => {
+      const r = svc.resolve({
+        companyId: company,
+        sourceId: source,
+        operationType: 'TRANSACTION',
+        amount: Money.of('50'),
+        rules: [oversizedFixed],
+        capFeeAtAmount: true,
+      });
+      expect(r.commissionAmount.toString()).toBe('3');
+      expect(r.netAmount.toString()).toBe('47');
+      expect(r.capped).toBeUndefined();
+    });
+
+    it('without the flag the same inputs still throw (money-OUT stays strict)', () => {
+      expect(() =>
+        svc.resolve({
+          companyId: company,
+          sourceId: source,
+          operationType: 'TRANSACTION',
+          amount: Money.of('1'),
+          rules: [oversizedFixed],
+        }),
+      ).toThrow(CommissionExceedsAmountError);
+    });
+
+    it('never inflates an ON_TOP fee decision (flag is a no-op for ON_TOP)', () => {
+      const r = svc.resolve({
+        companyId: company,
+        sourceId: source,
+        operationType: 'TRANSACTION',
+        amount: Money.of('1'),
+        rules: [
+          rule({
+            minAmount: '0',
+            maxAmount: '1000',
+            commissionType: 'FIXED',
+            commissionValue: '3',
+            feeApplication: 'ON_TOP',
+          }),
+        ],
+        capFeeAtAmount: true,
+      });
+      expect(r.commissionAmount.toString()).toBe('3');
+      expect(r.netAmount.toString()).toBe('1');
+      expect(r.capped).toBeUndefined();
+    });
+  });
 });
 
 describe('rules that crossed a JSON cache boundary', () => {

@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "f7c0a6b2-9d40-4cda-9c01-7d5b1ec23a91",
     "name": "Transactions System",
-    "description": "Full end-to-end test flow for the multi-tenant transaction platform.\n\nTwo distinct API key types:\n- **Source key** \u2014 held by external providers (OMT, Wish). Can POST transactions on behalf of any company via `/ingest/:sourceCode/transactions`, and discover companies via `GET /ingest/companies`.\n- **Company key** \u2014 held by the company itself. READ-ONLY. Used for programmatic dashboards/exports against `/company/*` endpoints.\n\nRun the requests **in order** from the top folder down:\n\n1. **00 \u2014 Health** \u2014 sanity check the API is up\n2. **01 \u2014 Admin** \u2014 log in as super admin, create a test company\n3. **02 \u2014 Company Owner** \u2014 log in as the new owner, create a read-only company key\n4. **02b \u2014 Admin: Source Keys** \u2014 mint a source key for a provider (e.g. OMT)\n5. **03 \u2014 Ingestion (external provider)** \u2014 discover companies, then POST a transaction using the source key + companyId\n6. **04 \u2014 Owner reads** \u2014 wallets, transactions, ledger\n7. **05 \u2014 Withdrawals** \u2014 request one, then admin approves with a reference\n8. **07 \u2014 Analytics** \u2014 admin dashboards\n9. **08 \u2014 Negative tests** \u2014 confirm validation/auth errors fire correctly\n\nThe collection has **test scripts that auto-capture** the CSRF token, company ID, owner credentials, source/company API keys, and withdrawal ID into collection variables \u2014 so you just click Send in order and everything flows.\n\n**Cookies**: Postman manages them per-host. When you switch from admin to owner login, the older session is overwritten automatically. If you want to log out fully, click the Cookies icon and clear `localhost`.",
+    "description": "Full end-to-end test flow for the multi-tenant transaction platform.\n\nTwo distinct API key types:\n- **Source key** \u2014 held by external providers (OMT, Wish). Can POST transactions on behalf of any company via `/ingest/:sourceCode/transactions`, and discover companies via `GET /ingest/companies`.\n- **Company key** \u2014 held by the company itself. READ-ONLY. Used for programmatic dashboards/exports against `/company/*` endpoints.\n\nRun the requests **in order** from the top folder down:\n\n1. **00 \u2014 Health** \u2014 sanity check the API is up\n2. **01 \u2014 Admin** \u2014 log in as super admin, create a test company\n3. **02 \u2014 Company Owner** \u2014 log in as the new owner, create a read-only company key\n4. **02b \u2014 Admin: Source Keys** \u2014 mint a source key for a provider (e.g. OMT)\n5. **03 \u2014 Ingestion (external provider)** \u2014 discover companies, then POST a transaction using the source key + companySlug\n6. **04 \u2014 Owner reads** \u2014 wallets, transactions, ledger\n7. **05 \u2014 Withdrawals** \u2014 request one, then admin approves with a reference\n8. **07 \u2014 Analytics** \u2014 admin dashboards\n9. **08 \u2014 Negative tests** \u2014 confirm validation/auth errors fire correctly\n\nThe collection has **test scripts that auto-capture** the CSRF token, company ID, owner credentials, source/company API keys, and withdrawal ID into collection variables \u2014 so you just click Send in order and everything flows.\n\n**Cookies**: Postman manages them per-host. When you switch from admin to owner login, the older session is overwritten automatically. If you want to log out fully, click the Cookies icon and clear `localhost`.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -28,6 +28,11 @@
     },
     {
       "key": "companyId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "companySlug",
       "value": "",
       "type": "string"
     },
@@ -171,6 +176,7 @@
                   "pm.test('201 Created', () => pm.expect([200, 201]).to.include(pm.response.code));",
                   "const j = pm.response.json().data; // responses are enveloped: { success, statusCode, data }",
                   "pm.collectionVariables.set('companyId', j.company.id);",
+                  "pm.collectionVariables.set('companySlug', j.company.slug);",
                   "pm.collectionVariables.set('ownerEmail', j.owner.email);",
                   "pm.collectionVariables.set('ownerPassword', j.owner.temporaryPassword);",
                   "console.log('Saved companyId =', j.company.id);",
@@ -485,9 +491,9 @@
                   "pm.test('200 OK', () => pm.response.to.have.status(200));",
                   "const j = pm.response.json().data; // responses are enveloped: { success, statusCode, data }",
                   "pm.test('Returns an array of companies', () => pm.expect(j.data).to.be.an('array'));",
-                  "if ((j.data || []).length > 0 && !pm.collectionVariables.get('companyId')) {",
-                  "  pm.collectionVariables.set('companyId', j.data[0].operatingId);",
-                  "  console.log('Saved operatingId =', j.data[0].operatingId);",
+                  "if ((j.data || []).length > 0 && !pm.collectionVariables.get('companySlug')) {",
+                  "  pm.collectionVariables.set('companySlug', j.data[0].slug);",
+                  "  console.log('Saved companySlug =', j.data[0].slug);",
                   "}"
                 ]
               }
@@ -506,7 +512,7 @@
               "host": ["{{baseUrl}}"],
               "path": ["ingest", "companies"]
             },
-            "description": "External provider startup: discover the list of ACTIVE companies, cache their operatingIds. Returns `{ data: [{ operatingId, slug, name, defaultCurrency }, ...] }`. Only callable with a source key."
+            "description": "External provider startup: discover the list of ACTIVE companies, cache their slugs. Returns `{ data: [{ slug, name, defaultCurrency }, ...] }`. Only callable with a source key. (Undocumented for partners — sources are normally handed their slugs directly.)"
           }
         },
         {
@@ -540,7 +546,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"operatingId\": \"{{companyId}}\",\n  \"externalTransactionId\": \"postman-{{$timestamp}}-50\",\n  \"amount\": \"50\",\n  \"currency\": \"USD\",\n  \"payload\": {\n    \"customer\": \"Alice (payer)\",\n    \"tradingAccount\": \"Bob (recipient)\",\n    \"phone\": \"+961-3-111-111\",\n    \"note\": \"test-from-postman\"\n  }\n}"
+              "raw": "{\n  \"companySlug\": \"{{companySlug}}\",\n  \"externalTransactionId\": \"postman-{{$timestamp}}-50\",\n  \"amount\": \"50\",\n  \"currency\": \"USD\",\n  \"payload\": {\n    \"customer\": \"Alice (payer)\",\n    \"tradingAccount\": \"Bob (recipient)\",\n    \"phone\": \"+961-3-111-111\",\n    \"note\": \"test-from-postman\"\n  }\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/ingest/{{sourceCode}}/transactions",
@@ -566,7 +572,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"operatingId\": \"{{companyId}}\",\n  \"externalTransactionId\": \"postman-{{$timestamp}}-200\",\n  \"amount\": \"200\",\n  \"currency\": \"USD\",\n  \"payload\": {\n    \"customer\": \"Bob (payer)\",\n    \"tradingAccount\": \"Dana (recipient)\",\n    \"phone\": \"+961-3-333-333\",\n    \"note\": \"bill payment\"\n  }\n}"
+              "raw": "{\n  \"companySlug\": \"{{companySlug}}\",\n  \"externalTransactionId\": \"postman-{{$timestamp}}-200\",\n  \"amount\": \"200\",\n  \"currency\": \"USD\",\n  \"payload\": {\n    \"customer\": \"Bob (payer)\",\n    \"tradingAccount\": \"Dana (recipient)\",\n    \"phone\": \"+961-3-333-333\",\n    \"note\": \"bill payment\"\n  }\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/ingest/{{sourceCode}}/transactions",
@@ -592,7 +598,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"operatingId\": \"{{companyId}}\",\n  \"externalTransactionId\": \"postman-{{$timestamp}}-500\",\n  \"amount\": \"500\",\n  \"currency\": \"USD\",\n  \"payload\": {\n    \"customer\": \"Carol (payer)\",\n    \"tradingAccount\": \"Eve (recipient)\",\n    \"phone\": \"+961-3-444-444\",\n    \"note\": \"large purchase\"\n  }\n}"
+              "raw": "{\n  \"companySlug\": \"{{companySlug}}\",\n  \"externalTransactionId\": \"postman-{{$timestamp}}-500\",\n  \"amount\": \"500\",\n  \"currency\": \"USD\",\n  \"payload\": {\n    \"customer\": \"Carol (payer)\",\n    \"tradingAccount\": \"Eve (recipient)\",\n    \"phone\": \"+961-3-444-444\",\n    \"note\": \"large purchase\"\n  }\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/ingest/{{sourceCode}}/transactions",
@@ -618,7 +624,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"operatingId\": \"{{companyId}}\",\n  \"externalTransactionId\": \"postman-dedup-fixed-id\",\n  \"amount\": \"50\",\n  \"currency\": \"USD\",\n  \"payload\": {}\n}"
+              "raw": "{\n  \"companySlug\": \"{{companySlug}}\",\n  \"externalTransactionId\": \"postman-dedup-fixed-id\",\n  \"amount\": \"50\",\n  \"currency\": \"USD\",\n  \"payload\": {}\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/ingest/{{sourceCode}}/transactions",
@@ -1576,7 +1582,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"operatingId\": \"{{companyId}}\",\n  \"externalTransactionId\": \"x\",\n  \"amount\": \"10\",\n  \"currency\": \"USD\"\n}"
+              "raw": "{\n  \"companySlug\": \"{{companySlug}}\",\n  \"externalTransactionId\": \"x\",\n  \"amount\": \"10\",\n  \"currency\": \"USD\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/ingest/{{sourceCode}}/transactions",
@@ -1601,7 +1607,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"operatingId\": \"{{companyId}}\",\n  \"externalTransactionId\": \"company-key-attempt-{{$timestamp}}\",\n  \"amount\": \"10\",\n  \"currency\": \"USD\"\n}"
+              "raw": "{\n  \"companySlug\": \"{{companySlug}}\",\n  \"externalTransactionId\": \"company-key-attempt-{{$timestamp}}\",\n  \"amount\": \"10\",\n  \"currency\": \"USD\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/ingest/{{sourceCode}}/transactions",
@@ -1627,7 +1633,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"operatingId\": \"{{companyId}}\",\n  \"externalTransactionId\": \"bad-{{$timestamp}}\",\n  \"amount\": \"-5\",\n  \"currency\": \"USD\"\n}"
+              "raw": "{\n  \"companySlug\": \"{{companySlug}}\",\n  \"externalTransactionId\": \"bad-{{$timestamp}}\",\n  \"amount\": \"-5\",\n  \"currency\": \"USD\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/ingest/{{sourceCode}}/transactions",
@@ -1637,7 +1643,7 @@
           }
         },
         {
-          "name": "Missing operatingId (400)",
+          "name": "Missing companySlug (400)",
           "request": {
             "method": "POST",
             "header": [
