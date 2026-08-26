@@ -108,7 +108,7 @@ describe('legacy over-scale rows still settle cleanly', () => {
   //
   // There is no code fix — the arithmetic does not allow one. Rows like this must
   // be settled or cancelled BEFORE the money scale is flipped; see the drain gate
-  // in docs/MONEY_SCALE_MIGRATION.md, which is why that gate runs before Stage A
+  // in the (now-retired) money-scale migration runbook, which is why that gate ran before Stage A
   // and not before Stage B. This test exists so the constraint is discovered here
   // rather than in production.
   it('CANNOT settle an over-scale ON_TOP reservation — proves the drain gate is required', async () => {

@@ -81,4 +81,4 @@ scale permanently:
   wallet is that ledger's projection and must match it exactly, so it stays wide
   too. New rows are constrained to cents by a `CHECK`, not by the column type.
 
-See `docs/MONEY_SCALE_MIGRATION.md` for the remaining data migration.
+The data migration shipped in 2026-08 (cent-tier re-derivation + safe column narrowing); the runbook has been retired.
