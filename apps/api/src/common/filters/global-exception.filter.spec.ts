@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { BadRequestException, type ArgumentsHost } from '@nestjs/common';
 import { type ZodError, z } from 'zod';
+import type { ApiErrorEnvelope } from '@app/shared';
 import { GlobalExceptionFilter } from './global-exception.filter';
 import { NotFoundError, ValidationError } from '../errors/domain.error';
 
-function capture(exception: unknown): { status: number; body: any } {
+function capture(exception: unknown): { status: number; body: ApiErrorEnvelope } {
   const json = vi.fn((_body: unknown) => undefined);
   const status = vi.fn((_code: number) => ({ json }));
   const res = { status };
@@ -14,7 +15,10 @@ function capture(exception: unknown): { status: number; body: any } {
   } as unknown as ArgumentsHost;
 
   new GlobalExceptionFilter().catch(exception, host);
-  return { status: status.mock.calls[0]![0], body: json.mock.calls[0]![0] };
+  return {
+    status: status.mock.calls[0]![0],
+    body: json.mock.calls[0]![0] as ApiErrorEnvelope,
+  };
 }
 
 describe('GlobalExceptionFilter envelope', () => {
