@@ -8,11 +8,22 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import type { DailyBucket } from '@app/shared';
+import type { BucketGranularity, DailyBucket } from '@app/shared';
+import { formatBucketTick, formatBucketTooltip } from '@/lib/date-presets';
 
-export function VolumeChart({ buckets, currency }: { buckets: DailyBucket[]; currency: string }) {
+export function VolumeChart({
+  buckets,
+  currency,
+  granularity = 'day',
+}: {
+  buckets: DailyBucket[];
+  currency: string;
+  /** Bucket width the server chose; labels must follow it or a month reads as a day. */
+  granularity?: BucketGranularity;
+}) {
   const data = buckets.map((b) => ({
-    date: b.date.slice(5), // MM-DD
+    date: formatBucketTick(b.date, granularity),
+    bucketStart: b.date,
     volume: Number(b.volume),
     fees: Number(b.fees),
     count: b.count,
@@ -29,7 +40,13 @@ export function VolumeChart({ buckets, currency }: { buckets: DailyBucket[]; cur
             </linearGradient>
           </defs>
           <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-          <XAxis dataKey="date" tick={{ fontSize: 11 }} interval="preserveStartEnd" />
+          <XAxis
+            dataKey="date"
+            tick={{ fontSize: 11 }}
+            interval="preserveStartEnd"
+            // Month buckets over a long history would otherwise overprint.
+            minTickGap={24}
+          />
           <YAxis tick={{ fontSize: 11 }} width={50} />
           <Tooltip
             cursor={{ fill: 'hsl(var(--accent) / 0.3)' }}
@@ -43,6 +60,15 @@ export function VolumeChart({ buckets, currency }: { buckets: DailyBucket[]; cur
               `${value.toLocaleString()} ${currency}`,
               name === 'volume' ? 'Volume' : name === 'fees' ? 'Fees' : name,
             ]}
+            // Without this the header is the bare tick, so a week/month bucket
+            // gives no clue how much time it covers.
+            labelFormatter={(
+              _label: string,
+              payload: ReadonlyArray<{ payload?: { bucketStart?: string } }>,
+            ) => {
+              const start = payload?.[0]?.payload?.bucketStart;
+              return start ? formatBucketTooltip(start, granularity) : _label;
+            }}
           />
           <Area
             type="monotone"
@@ -50,6 +76,9 @@ export function VolumeChart({ buckets, currency }: { buckets: DailyBucket[]; cur
             stroke="hsl(var(--primary))"
             strokeWidth={2}
             fill="url(#volumeFill)"
+            // A single bucket (a brand-new company on All time) draws no line
+            // at all without a visible point.
+            dot={data.length === 1}
             // No draw animation: live realtime refreshes re-render the chart, and
             // the ~1.5s path-morph on every refresh reads as jank, not polish.
             isAnimationActive={false}

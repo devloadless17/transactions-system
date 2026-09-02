@@ -9,15 +9,17 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { DataTable, type Column } from '@/components/ui/data-table';
 import { apiFetch } from '@/lib/api.client';
+import { granularityWord } from '@/lib/date-presets';
 import { formatNumber as fmt } from '@/lib/format';
 import { KpiCard } from '@/features/analytics/kpi-card';
 import { FlowsChart } from '@/features/analytics/flows-chart.lazy';
 import {
   DateRangeControls,
+  analyticsRangeParams,
   DEFAULT_RANGE,
   rangeKey,
   rangeLabel,
-  resolveRange,
+  rangePhrase,
   type DateRange,
 } from '@/features/analytics/date-range';
 
@@ -37,10 +39,7 @@ export function AdminOverview() {
   // preset's upper bound to the next minute so the backend's per-window cache
   // stays stable across auto-refresh; rangeKey keys the queries so switching
   // the window (preset or custom) refetches.
-  const rangeParams = () => {
-    const { from, to } = resolveRange(range);
-    return new URLSearchParams({ from, to });
-  };
+  const rangeParams = () => analyticsRangeParams(range);
   const rk = rangeKey(range);
 
   const platformQ = useQuery({
@@ -273,7 +272,7 @@ export function AdminOverview() {
             <div>
               <CardTitle>By source</CardTitle>
               <CardDescription>
-                Volume, transaction count, and platform fees per source over {rangeLabel(range)} (
+                Volume, transaction count, and platform fees per source {rangePhrase(range)} (
                 {flowsCurrency}).
               </CardDescription>
             </div>
@@ -314,7 +313,8 @@ export function AdminOverview() {
             <div>
               <CardTitle>Flows</CardTitle>
               <CardDescription>
-                Daily in (above axis) vs out (below) with platform fees overlaid.
+                {granularityWord(flowsQ.data?.granularity ?? 'day')} in (above axis) vs out (below)
+                with platform fees overlaid.
               </CardDescription>
             </div>
             <select
@@ -336,7 +336,11 @@ export function AdminOverview() {
               Couldn&apos;t load flows — retrying…
             </div>
           ) : flowsQ.data ? (
-            <FlowsChart buckets={flowsQ.data.buckets} currency={flowsQ.data.currency} />
+            <FlowsChart
+              buckets={flowsQ.data.buckets}
+              currency={flowsQ.data.currency}
+              granularity={flowsQ.data.granularity}
+            />
           ) : (
             <div className="h-80 w-full animate-pulse rounded bg-muted" />
           )}

@@ -433,6 +433,31 @@ The list array is at `data.data`, with paging info at `meta`. Page with `?page=N
 
 > **Fees are transparent.** Every transaction returns `amount` (gross), `commissionAmount` (the platform fee we took), and `netAmount` (what you were credited). Withdrawals, payouts and loads return the same breakdown as `totalAmount` / `feeAmount` / `netAmount` — so after any completed transaction you always know exactly what we charged.
 
+#### Date ranges
+
+List endpoints (`transactions`, `ledger`, `activity`, `withdrawals`, `payouts`, `loads`) take
+optional `from` / `to` as full RFC-3339 datetimes (`2026-06-01T00:00:00Z`, not a bare date), both
+inclusive, applied to `createdAt`. Omit them and you get your whole history, paginated.
+
+The **analytics** endpoints behave differently in two ways worth knowing:
+
+|                      |                                                                                                      |
+| -------------------- | ---------------------------------------------------------------------------------------------------- |
+| No `from`/`to`       | Defaults to the **last 30 days** — not all time.                                                     |
+| Explicit `from`+`to` | Capped at **366 days**; a wider window returns `400 VALIDATION_ERROR`.                               |
+| `preset=all`         | Everything since your company was created. Cannot be combined with `from`/`to` (that returns `400`). |
+
+```bash
+# Lifetime totals, however far back your account goes
+curl "https://<your-dashboard-domain>/v1/company/analytics/overview?preset=all&currency=USD" \
+  -H "Authorization: Bearer tsk_<company-key>"
+```
+
+The time series in `daily.buckets` widens its bucket as the window grows, so a long range stays a
+manageable number of points. `daily.granularity` tells you which was used — `day`, `week`, or
+`month` — and each bucket's `date` is the **start** of that bucket. Read the granularity rather than
+assuming daily buckets, otherwise a monthly series will be misread as consecutive days.
+
 ### 3.5 All endpoints at a glance
 
 These `company/*` routes accept your company key.

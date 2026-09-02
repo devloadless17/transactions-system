@@ -5,7 +5,8 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { DateRangePicker, type RangePreset } from '@/components/ui/date-range-picker';
+import { DateRangePicker } from '@/components/ui/date-range-picker';
+import { isoBound, quickRangePresets } from '@/lib/date-presets';
 import { CompanyFilter } from '@/features/admin/company-filter';
 
 // Shared filter bar for the Whish Pay lists (company + admin). Every field maps
@@ -31,23 +32,6 @@ export const EMPTY_WHISH_FILTERS: WhishFilters = {
   fromTime: undefined,
   toTime: undefined,
 };
-
-// Inclusive ISO bound from a date (YYYY-MM-DD) + optional time (HH:mm). Returns
-// undefined for a malformed value so the query-string build can't throw.
-function isoBound(date: string, time: string | undefined, endOfDay: boolean): string | undefined {
-  const t = time || (endOfDay ? '23:59' : '00:00');
-  const d = new Date(`${date}T${t}:${endOfDay ? '59.999' : '00'}`);
-  return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
-}
-
-// YYYY-MM-DD for `offsetDays` ago (local), for the quick-range presets.
-function dayKey(offsetDays: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() - offsetDays);
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${d.getFullYear()}-${m}-${day}`;
-}
 
 /** Build the list/export query string from the active filters + search (+ base params). */
 export function whishFilterParams(
@@ -98,15 +82,11 @@ export function WhishFilterBar({
   const selectClass =
     'h-9 w-full rounded-md border border-input bg-background px-3 text-sm sm:w-auto';
   const active = whishFiltersActive(value, search);
-  const datePresets: RangePreset[] = [
-    { label: 'Today', from: dayKey(0), to: dayKey(0) },
-    { label: 'Last 7 days', from: dayKey(6), to: dayKey(0) },
-    { label: 'Last 30 days', from: dayKey(29), to: dayKey(0) },
-  ].map((p) => ({
-    label: p.label,
-    active: value.from === p.from && value.to === p.to && !value.fromTime && !value.toTime,
-    onSelect: () => set({ from: p.from, to: p.to, fromTime: undefined, toTime: undefined }),
-  }));
+  // WhishFilters store cleared bounds as '' (not undefined) — the shared matcher
+  // normalises before comparing, so "All time" highlights correctly here too.
+  const datePresets = quickRangePresets(value, (b) =>
+    set({ from: b.from ?? '', to: b.to ?? '', fromTime: undefined, toTime: undefined }),
+  );
 
   return (
     <Card>
@@ -172,7 +152,7 @@ export function WhishFilterBar({
             }
             presets={datePresets}
             align="end"
-            placeholder="Any date"
+            placeholder="All time"
           />
         </Field>
         {active && (

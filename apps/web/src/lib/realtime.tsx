@@ -8,6 +8,7 @@ import {
   type RealtimeInvalidate,
   type RealtimeTopic,
 } from '@app/shared';
+import { ALL_TIME_KEY } from '@/features/analytics/range';
 import { publicApiBase } from './api';
 import { refreshSession } from './api.client';
 
@@ -89,6 +90,26 @@ const TOPIC_KEYS: Record<RealtimeTopic, KeysFor> = {
 };
 
 /** Origin of the API (strip the `/v1` path) so we can reach the socket server. */
+/**
+ * Skip all-time analytics queries when a mutation invalidates the dashboards.
+ *
+ * Every financial mutation bumps the analytics cache generation and pushes an
+ * invalidate to every open dashboard. For a bounded window that is a cheap
+ * recompute; for an all-time window it is a full-history aggregate, per
+ * mutation, per viewer. An all-time chart is not the surface anyone reconciles
+ * an individual transaction against, so it keeps whatever it has until the
+ * viewer changes the range or reloads — which is a far better trade than making
+ * a busy platform recompute its entire history on every ingest.
+ *
+ * Matches on the namespaced ALL_TIME_KEY token rather than a bare 'all', which
+ * would also match unrelated keys like ['sources', 'all'] — that one documents
+ * its reliance on this very invalidation, so a loose match would silently stop
+ * the sources list refreshing live.
+ */
+function isNotAllTimeQuery(query: { queryKey: readonly unknown[] }): boolean {
+  return !query.queryKey.includes(ALL_TIME_KEY);
+}
+
 function socketOrigin(): string | null {
   try {
     return new URL(publicApiBase()).origin;
@@ -172,7 +193,7 @@ export function RealtimeBridge() {
       // a reconnect bounce settles into one catch-up rather than a refetch storm.
       if (catchup) clearTimeout(catchup);
       catchup = setTimeout(() => {
-        void qc.invalidateQueries({ refetchType: 'active' });
+        void qc.invalidateQueries({ refetchType: 'active', predicate: isNotAllTimeQuery });
       }, 250);
     });
 
@@ -220,7 +241,9 @@ export function RealtimeBridge() {
         const keys = [...pendingKeys.values()];
         pendingKeys.clear();
         // refetchType defaults to 'active' → unmounted/other-app keys are no-ops.
-        for (const queryKey of keys) void qc.invalidateQueries({ queryKey });
+        for (const queryKey of keys) {
+          void qc.invalidateQueries({ queryKey, predicate: isNotAllTimeQuery });
+        }
       }, INVALIDATE_COALESCE_MS);
     });
 

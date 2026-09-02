@@ -2,7 +2,13 @@
 import { useQuery } from '@tanstack/react-query';
 import type { OverviewResponse } from '@app/shared';
 import { apiFetch } from '@/lib/api.client';
-import { DEFAULT_RANGE, isRangeReady, rangeKey, resolveRange, type DateRange } from './date-range';
+import {
+  analyticsRangeParams,
+  DEFAULT_RANGE,
+  isRangeReady,
+  rangeKey,
+  type DateRange,
+} from './date-range';
 
 export function useOverview(args: {
   scope: 'admin' | 'company';
@@ -18,8 +24,7 @@ export function useOverview(args: {
     // backend's per-window cache stays stable across the 30s auto-refresh.
     queryKey: [args.scope, 'analytics', 'overview', args.currency ?? null, rangeKey(range)],
     queryFn: () => {
-      const { from, to } = resolveRange(range);
-      const params = new URLSearchParams({ from, to });
+      const params = analyticsRangeParams(range);
       if (args.currency) params.set('currency', args.currency);
       return apiFetch<OverviewResponse>(`${path}?${params.toString()}`);
     },

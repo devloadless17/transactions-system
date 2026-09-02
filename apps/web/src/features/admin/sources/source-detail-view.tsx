@@ -13,17 +13,19 @@ import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { DataTable, type Column } from '@/components/ui/data-table';
 import { apiFetch } from '@/lib/api.client';
+import { granularityWord } from '@/lib/date-presets';
 import { formatNumber as fmt } from '@/lib/format';
 import { KpiCard } from '@/features/analytics/kpi-card';
 import { VolumeChart } from '@/features/analytics/volume-chart.lazy';
 import { SourceFeeSchedule } from './source-fee-schedule';
 import {
   DateRangeControls,
+  analyticsRangeParams,
   DEFAULT_RANGE,
   isRangeReady,
   rangeKey,
   rangeLabel,
-  resolveRange,
+  rangePhrase,
   type DateRange,
 } from '@/features/analytics/date-range';
 
@@ -39,8 +41,7 @@ export function SourceDetailView({ sourceId }: { sourceId: string }) {
   const overviewQ = useQuery({
     queryKey: ['admin', 'source', sourceId, 'overview', currency, rangeKey(range)],
     queryFn: () => {
-      const { from, to } = resolveRange(range);
-      const params = new URLSearchParams({ from, to, currency });
+      const params = analyticsRangeParams(range, { currency });
       return apiFetch<SourceOverviewResponse>(
         `/admin/analytics/sources/${sourceId}/overview?${params.toString()}`,
       );
@@ -151,7 +152,10 @@ export function SourceDetailView({ sourceId }: { sourceId: string }) {
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <CardTitle>Activity</CardTitle>
-              <CardDescription>Daily completed volume through this source.</CardDescription>
+              <CardDescription>
+                {granularityWord(overviewQ.data?.daily.granularity ?? 'day')} completed volume
+                through this source.
+              </CardDescription>
             </div>
             <div className="flex flex-wrap gap-2">
               <select
@@ -170,7 +174,11 @@ export function SourceDetailView({ sourceId }: { sourceId: string }) {
         </CardHeader>
         <CardContent>
           {overviewQ.data ? (
-            <VolumeChart buckets={overviewQ.data.daily.buckets} currency={currency} />
+            <VolumeChart
+              buckets={overviewQ.data.daily.buckets}
+              currency={currency}
+              granularity={overviewQ.data.daily.granularity}
+            />
           ) : (
             <div className="h-72 w-full animate-pulse rounded bg-muted" />
           )}
@@ -181,7 +189,7 @@ export function SourceDetailView({ sourceId }: { sourceId: string }) {
         <CardHeader>
           <CardTitle>By company</CardTitle>
           <CardDescription>
-            Every company that transacted through this source over {rangeLabel(range)} ({currency}).
+            Every company that transacted through this source {rangePhrase(range)} ({currency}).
             Click a company for its full breakdown.
           </CardDescription>
         </CardHeader>

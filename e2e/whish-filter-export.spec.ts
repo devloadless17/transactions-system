@@ -69,4 +69,38 @@ test.describe('admin Whish Pay: filter + export', () => {
       expect(cols).toContain(c);
     }
   });
+
+  // The list request and the export share one params object in the view, so a
+  // quick range must narrow BOTH identically. If they ever diverge, an operator
+  // exports a different set of rows than the one they are looking at — which is
+  // exactly the kind of quiet mismatch a reconciliation would trip over.
+  test('a quick range narrows the export exactly like the list', async ({ page }) => {
+    await page.goto('/admin/whish', { waitUntil: 'domcontentloaded' });
+    await expect(page.getByRole('heading', { name: 'Whish Pay' })).toBeVisible({
+      timeout: 30_000,
+    });
+
+    const trigger = page.locator('button:has(svg.lucide-calendar)').first();
+    await expect(trigger).toBeVisible({ timeout: 15_000 });
+    await trigger.click();
+    const quickRanges = page.locator('text=Quick ranges').locator('..');
+
+    const [listReq] = await Promise.all([
+      page.waitForRequest((r) => r.url().includes('/whish/payments') && r.url().includes('from=')),
+      quickRanges.getByRole('button', { name: 'Last 30 days', exact: true }).click(),
+    ]);
+
+    const [exportReq] = await Promise.all([
+      page.waitForRequest((r) => r.url().includes('export.csv')),
+      page.getByRole('button', { name: /Export CSV/i }).click(),
+    ]);
+
+    const bounds = (url: string) => {
+      const p = new URL(url).searchParams;
+      return { from: p.get('from'), to: p.get('to') };
+    };
+    const listBounds = bounds(listReq.url());
+    expect(listBounds.from).toBeTruthy();
+    expect(bounds(exportReq.url())).toEqual(listBounds);
+  });
 });

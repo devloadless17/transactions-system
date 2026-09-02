@@ -1,16 +1,25 @@
 import { z } from 'zod';
-import { assertSaneDateRange, currencySchema } from './common';
+import { bucketGranularitySchema } from '../analytics-buckets';
+import {
+  analyticsPresetShape,
+  assertPresetExclusive,
+  assertSaneDateRange,
+  currencySchema,
+} from './common';
 
 export const analyticsRangeSchema = z
   .object({
-    // ISO date strings. Defaults to last 30 days when omitted.
+    // ISO date strings. Defaults to last 30 days when omitted — `preset: 'all'`
+    // is the only way to ask for an unbounded window.
     from: z.string().datetime().optional(),
     to: z.string().datetime().optional(),
+    ...analyticsPresetShape,
     // Optional admin filter.
     companyId: z.string().uuid().optional(),
     currency: currencySchema.optional(),
   })
-  .superRefine(assertSaneDateRange);
+  .superRefine(assertSaneDateRange)
+  .superRefine(assertPresetExclusive);
 export type AnalyticsRange = z.infer<typeof analyticsRangeSchema>;
 
 export const kpiResponseSchema = z.object({
@@ -26,7 +35,7 @@ export const kpiResponseSchema = z.object({
 export type KpiResponse = z.infer<typeof kpiResponseSchema>;
 
 export const dailyBucketSchema = z.object({
-  date: z.string(), // YYYY-MM-DD
+  date: z.string(), // YYYY-MM-DD — START of the bucket (day/week/month)
   volume: z.string(),
   fees: z.string(),
   count: z.number().int(),
@@ -35,6 +44,10 @@ export type DailyBucket = z.infer<typeof dailyBucketSchema>;
 
 export const dailySeriesResponseSchema = z.object({
   currency: z.string(),
+  // Bucket width the server chose for this window (see `pickGranularity`).
+  // Required, not optional: a chart that defaults a missing value to 'day'
+  // would silently label a monthly series as daily.
+  granularity: bucketGranularitySchema,
   buckets: z.array(dailyBucketSchema),
 });
 export type DailySeriesResponse = z.infer<typeof dailySeriesResponseSchema>;

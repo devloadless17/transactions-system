@@ -1,5 +1,11 @@
 import { z } from 'zod';
-import { assertSaneDateRange, currencySchema } from './common';
+import { bucketGranularitySchema } from '../analytics-buckets';
+import {
+  analyticsPresetShape,
+  assertPresetExclusive,
+  assertSaneDateRange,
+  currencySchema,
+} from './common';
 import { topSourceSchema } from './analytics';
 
 // ---------------- shared range ----------------
@@ -8,8 +14,12 @@ import { topSourceSchema } from './analytics';
 const dateRangeShape = {
   from: z.string().datetime().optional(),
   to: z.string().datetime().optional(),
+  ...analyticsPresetShape,
 };
-export const adminAnalyticsRangeSchema = z.object(dateRangeShape).superRefine(assertSaneDateRange);
+export const adminAnalyticsRangeSchema = z
+  .object(dateRangeShape)
+  .superRefine(assertSaneDateRange)
+  .superRefine(assertPresetExclusive);
 export type AdminAnalyticsRange = z.infer<typeof adminAnalyticsRangeSchema>;
 
 // ---------------- platform multi-currency ----------------
@@ -62,12 +72,13 @@ export const flowsRangeSchema = z
     // unsupported code returns a clean 400 instead of an empty chart.
     currency: currencySchema,
   })
-  .superRefine(assertSaneDateRange);
+  .superRefine(assertSaneDateRange)
+  .superRefine(assertPresetExclusive);
 export type FlowsRange = z.infer<typeof flowsRangeSchema>;
 
 export const flowsBucketSchema = z.object({
-  date: z.string(),
-  in: z.string(), // money in that day (transactions + loads), net + fee
+  date: z.string(), // START of the bucket (day/week/month)
+  in: z.string(), // money in that bucket (transactions + loads), net + fee
   out: z.string(), // money out that day (withdrawals + payouts), net + fee
   fees: z.string(), // fees earned that day (FEE ledger, all flows)
 });
@@ -76,6 +87,8 @@ export type FlowsBucket = z.infer<typeof flowsBucketSchema>;
 export const flowsResponseSchema = z.object({
   currency: z.string(),
   range: z.object({ from: z.string(), to: z.string() }),
+  // Bucket width the server chose for this window — see dailySeriesResponseSchema.
+  granularity: bucketGranularitySchema,
   buckets: z.array(flowsBucketSchema),
   // Top sources by volume for THIS currency+window. Carried here (the per-currency
   // endpoint the admin overview already fetches) so the admin dashboard's

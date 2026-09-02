@@ -1,7 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import {
+  bucketKey,
+  eachBucketStartUtc,
   Money,
+  sqlTruncUnit,
   type AnalyticsRange,
+  type BucketGranularity,
   type OverviewResponse,
   type SourceOverviewResponse,
   type VolumeMetric,
@@ -10,9 +14,17 @@ import {
 import { PrismaService } from '../../database/prisma.service';
 import { CacheService } from '../cache/cache.service';
 import { LedgerService } from '../ledger/ledger.service';
+import {
+  ALL_TIME_STATEMENT_TIMEOUT,
+  ALL_TIME_TX_TIMEOUT_MS,
+  originForOverviewScope,
+  originForSource,
+  resolveWindow,
+  type OriginDeps,
+  type AnalyticsWindow,
+} from './range';
 import { sourceFeeForSource } from './source-fees';
 
-const DEFAULT_DAYS = 30;
 const DEFAULT_CURRENCY = 'USD';
 const TOP_LIMIT = 5;
 
@@ -23,6 +35,11 @@ export class AnalyticsService {
     private readonly cache: CacheService,
     private readonly ledger: LedgerService,
   ) {}
+
+  /** The two dependencies the origin helpers need, without widening their access. */
+  private get originDeps(): OriginDeps {
+    return { prisma: this.prisma, cache: this.cache };
+  }
 
   /**
    * Drop every cached analytics rollup. Called after any financial mutation
@@ -55,18 +72,24 @@ export class AnalyticsService {
     range: AnalyticsRange;
   }): Promise<OverviewResponse> {
     const currency = args.range.currency ?? DEFAULT_CURRENCY;
-    const to = args.range.to ? new Date(args.range.to) : new Date();
-    const from = args.range.from
-      ? new Date(args.range.from)
-      : new Date(to.getTime() - DEFAULT_DAYS * 24 * 3600 * 1000);
+    const origin =
+      args.range.preset === 'all'
+        ? await originForOverviewScope(this.originDeps, args.scope, args.range.companyId)
+        : null;
+    const window = resolveWindow(args.range, origin);
 
     const scopeKey =
       args.scope === 'admin'
         ? `admin:${args.range.companyId ?? 'all'}`
         : `co:${args.scope.companyId}`;
-    const cacheKey = `analytics:overview:${scopeKey}:${currency}:${from.toISOString()}:${to.toISOString()}`;
+    // `v2` because the payload gained `daily.granularity`: without the bump a
+    // post-deploy read could serve a pre-deploy entry whose granularity is
+    // undefined, and the chart would label the axis wrongly for a whole TTL.
+    // The granularity is in the key too — it is derivable from the window today,
+    // but that stops being true the moment the thresholds are ever retuned.
+    const cacheKey = `analytics:overview:v2:${scopeKey}:${currency}:${window.from.toISOString()}:${window.to.toISOString()}:${window.granularity}`;
 
-    return this.cache.wrap(cacheKey, 60, () => this.compute({ args, currency, from, to }));
+    return this.cache.wrap(cacheKey, 60, () => this.compute({ args, currency, window }));
   }
 
   /**
@@ -154,45 +177,50 @@ export class AnalyticsService {
     range: AnalyticsRange;
   }): Promise<SourceOverviewResponse> {
     const currency = args.range.currency ?? DEFAULT_CURRENCY;
-    const to = args.range.to ? new Date(args.range.to) : new Date();
-    const from = args.range.from
-      ? new Date(args.range.from)
-      : new Date(to.getTime() - DEFAULT_DAYS * 24 * 3600 * 1000);
+    const origin =
+      args.range.preset === 'all' ? await originForSource(this.originDeps, args.sourceId) : null;
+    const window = resolveWindow(args.range, origin);
 
-    const cacheKey = `analytics:source-overview:${args.sourceId}:${currency}:${from.toISOString()}:${to.toISOString()}`;
+    const cacheKey = `analytics:source-overview:v2:${args.sourceId}:${currency}:${window.from.toISOString()}:${window.to.toISOString()}:${window.granularity}`;
     return this.cache.wrap(cacheKey, 60, () =>
-      this.computeSource({ sourceId: args.sourceId, currency, from, to }),
+      this.computeSource({ sourceId: args.sourceId, currency, window }),
     );
   }
 
   private async computeSource(p: {
     sourceId: string;
     currency: string;
-    from: Date;
-    to: Date;
+    window: AnalyticsWindow;
   }): Promise<SourceOverviewResponse> {
-    return this.prisma.runAsAdmin(async (tx) => {
-      const source = await tx.source.findUnique({ where: { id: p.sourceId } });
+    const { from, to, granularity } = p.window;
+    return this.prisma.runAsAdmin(
+      async (tx) => {
+        if (p.window.isAllTime) {
+          await tx.$executeRawUnsafe(
+            `SET LOCAL statement_timeout = '${ALL_TIME_STATEMENT_TIMEOUT}'`,
+          );
+        }
+        const source = await tx.source.findUnique({ where: { id: p.sourceId } });
 
-      const where = {
-        status: 'COMPLETED' as const,
-        currency: p.currency,
-        sourceId: p.sourceId,
-        createdAt: { gte: p.from, lte: p.to },
-      };
+        const where = {
+          status: 'COMPLETED' as const,
+          currency: p.currency,
+          sourceId: p.sourceId,
+          createdAt: { gte: from, lte: to },
+        };
 
-      const agg = await tx.transaction.aggregate({
-        where,
-        _sum: { amount: true, netAmount: true, commissionAmount: true },
-        _count: { _all: true },
-      });
+        const agg = await tx.transaction.aggregate({
+          where,
+          _sum: { amount: true, netAmount: true, commissionAmount: true },
+          _count: { _all: true },
+        });
 
-      const dailyRows = await tx.$queryRawUnsafe<
-        Array<{ day: Date; volume: string; fees: string; count: bigint }>
-      >(
-        `
+        const dailyRows = await tx.$queryRawUnsafe<
+          Array<{ day: Date; volume: string; fees: string; count: bigint }>
+        >(
+          `
         SELECT
-          date_trunc('day', created_at)::date          AS day,
+          date_trunc($5::text, created_at AT TIME ZONE 'UTC')::date AS day,
           SUM(net_amount + commission_amount)::text    AS volume,
           SUM(commission_amount)::text                 AS fees,
           COUNT(*)::bigint                             AS count
@@ -205,101 +233,109 @@ export class AnalyticsService {
         GROUP BY 1
         ORDER BY 1 ASC
         `,
-        p.currency,
-        p.sourceId,
-        p.from,
-        p.to,
-      );
-      const buckets = fillDailyGaps(p.from, p.to, dailyRows);
+          p.currency,
+          p.sourceId,
+          from,
+          to,
+          sqlTruncUnit(granularity),
+        );
+        const buckets = fillBucketGaps(from, to, granularity, dailyRows);
 
-      // Top companies by volume for this source. Capped so the payload can't grow
-      // unbounded with tenant count on a high-fan-out source (a source used by tens
-      // of thousands of companies would otherwise return one row each). 500 is far
-      // beyond what the drilldown table meaningfully shows; raise if ever needed.
-      const SOURCE_COMPANY_CAP = 500;
-      const companyRows = await tx.transaction.groupBy({
-        by: ['companyId'],
-        where,
-        _sum: { amount: true, netAmount: true, commissionAmount: true },
-        _count: { _all: true },
-        orderBy: { _sum: { amount: 'desc' } },
-        take: SOURCE_COMPANY_CAP,
-      });
-      const companyIds = companyRows.map((r) => r.companyId);
-      const companies = companyIds.length
-        ? await tx.company.findMany({ where: { id: { in: companyIds } } })
-        : [];
-      const nameById = new Map(companies.map((c) => [c.id, c.name]));
-      const byCompany = companyRows.map((r) => ({
-        companyId: r.companyId,
-        companyName: nameById.get(r.companyId) ?? r.companyId.slice(0, 8),
-        // net + fee (money moved), consistent with the platform/volume surfaces.
-        volume: Money.of((r._sum.netAmount ?? 0).toString())
-          .add(Money.of((r._sum.commissionAmount ?? 0).toString()))
-          .toString(),
-        fees: Money.of((r._sum.commissionAmount ?? 0).toString()).toString(),
-        count: r._count._all,
-      }));
-
-      // What this source charged THE PLATFORM on its deposits (cost of funds).
-      // Admin-only endpoint — never surfaced to companies.
-      const sourceFees = await sourceFeeForSource(tx, p.sourceId, p.currency, p.from, p.to);
-
-      return {
-        range: { from: p.from.toISOString(), to: p.to.toISOString() },
-        currency: p.currency,
-        source: {
-          id: p.sourceId,
-          code: source?.code ?? '',
-          name: source?.name ?? p.sourceId.slice(0, 8),
-        },
-        sourceFees,
-        kpi: {
-          // Volume = net + fee (money moved), consistent with the daily series,
-          // the by-company rows, and every other volume surface. NOT SUM(amount)
-          // — for an ON_TOP deposit `amount` is the net, so it would drop the fee
-          // and disagree with the rest of this very page.
-          totalVolume: Money.of((agg._sum.netAmount ?? 0).toString())
-            .add(Money.of((agg._sum.commissionAmount ?? 0).toString()))
+        // Top companies by volume for this source. Capped so the payload can't grow
+        // unbounded with tenant count on a high-fan-out source (a source used by tens
+        // of thousands of companies would otherwise return one row each). 500 is far
+        // beyond what the drilldown table meaningfully shows; raise if ever needed.
+        const SOURCE_COMPANY_CAP = 500;
+        const companyRows = await tx.transaction.groupBy({
+          by: ['companyId'],
+          where,
+          _sum: { amount: true, netAmount: true, commissionAmount: true },
+          _count: { _all: true },
+          orderBy: { _sum: { amount: 'desc' } },
+          take: SOURCE_COMPANY_CAP,
+        });
+        const companyIds = companyRows.map((r) => r.companyId);
+        const companies = companyIds.length
+          ? await tx.company.findMany({ where: { id: { in: companyIds } } })
+          : [];
+        const nameById = new Map(companies.map((c) => [c.id, c.name]));
+        const byCompany = companyRows.map((r) => ({
+          companyId: r.companyId,
+          companyName: nameById.get(r.companyId) ?? r.companyId.slice(0, 8),
+          // net + fee (money moved), consistent with the platform/volume surfaces.
+          volume: Money.of((r._sum.netAmount ?? 0).toString())
+            .add(Money.of((r._sum.commissionAmount ?? 0).toString()))
             .toString(),
-          totalFees: Money.of((agg._sum.commissionAmount ?? 0).toString()).toString(),
-          transactionCount: agg._count._all,
-          // Average = volume ÷ count (the volume shown on this same card), not
-          // avg(amount): for an ON_TOP fee `amount` is the net, so avg(amount)
-          // wouldn't tie out with the net+fee volume beside it.
-          averageAmount:
-            agg._count._all > 0
-              ? Money.of((agg._sum.netAmount ?? 0).toString())
-                  .add(Money.of((agg._sum.commissionAmount ?? 0).toString()))
-                  .div(agg._count._all)
-                  .toString()
-              : '0',
+          fees: Money.of((r._sum.commissionAmount ?? 0).toString()).toString(),
+          count: r._count._all,
+        }));
+
+        // What this source charged THE PLATFORM on its deposits (cost of funds).
+        // Admin-only endpoint — never surfaced to companies.
+        const sourceFees = await sourceFeeForSource(tx, p.sourceId, p.currency, from, to);
+
+        return {
+          range: { from: from.toISOString(), to: to.toISOString() },
           currency: p.currency,
-        },
-        daily: { currency: p.currency, buckets },
-        byCompany,
-      };
-    });
+          source: {
+            id: p.sourceId,
+            code: source?.code ?? '',
+            name: source?.name ?? p.sourceId.slice(0, 8),
+          },
+          sourceFees,
+          kpi: {
+            // Volume = net + fee (money moved), consistent with the daily series,
+            // the by-company rows, and every other volume surface. NOT SUM(amount)
+            // — for an ON_TOP deposit `amount` is the net, so it would drop the fee
+            // and disagree with the rest of this very page.
+            totalVolume: Money.of((agg._sum.netAmount ?? 0).toString())
+              .add(Money.of((agg._sum.commissionAmount ?? 0).toString()))
+              .toString(),
+            totalFees: Money.of((agg._sum.commissionAmount ?? 0).toString()).toString(),
+            transactionCount: agg._count._all,
+            // Average = volume ÷ count (the volume shown on this same card), not
+            // avg(amount): for an ON_TOP fee `amount` is the net, so avg(amount)
+            // wouldn't tie out with the net+fee volume beside it.
+            averageAmount:
+              agg._count._all > 0
+                ? Money.of((agg._sum.netAmount ?? 0).toString())
+                    .add(Money.of((agg._sum.commissionAmount ?? 0).toString()))
+                    .div(agg._count._all)
+                    .toString()
+                : '0',
+            currency: p.currency,
+          },
+          daily: { currency: p.currency, granularity, buckets },
+          byCompany,
+        };
+      },
+      p.window.isAllTime ? { timeout: ALL_TIME_TX_TIMEOUT_MS } : undefined,
+    );
   }
 
   private async compute(p: {
     args: { scope: 'admin' | { companyId: string }; range: AnalyticsRange };
     currency: string;
-    from: Date;
-    to: Date;
+    window: AnalyticsWindow;
   }): Promise<OverviewResponse> {
     const companyFilter =
       p.args.scope === 'admin' ? p.args.range.companyId : p.args.scope.companyId;
+    const { from, to, granularity } = p.window;
 
     return this.prisma.runAsScoped(
       p.args.scope === 'admin' ? null : p.args.scope.companyId,
       async (tx) => {
+        if (p.window.isAllTime) {
+          await tx.$executeRawUnsafe(
+            `SET LOCAL statement_timeout = '${ALL_TIME_STATEMENT_TIMEOUT}'`,
+          );
+        }
         // KPI aggregate
         const agg = await tx.transaction.aggregate({
           where: {
             status: 'COMPLETED',
             currency: p.currency,
-            createdAt: { gte: p.from, lte: p.to },
+            createdAt: { gte: from, lte: to },
             ...(companyFilter ? { companyId: companyFilter } : {}),
           },
           _sum: { amount: true, netAmount: true, commissionAmount: true },
@@ -327,8 +363,8 @@ export class AnalyticsService {
             ${companyFilter ? 'AND company_id = $4::uuid' : ''}
           `,
           p.currency,
-          p.from,
-          p.to,
+          from,
+          to,
           ...(companyFilter ? [companyFilter] : []),
         );
         const totalFees = Money.of(feeRow[0]?.fees ?? '0').toString();
@@ -346,7 +382,7 @@ export class AnalyticsService {
         // company / date window as the KPI aggregate above.
         const baseWhere = {
           currency: p.currency,
-          createdAt: { gte: p.from, lte: p.to },
+          createdAt: { gte: from, lte: to },
           ...(companyFilter ? { companyId: companyFilter } : {}),
         };
         // COMPLETED withdrawals/payouts/loads settle (and book their FEE ledger
@@ -358,7 +394,7 @@ export class AnalyticsService {
         // flows have no processedAt yet, so they stay on baseWhere/createdAt.)
         const settledWhere = {
           currency: p.currency,
-          processedAt: { gte: p.from, lte: p.to },
+          processedAt: { gte: from, lte: to },
           ...(companyFilter ? { companyId: companyFilter } : {}),
         };
         // Sum net + fee (not `amount`) for every group. The card TOTAL is the
@@ -433,13 +469,17 @@ export class AnalyticsService {
           ),
         };
 
-        // Daily buckets via raw SQL: groupBy doesn't support date_trunc directly.
+        // Time buckets via raw SQL: groupBy doesn't support date_trunc directly.
+        // The trunc unit is BOUND, not interpolated (see the fillBucketGaps
+        // docblock for why the UTC cast matters). Its position shifts with the
+        // optional company filter, so the index is computed rather than fixed.
+        const truncParam = companyFilter ? 5 : 4;
         const dailyRows = await tx.$queryRawUnsafe<
           Array<{ day: Date; volume: string; fees: string; count: bigint }>
         >(
           `
         SELECT
-          date_trunc('day', created_at)::date          AS day,
+          date_trunc($${truncParam}::text, created_at AT TIME ZONE 'UTC')::date AS day,
           SUM(net_amount + commission_amount)::text    AS volume,
           SUM(commission_amount)::text                 AS fees,
           COUNT(*)::bigint                             AS count
@@ -453,12 +493,13 @@ export class AnalyticsService {
         ORDER BY 1 ASC
         `,
           p.currency,
-          p.from,
-          p.to,
+          from,
+          to,
           ...(companyFilter ? [companyFilter] : []),
+          sqlTruncUnit(granularity),
         );
 
-        const buckets = fillDailyGaps(p.from, p.to, dailyRows);
+        const buckets = fillBucketGaps(from, to, granularity, dailyRows);
 
         // Sources by volume — include fees so dashboards can show
         // "by OMT: $X volume, $Y fees" / "by wish: ..." breakdowns. When
@@ -490,8 +531,8 @@ export class AnalyticsService {
           ${companyFilter ? '' : `LIMIT ${TOP_LIMIT}`}
           `,
           p.currency,
-          p.from,
-          p.to,
+          from,
+          to,
           ...(companyFilter ? [companyFilter] : []),
         );
         const sourceIds = topSrcRows.map((r) => r.sourceId);
@@ -536,8 +577,8 @@ export class AnalyticsService {
             LIMIT ${TOP_LIMIT}
             `,
             p.currency,
-            p.from,
-            p.to,
+            from,
+            to,
           );
           const companyIds = rows.map((r) => r.companyId);
           const companies = companyIds.length
@@ -554,7 +595,7 @@ export class AnalyticsService {
         }
 
         return {
-          range: { from: p.from.toISOString(), to: p.to.toISOString() },
+          range: { from: from.toISOString(), to: to.toISOString() },
           currency: p.currency,
           kpi: {
             totalVolume,
@@ -567,11 +608,12 @@ export class AnalyticsService {
             currency: p.currency,
           },
           volume,
-          daily: { currency: p.currency, buckets },
+          daily: { currency: p.currency, granularity, buckets },
           topSources,
           ...(topCompanies ? { topCompanies } : {}),
         };
       },
+      p.window.isAllTime ? { timeout: ALL_TIME_TX_TIMEOUT_MS } : undefined,
     );
   }
 }
@@ -601,37 +643,37 @@ function toVolumeMetric(
   };
 }
 
-function fillDailyGaps(
+/**
+ * Emit one row per bucket across the whole window, zero-filling the buckets the
+ * query returned nothing for, so a chart never has to reason about gaps.
+ *
+ * Both this walker and the SQL must agree on where a bucket starts. The SQL
+ * truncates `created_at AT TIME ZONE 'UTC'` and this walks in UTC, so they line
+ * up regardless of the Postgres session TimeZone (which this repo never pins).
+ * Without that cast a non-UTC server would shift every week/month bucket
+ * against these keys and each one would come back empty.
+ */
+function fillBucketGaps(
   from: Date,
   to: Date,
+  granularity: BucketGranularity,
   rows: Array<{ day: Date; volume: string; fees: string; count: bigint }>,
 ): Array<{ date: string; volume: string; fees: string; count: number }> {
-  const byDay = new Map<string, { volume: string; fees: string; count: number }>();
+  const byBucket = new Map<string, { volume: string; fees: string; count: number }>();
   for (const r of rows) {
-    byDay.set(toDateKey(r.day), {
+    byBucket.set(bucketKey(r.day), {
       volume: r.volume ?? '0',
       fees: r.fees ?? '0',
       count: Number(r.count),
     });
   }
-  const out: Array<{ date: string; volume: string; fees: string; count: number }> = [];
-  const cursor = new Date(from);
-  cursor.setUTCHours(0, 0, 0, 0);
-  const end = new Date(to);
-  end.setUTCHours(0, 0, 0, 0);
-  while (cursor.getTime() <= end.getTime()) {
-    const key = toDateKey(cursor);
-    out.push({
+  return eachBucketStartUtc(from, to, granularity).map((start) => {
+    const key = bucketKey(start);
+    return {
       date: key,
-      volume: byDay.get(key)?.volume ?? '0',
-      fees: byDay.get(key)?.fees ?? '0',
-      count: byDay.get(key)?.count ?? 0,
-    });
-    cursor.setUTCDate(cursor.getUTCDate() + 1);
-  }
-  return out;
-}
-
-function toDateKey(d: Date): string {
-  return d.toISOString().slice(0, 10);
+      volume: byBucket.get(key)?.volume ?? '0',
+      fees: byBucket.get(key)?.fees ?? '0',
+      count: byBucket.get(key)?.count ?? 0,
+    };
+  });
 }

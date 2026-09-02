@@ -95,12 +95,22 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
    * RLS scopes every query to `companyId`. SUPER_ADMIN callers should
    * use `runAsAdmin` instead.
    */
-  async runAsTenant<T>(companyId: string, fn: (tx: PrismaClient) => Promise<T>): Promise<T> {
-    return this.$transaction(async (tx) => {
-      await setTenantContext(tx, companyId);
-      // Cast keeps the closure free of the broader $transaction client interface.
-      return fn(tx as unknown as PrismaClient);
-    });
+  async runAsTenant<T>(
+    companyId: string,
+    fn: (tx: PrismaClient) => Promise<T>,
+    opts?: { timeout?: number },
+  ): Promise<T> {
+    return this.$transaction(
+      async (tx) => {
+        await setTenantContext(tx, companyId);
+        // Cast keeps the closure free of the broader $transaction client interface.
+        return fn(tx as unknown as PrismaClient);
+      },
+      // Same reasoning as runAsAdmin: a wide read (an all-time analytics window
+      // runs ~11 aggregates in one transaction) must not abort on Prisma's 5s
+      // interactive-transaction default. Reads only, so a long timeout is safe.
+      opts?.timeout ? { timeout: opts.timeout, maxWait: 5_000 } : undefined,
+    );
   }
 
   /**
@@ -129,8 +139,12 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
    * admin (RLS bypass) for genuine cross-tenant/admin reads when it is null.
    * Lets one service method serve both a company actor and an admin safely.
    */
-  async runAsScoped<T>(companyId: string | null, fn: (tx: PrismaClient) => Promise<T>): Promise<T> {
-    return companyId ? this.runAsTenant(companyId, fn) : this.runAsAdmin(fn);
+  async runAsScoped<T>(
+    companyId: string | null,
+    fn: (tx: PrismaClient) => Promise<T>,
+    opts?: { timeout?: number },
+  ): Promise<T> {
+    return companyId ? this.runAsTenant(companyId, fn, opts) : this.runAsAdmin(fn, opts);
   }
 
   /**

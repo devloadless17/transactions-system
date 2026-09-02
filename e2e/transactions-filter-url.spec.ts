@@ -62,4 +62,53 @@ test.describe('admin transactions: filters mirror to the URL', () => {
     await expect(page).toHaveURL(/[?&]status=COMPLETED\b/, { timeout: 15_000 });
     await expect(page).not.toHaveURL(/[?&]page=/);
   });
+
+  // The quick ranges are defined once in `apps/web/src/lib/date-presets.ts` and
+  // rendered by every picker in the app. This bar is the only one that mirrors
+  // dates to the URL, which makes it the one place the selection is observable
+  // from outside the component — so it guards the shared list for all of them.
+  test('quick ranges offer the six shared presets, and All time clears the dates', async ({
+    page,
+  }) => {
+    await page.goto('/admin/deposits', { waitUntil: 'domcontentloaded' });
+    await expect(page.getByRole('heading', { name: 'Transactions' })).toBeVisible({
+      timeout: 30_000,
+    });
+
+    // The picker trigger is the only button carrying the calendar icon; the
+    // preset buttons inside the popover do not.
+    const trigger = page.locator('button:has(svg.lucide-calendar)').first();
+    await expect(trigger).toBeVisible({ timeout: 30_000 });
+    await trigger.click();
+
+    const quickRanges = page.locator('text=Quick ranges').locator('..');
+    await expect(quickRanges.getByRole('button')).toHaveText([
+      'Today',
+      'This month',
+      'Last 7 days',
+      'Last 30 days',
+      'Last 90 days',
+      'All time',
+    ]);
+
+    // "This month" is month-to-date: the from bound is the 1st of this month.
+    await quickRanges.getByRole('button', { name: 'This month', exact: true }).click();
+    const firstOfMonth = new Date();
+    const monthStart = `${firstOfMonth.getFullYear()}-${String(firstOfMonth.getMonth() + 1).padStart(2, '0')}-01`;
+    await expect(page).toHaveURL(new RegExp(`[?&]from=${monthStart}\\b`), { timeout: 15_000 });
+    await expect(page).not.toHaveURL(/[?&]page=/);
+
+    // "All time" removes both bounds entirely — an absent from/to is what makes
+    // the API return the caller's whole history (RLS still scopes it).
+    await trigger.click();
+    await quickRanges.getByRole('button', { name: 'All time', exact: true }).click();
+    await expect(page).not.toHaveURL(/[?&](from|to)=/, { timeout: 15_000 });
+
+    // Re-opening highlights All time. This could never happen before: the bars
+    // stored cleared bounds as '' and compared them against undefined.
+    await trigger.click();
+    await expect(quickRanges.getByRole('button', { name: 'All time', exact: true })).toHaveClass(
+      /bg-secondary/,
+    );
+  });
 });

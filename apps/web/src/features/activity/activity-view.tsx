@@ -14,8 +14,8 @@ import { useDebouncedValue } from '@/lib/use-debounced-value';
 import {
   DateRangeControls,
   DEFAULT_RANGE,
+  listRangeParams,
   rangeKey,
-  resolveRange,
   type DateRange,
 } from '@/features/analytics/date-range';
 import { CompanyFilter } from '@/features/admin/company-filter';
@@ -58,12 +58,12 @@ export function ActivityView({ scope }: { scope: 'admin' | 'company' }) {
     setPage(1);
   }, [direction, kind, companyId, search, rangeKey(range)]);
 
-  const { from, to } = resolveRange(range);
-  const params = new URLSearchParams({
+  // Activity is a LIST endpoint: it applies no default window, so an all-time
+  // range simply omits from/to (and must NOT send the analytics preset flag,
+  // which this schema doesn't accept).
+  const params = listRangeParams(range, {
     page: String(page),
     pageSize: String(PAGE_SIZE),
-    from,
-    to,
   });
   if (direction) params.set('direction', direction);
   if (kind) params.set('kind', kind);

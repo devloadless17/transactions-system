@@ -10,6 +10,7 @@ import {
 } from '@app/shared';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { apiFetch } from '@/lib/api.client';
+import { granularityWord } from '@/lib/date-presets';
 import { formatMoney, formatNumber } from '@/lib/format';
 import { useOverview } from '@/features/analytics/use-overview';
 import { KpiCard } from '@/features/analytics/kpi-card';
@@ -18,9 +19,10 @@ import {
   DateRangeControls,
   DEFAULT_RANGE,
   isRangeReady,
+  listRangeParams,
   rangeKey,
   rangeLabel,
-  resolveRange,
+  rangePhrase,
   type DateRange,
 } from '@/features/analytics/date-range';
 
@@ -37,8 +39,12 @@ export function OverviewView() {
   const summaryQ = useQuery({
     queryKey: ['company', 'analytics', 'wallet-summary', currency, rangeKey(range)],
     queryFn: () => {
-      const { from, to } = resolveRange(range);
-      const params = new URLSearchParams({ currency, from, to });
+      // Bounds only, no preset: wallet-summary applies no default window, so
+      // omitting from/to already means lifetime — which is exactly what the
+      // all-time range wants. Its schema has no `preset` field either, so one
+      // would be silently stripped today and could change meaning the day the
+      // field is added.
+      const params = listRangeParams(range, { currency });
       return apiFetch<WalletSummaryResponse>(
         `/company/analytics/wallet-summary?${params.toString()}`,
       );
@@ -86,6 +92,10 @@ export function OverviewView() {
     const sign = Number(s) > 0 ? '− ' : '';
     return `${sign}${formatMoney(s)} ${ccy}`;
   };
+
+  // Caption must follow the bucket width the server actually used: "Daily" over
+  // a monthly all-time series would be plainly wrong.
+  const seriesWord = granularityWord(data?.daily.granularity ?? 'day');
 
   return (
     <div className="space-y-6">
@@ -177,12 +187,16 @@ export function OverviewView() {
         <CardHeader>
           <CardTitle>Volume</CardTitle>
           <CardDescription>
-            Daily completed transactions over {rangeLabel(range)} ({data?.currency ?? currency}).
+            {seriesWord} completed transactions {rangePhrase(range)} ({data?.currency ?? currency}).
           </CardDescription>
         </CardHeader>
         <CardContent>
           {data ? (
-            <VolumeChart buckets={data.daily.buckets} currency={data.currency} />
+            <VolumeChart
+              buckets={data.daily.buckets}
+              currency={data.currency}
+              granularity={data.daily.granularity}
+            />
           ) : (
             <Skeleton />
           )}
@@ -193,7 +207,7 @@ export function OverviewView() {
         <CardHeader>
           <CardTitle>By source</CardTitle>
           <CardDescription>
-            Volume and transaction count per source over {rangeLabel(range)} (
+            Volume and transaction count per source {rangePhrase(range)} (
             {data?.currency ?? currency}
             ).
           </CardDescription>

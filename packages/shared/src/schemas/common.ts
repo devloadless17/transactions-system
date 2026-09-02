@@ -73,6 +73,14 @@ export const quantizedAmountSchema = (direction: 'in' | 'out' = 'in') =>
  * endpoints are throttle-exempt — so an unbounded range would otherwise be a
  * cheap way to force a huge scan + bucket array. `.datetime()` has already
  * validated the string format upstream, so a parse failure here just no-ops.
+ *
+ * This cap governs EXPLICIT custom ranges only, and deliberately stays that way.
+ * `preset=all` is a disjoint axis (see `analyticsPresetShape`): it carries no
+ * bounds at all, so this refinement never sees it and cannot be weakened by it.
+ * That path is bounded differently — by server-derived origins the client can't
+ * influence, adaptive bucket granularity, the shared cache, and a statement
+ * timeout. A sentinel like `from=1970-01-01` would instead have forced a magic
+ * timestamp exception right here, which is exactly what this must never grow.
  */
 export function assertSaneDateRange(r: { from?: string; to?: string }, ctx: z.RefinementCtx): void {
   if (!r.from || !r.to) return;
@@ -90,6 +98,45 @@ export function assertSaneDateRange(r: { from?: string; to?: string }, ctx: z.Re
       code: z.ZodIssueCode.custom,
       path: ['to'],
       message: 'date range must not exceed 366 days',
+    });
+  }
+}
+
+/**
+ * Opt out of the default 30-day analytics window and report on everything.
+ *
+ * A separate field rather than a wide `from`/`to` because the analytics
+ * endpoints cap explicit ranges at 366 days (`assertSaneDateRange`) — this asks
+ * the server to resolve the lower bound itself (the company's, source's, or the
+ * platform's creation date) and to widen the bucket accordingly.
+ *
+ * Only the ANALYTICS schemas carry it. List endpoints (transactions, ledger,
+ * activity, withdrawals, …) apply no default window at all, so for them "all
+ * time" is simply omitting `from`/`to` — sending a preset there would be
+ * stripped by zod and silently mean nothing.
+ */
+export const analyticsPresetShape = {
+  preset: z.enum(['all']).optional(),
+};
+
+/**
+ * `preset` and an explicit `from`/`to` are mutually exclusive.
+ *
+ * Rejected rather than ignored: silently dropping the bounds would let a caller
+ * believe it had asked for a capped window when it had actually asked for all
+ * of history, and silently dropping the preset would return 30 days labelled as
+ * all time. Either way the response wouldn't match the request.
+ */
+export function assertPresetExclusive(
+  r: { preset?: string; from?: string; to?: string },
+  ctx: z.RefinementCtx,
+): void {
+  if (!r.preset) return;
+  if (r.from || r.to) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['preset'],
+      message: 'preset cannot be combined with from/to',
     });
   }
 }

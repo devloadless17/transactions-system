@@ -1,7 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import {
+  bucketKey,
+  eachBucketStartUtc,
   Money,
+  sqlTruncUnit,
   type AdminAnalyticsRange,
+  type BucketGranularity,
   type CurrencyRollup,
   type FlowsBucket,
   type FlowsRange,
@@ -12,9 +16,15 @@ import {
 } from '@app/shared';
 import { PrismaService } from '../../database/prisma.service';
 import { CacheService } from '../cache/cache.service';
+import {
+  ALL_TIME_STATEMENT_TIMEOUT,
+  ALL_TIME_TX_TIMEOUT_MS,
+  originForPlatform,
+  resolveWindow,
+  type OriginDeps,
+} from './range';
 import { sourceFeesByCurrency, sourceFeesBreakdown } from './source-fees';
 
-const DEFAULT_DAYS = 30;
 const PENDING_OPS_LIMIT = 20;
 // Top sources shown on the admin overview "By source" tile.
 const TOP_SOURCES_LIMIT = 5;
@@ -31,6 +41,11 @@ export class PlatformAnalyticsService {
     private readonly cache: CacheService,
   ) {}
 
+  /** The two dependencies the origin helpers need, without widening their access. */
+  private get originDeps(): OriginDeps {
+    return { prisma: this.prisma, cache: this.cache };
+  }
+
   // ============================================================
   // Platform multi-currency rollup
   // ============================================================
@@ -39,11 +54,17 @@ export class PlatformAnalyticsService {
    * total "net held" across all wallets (point-in-time, not range-bound).
    */
   async platform(range: AdminAnalyticsRange): Promise<PlatformAnalyticsResponse> {
-    const { from, to } = resolveRange(range);
-    const cacheKey = `analytics:platform:${from.toISOString()}:${to.toISOString()}`;
+    const origin = range.preset === 'all' ? await originForPlatform(this.originDeps) : null;
+    const { from, to, isAllTime } = resolveWindow(range, origin);
+    const cacheKey = `analytics:platform:v2:${from.toISOString()}:${to.toISOString()}`;
 
     return this.cache.wrap(cacheKey, 60, async () => {
       return this.prisma.runAsAdmin(async (tx) => {
+        if (isAllTime) {
+          await tx.$executeRawUnsafe(
+            `SET LOCAL statement_timeout = '${ALL_TIME_STATEMENT_TIMEOUT}'`,
+          );
+        }
         // Money IN = transaction ingestion + load approvals. Money OUT =
         // withdrawal + payout approvals. Every figure is net + fee (the money
         // that actually moved): the raw `amount` column equals net+fee only for
@@ -206,20 +227,28 @@ export class PlatformAnalyticsService {
   // Flows: daily in vs out per currency
   // ============================================================
   async flows(range: FlowsRange): Promise<FlowsResponse> {
-    const { from, to } = resolveRange(range);
+    const origin = range.preset === 'all' ? await originForPlatform(this.originDeps) : null;
+    const { from, to, granularity, isAllTime } = resolveWindow(range, origin);
     const currency = range.currency;
-    const cacheKey = `analytics:flows:${currency}:${from.toISOString()}:${to.toISOString()}`;
+    const cacheKey = `analytics:flows:v2:${currency}:${from.toISOString()}:${to.toISOString()}:${granularity}`;
 
     return this.cache.wrap(cacheKey, 60, async () => {
-      return this.prisma.runAsAdmin(async (tx) => {
-        // Daily in/out are net + fee (the money that actually moved), and span
-        // every flow: in = transactions (created_at) + loads (processed_at);
-        // out = withdrawals + payouts (processed_at). Plus the FEE-ledger fee
-        // overlay (all flows), so the bars and the fee line agree day-by-day.
-        const txRows = await tx.$queryRawUnsafe<Array<{ day: Date; v: string }>>(
-          `
+      return this.prisma.runAsAdmin(
+        async (tx) => {
+          if (isAllTime) {
+            await tx.$executeRawUnsafe(
+              `SET LOCAL statement_timeout = '${ALL_TIME_STATEMENT_TIMEOUT}'`,
+            );
+          }
+          const truncUnit = sqlTruncUnit(granularity);
+          // Daily in/out are net + fee (the money that actually moved), and span
+          // every flow: in = transactions (created_at) + loads (processed_at);
+          // out = withdrawals + payouts (processed_at). Plus the FEE-ledger fee
+          // overlay (all flows), so the bars and the fee line agree day-by-day.
+          const txRows = await tx.$queryRawUnsafe<Array<{ day: Date; v: string }>>(
+            `
           SELECT
-            date_trunc('day', created_at)::date       AS day,
+            date_trunc($4::text, created_at AT TIME ZONE 'UTC')::date AS day,
             SUM(net_amount + commission_amount)::text AS v
           FROM transactions
           WHERE status = 'COMPLETED'
@@ -227,15 +256,16 @@ export class PlatformAnalyticsService {
             AND created_at >= $2 AND created_at <= $3
           GROUP BY 1 ORDER BY 1 ASC
           `,
-          currency,
-          from,
-          to,
-        );
+            currency,
+            from,
+            to,
+            truncUnit,
+          );
 
-        const loadRows = await tx.$queryRawUnsafe<Array<{ day: Date; v: string }>>(
-          `
+          const loadRows = await tx.$queryRawUnsafe<Array<{ day: Date; v: string }>>(
+            `
           SELECT
-            date_trunc('day', processed_at)::date AS day,
+            date_trunc($4::text, processed_at AT TIME ZONE 'UTC')::date AS day,
             SUM(net_amount + fee_amount)::text     AS v
           FROM loads
           WHERE status = 'COMPLETED'
@@ -244,15 +274,16 @@ export class PlatformAnalyticsService {
             AND processed_at >= $2 AND processed_at <= $3
           GROUP BY 1 ORDER BY 1 ASC
           `,
-          currency,
-          from,
-          to,
-        );
+            currency,
+            from,
+            to,
+            truncUnit,
+          );
 
-        const wdRows = await tx.$queryRawUnsafe<Array<{ day: Date; v: string }>>(
-          `
+          const wdRows = await tx.$queryRawUnsafe<Array<{ day: Date; v: string }>>(
+            `
           SELECT
-            date_trunc('day', processed_at)::date AS day,
+            date_trunc($4::text, processed_at AT TIME ZONE 'UTC')::date AS day,
             SUM(net_amount + fee_amount)::text     AS v
           FROM withdrawals
           WHERE status = 'COMPLETED'
@@ -261,15 +292,16 @@ export class PlatformAnalyticsService {
             AND processed_at >= $2 AND processed_at <= $3
           GROUP BY 1 ORDER BY 1 ASC
           `,
-          currency,
-          from,
-          to,
-        );
+            currency,
+            from,
+            to,
+            truncUnit,
+          );
 
-        const poRows = await tx.$queryRawUnsafe<Array<{ day: Date; v: string }>>(
-          `
+          const poRows = await tx.$queryRawUnsafe<Array<{ day: Date; v: string }>>(
+            `
           SELECT
-            date_trunc('day', processed_at)::date AS day,
+            date_trunc($4::text, processed_at AT TIME ZONE 'UTC')::date AS day,
             SUM(net_amount + fee_amount)::text     AS v
           FROM payouts
           WHERE status = 'COMPLETED'
@@ -278,15 +310,16 @@ export class PlatformAnalyticsService {
             AND processed_at >= $2 AND processed_at <= $3
           GROUP BY 1 ORDER BY 1 ASC
           `,
-          currency,
-          from,
-          to,
-        );
+            currency,
+            from,
+            to,
+            truncUnit,
+          );
 
-        const feeRows = await tx.$queryRawUnsafe<Array<{ day: Date; f: string }>>(
-          `
+          const feeRows = await tx.$queryRawUnsafe<Array<{ day: Date; f: string }>>(
+            `
           SELECT
-            date_trunc('day', created_at)::date AS day,
+            date_trunc($4::text, created_at AT TIME ZONE 'UTC')::date AS day,
             SUM(CASE WHEN direction = 'CREDIT' THEN amount ELSE -amount END)::text AS f
           FROM ledger_entries
           WHERE account_type = 'FEE'
@@ -294,21 +327,22 @@ export class PlatformAnalyticsService {
             AND created_at >= $2 AND created_at <= $3
           GROUP BY 1 ORDER BY 1 ASC
           `,
-          currency,
-          from,
-          to,
-        );
+            currency,
+            from,
+            to,
+            truncUnit,
+          );
 
-        // Top sources by volume for this currency+window — for the admin overview
-        // "By source" tile. One indexed GROUP BY source_id (backed by the partial
-        // transactions_completed_source_created_idx). Lives here, on the per-currency
-        // endpoint the admin overview already fetches, so the dashboard no longer
-        // pays for the full overview() compute (~11 queries incl. a cross-tenant
-        // GROUP BY) just to render this 5-row table.
-        const topSrcRows = await tx.$queryRawUnsafe<
-          Array<{ sourceId: string; volume: string; fees: string; count: bigint }>
-        >(
-          `
+          // Top sources by volume for this currency+window — for the admin overview
+          // "By source" tile. One indexed GROUP BY source_id (backed by the partial
+          // transactions_completed_source_created_idx). Lives here, on the per-currency
+          // endpoint the admin overview already fetches, so the dashboard no longer
+          // pays for the full overview() compute (~11 queries incl. a cross-tenant
+          // GROUP BY) just to render this 5-row table.
+          const topSrcRows = await tx.$queryRawUnsafe<
+            Array<{ sourceId: string; volume: string; fees: string; count: bigint }>
+          >(
+            `
           SELECT source_id                                 AS "sourceId",
                  SUM(net_amount + commission_amount)::text AS volume,
                  SUM(commission_amount)::text              AS fees,
@@ -320,34 +354,44 @@ export class PlatformAnalyticsService {
           ORDER BY SUM(net_amount + commission_amount) DESC
           LIMIT ${TOP_SOURCES_LIMIT}
           `,
-          currency,
-          from,
-          to,
-        );
-        const srcIds = topSrcRows.map((r) => r.sourceId);
-        const srcRows = srcIds.length
-          ? await tx.source.findMany({
-              where: { id: { in: srcIds } },
-              select: { id: true, code: true },
-            })
-          : [];
-        const srcCode = new Map(srcRows.map((s) => [s.id, s.code]));
-        const topSources = topSrcRows.map((r) => ({
-          sourceId: r.sourceId,
-          sourceCode: srcCode.get(r.sourceId) ?? '',
-          volume: r.volume,
-          fees: r.fees,
-          count: Number(r.count),
-        }));
+            currency,
+            from,
+            to,
+          );
+          const srcIds = topSrcRows.map((r) => r.sourceId);
+          const srcRows = srcIds.length
+            ? await tx.source.findMany({
+                where: { id: { in: srcIds } },
+                select: { id: true, code: true },
+              })
+            : [];
+          const srcCode = new Map(srcRows.map((s) => [s.id, s.code]));
+          const topSources = topSrcRows.map((r) => ({
+            sourceId: r.sourceId,
+            sourceCode: srcCode.get(r.sourceId) ?? '',
+            volume: r.volume,
+            fees: r.fees,
+            count: Number(r.count),
+          }));
 
-        const buckets = mergeDailyBuckets(from, to, [txRows, loadRows], [wdRows, poRows], feeRows);
-        return {
-          currency,
-          range: { from: from.toISOString(), to: to.toISOString() },
-          buckets,
-          topSources,
-        };
-      });
+          const buckets = mergeBuckets(
+            from,
+            to,
+            granularity,
+            [txRows, loadRows],
+            [wdRows, poRows],
+            feeRows,
+          );
+          return {
+            currency,
+            range: { from: from.toISOString(), to: to.toISOString() },
+            granularity,
+            buckets,
+            topSources,
+          };
+        },
+        isAllTime ? { timeout: ALL_TIME_TX_TIMEOUT_MS } : undefined,
+      );
     });
   }
 
@@ -487,54 +531,41 @@ export class PlatformAnalyticsService {
   }
 }
 
-function resolveRange(range: AdminAnalyticsRange): { from: Date; to: Date } {
-  const to = range.to ? new Date(range.to) : new Date();
-  const from = range.from
-    ? new Date(range.from)
-    : new Date(to.getTime() - DEFAULT_DAYS * 24 * 3600 * 1000);
-  return { from, to };
-}
-
-function mergeDailyBuckets(
+/**
+ * Merge the per-flow row sets into one zero-filled series. Walks in UTC to match
+ * the SQL, which truncates `AT TIME ZONE 'UTC'` — see fillBucketGaps in
+ * analytics.service.ts for why that pairing matters.
+ */
+function mergeBuckets(
   from: Date,
   to: Date,
+  granularity: BucketGranularity,
   inRowSets: Array<Array<{ day: Date; v: string }>>,
   outRowSets: Array<Array<{ day: Date; v: string }>>,
   feeRows: Array<{ day: Date; f: string }>,
 ): FlowsBucket[] {
   // Each direction merges several per-flow row sets, summing same-day values.
-  const sumByDay = (sets: Array<Array<{ day: Date; v: string }>>) => {
+  const sumByBucket = (sets: Array<Array<{ day: Date; v: string }>>) => {
     const map = new Map<string, Money>();
     for (const rows of sets) {
       for (const r of rows) {
-        const key = toDateKey(r.day);
+        const key = bucketKey(r.day);
         map.set(key, (map.get(key) ?? Money.zero()).add(Money.of(r.v ?? '0')));
       }
     }
     return map;
   };
-  const inByDay = sumByDay(inRowSets);
-  const outByDay = sumByDay(outRowSets);
-  const feeByDay = new Map(feeRows.map((r) => [toDateKey(r.day), r.f ?? '0']));
+  const inByDay = sumByBucket(inRowSets);
+  const outByDay = sumByBucket(outRowSets);
+  const feeByDay = new Map(feeRows.map((r) => [bucketKey(r.day), r.f ?? '0']));
 
-  const out: FlowsBucket[] = [];
-  const cursor = new Date(from);
-  cursor.setUTCHours(0, 0, 0, 0);
-  const end = new Date(to);
-  end.setUTCHours(0, 0, 0, 0);
-  while (cursor.getTime() <= end.getTime()) {
-    const key = toDateKey(cursor);
-    out.push({
+  return eachBucketStartUtc(from, to, granularity).map((start) => {
+    const key = bucketKey(start);
+    return {
       date: key,
       in: (inByDay.get(key) ?? Money.zero()).toString(),
       out: (outByDay.get(key) ?? Money.zero()).toString(),
       fees: feeByDay.get(key) ?? '0',
-    });
-    cursor.setUTCDate(cursor.getUTCDate() + 1);
-  }
-  return out;
-}
-
-function toDateKey(d: Date): string {
-  return d.toISOString().slice(0, 10);
+    };
+  });
 }

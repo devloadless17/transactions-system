@@ -31,11 +31,8 @@ import { ExportCsvButton } from '@/components/export-csv-button';
 import { useDebouncedValue } from '@/lib/use-debounced-value';
 import { EmptyState } from '@/components/empty-state';
 import { Inbox } from 'lucide-react';
-import {
-  DateRangePicker,
-  type PickedRange,
-  type RangePreset,
-} from '@/components/ui/date-range-picker';
+import { DateRangePicker, type PickedRange } from '@/components/ui/date-range-picker';
+import { isoBound, quickRangePresets } from '@/lib/date-presets';
 import { CompanyFilter, useCompanyNames } from '@/features/admin/company-filter';
 import { TransactionDetailDrawer } from './transaction-detail-drawer';
 
@@ -66,13 +63,6 @@ const FILTER_KEYS = [
   'toTime',
 ] as const;
 
-// Local YYYY-MM-DD, n days before today (0 = today).
-function dayKey(daysAgo = 0): string {
-  const d = new Date();
-  d.setDate(d.getDate() - daysAgo);
-  return new Date(d.getTime() - d.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
-}
-
 function filtersFromParams(p: URLSearchParams): Filters {
   const f: Filters = {};
   for (const k of FILTER_KEYS) {
@@ -92,16 +82,6 @@ function urlParamsFromState(page: number, filters: Filters): string {
     if (v) p.set(k, v);
   }
   return p.toString();
-}
-
-// Build an inclusive ISO bound from a date (YYYY-MM-DD) + optional time (HH:mm).
-// Returns undefined for a malformed value (e.g. a tampered/stale URL like ?from=x)
-// so `.toISOString()` can't throw RangeError during render and crash the page into
-// an inescapable error boundary.
-function isoBound(date: string, time: string | undefined, endOfDay: boolean): string | undefined {
-  const t = time || (endOfDay ? '23:59' : '00:00');
-  const d = new Date(`${date}T${t}:${endOfDay ? '59.999' : '00'}`);
-  return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
 }
 
 // `canReverse` gates the admin-only Reverse action. Back office can view
@@ -163,15 +143,9 @@ export function TransactionsView({
     fromTime: filters.fromTime,
     toTime: filters.toTime,
   };
-  const datePresets: RangePreset[] = [
-    { label: 'Today', from: dayKey(0), to: dayKey(0) },
-    { label: 'Last 7 days', from: dayKey(6), to: dayKey(0) },
-    { label: 'Last 30 days', from: dayKey(29), to: dayKey(0) },
-  ].map((p) => ({
-    label: p.label,
-    active: filters.from === p.from && filters.to === p.to && !filters.fromTime && !filters.toTime,
-    onSelect: () => setFilter({ from: p.from, to: p.to, fromTime: undefined, toTime: undefined }),
-  }));
+  const datePresets = quickRangePresets(dateValue, (b) =>
+    setFilter({ from: b.from, to: b.to, fromTime: undefined, toTime: undefined }),
+  );
   const [reverseTarget, setReverseTarget] = useState<TransactionResponse | null>(null);
   const [detailTarget, setDetailTarget] = useState<TransactionResponse | null>(null);
 
@@ -365,7 +339,7 @@ export function TransactionsView({
               <DateRangePicker
                 value={dateValue}
                 presets={datePresets}
-                placeholder="All dates"
+                placeholder="All time"
                 className="w-64"
                 onChange={(v) =>
                   setFilter({

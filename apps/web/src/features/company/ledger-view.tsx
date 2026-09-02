@@ -13,32 +13,14 @@ import { Badge } from '@/components/ui/badge';
 import { Label } from '@/components/ui/label';
 import { DataTable, type Column } from '@/components/ui/data-table';
 import { Pagination } from '@/components/ui/pagination';
-import {
-  DateRangePicker,
-  type PickedRange,
-  type RangePreset,
-} from '@/components/ui/date-range-picker';
+import { DateRangePicker, type PickedRange } from '@/components/ui/date-range-picker';
+import { isoBound, quickRangePresets } from '@/lib/date-presets';
 import { apiFetch } from '@/lib/api.client';
 import { formatExact } from '@/lib/format';
 import { ExportCsvButton } from '@/components/export-csv-button';
 import { EntityDetailDrawer } from '@/features/activity/activity-detail-drawer';
 
 const PAGE_SIZE = 50;
-
-// Local YYYY-MM-DD, n days before today (0 = today).
-function dayKey(daysAgo = 0): string {
-  const d = new Date();
-  d.setDate(d.getDate() - daysAgo);
-  return new Date(d.getTime() - d.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
-}
-
-// Build an inclusive ISO bound from a date (YYYY-MM-DD) + optional time (HH:mm).
-// Returns undefined for a malformed value so `.toISOString()` can't throw.
-function isoBound(date: string, time: string | undefined, endOfDay: boolean): string | undefined {
-  const t = time || (endOfDay ? '23:59' : '00:00');
-  const d = new Date(`${date}T${t}:${endOfDay ? '59.999' : '00'}`);
-  return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
-}
 
 export function LedgerView() {
   const [page, setPage] = useState(1);
@@ -61,18 +43,10 @@ export function LedgerView() {
     if (toIso) params.set('to', toIso);
   }
 
-  const datePresets: RangePreset[] = [
-    { label: 'Today', from: dayKey(0), to: dayKey(0) },
-    { label: 'Last 7 days', from: dayKey(6), to: dayKey(0) },
-    { label: 'Last 30 days', from: dayKey(29), to: dayKey(0) },
-  ].map((p) => ({
-    label: p.label,
-    active: range.from === p.from && range.to === p.to && !range.fromTime && !range.toTime,
-    onSelect: () => {
-      setRange({ from: p.from, to: p.to });
-      setPage(1);
-    },
-  }));
+  const datePresets = quickRangePresets(range, (b) => {
+    setRange({ from: b.from, to: b.to });
+    setPage(1);
+  });
 
   const listQ = useQuery({
     queryKey: ['company', 'ledger', params.toString()],
@@ -154,7 +128,7 @@ export function LedgerView() {
               <DateRangePicker
                 value={range}
                 presets={datePresets}
-                placeholder="All dates"
+                placeholder="All time"
                 className="w-64"
                 onChange={(v) => {
                   setRange(v);

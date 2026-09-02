@@ -4,33 +4,28 @@ import { AdminOverview } from '@/features/admin/overview-view';
 import { apiServer } from '@/lib/api.server';
 import { makeServerQueryClient } from '@/lib/server-query-client';
 import { requireRole } from '@/lib/session';
+import { analyticsRangeParams, DEFAULT_RANGE, rangeKey } from '@/features/analytics/range';
 import { FULL_ADMIN_ROLES } from '@/features/admin/access';
 
 export const dynamic = 'force-dynamic';
 
-// First paint always uses the default 30-day preset + USD (see AdminOverview's
-// initial state and analytics/date-range.tsx). Replicated here so the SSR query
-// KEYS match the client's exactly — only then does hydration take. The preset
-// key is the stable token 'p30' (no timestamp), so server/client keys agree
-// even though each resolves the absolute window at its own request time.
-const RANGE_KEY = 'p30';
+// First paint uses AdminOverview's initial range + USD, and the SSR query KEYS
+// must match the client's exactly — only then does hydration take.
+//
+// Both are now DERIVED from DEFAULT_RANGE rather than hand-copied. They used to
+// be a literal 'p30' while the client had already moved to `{ mode: 'today' }`,
+// so the keys never matched: every admin dashboard load paid for two server
+// round-trips whose results were dehydrated into the HTML and then ignored,
+// plus the skeleton flash this prefetch exists to avoid.
+const RANGE_KEY = rangeKey(DEFAULT_RANGE);
 const CURRENCY = 'USD';
-
-function defaultRangeParams(): URLSearchParams {
-  // Mirrors resolveRange({ mode: 'preset', days: 30 }) in date-range.tsx.
-  const anchor = Math.ceil(Date.now() / 60_000) * 60_000;
-  return new URLSearchParams({
-    from: new Date(anchor - 30 * 24 * 3600 * 1000).toISOString(),
-    to: new Date(anchor).toISOString(),
-  });
-}
 
 export default async function Page() {
   // Overview is platform analytics — full admins only. Back office is redirected
   // to its landing page (it never sees this route in its nav).
   await requireRole(FULL_ADMIN_ROLES);
   const qc = makeServerQueryClient();
-  const rp = defaultRangeParams();
+  const rp = analyticsRangeParams(DEFAULT_RANGE);
   const flowsParams = new URLSearchParams(rp);
   flowsParams.set('currency', CURRENCY);
 
@@ -42,6 +37,12 @@ export default async function Page() {
       queryKey: ['admin', 'analytics', 'platform', RANGE_KEY],
       queryFn: () =>
         apiServer<PlatformAnalyticsResponse>(`/admin/analytics/platform?${rp.toString()}`),
+      // The key is timezone-independent but the BOUNDS are resolved with the
+      // server's clock, so a host in another timezone could hydrate a
+      // neighbouring day's window (the reason app/(company)/app/page.tsx skips
+      // range-keyed prefetching entirely). staleTime 0 keeps the SSR payload as
+      // a first-paint placeholder that the client refetches on mount.
+      staleTime: 0,
     }),
     qc.prefetchQuery({
       queryKey: ['admin', 'analytics', 'operations'],
@@ -50,6 +51,7 @@ export default async function Page() {
     qc.prefetchQuery({
       queryKey: ['admin', 'analytics', 'flows', RANGE_KEY, CURRENCY],
       queryFn: () => apiServer<FlowsResponse>(`/admin/analytics/flows?${flowsParams.toString()}`),
+      staleTime: 0, // same reasoning as the platform prefetch above
     }),
   ]).catch(() => {
     // Swallow prefetch errors — client queries will surface/retry. SSR must not

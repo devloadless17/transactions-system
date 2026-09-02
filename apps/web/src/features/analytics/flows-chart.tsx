@@ -10,16 +10,27 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import type { FlowsBucket } from '@app/shared';
+import type { BucketGranularity, FlowsBucket } from '@app/shared';
+import { formatBucketTick, formatBucketTooltip } from '@/lib/date-presets';
 
 /**
- * Daily money-in (deposits + loads) vs money-out (withdrawals + payouts) flows
- * for a currency, with fees overlaid as a line. "In" and "out" are stacked
- * areas so the operator can see net flow at a glance.
+ * Money-in (deposits + loads) vs money-out (withdrawals + payouts) flows for a
+ * currency, with fees overlaid as a line. "In" and "out" are stacked areas so
+ * the operator can see net flow at a glance. One point per bucket, whose width
+ * the server picks from the window (day / week / month).
  */
-export function FlowsChart({ buckets, currency }: { buckets: FlowsBucket[]; currency: string }) {
+export function FlowsChart({
+  buckets,
+  currency,
+  granularity = 'day',
+}: {
+  buckets: FlowsBucket[];
+  currency: string;
+  granularity?: BucketGranularity;
+}) {
   const data = buckets.map((b) => ({
-    date: b.date.slice(5), // MM-DD
+    date: formatBucketTick(b.date, granularity),
+    bucketStart: b.date,
     in: Number(b.in),
     out: -Number(b.out), // negative so it draws below the axis
     fees: Number(b.fees),
@@ -40,7 +51,12 @@ export function FlowsChart({ buckets, currency }: { buckets: FlowsBucket[]; curr
             </linearGradient>
           </defs>
           <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-          <XAxis dataKey="date" tick={{ fontSize: 11 }} interval="preserveStartEnd" />
+          <XAxis
+            dataKey="date"
+            tick={{ fontSize: 11 }}
+            interval="preserveStartEnd"
+            minTickGap={24}
+          />
           <YAxis
             tick={{ fontSize: 11 }}
             width={60}
@@ -61,6 +77,13 @@ export function FlowsChart({ buckets, currency }: { buckets: FlowsBucket[]; curr
                   ? 'Out (withdrawals + payouts)'
                   : 'Fees',
             ]}
+            labelFormatter={(
+              _label: string,
+              payload: ReadonlyArray<{ payload?: { bucketStart?: string } }>,
+            ) => {
+              const start = payload?.[0]?.payload?.bucketStart;
+              return start ? formatBucketTooltip(start, granularity) : _label;
+            }}
           />
           <Legend
             wrapperStyle={{ fontSize: 12 }}
