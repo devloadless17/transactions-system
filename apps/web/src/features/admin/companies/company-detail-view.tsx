@@ -3,8 +3,10 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from '@/lib/toast';
 import Link from 'next/link';
+import { AlertTriangle, Pencil } from 'lucide-react';
 import {
   SUPPORTED_CURRENCIES,
+  companyNameSchema,
   slugSchema,
   type AuditLogResponse,
   type CompanyResponse,
@@ -31,27 +33,31 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { DataTable, type Column } from '@/components/ui/data-table';
 import { apiFetch } from '@/lib/api.client';
+import { granularityWord } from '@/lib/date-presets';
 import { ApiClientError } from '@/lib/api';
 import { formatNumber as fmt, trimAmount } from '@/lib/format';
 import { KpiCard } from '@/features/analytics/kpi-card';
 import { VolumeChart } from '@/features/analytics/volume-chart.lazy';
 import {
   DateRangeControls,
+  analyticsRangeParams,
   DEFAULT_RANGE,
   isRangeReady,
   rangeKey,
   rangeLabel,
-  resolveRange,
+  rangePhrase,
   type DateRange,
 } from '@/features/analytics/date-range';
+import { AuditChangesCell } from '@/features/admin/audit/audit-changes';
 import { CompanyUsersCard } from './company-users-card';
 
 export function CompanyDetailView({
   companyId,
-  canEditSlug = false,
+  canEditIdentity = false,
 }: {
   companyId: string;
-  canEditSlug?: boolean;
+  /** SUPER_ADMIN: may rename the company and change its slug. */
+  canEditIdentity?: boolean;
 }) {
   const qc = useQueryClient();
   const [chartCurrency, setChartCurrency] = useState<string>('USD');
@@ -63,6 +69,11 @@ export function CompanyDetailView({
   const slugParse = slugSchema.safeParse(slugDraft);
   const slugError =
     slugDraft.trim() && !slugParse.success ? slugParse.error.issues[0]?.message : null;
+  const [nameDialogOpen, setNameDialogOpen] = useState(false);
+  const [nameDraft, setNameDraft] = useState('');
+  const nameParse = companyNameSchema.safeParse(nameDraft);
+  const nameError =
+    nameDraft.trim() && !nameParse.success ? nameParse.error.issues[0]?.message : null;
 
   const companyQ = useQuery({
     queryKey: ['admin', 'company', companyId],
@@ -72,8 +83,7 @@ export function CompanyDetailView({
   const overviewQ = useQuery({
     queryKey: ['admin', 'company', companyId, 'overview', chartCurrency, rangeKey(range)],
     queryFn: () => {
-      const { from, to } = resolveRange(range);
-      const params = new URLSearchParams({ from, to, currency: chartCurrency });
+      const params = analyticsRangeParams(range, { currency: chartCurrency });
       return apiFetch<OverviewResponse>(
         `/admin/analytics/companies/${companyId}/overview?${params.toString()}`,
       );
@@ -116,6 +126,23 @@ export function CompanyDetailView({
     onSuccess: () => {
       toast.success('Company activated');
       qc.invalidateQueries({ queryKey: ['admin', 'company', companyId] });
+      qc.invalidateQueries({ queryKey: ['admin', 'companies'] });
+    },
+    onError: (err) => toast.error(err instanceof ApiClientError ? err.message : 'Failed'),
+  });
+
+  const nameMu = useMutation({
+    mutationFn: (name: string) =>
+      apiFetch<CompanyResponse>(`/admin/companies/${companyId}`, {
+        method: 'PATCH',
+        body: { name },
+      }),
+    onSuccess: (c) => {
+      toast.success(`Renamed to ${c.name}`);
+      setNameDialogOpen(false);
+      qc.invalidateQueries({ queryKey: ['admin', 'company', companyId] });
+      // Prefix match, so this also refreshes the companies list, the picker and
+      // ['admin','companies','names',…] — the lookup behind every company filter.
       qc.invalidateQueries({ queryKey: ['admin', 'companies'] });
     },
     onError: (err) => toast.error(err instanceof ApiClientError ? err.message : 'Failed'),
@@ -262,6 +289,8 @@ export function CompanyDetailView({
     },
     { key: 'actor', header: 'Actor', className: 'text-xs', cell: (a) => a.actorEmail ?? '—' },
     { key: 'action', header: 'Action', className: 'font-mono text-xs', cell: (a) => a.action },
+    // A rename is legible right where it happened.
+    { key: 'changes', header: 'Changes', cell: (a) => <AuditChangesCell metadata={a.metadata} /> },
     {
       key: 'entity',
       header: 'Entity',
@@ -289,6 +318,21 @@ export function CompanyDetailView({
                 <Badge variant={companyQ.data.status === 'ACTIVE' ? 'success' : 'destructive'}>
                   {companyQ.data.status}
                 </Badge>
+                {canEditIdentity && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                    aria-label="Rename company"
+                    title="Rename company"
+                    onClick={() => {
+                      setNameDraft(companyQ.data?.name ?? '');
+                      setNameDialogOpen(true);
+                    }}
+                  >
+                    <Pencil className="h-4 w-4" />
+                  </Button>
+                )}
               </>
             ) : companyQ.isError ? null : (
               // Reserve the H1's height while loading so the name doesn't pop in
@@ -298,18 +342,23 @@ export function CompanyDetailView({
           </h1>
           {companyQ.data ? (
             <p className="text-sm text-muted-foreground">
-              slug: <span className="font-mono break-all">{companyQ.data.slug}</span>
-              {canEditSlug && (
-                <button
-                  type="button"
-                  className="ml-1 align-baseline text-xs underline-offset-2 hover:underline"
+              slug: <span className="break-all font-mono">{companyQ.data.slug}</span>
+              {canEditIdentity && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  // Smaller than the name's: this one sits inline in a line of
+                  // small print, where an h-8 control would tower over the text.
+                  className="ml-0.5 h-6 w-6 translate-y-0.5 text-muted-foreground hover:text-foreground"
+                  aria-label="Edit slug"
+                  title="Edit slug"
                   onClick={() => {
                     setSlugDraft(companyQ.data?.slug ?? '');
                     setSlugDialogOpen(true);
                   }}
                 >
-                  edit
-                </button>
+                  <Pencil className="h-3 w-3" />
+                </Button>
               )}{' '}
               · default currency: {companyQ.data.defaultCurrency} · created{' '}
               {new Date(companyQ.data.createdAt).toLocaleDateString()}
@@ -357,33 +406,91 @@ export function CompanyDetailView({
         </div>
       </div>
 
-      {canEditSlug && (
+      {canEditIdentity && (
+        <Dialog open={nameDialogOpen} onOpenChange={setNameDialogOpen}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Rename company</DialogTitle>
+              <DialogDescription>
+                Changes the display name shown across the admin, notifications and exports.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-2">
+              <Label htmlFor="company-name">Company name</Label>
+              <Input
+                id="company-name"
+                value={nameDraft}
+                onChange={(e) => setNameDraft(e.target.value)}
+                placeholder="Acme Corp"
+                autoComplete="off"
+              />
+              {nameError ? (
+                <p className="text-xs text-destructive">{nameError}</p>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  2–120 characters. Names don&apos;t have to be unique.
+                </p>
+              )}
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setNameDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                // Send the PARSED value, so the trimmed name is what's saved.
+                onClick={() => nameParse.success && nameMu.mutate(nameParse.data)}
+                disabled={
+                  nameMu.isPending ||
+                  !nameParse.success ||
+                  (nameParse.success && nameParse.data === companyQ.data?.name)
+                }
+              >
+                {nameMu.isPending ? 'Saving…' : 'Save name'}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {canEditIdentity && (
         <Dialog open={slugDialogOpen} onOpenChange={setSlugDialogOpen}>
           <DialogContent className="sm:max-w-md">
             <DialogHeader>
               <DialogTitle>Edit slug</DialogTitle>
               <DialogDescription>
-                Sources ingest transactions using this slug — renaming it breaks their requests
-                until they switch to the new slug. Share the new value with every source that posts
-                for this company.
+                The public identifier external sources ingest with.
               </DialogDescription>
             </DialogHeader>
-            <div className="space-y-2">
-              <Label htmlFor="company-slug">Slug</Label>
-              <Input
-                id="company-slug"
-                className="font-mono"
-                value={slugDraft}
-                onChange={(e) => setSlugDraft(e.target.value)}
-                placeholder="acme-corp"
-                autoComplete="off"
-              />
-              {slugError ? (
-                <p className="text-xs text-destructive">{slugError}</p>
-              ) : (
-                <p className="text-xs text-muted-foreground">
-                  2–50 characters, lowercase letters, numbers and dashes.
-                </p>
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="company-slug">Slug</Label>
+                <Input
+                  id="company-slug"
+                  className="font-mono"
+                  value={slugDraft}
+                  onChange={(e) => setSlugDraft(e.target.value)}
+                  placeholder="acme-corp"
+                  autoComplete="off"
+                />
+                {slugError ? (
+                  <p className="text-xs text-destructive">{slugError}</p>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    2–50 characters, lowercase letters, numbers and dashes.
+                  </p>
+                )}
+              </div>
+              {/* A real change breaks live ingestion until every source is
+                  updated, so it gets the same treatment as the app's other
+                  destructive paths — and only once the value actually differs. */}
+              {slugParse.success && slugParse.data !== companyQ.data?.slug && (
+                <div className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <span>
+                    Sources posting to <span className="font-mono">{companyQ.data?.slug}</span> will
+                    start failing when you save.
+                  </span>
+                </div>
               )}
             </div>
             <DialogFooter>
@@ -494,7 +601,10 @@ export function CompanyDetailView({
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <CardTitle>Activity</CardTitle>
-              <CardDescription>Daily completed transaction volume.</CardDescription>
+              <CardDescription>
+                {granularityWord(overviewQ.data?.daily.granularity ?? 'day')} completed transaction
+                volume.
+              </CardDescription>
             </div>
             <div className="flex flex-wrap gap-2">
               <select
@@ -513,7 +623,11 @@ export function CompanyDetailView({
         </CardHeader>
         <CardContent>
           {overviewQ.data ? (
-            <VolumeChart buckets={overviewQ.data.daily.buckets} currency={chartCurrency} />
+            <VolumeChart
+              buckets={overviewQ.data.daily.buckets}
+              currency={chartCurrency}
+              granularity={overviewQ.data.daily.granularity}
+            />
           ) : (
             <div className="h-72 w-full animate-pulse rounded bg-muted" />
           )}
@@ -524,7 +638,7 @@ export function CompanyDetailView({
         <CardHeader>
           <CardTitle>By source</CardTitle>
           <CardDescription>
-            Every source this company transacted through over {rangeLabel(range)} ({chartCurrency}).
+            Every source this company transacted through {rangePhrase(range)} ({chartCurrency}).
             Click a source for its full breakdown.
           </CardDescription>
         </CardHeader>

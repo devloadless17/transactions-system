@@ -7,6 +7,7 @@ import {
   Patch,
   Post,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -24,8 +25,9 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { CsrfGuard } from '../auth/guards/csrf.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
-import type { AuthPrincipal } from '../../common/types/request.types';
+import type { AuthPrincipal, AuthenticatedRequest } from '../../common/types/request.types';
 import { Audited } from '../audit/audit.decorator';
+import { recordAuditChanges } from '../audit/audit-changes';
 import { CompaniesService } from './companies.service';
 
 @UseGuards(JwtAuthGuard, RolesGuard, CsrfGuard)
@@ -82,12 +84,19 @@ export class CompaniesController {
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body(new ZodPipe(updateCompanySchema)) body: UpdateCompanyInput,
     @CurrentUser() user: AuthPrincipal,
+    @Req() req: AuthenticatedRequest,
   ) {
-    // Slug renames are SUPER_ADMIN-only; the check lives in the service, next
-    // to the write, keyed on the actor role passed here. Per-field (not
-    // per-route) because ADMIN_OPERATOR legitimately PATCHes the other fields
-    // (e.g. the visibility toggle).
-    return this.companies.update(id, body, { actorRole: user.role });
+    // Renames and slug changes are SUPER_ADMIN-only; both checks live in the
+    // service, next to the write, keyed on the actor role passed here.
+    // Per-field (not per-route) because ADMIN_OPERATOR legitimately PATCHes the
+    // other fields (e.g. the visibility toggle).
+    return this.companies.update(id, body, {
+      actorRole: user.role,
+      // Hand the post-commit field diff to AuditInterceptor through the request,
+      // so the `company.updated` row records WHICH fields changed and their
+      // before→after values. The interceptor cannot see the previous values.
+      onChanges: (changes) => recordAuditChanges(req, changes),
+    });
   }
 
   @Post(':id/disable')
@@ -97,8 +106,8 @@ export class CompaniesController {
     idFrom: 'params.id',
     companyIdFrom: 'params.id',
   })
-  async disable(@Param('id', new ParseUUIDPipe()) id: string) {
-    return this.companies.disable(id);
+  async disable(@Param('id', new ParseUUIDPipe()) id: string, @Req() req: AuthenticatedRequest) {
+    return this.companies.disable(id, { onChanges: (c) => recordAuditChanges(req, c) });
   }
 
   @Post(':id/activate')
@@ -108,7 +117,7 @@ export class CompaniesController {
     idFrom: 'params.id',
     companyIdFrom: 'params.id',
   })
-  async activate(@Param('id', new ParseUUIDPipe()) id: string) {
-    return this.companies.activate(id);
+  async activate(@Param('id', new ParseUUIDPipe()) id: string, @Req() req: AuthenticatedRequest) {
+    return this.companies.activate(id, { onChanges: (c) => recordAuditChanges(req, c) });
   }
 }

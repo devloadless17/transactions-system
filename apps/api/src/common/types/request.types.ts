@@ -1,5 +1,5 @@
 import type { Request } from 'express';
-import type { UserRole } from '@app/shared';
+import type { AuditChanges, UserRole } from '@app/shared';
 
 export interface AuthPrincipal {
   userId: string;
@@ -24,4 +24,12 @@ export interface AuthenticatedRequest extends Request {
   // to a company UUID. IngestLogInterceptor reads it to fill the UUID-typed
   // transaction_logs.company_id column — the body itself only carries the slug.
   ingestCompanyId?: string;
+  // Field-level before→after diff published by a handler for THIS request;
+  // AuditInterceptor merges it into the audit row's `metadata.changes`. The
+  // interceptor can only see the request body and the result, never the
+  // previous values, so the service that loaded them has to hand them over.
+  // Publish through `recordAuditChanges` (modules/audit/audit-changes.ts): it
+  // enforces the scalar/allowlist rules, and producers must call it only AFTER
+  // the write commits.
+  auditChanges?: AuditChanges;
 }

@@ -14,6 +14,7 @@ import { Label } from '@/components/ui/label';
 import { DataTable, type Column } from '@/components/ui/data-table';
 import { Pagination } from '@/components/ui/pagination';
 import { apiFetch } from '@/lib/api.client';
+import { AuditChangesCell } from './audit-changes';
 import { useDebouncedValue } from '@/lib/use-debounced-value';
 import { CompanyFilter, useCompanyNames } from '@/features/admin/company-filter';
 import { auditEntityTarget, EntityDetailDrawer } from '@/features/activity/activity-detail-drawer';
@@ -124,6 +125,9 @@ export function AuditLogsView() {
       className: 'font-mono text-xs',
       cell: (a) => a.action,
     },
+    // What actually changed. Rows from before this existed — and from routes
+    // that don't publish a diff — render as '—'.
+    { key: 'changes', header: 'Changes', cell: (a) => <AuditChangesCell metadata={a.metadata} /> },
     {
       key: 'entity',
       header: 'Entity',

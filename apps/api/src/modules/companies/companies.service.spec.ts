@@ -225,6 +225,38 @@ describe('CompaniesService.list — balances are SUPER_ADMIN-only', () => {
 });
 
 /**
+ * Shared by the slug-rename, rename and audit-diff suites below: a CompaniesService
+ * wired to an in-memory tx, so update()'s gates and diff can be asserted without a DB.
+ */
+function makeUpdateService(opts: {
+  existing: ReturnType<typeof COMPANY>;
+  slugTakenBy?: ReturnType<typeof COMPANY>;
+  retiredBy?: string; // companyId that once held the requested slug
+}) {
+  const findUnique = vi.fn((args: { where: { id?: string; slug?: string } }) => {
+    if (args.where.id) return Promise.resolve(opts.existing);
+    if (args.where.slug) return Promise.resolve(opts.slugTakenBy ?? null);
+    return Promise.resolve(null);
+  });
+  const update = vi.fn((args: { where: { id: string }; data: Record<string, unknown> }) =>
+    Promise.resolve({ ...opts.existing, ...args.data }),
+  );
+  const historyFindUnique = vi.fn((args: { where: { slug: string } }) =>
+    Promise.resolve(opts.retiredBy ? { slug: args.where.slug, companyId: opts.retiredBy } : null),
+  );
+  const historyUpsert = vi.fn(() => Promise.resolve({}));
+  const tx = {
+    company: { findUnique, update },
+    companySlugHistory: { findUnique: historyFindUnique, upsert: historyUpsert },
+  };
+  const prisma = {
+    runAsAdmin: vi.fn((cb: (t: typeof tx) => unknown) => cb(tx)),
+  } as unknown as PrismaService;
+  const realtime = { admin: vi.fn() } as unknown as RealtimeService;
+  return { svc: new CompaniesService(prisma, realtime), findUnique, update, historyUpsert };
+}
+
+/**
  * Slug rename contract: the slug is the PUBLIC identifier external sources
  * ingest with, so update() must (a) allow renaming it, (b) 409 on a collision
  * with another company, and (c) not run the collision check when the slug is
@@ -232,34 +264,6 @@ describe('CompaniesService.list — balances are SUPER_ADMIN-only', () => {
  */
 describe('CompaniesService.update — slug rename', () => {
   const SUPER = { actorRole: UserRole.SUPER_ADMIN };
-
-  function makeUpdateService(opts: {
-    existing: ReturnType<typeof COMPANY>;
-    slugTakenBy?: ReturnType<typeof COMPANY>;
-    retiredBy?: string; // companyId that once held the requested slug
-  }) {
-    const findUnique = vi.fn((args: { where: { id?: string; slug?: string } }) => {
-      if (args.where.id) return Promise.resolve(opts.existing);
-      if (args.where.slug) return Promise.resolve(opts.slugTakenBy ?? null);
-      return Promise.resolve(null);
-    });
-    const update = vi.fn((args: { where: { id: string }; data: Record<string, unknown> }) =>
-      Promise.resolve({ ...opts.existing, ...args.data }),
-    );
-    const historyFindUnique = vi.fn((args: { where: { slug: string } }) =>
-      Promise.resolve(opts.retiredBy ? { slug: args.where.slug, companyId: opts.retiredBy } : null),
-    );
-    const historyUpsert = vi.fn(() => Promise.resolve({}));
-    const tx = {
-      company: { findUnique, update },
-      companySlugHistory: { findUnique: historyFindUnique, upsert: historyUpsert },
-    };
-    const prisma = {
-      runAsAdmin: vi.fn((cb: (t: typeof tx) => unknown) => cb(tx)),
-    } as unknown as PrismaService;
-    const realtime = { admin: vi.fn() } as unknown as RealtimeService;
-    return { svc: new CompaniesService(prisma, realtime), findUnique, update, historyUpsert };
-  }
 
   it('renames the slug when the new slug is free, tombstoning the old one', async () => {
     const { svc, update, historyUpsert } = makeUpdateService({ existing: COMPANY('c1', 'Alpha') });
@@ -322,9 +326,112 @@ describe('CompaniesService.update — slug rename', () => {
   it('skips slug gating entirely when the slug is unchanged (operators can PATCH other fields)', async () => {
     const existing = COMPANY('c1', 'Alpha');
     const { svc, findUnique } = makeUpdateService({ existing });
-    await svc.update('c1', { slug: existing.slug, name: 'Alpha Renamed' });
+    // `visible` (not `name`, which is privileged in its own right now) — the
+    // subject here is that an unchanged slug runs no collision check.
+    await svc.update('c1', { slug: existing.slug, visible: false });
     // Only the by-id lookup ran — no by-slug query, and no Forbidden despite
     // the missing actorRole, because nothing privileged was changed.
     expect(findUnique.mock.calls.filter(([a]) => 'slug' in a.where)).toHaveLength(0);
+  });
+});
+
+/**
+ * Rename contract. The display name breaks nothing downstream (sources ingest
+ * by SLUG, it isn't unique, nothing keys on it) but it relabels the tenant
+ * everywhere an admin looks, so it carries the same SUPER_ADMIN gate the slug
+ * does — and, like the slug's, that gate is per-FIELD so operators keep their
+ * status/visibility PATCHes.
+ */
+describe('CompaniesService.update — rename', () => {
+  const SUPER = { actorRole: UserRole.SUPER_ADMIN };
+
+  it('renames when the actor is SUPER_ADMIN', async () => {
+    const { svc, update } = makeUpdateService({ existing: COMPANY('c1', 'Alpha') });
+    const res = await svc.update('c1', { name: 'Alpha Renamed' }, SUPER);
+    expect(res.name).toBe('Alpha Renamed');
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ name: 'Alpha Renamed' }) }),
+    );
+  });
+
+  it('403s a rename without an explicit SUPER_ADMIN actor, and does not write', async () => {
+    const { svc, update } = makeUpdateService({ existing: COMPANY('c1', 'Alpha') });
+    await expect(svc.update('c1', { name: 'Alpha Renamed' })).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+      httpStatus: 403,
+    });
+    await expect(
+      svc.update('c1', { name: 'Alpha Renamed' }, { actorRole: UserRole.ADMIN_OPERATOR }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  // An operator PATCHing visibility from a form that echoes the current name
+  // must not 403 — the gate keys on an actual CHANGE, like the slug's does.
+  it('treats an unchanged name as unprivileged', async () => {
+    const existing = COMPANY('c1', 'Alpha');
+    const { svc, update } = makeUpdateService({ existing });
+    await expect(svc.update('c1', { name: existing.name, visible: false })).resolves.toBeDefined();
+    expect(update).toHaveBeenCalled();
+  });
+});
+
+/**
+ * Audit diffs. The interceptor can only see the request body and the result, so
+ * update() hands it the before→after diff — and must do so only for fields that
+ * actually changed, only from the allowlist, and only once the write committed.
+ */
+describe('CompaniesService.update — audit diff', () => {
+  const SUPER = { actorRole: UserRole.SUPER_ADMIN };
+
+  it('publishes only the fields that actually changed', async () => {
+    const existing = COMPANY('c1', 'Alpha'); // visible: true
+    const { svc } = makeUpdateService({ existing });
+    const onChanges = vi.fn();
+    await svc.update(
+      'c1',
+      { name: 'Alpha Renamed', visible: existing.visible },
+      {
+        ...SUPER,
+        onChanges,
+      },
+    );
+    expect(onChanges).toHaveBeenCalledWith({
+      name: { from: 'Alpha', to: 'Alpha Renamed' },
+    });
+  });
+
+  it('publishes nothing when the PATCH is a no-op', async () => {
+    const existing = COMPANY('c1', 'Alpha');
+    const { svc } = makeUpdateService({ existing });
+    const onChanges = vi.fn();
+    await svc.update('c1', { name: existing.name }, { ...SUPER, onChanges });
+    expect(onChanges).not.toHaveBeenCalled();
+  });
+
+  // The write runs in an interactive transaction, so a diff emitted before the
+  // commit could describe a change that rolled back.
+  it('does not publish a diff when the write fails', async () => {
+    const { svc, update } = makeUpdateService({ existing: COMPANY('c1', 'Alpha') });
+    update.mockRejectedValueOnce(new Error('db down'));
+    const onChanges = vi.fn();
+    await expect(
+      svc.update('c1', { name: 'Alpha Renamed' }, { ...SUPER, onChanges }),
+    ).rejects.toThrow('db down');
+    expect(onChanges).not.toHaveBeenCalled();
+  });
+
+  // Security regression guard: `companies` carries webhookSecret / crmApiKey /
+  // crmDemoToken on the same row, and audit logs are ADMIN_OPERATOR-readable.
+  it('never diffs a field outside the allowlist', async () => {
+    const existing = COMPANY('c1', 'Alpha');
+    const { svc } = makeUpdateService({ existing });
+    const onChanges = vi.fn();
+    await svc.update('c1', { name: 'Alpha Renamed', webhookSecret: 'leaked' } as never, {
+      ...SUPER,
+      onChanges,
+    });
+    const [changes] = onChanges.mock.calls[0];
+    expect(Object.keys(changes)).toEqual(['name']);
   });
 });

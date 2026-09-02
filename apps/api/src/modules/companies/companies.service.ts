@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import argon2 from 'argon2';
 import crypto from 'node:crypto';
 import {
+  type AuditChanges,
   type CompanyBalance,
   type CompanyListResponse,
   type CompanyResponse,
@@ -18,7 +19,25 @@ import { RealtimeService } from '../realtime/realtime.service';
 import { ConflictError, ForbiddenError, NotFoundError } from '../../common/errors/domain.error';
 import { assertListOffset } from '../../common/pagination';
 import { expand } from '../commissions/commissions.service';
+import { diffFields } from '../audit/audit-changes';
 import type { Prisma } from '@app/db';
+
+/**
+ * The ONLY company fields whose changes are written to the audit log.
+ *
+ * An explicit allowlist, not a computed one: the `companies` row also carries
+ * `webhookSecret`, `crmApiKey` and `crmDemoToken`, and audit rows are readable
+ * by ADMIN_OPERATOR — so "diff whatever changed" would eventually leak a
+ * credential. Adding a field here is a deliberate act.
+ */
+const AUDITED_COMPANY_FIELDS = ['name', 'slug', 'status', 'visible'] as const;
+
+/** Options every company mutation accepts: who is acting, and where to publish the diff. */
+export interface CompanyUpdateOpts {
+  actorRole?: UserRole;
+  /** Called with the field diff AFTER the write commits. */
+  onChanges?: (changes: AuditChanges) => void;
+}
 
 @Injectable()
 export class CompaniesService {
@@ -218,11 +237,24 @@ export class CompaniesService {
   async update(
     id: string,
     input: UpdateCompanyInput,
-    opts?: { actorRole?: UserRole },
+    opts?: CompanyUpdateOpts,
   ): Promise<CompanyResponse> {
-    const row = await this.prisma.runAsAdmin(async (tx) => {
+    const { row, changes } = await this.prisma.runAsAdmin(async (tx) => {
       const existing = await tx.company.findUnique({ where: { id } });
       if (!existing) throw new NotFoundError('Company', id);
+      // Display-name rename. Unlike the slug this breaks nothing downstream —
+      // sources ingest by SLUG, the name is not unique, and nothing keys on it —
+      // but it rewrites how the tenant is identified on every admin screen and
+      // in the source discovery response, so it takes the same authority the
+      // slug does. Gated HERE, next to the write, for the same reason: no other
+      // caller of update() can acquire the power by accident.
+      // Per-FIELD, not per-route: ADMIN_OPERATOR still PATCHes status/visible,
+      // and re-sending an UNCHANGED name must stay idempotent rather than 403.
+      if (input.name !== undefined && input.name !== existing.name) {
+        if (opts?.actorRole !== UserRole.SUPER_ADMIN) {
+          throw new ForbiddenError('only a SUPER_ADMIN can rename a company');
+        }
+      }
       // Slug rename. The slug is the PUBLIC identifier external sources ingest
       // with, so a rename cuts them over instantly — authorization lives HERE,
       // next to the write, so no other caller of update() can gain the power
@@ -252,7 +284,8 @@ export class CompaniesService {
           update: { companyId: id },
         });
       }
-      return tx.company.update({
+      const changes = diffFields(existing, input, AUDITED_COMPANY_FIELDS);
+      const row = await tx.company.update({
         where: { id },
         data: {
           name: input.name ?? undefined,
@@ -261,7 +294,12 @@ export class CompaniesService {
           visible: input.visible ?? undefined,
         },
       });
+      return { row, changes };
     });
+    // Publish AFTER the transaction commits: runAsAdmin is a real interactive
+    // $transaction, so a diff emitted inside it could describe a write that then
+    // rolled back — an audit row for a change that never happened.
+    if (Object.keys(changes).length > 0) opts?.onChanges?.(changes);
     // Admin-room only: TOPIC_KEYS.companies maps exclusively to admin-app query
     // keys, so a company-room delivery invalidated nothing for company users (a
     // deactivated company learns on its next API call, which 403s). If a company
@@ -271,12 +309,15 @@ export class CompaniesService {
     return mapCompany(row);
   }
 
-  async disable(id: string): Promise<CompanyResponse> {
-    return this.update(id, { status: 'DISABLED' satisfies CompanyStatus });
+  // opts is threaded so these rows carry a status diff too, keeping "which
+  // fields changed" uniform across every company mutation rather than a
+  // one-off on PATCH.
+  async disable(id: string, opts?: CompanyUpdateOpts): Promise<CompanyResponse> {
+    return this.update(id, { status: 'DISABLED' satisfies CompanyStatus }, opts);
   }
 
-  async activate(id: string): Promise<CompanyResponse> {
-    return this.update(id, { status: 'ACTIVE' satisfies CompanyStatus });
+  async activate(id: string, opts?: CompanyUpdateOpts): Promise<CompanyResponse> {
+    return this.update(id, { status: 'ACTIVE' satisfies CompanyStatus }, opts);
   }
 }
 

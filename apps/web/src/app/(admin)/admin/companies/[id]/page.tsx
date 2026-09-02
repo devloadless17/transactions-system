@@ -10,7 +10,11 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
   // admins only. Back office can list companies but not drill into one.
   const session = await requireRole(FULL_ADMIN_ROLES);
   const { id } = await params;
-  // The slug is the public identifier sources ingest with — renaming it is
-  // SUPER_ADMIN-only (the API enforces this; the prop just hides the control).
-  return <CompanyDetailView companyId={id} canEditSlug={session.role === UserRole.SUPER_ADMIN} />;
+  // A company's IDENTITY — its display name and its slug — is SUPER_ADMIN-only.
+  // The API enforces both per-field in CompaniesService.update; this prop just
+  // hides the controls. One prop, because the two share one rule and one role
+  // check: two props here could only ever drift apart wrongly.
+  return (
+    <CompanyDetailView companyId={id} canEditIdentity={session.role === UserRole.SUPER_ADMIN} />
+  );
 }

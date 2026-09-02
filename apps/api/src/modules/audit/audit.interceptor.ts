@@ -56,6 +56,16 @@ export class AuditInterceptor implements NestInterceptor {
         const status = (err as { status?: number } | undefined)?.status;
         if (typeof status === 'number') metadata.status = status;
       }
+      // Field-level before→after diff, if the handler published one via
+      // `recordAuditChanges` — the interceptor sees the body and the result but
+      // never the previous values, so only the service that loaded them can
+      // supply this. Producers publish post-commit, so a diff present on an
+      // 'error' outcome is the truthful reading: the write landed and a later
+      // step failed. Absent diff writes NO `changes` key, leaving rows from
+      // routes that haven't adopted it byte-identical to before.
+      if (req.auditChanges && Object.keys(req.auditChanges).length > 0) {
+        metadata.changes = req.auditChanges;
+      }
       this.audit
         .record({
           actorId: apiKeyId ? null : (principal?.userId ?? null),

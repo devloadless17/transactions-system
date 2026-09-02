@@ -19,8 +19,17 @@ export const slugSchema = z
   .toLowerCase()
   .regex(slugRegex, 'slug must be 2-50 chars, lowercase, alphanumeric or dashes');
 
+/**
+ * THE company-name rule — shared by company create, the SUPER_ADMIN rename, and
+ * the admin UI's inline validation, so all three accept exactly the same values.
+ *
+ * Unlike the slug, the name is a DISPLAY label: it is not unique, nothing keys
+ * on it, and no source addresses a company by it.
+ */
+export const companyNameSchema = z.string().trim().min(2).max(120);
+
 export const createCompanySchema = z.object({
-  name: z.string().trim().min(2).max(120),
+  name: companyNameSchema,
   slug: slugSchema,
   defaultCurrency: currencySchema,
   ownerEmail: z.string().email(),
@@ -34,7 +43,11 @@ export const createCompanySchema = z.object({
 export type CreateCompanyInput = z.infer<typeof createCompanySchema>;
 
 export const updateCompanySchema = z.object({
-  name: z.string().trim().min(2).max(120).optional(),
+  // Display name. SUPER_ADMIN only, enforced in CompaniesService.update via the
+  // actor's role — the same gate as the slug, because this route is shared with
+  // roles that may only toggle status/visible. Unlike the slug it is NOT unique
+  // and nothing keys on it, so a rename can neither collide nor break a source.
+  name: companyNameSchema.optional(),
   // The slug is the PUBLIC identifier external sources ingest with — renaming
   // it breaks their requests until they switch to the new slug. SUPER_ADMIN
   // only, enforced in CompaniesService.update via the actor's role (the route
