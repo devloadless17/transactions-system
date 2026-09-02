@@ -5,7 +5,10 @@ export const ADMIN_EMAIL = process.env.E2E_ADMIN_EMAIL ?? 'admin@example.com';
 // admin password (loaded from .env by playwright.config.ts), else the CI default.
 export const ADMIN_PASSWORD =
   process.env.E2E_ADMIN_PASSWORD ?? process.env.SEED_ADMIN_PASSWORD ?? 'loadless';
-export const API_BASE = process.env.E2E_API_BASE ?? 'http://localhost:3001';
+// Mirrors BASE_URL in playwright.config.ts: fall back to the root .env `API_PORT`
+// (that config loads .env per worker) before the documented 3001 default.
+export const API_BASE =
+  process.env.E2E_API_BASE ?? `http://localhost:${process.env.API_PORT ?? '3001'}`;
 
 // POST /v1/auth/login is throttled to 10 req / 60s per IP. A serial suite that
 // provisions several companies + owners easily exceeds that, so all API logins

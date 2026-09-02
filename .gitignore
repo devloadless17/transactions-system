@@ -7,7 +7,12 @@ coverage
 .turbo
 *.tsbuildinfo
 
+# Every .env variant, including the timestamped backups tooling leaves behind:
+# `.env` alone does not match `.env.bak-…`, and those hold live Whish and
+# database credentials.
 .env
+.env.bak*
+.env.before*
 .env.local
 .env.*.local
 

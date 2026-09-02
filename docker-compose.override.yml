@@ -2,8 +2,11 @@
 # images on plain localhost — no TLS gateway — for local testing.
 #
 #   docker compose --profile prod up --build -d
-#     → web  http://localhost:3000
-#     → api  http://localhost:3001/v1
+#     → web  http://localhost:${WEB_PORT:-3000}
+#     → api  http://localhost:${API_PORT:-3001}/v1
+#
+# Only the HOST side of those mappings moves with WEB_PORT/API_PORT; inside the
+# compose network the containers stay on :3000 / :3001 (see docker-compose.yml).
 #
 # The API runs in development mode so the production-only env validation
 # (which requires HTTPS, Secure cookies, a non-localhost cookie domain, and

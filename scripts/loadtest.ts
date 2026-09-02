@@ -4,7 +4,7 @@
  *
  * Usage (from repo root):
  *   pnpm exec tsx scripts/loadtest.ts \
- *     --base http://localhost:3001/v1--concurrency 20 --count 500
+ *     --base http://localhost:3001/v1 --concurrency 20 --count 500
  *
  * Defaults are listed below. The script:
  *   1. logs in as the seed admin
@@ -14,6 +14,16 @@
  *   5. queries the wallet to confirm ledger consistency at the end
  */
 import { setTimeout as wait } from 'node:timers/promises';
+import path from 'node:path';
+
+// Same trick playwright.config.ts uses: pull the repo-root .env in so the
+// defaults below track this machine's API_PORT / SEED_ADMIN_PASSWORD instead
+// of assuming the documented 3001. Missing .env is fine — flags still win.
+try {
+  process.loadEnvFile(path.join(__dirname, '..', '.env'));
+} catch {
+  /* no .env present — rely on the ambient environment */
+}
 
 interface Args {
   base: string;
@@ -31,11 +41,11 @@ function parseArgs(): Args {
     return i >= 0 ? (argv[i + 1] ?? def) : def;
   };
   return {
-    base: get('--base', 'http://localhost:3001/v1'),
+    base: get('--base', `http://localhost:${process.env.API_PORT ?? '3001'}/v1`),
     concurrency: Number(get('--concurrency', '20')),
     count: Number(get('--count', '500')),
-    email: get('--email', 'admin@example.com'),
-    password: get('--password', 'loadless'),
+    email: get('--email', process.env.SEED_ADMIN_EMAIL ?? 'admin@example.com'),
+    password: get('--password', process.env.SEED_ADMIN_PASSWORD ?? 'loadless'),
     source: get('--source', 'omt'),
   };
 }

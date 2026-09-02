@@ -53,6 +53,9 @@ pnpm dev
 - API: http://localhost:3001/v1
 - Web: http://localhost:3000
 
+(Set `API_PORT` / `WEB_PORT` in `.env` to move these; see
+[GETTING_STARTED.md](./GETTING_STARTED.md#running-on-different-ports).)
+
 The seed prints the super admin credentials. Default:
 
 - email: `admin@example.com`

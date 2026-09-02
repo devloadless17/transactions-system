@@ -1,8 +1,23 @@
 // Headless smoke test of the refactored UI behind auth, using system Chrome.
 const { chromium } = require('@playwright/test');
+const path = require('node:path');
+
+// Follow the repo-root .env (WEB_PORT / SEED_ADMIN_*) so this smoke test hits the
+// same origin the dev server actually bound to. BASE_URL overrides everything.
+try {
+  process.loadEnvFile(path.join(__dirname, '..', '.env'));
+} catch {
+  /* no .env present — fall through to the defaults below */
+}
+const BASE = process.env.BASE_URL ?? `http://localhost:${process.env.WEB_PORT ?? '3000'}`;
 
 (async () => {
-  const browser = await chromium.launch({ channel: 'chrome', headless: true });
+  // Prefer system Chrome (closest to what users run), but fall back to Playwright's
+  // bundled Chromium — a WSL/CI box often has no /opt/google/chrome, and a missing
+  // browser shouldn't be the reason the smoke test can't run.
+  const browser = await chromium
+    .launch({ channel: 'chrome', headless: true })
+    .catch(() => chromium.launch({ headless: true }));
   const errors = [];
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   const page = await ctx.newPage();
@@ -13,16 +28,19 @@ const { chromium } = require('@playwright/test');
   const note = (s) => { report.push(s); console.log(s); };
 
   // 1. Login page renders
-  await page.goto('http://localhost:3000/login', { waitUntil: 'networkidle' });
+  await page.goto(BASE + '/login', { waitUntil: 'networkidle' });
   note('login title: ' + JSON.stringify((await page.title())));
-  await page.fill('input[type="email"], #email', 'admin@example.com');
-  await page.fill('input[type="password"], #password', 'AdminPassw0rd!');
+  await page.fill('input[type="email"], #email', process.env.SEED_ADMIN_EMAIL ?? 'admin@example.com');
+  await page.fill(
+    'input[type="password"], #password',
+    process.env.SEED_ADMIN_PASSWORD ?? 'AdminPassw0rd!',
+  );
   await page.click('button[type="submit"]');
   await page.waitForURL('**/admin**', { timeout: 15000 }).catch(() => {});
   note('after login url: ' + page.url());
 
   // 2. Admin shell + a refactored list page (desktop)
-  await page.goto('http://localhost:3000/admin/companies', { waitUntil: 'networkidle' });
+  await page.goto(BASE + '/admin/companies', { waitUntil: 'networkidle' });
   const navVisible = await page.getByText('Companies', { exact: false }).first().isVisible().catch(() => false);
   const hasTable = (await page.locator('table').count()) > 0;
   const hasEmpty = (await page.getByText('No companies', { exact: false }).count()) > 0;
@@ -31,13 +49,13 @@ const { chromium } = require('@playwright/test');
 
   // 3. Company-side refactored page
   // (still admin session; just confirm admin whish + a couple pages render)
-  await page.goto('http://localhost:3000/admin/whish', { waitUntil: 'networkidle' });
+  await page.goto(BASE + '/admin/whish', { waitUntil: 'networkidle' });
   const whishOk = (await page.getByText('Whish Pay', { exact: false }).count()) > 0;
   note('admin/whish renders: ' + whishOk);
 
   // 4. Mobile viewport — hamburger drawer
   await page.setViewportSize({ width: 375, height: 740 });
-  await page.goto('http://localhost:3000/admin/companies', { waitUntil: 'networkidle' });
+  await page.goto(BASE + '/admin/companies', { waitUntil: 'networkidle' });
   await page.waitForTimeout(600);
   await page.screenshot({ path: 'scripts/_shot-admin-mobile.png' });
   let drawerOpened = false;

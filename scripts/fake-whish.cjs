@@ -13,7 +13,7 @@
 const http = require('node:http');
 const crypto = require('node:crypto');
 
-const PORT = 4100;
+const PORT = Number(process.env.FAKE_WHISH_PORT ?? 4100);
 const REQUIRED_HEADERS = ['channel', 'secret', 'websiteurl', 'user-agent'];
 // success | failed | pending | refunded | unknown  (all five v1.4.4 values)
 let collectStatus = 'success';

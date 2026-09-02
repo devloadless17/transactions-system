@@ -25,6 +25,7 @@ What the defaults give you:
 | `DATABASE_MIGRATIONS_URL`                  | `postgresql://txn_app:…@localhost:5444/txn_system`     | Migration connection (RLS bypass)      |
 | `REDIS_PORT`                               | `6391`                                                 | Host-side port for the Redis container |
 | `API_PORT`                                 | `3001`                                                 | NestJS listens here                    |
+| `WEB_PORT`                                 | `3000`                                                 | Next.js listens here                   |
 | `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` | `admin@example.com` / `AdminPassw0rd!`                 | Created by `db:seed`                   |
 | `NEXT_PUBLIC_API_BASE_URL`                 | `http://localhost:3001/v1`                             | Web → API base URL                     |
 
@@ -74,6 +75,31 @@ Open:
 - **Web:** http://localhost:3000
 - **API health:** http://localhost:3001/v1/health
 - **Prisma Studio (DB GUI):** `pnpm db:studio`
+
+### Running on different ports
+
+If another project already owns 3000/3001, change `WEB_PORT` and `API_PORT` in your
+`.env` — nothing else. `pnpm dev`, `docker compose`, `pnpm e2e`, `pnpm loadtest` and
+`scripts/ui-smoke.cjs` all read those two vars, so the whole toolchain moves together.
+Two things must move with them or login breaks:
+
+- `ALLOWED_ORIGINS` (and `WEB_ORIGIN`) — the API rejects a browser origin it doesn't
+  list, so a web server on a new port needs that origin added.
+- `apps/web/.env.local` — `next dev` does **not** read the repo-root `.env`, so the
+  browser bundle and Next's server side each need the API URL spelled out there:
+
+  ```bash
+  # apps/web/.env.local  (gitignored, per-machine)
+  NEXT_PUBLIC_API_BASE_URL=http://localhost:4001/v1   # browser → API
+  API_INTERNAL_BASE_URL=http://127.0.0.1:4001/v1      # middleware / server components → API
+  ```
+
+  Without the second line, login sets its cookies and every guarded route still
+  bounces back to `/login`.
+
+Container-internal ports never change: inside Docker the API is always `:3001` and the
+web always `:3000`, and Caddy proxies to those names. `WEB_PORT`/`API_PORT` only pick
+the **host** side of the mapping.
 
 Sign in to the web with the seeded admin: `admin@example.com` / `AdminPassw0rd!` (or whatever you put in your `.env`).
 

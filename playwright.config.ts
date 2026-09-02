@@ -12,7 +12,10 @@ try {
   /* no .env present — rely on the ambient environment */
 }
 
-const BASE_URL = process.env.E2E_BASE_URL ?? 'http://localhost:3000';
+// Port follows the same `WEB_PORT` knob as docker-compose and the web dev script,
+// so a machine that moved the app off :3000 (a second project owning that port)
+// runs the suite without per-invocation env vars. E2E_BASE_URL still wins.
+const BASE_URL = process.env.E2E_BASE_URL ?? `http://localhost:${process.env.WEB_PORT ?? '3000'}`;
 
 export default defineConfig({
   testDir: './e2e',
