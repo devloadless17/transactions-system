@@ -47,7 +47,11 @@ let sourceId: string;
 
 /** Backdate a settled transaction so it falls outside the 30-day default. */
 async function backdate(externalId: string, daysAgo: number): Promise<void> {
-  const at = new Date(Date.now() - daysAgo * DAY_MS);
+  await backdateTo(externalId, new Date(Date.now() - daysAgo * DAY_MS));
+}
+
+/** Backdate to an exact instant, for boundary assertions. */
+async function backdateTo(externalId: string, at: Date): Promise<void> {
   await h.prisma.runAsAdmin(async (tx) => {
     await tx.transaction.updateMany({
       where: { externalTransactionId: externalId },
@@ -169,6 +173,55 @@ describe('all-time analytics window', () => {
       Money.of(sum(res.daily.buckets.map((b) => b.volume))).eq(Money.of(res.kpi.totalVolume)),
     ).toBe(true);
     expect(res.kpi.transactionCount).toBe(3);
+  });
+
+  /**
+   * REGRESSION: the requested window is honoured EXACTLY.
+   *
+   * The bucketing work briefly floored `from` to its UTC bucket start, which
+   * quietly pulled everything back to UTC midnight. A UTC+3 dashboard asking
+   * for "today" (local midnight = 21:00Z) then received 21 extra hours of the
+   * previous day — on production, $5,300.60 of platform revenue for a day whose
+   * real figure was $601.45.
+   *
+   * The Σ(buckets) === kpi.totalVolume identity above cannot catch this: both
+   * sides read the same window, so they agree even when the window is wrong.
+   * This asserts the BOUNDARY itself, against rows placed either side of it.
+   */
+  it('excludes rows before a from that sits mid-bucket', async () => {
+    const co = await createCompany(h);
+    const src = await createEnabledSource(h, co.companyId);
+    await addTransactionFee(h, co.companyId, '10');
+
+    // Anchor everything to YESTERDAY's UTC midnight so the assertion is
+    // deterministic whatever time of day the suite runs. `from` sits 12h into
+    // that day — mid-bucket — and the decoy sits 1h into it: AFTER the bucket
+    // start the buggy code would floor to, but BEFORE the window asked for.
+    const utcMidnightYesterday = new Date(Date.now() - DAY_MS);
+    utcMidnightYesterday.setUTCHours(0, 0, 0, 0);
+    const at = (hours: number) => new Date(utcMidnightYesterday.getTime() + hours * 3600_000);
+
+    const decoy = ingestInput(co.companyId, '500');
+    await h.transactions.ingest({ kind: 'source', sourceId: src }, decoy);
+    await backdateTo(decoy.externalTransactionId, at(1));
+
+    const inWindow = ingestInput(co.companyId, '100');
+    await h.transactions.ingest({ kind: 'source', sourceId: src }, inWindow);
+    await backdateTo(inWindow.externalTransactionId, at(14));
+
+    const res = await analytics.overview({
+      scope: { companyId: co.companyId },
+      range: {
+        currency: 'USD',
+        from: at(12).toISOString(),
+        to: at(18).toISOString(),
+      },
+    });
+
+    // Only the 14h deposit is in range. Flooring `from` back to that day's UTC
+    // midnight would drag the 1h decoy in and make this 600.
+    expect(Money.of(res.kpi.totalVolume).eq(Money.of('100'))).toBe(true);
+    expect(res.kpi.transactionCount).toBe(1);
   });
 
   // All time must not become an all-tenants back door: the window widens, the

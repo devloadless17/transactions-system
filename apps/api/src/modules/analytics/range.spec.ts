@@ -8,11 +8,8 @@ describe('resolveWindow', () => {
   describe('the default 30-day window (unchanged behaviour)', () => {
     it('spans 30 days back from now when nothing is supplied', () => {
       const w = resolveWindow({}, null);
-      const span = w.to.getTime() - w.from.getTime();
-      // `from` is floored to its bucket start, so the span is 30 days plus at
-      // most the part of today already elapsed.
-      expect(span).toBeGreaterThanOrEqual(30 * DAY_MS);
-      expect(span).toBeLessThan(31 * DAY_MS);
+      // Exactly 30 days — no bucket padding in either direction.
+      expect(w.to.getTime() - w.from.getTime()).toBe(30 * DAY_MS);
       expect(w.granularity).toBe('day');
       expect(w.isAllTime).toBe(false);
     });
@@ -25,6 +22,45 @@ describe('resolveWindow', () => {
       expect(w.from.toISOString()).toBe('2026-08-01T00:00:00.000Z');
       expect(w.to.toISOString()).toBe('2026-09-02T12:34:00.000Z');
       expect(w.granularity).toBe('day');
+    });
+
+    /**
+     * REGRESSION: the window must never be widened to a bucket boundary.
+     *
+     * A UTC+3 browser sends 21:00Z for "today" (its local midnight). Flooring
+     * that to UTC midnight pulled 21 hours of the PREVIOUS day into every
+     * total — on production that reported $5,300.60 of platform revenue for a
+     * day whose real figure was $601.45.
+     *
+     * The earlier version of the test above could not catch this: its `from`
+     * was already UTC midnight, so flooring was a no-op on it.
+     */
+    it('never widens a from that sits mid-bucket (local midnight in UTC+3)', () => {
+      const w = resolveWindow({ from: iso('2026-09-02T21:00:00Z') }, null);
+      expect(w.from.toISOString()).toBe('2026-09-02T21:00:00.000Z');
+    });
+
+    it.each([
+      ['2026-09-02T21:00:00Z', 'UTC+3 local midnight'],
+      ['2026-09-02T05:00:00Z', 'UTC-5 local midnight'],
+      ['2026-09-02T13:37:42.123Z', 'an arbitrary mid-day instant'],
+      ['2026-08-27T10:23:00Z', 'a rolling "last 7 days" lower bound'],
+    ])('uses %s verbatim (%s)', (from) => {
+      expect(resolveWindow({ from: iso(from) }, null).from.toISOString()).toBe(
+        new Date(from).toISOString(),
+      );
+    });
+
+    // Widening at month granularity would have been the worst case: a
+    // "this month" window could reach back into the previous month.
+    it('does not widen a long window down to its month boundary', () => {
+      // >731 days, so this lands in the month tier.
+      const w = resolveWindow(
+        { from: iso('2023-03-15T18:00:00Z'), to: iso('2026-09-02T12:00:00Z') },
+        null,
+      );
+      expect(w.granularity).toBe('month');
+      expect(w.from.toISOString()).toBe('2023-03-15T18:00:00.000Z');
     });
 
     it('resolves each bound independently (only `to` given)', () => {
@@ -66,8 +102,9 @@ describe('resolveWindow', () => {
       const w = resolveWindow({ preset: 'all' }, origin);
       expect(w.isAllTime).toBe(true);
       expect(w.granularity).toBe('month');
-      // Floored to the bucket start, so the first bucket is whole.
-      expect(w.from.toISOString()).toBe('2019-04-01T00:00:00.000Z');
+      // The origin is used verbatim too. The series still starts on a clean
+      // month boundary because eachBucketStartUtc floors the bucket KEYS.
+      expect(w.from.toISOString()).toBe('2019-04-17T09:13:22.000Z');
     });
 
     it('keeps day buckets when the whole history is short', () => {
@@ -88,7 +125,7 @@ describe('resolveWindow', () => {
       const w = resolveWindow({ preset: 'all' }, null);
       expect(w.isAllTime).toBe(false);
       expect(w.granularity).toBe('day');
-      expect(w.to.getTime() - w.from.getTime()).toBeGreaterThanOrEqual(30 * DAY_MS);
+      expect(w.to.getTime() - w.from.getTime()).toBe(30 * DAY_MS);
     });
   });
 });

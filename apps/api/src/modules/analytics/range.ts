@@ -1,4 +1,4 @@
-import { pickGranularity, startOfBucketUtc, type BucketGranularity } from '@app/shared';
+import { pickGranularity, type BucketGranularity } from '@app/shared';
 import type { PrismaService } from '../../database/prisma.service';
 import type { CacheService } from '../cache/cache.service';
 
@@ -46,8 +46,7 @@ interface RangeInput {
  *    An EXPLICIT `to` is used verbatim: it is already a stable cache token, and
  *    rounding it would silently widen a window the caller chose.
  *
- * 2. `from` is floored to the start of its bucket, so the first bucket in the
- *    series is whole rather than a fragment the gap-filler would emit twice.
+ * 2. `from` is NOT floored to a bucket boundary — see the note at the return.
  *
  * `origin` is the all-time lower bound (see originFor* below). A null
  * origin — an empty platform — falls back to the default window so the response
@@ -65,10 +64,16 @@ export function resolveWindow(range: RangeInput, origin: Date | null): Analytics
       ? origin
       : new Date(to.getTime() - DEFAULT_DAYS * 24 * 3600 * 1000);
 
-  // Granularity from the pre-floor span, so a window sitting exactly on a
-  // threshold can't oscillate between two widths as `from` is snapped back.
-  const granularity = pickGranularity(rawFrom, to);
-  return { from: startOfBucketUtc(rawFrom, granularity), to, granularity, isAllTime };
+  // The window is used VERBATIM. It must never be widened to a bucket boundary:
+  // the client sends LOCAL midnight for "today" (21:00Z for UTC+3), and flooring
+  // that to UTC midnight silently pulled ~21 hours of the previous day into
+  // every total — reporting ~9x the real revenue on a UTC+3 dashboard.
+  //
+  // Bucket alignment does not need this: `eachBucketStartUtc` floors `from`
+  // itself when generating bucket KEYS, so the series still starts on a clean
+  // boundary. The first bucket is simply partial, which is the truth — the
+  // caller asked for a window that begins mid-bucket.
+  return { from: rawFrom, to, granularity: pickGranularity(rawFrom, to), isAllTime };
 }
 
 /**
