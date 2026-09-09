@@ -15,6 +15,7 @@ import IORedis from 'ioredis';
 import type { Server, ServerOptions } from 'socket.io';
 import type { INestApplicationContext } from '@nestjs/common';
 import { noStore } from './common/http/no-store';
+import { trustedProxies } from './common/http/trusted-proxies';
 import { AppModule } from './app.module';
 import type { Env } from './config/env.schema';
 import { CSRF_HEADER_NAME } from './modules/auth/auth.constants';
@@ -139,7 +140,10 @@ async function bootstrap() {
       .finally(() => process.exit(1));
   });
 
-  app.set('trust proxy', 1);
+  // Trust the hops we actually operate (container network + Cloudflare), never a
+  // hop COUNT — staging has one hop and prod has two, and a count that exceeds
+  // the real chain is spoofable. See ./common/http/trusted-proxies.
+  app.set('trust proxy', trustedProxies());
   // Every response here is authenticated and tenant-scoped — nothing may be
   // cached by a browser, proxy or CDN. Registered before the routes so it
   // covers streamed CSV exports and error responses too. See ./common/http/no-store.
