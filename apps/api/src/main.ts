@@ -14,6 +14,7 @@ import { createAdapter } from '@socket.io/redis-adapter';
 import IORedis from 'ioredis';
 import type { Server, ServerOptions } from 'socket.io';
 import type { INestApplicationContext } from '@nestjs/common';
+import { noStore } from './common/http/no-store';
 import { AppModule } from './app.module';
 import type { Env } from './config/env.schema';
 import { CSRF_HEADER_NAME } from './modules/auth/auth.constants';
@@ -139,6 +140,10 @@ async function bootstrap() {
   });
 
   app.set('trust proxy', 1);
+  // Every response here is authenticated and tenant-scoped — nothing may be
+  // cached by a browser, proxy or CDN. Registered before the routes so it
+  // covers streamed CSV exports and error responses too. See ./common/http/no-store.
+  app.use(noStore);
   // Tighter helmet config. CSP stays off for /docs (Swagger UI) which we
   // mount before this would matter; turn it on for everything else.
   app.use(

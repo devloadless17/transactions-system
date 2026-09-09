@@ -508,3 +508,55 @@ function parseCsvLine(line: string): string[] {
   cells.push(cur);
   return cells;
 }
+
+/**
+ * Cross-tenant isolation of the CSV EXPORT specifically.
+ *
+ * Written after a client reported downloading an export containing another
+ * company's rows. The list endpoint was already covered; the export path
+ * (`streamCsv` → raw UNION under `runAsScoped`) was not, even though it is the
+ * one that hands a file to a human. This proves the export is scoped by the
+ * DATABASE (RLS), not by a where-clause someone could drop.
+ */
+describe('activity CSV export — tenant isolation', () => {
+  it('never emits another company rows, even when they match the filters', async () => {
+    const mine = await createCompany(h);
+    const theirs = await createCompany(h);
+    const mySource = await createEnabledSource(h, mine.companyId);
+    const theirSource = await createEnabledSource(h, theirs.companyId);
+    await addTransactionFee(h, mine.companyId, '10');
+    await addTransactionFee(h, theirs.companyId, '10');
+
+    const myTxn = await h.transactions.ingest(
+      { kind: 'source', sourceId: mySource },
+      ingestInput(mine.companyId, '111'),
+    );
+    const theirTxn = await h.transactions.ingest(
+      { kind: 'source', sourceId: theirSource },
+      ingestInput(theirs.companyId, '222'),
+    );
+
+    const activity = new ActivityService(h.prisma, passThroughCache);
+    const query = {} as ListActivityQuery;
+
+    const csvFor = async (companyId: string): Promise<string> => {
+      const file = activity.streamCsv({ companyId, query });
+      let out = '';
+      for await (const chunk of file.getStream()) out += chunk;
+      return out;
+    };
+
+    const myCsv = await csvFor(mine.companyId);
+    expect(myCsv).toContain(myTxn.id);
+    // The tenant boundary: their row, their id and their company id must not
+    // appear in my export under any circumstances.
+    expect(myCsv).not.toContain(theirTxn.id);
+    expect(myCsv).not.toContain(theirs.companyId);
+
+    // ...and symmetrically, so the test can't pass by exporting nothing at all.
+    const theirCsv = await csvFor(theirs.companyId);
+    expect(theirCsv).toContain(theirTxn.id);
+    expect(theirCsv).not.toContain(myTxn.id);
+    expect(theirCsv).not.toContain(mine.companyId);
+  });
+});
