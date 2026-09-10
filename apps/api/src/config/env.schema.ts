@@ -82,6 +82,26 @@ export const envSchema = z
     RATE_LIMIT_TTL: z.coerce.number().int().positive().default(60),
     RATE_LIMIT_MAX: z.coerce.number().int().positive().default(100),
 
+    // ---- Source-ingest limiters ----
+    // Authenticated ingest volume per API key, per minute. 0 (the default) =
+    // UNLIMITED, and that is deliberate: a source pushing deposits is pushing
+    // money that ALREADY left the payer, so throttling it can only strand real
+    // funds. Set a positive value to rein in one misbehaving partner — tunable
+    // from the server env, no deploy needed.
+    INGEST_RATE_LIMIT_MAX: z.coerce.number().int().min(0).default(0),
+
+    // Company-facing Whish Pay integration endpoints, per API key, per minute.
+    // Stays capped: those calls fan out to Whish's own API, so a runaway CRM
+    // loop burns our upstream quota, and nothing is stranded by slowing it —
+    // the customer has not paid yet. 0 disables.
+    INTEGRATION_RATE_LIMIT_MAX: z.coerce.number().int().min(0).default(300),
+
+    // FAILED API-key authentications per client IP, per minute. Always on: this
+    // is the surface an attacker actually hammers (key guessing, plus argon2 CPU
+    // burn once a valid 8-char key prefix is known). A working key never counts
+    // toward it, so real partners can never trip it.
+    AUTH_FAILURE_MAX_PER_MIN: z.coerce.number().int().positive().default(20),
+
     // When set, GET /metrics requires `Authorization: Bearer <token>`. Empty in
     // dev (open); set it in production so the metrics aren't world-readable.
     METRICS_TOKEN: z.string().default(''),

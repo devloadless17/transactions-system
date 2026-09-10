@@ -132,14 +132,14 @@ Timestamps are ISO-8601 strings (e.g. `"2026-06-22T14:05:00.000Z"`).
 
 ### Rate limits
 
-Ingest is rate-limited **per API key** (not per IP), so a high-volume source egressing from a single IP is never capped by the platform's global per-IP limiter:
+**Accepted ingest is NOT rate-limited by default.** A source calling this endpoint is pushing money that has already left the payer, so refusing it cannot slow anything down — it can only strand real funds behind a partner's retry logic. Ingest also opts out of the global per-IP throttle, so a high-volume provider egressing from one IP is never capped.
 
-- **300 requests / 60 seconds** per key, fixed window (`MAX_PER_WINDOW = 300`, `WINDOW_SECONDS = 60`).
-- Ingest opts out of the global per-IP throttle entirely — only this per-key budget applies.
-- Every response carries `RateLimit-Limit`, `RateLimit-Remaining`, and `RateLimit-Reset` (seconds until the window resets) so you can self-pace; a 429 additionally sets `Retry-After` (seconds).
-- The limiter fails **open** if its backing store is briefly unavailable (it will not reject your traffic).
+- `INGEST_RATE_LIMIT_MAX` (server env, **default `0` = unlimited**) can set a per-key, per-minute ceiling to rein in one misbehaving partner. Tunable without a deploy. **If you ever set it, add a `429` row to the partner-facing guide** — otherwise a throttled partner has no documented recovery path.
+- What IS always limited is **failed authentication**: `AUTH_FAILURE_MAX_PER_MIN` (default 20) per client IP. That is the surface an attacker hammers — key guessing, plus argon2 CPU burn once a valid 8-char prefix is known — and the check runs _before_ verification, so a blocked attacker never costs a hash. A valid key never counts toward it, and a successful auth clears the IP's budget, so a real partner sharing an egress IP can't be locked out.
+- Both limiters fail **open** if the backing store is briefly unavailable (traffic is allowed through unmetered).
+- When a ceiling IS configured, every response carries `RateLimit-Limit`, `RateLimit-Remaining`, and `RateLimit-Reset` (seconds until the window resets); a 429 additionally sets `Retry-After`.
 
-The 429 uses the standard flat envelope:
+A 429 (from either limiter) uses the standard flat envelope:
 
 ```json
 {
@@ -147,8 +147,8 @@ The 429 uses the standard flat envelope:
   "statusCode": 429,
   "error": {
     "code": "RATE_LIMITED",
-    "message": "Rate limit exceeded: 300 requests per 60s",
-    "details": { "limit": 300, "windowSeconds": 60 }
+    "message": "Rate limit exceeded: 20 requests per 60s",
+    "details": { "limit": 20, "windowSeconds": 60 }
   }
 }
 ```
@@ -165,7 +165,7 @@ Endpoints for external payment/transfer providers ("sources" — OMT, Whish, ban
 
 - **Auth:** `Authorization: Bearer tsk_<prefix>_<secret>` where the key is a _source_ key. The key is bound to exactly one source; for the POST route the `:sourceCode` in the URL **must** name that same source or the call is rejected `403 FORBIDDEN`.
 - **No CSRF.** API-key requests skip CSRF entirely.
-- **Rate limit:** per-API-key, **300 requests / 60s** (`ApiKeyRateLimitGuard`), _not_ the global per-IP throttler — a single high-volume provider egresses from one IP and would otherwise be capped too low. Over budget → `429 RATE_LIMITED` (flat envelope; `error.details` carries `{ limit: 300, windowSeconds: 60 }`). Every response sets `RateLimit-Limit` / `RateLimit-Remaining` / `RateLimit-Reset` (seconds), and a 429 adds `Retry-After` (seconds) — use them to self-pace. The limiter **fails open**: if Redis is unavailable, requests are allowed through unmetered.
+- **Rate limit:** accepted ingest is **unlimited by default** (`IngestRateLimitGuard`, `INGEST_RATE_LIMIT_MAX=0`) — see [Rate limits](#rate-limits). Failed authentication is limited per IP (`AUTH_FAILURE_MAX_PER_MIN`, default 20). Both fail **open** if Redis is unavailable.
 - **Envelope:** standard `{ success, statusCode, data }` on success, `{ success, statusCode, error }` on failure. `POST` returns **201**, `GET` returns **200**.
 - Every ingest attempt that reaches the endpoint handler — success **and** 4xx/5xx rejection — is recorded server-side as a `TransactionLog` (raw request body + the exact response envelope you received), best-effort and off the money path. Guard-stage rejections (401 invalid key, 403 wrong source, 429) happen before the handler and are captured in the server logs, not in `transaction_logs`.
 

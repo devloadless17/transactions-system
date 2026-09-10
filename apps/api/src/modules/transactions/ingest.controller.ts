@@ -20,7 +20,7 @@ import {
 } from '@app/shared';
 import { ZodPipe } from '../../common/pipes/zod-validation.pipe';
 import { ApiKeyAuthGuard } from '../api-keys/guards/api-key-auth.guard';
-import { ApiKeyRateLimitGuard } from '../api-keys/guards/api-key-rate-limit.guard';
+import { IngestRateLimitGuard } from '../api-keys/guards/api-key-rate-limit.guard';
 import { DomainError, ForbiddenError, ValidationError } from '../../common/errors/domain.error';
 import { PrismaService } from '../../database/prisma.service';
 import { TransactionsService } from './transactions.service';
@@ -143,11 +143,14 @@ function toSourceTransaction(r: TransactionResponse, companySlug: string, replay
  * mismatches are rejected with 403.
  */
 // Opt out of the global per-IP ThrottlerGuard (RATE_LIMIT_MAX, default 100/60s):
-// ingest is rate-limited per API KEY by ApiKeyRateLimitGuard (300/60s). A single
-// high-volume provider egresses from one IP, so the global IP limiter would cap
-// real money traffic below the per-key budget and silently 429 legitimate bursts.
+// a single high-volume provider egresses from one IP, so an IP limiter would cap
+// real money traffic and silently 429 legitimate bursts. Accepted ingest volume
+// is UNLIMITED by default (IngestRateLimitGuard / INGEST_RATE_LIMIT_MAX=0) —
+// this endpoint carries money that already left the payer, so throttling it can
+// only strand funds. Abuse is policed where it actually happens: ApiKeyAuthGuard
+// rate-limits FAILED authentications per IP.
 @SkipThrottle()
-@UseGuards(ApiKeyAuthGuard, ApiKeyRateLimitGuard)
+@UseGuards(ApiKeyAuthGuard, IngestRateLimitGuard)
 @Controller('ingest')
 export class IngestController {
   private readonly logger = new Logger(IngestController.name);

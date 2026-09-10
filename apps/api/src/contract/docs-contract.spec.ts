@@ -518,15 +518,17 @@ describe('docs contract — facts clients asked about', () => {
   });
 
   it('scopes the per-key rate limiter to the endpoints that actually mount it', () => {
-    const keyLimited = [
-      'apps/api/src/modules/whish/integrations-whish.controller.ts',
-      'apps/api/src/modules/transactions/ingest.controller.ts',
-    ];
-    for (const rel of keyLimited) {
-      expect(read(rel), `${rel} should mount ApiKeyRateLimitGuard`).toContain(
-        'ApiKeyRateLimitGuard',
-      );
-    }
+    // Company-facing Whish Pay integration stays capped (its calls fan out to
+    // Whish's own API); source ingest mounts its own guard, unlimited by
+    // default, because that traffic is money that already left the payer.
+    expect(
+      read('apps/api/src/modules/whish/integrations-whish.controller.ts'),
+      'integrations-whish should mount ApiKeyRateLimitGuard',
+    ).toContain('ApiKeyRateLimitGuard');
+    expect(
+      read('apps/api/src/modules/transactions/ingest.controller.ts'),
+      'ingest should mount IngestRateLimitGuard',
+    ).toContain('IngestRateLimitGuard');
     // company/* routes are per-IP only — the docs must not imply the 300/60s allowance.
     for (const rel of [
       'apps/api/src/modules/withdrawals/withdrawals.controller.ts',

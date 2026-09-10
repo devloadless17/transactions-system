@@ -179,7 +179,7 @@ There are two independent limiters:
 - **300 requests / 60s** per key (`MAX_PER_WINDOW = 300`, `WINDOW_SECONDS = 60`), fixed-window.
 - Fails **open** if Redis is unavailable.
 
-> **Which limiter applies to you.** Every `/v1/company/*` route — including `/company/whish/payments`, `/company/withdrawals` and `/company/transactions` — is governed by limiter 1 **only**, even when you call it with an API key. Only `/v1/integrations/whish/*` and the source ingest endpoint get the per-key 300/60s allowance and the `RateLimit-*` headers below. If you drive `company/*` at volume, pace against the per-IP budget (default 100/60s).
+> **Which limiter applies to you.** Every `/v1/company/*` route — including `/company/whish/payments`, `/company/withdrawals` and `/company/transactions` — is governed by limiter 1 **only**, even when you call it with an API key. Only `/v1/integrations/whish/*` gets the per-key 300/60s allowance and the `RateLimit-*` headers below. (The source ingest endpoint is a separate surface, not reachable with a company key, and is unlimited by default.) If you drive `company/*` at volume, pace against the per-IP budget (default 100/60s).
 
 Both emit HTTP **429** with `error.code = "RATE_LIMITED"`. The per-key limiter returns the standard flat envelope, with the limit in `error.details`:
 
