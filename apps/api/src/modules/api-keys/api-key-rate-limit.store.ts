@@ -90,6 +90,26 @@ export class ApiKeyRateLimitStore implements OnModuleDestroy {
     await this.redis.del(`${key}:${bucket}`).catch(() => undefined);
   }
 
+  /**
+   * Remember that this exact (IP, key prefix) pair authenticated successfully.
+   * While the marker lives, the failure budgets are skipped entirely — so a
+   * real partner can NEVER be locked out by an attacker flooding the same
+   * egress IP, even while that attacker is actively blocked. An attacker never
+   * authenticates, so they never earn a marker.
+   */
+  async markTrusted(key: string, ttlSeconds: number): Promise<void> {
+    if (!this.healthy) return;
+    await this.redis.set(key, '1', 'EX', ttlSeconds).catch(() => undefined);
+  }
+
+  async isTrusted(key: string): Promise<boolean> {
+    if (!this.healthy) return false;
+    return this.redis
+      .exists(key)
+      .then((n) => n === 1)
+      .catch(() => false);
+  }
+
   private async run(
     windowSeconds: number,
     op: (bucketKey: string) => Promise<number>,

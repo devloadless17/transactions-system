@@ -24,6 +24,10 @@ async function enforce(
   ctx: ExecutionContext,
   limits: ApiKeyRateLimitStore,
   max: number,
+  // Each surface gets its OWN counter namespace. Sharing one would let ingest
+  // traffic drain the Whish-Pay budget for the same key (a company key reaches
+  // ApiKeyAuthGuard on /v1/ingest — the 403 comes later, in the handler).
+  namespace: string,
 ): Promise<boolean> {
   if (max <= 0) return true;
   const req = ctx.switchToHttp().getRequest<AuthenticatedRequest>();
@@ -31,7 +35,7 @@ async function enforce(
   const keyId = req.principal?.userId;
   if (!keyId) return true;
 
-  const hit = await limits.hit(`rl:ingest:${keyId}`, WINDOW_SECONDS);
+  const hit = await limits.hit(`${namespace}:${keyId}`, WINDOW_SECONDS);
   if (!hit) return true;
 
   // Standard RateLimit headers (draft IETF naming) so clients can self-pace.
@@ -67,7 +71,7 @@ export class ApiKeyRateLimitGuard implements CanActivate {
   }
 
   canActivate(ctx: ExecutionContext): Promise<boolean> {
-    return enforce(ctx, this.limits, this.max);
+    return enforce(ctx, this.limits, this.max, 'rl:integration');
   }
 }
 
@@ -94,6 +98,6 @@ export class IngestRateLimitGuard implements CanActivate {
   }
 
   canActivate(ctx: ExecutionContext): Promise<boolean> {
-    return enforce(ctx, this.limits, this.max);
+    return enforce(ctx, this.limits, this.max, 'rl:ingest');
   }
 }

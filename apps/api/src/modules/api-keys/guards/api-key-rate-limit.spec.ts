@@ -31,16 +31,20 @@ function ctxWith(headers: Record<string, string>, ip: string | undefined) {
   };
 }
 
-function storeStub(peek: WindowCount | null = null, hit: WindowCount | null = null) {
+function storeStub(
+  peek: WindowCount | null = null,
+  hit: WindowCount | null = null,
+  opts: { trusted?: boolean; peekByKey?: Record<string, WindowCount> } = {},
+) {
   return {
-    peek: vi.fn().mockResolvedValue(peek),
+    peek: vi.fn((key: string) =>
+      Promise.resolve(opts.peekByKey ? (opts.peekByKey[key] ?? null) : peek),
+    ),
     hit: vi.fn().mockResolvedValue(hit),
     clear: vi.fn().mockResolvedValue(undefined),
-  } as unknown as ApiKeyRateLimitStore & {
-    peek: ReturnType<typeof vi.fn>;
-    hit: ReturnType<typeof vi.fn>;
-    clear: ReturnType<typeof vi.fn>;
-  };
+    isTrusted: vi.fn().mockResolvedValue(opts.trusted ?? false),
+    markTrusted: vi.fn().mockResolvedValue(undefined),
+  } as unknown as ApiKeyRateLimitStore & Record<string, ReturnType<typeof vi.fn>>;
 }
 
 const prisma = {} as PrismaService;
@@ -72,7 +76,8 @@ describe('ApiKeyAuthGuard — failed-attempt limiting (the surface attackers ham
     const { ctx } = ctxWith({}, '203.0.113.9');
 
     await expect(guard.canActivate(ctx)).rejects.toMatchObject({ httpStatus: 401 });
-    expect(limits.hit).toHaveBeenCalledWith('rl:authfail:203.0.113.9:na', 60);
+    expect(limits.hit).toHaveBeenCalledWith('rl:authfail:key:203.0.113.9:na', 60);
+    expect(limits.hit).toHaveBeenCalledWith('rl:authfail:ip:203.0.113.9', 60);
   });
 
   it('counts a failure for an invalid key', async () => {
@@ -81,7 +86,7 @@ describe('ApiKeyAuthGuard — failed-attempt limiting (the surface attackers ham
     const { ctx } = ctxWith({ authorization: 'Bearer tsk_NOPE1234_beef' }, '203.0.113.9');
 
     await expect(guard.canActivate(ctx)).rejects.toMatchObject({ httpStatus: 401 });
-    expect(limits.hit).toHaveBeenCalledTimes(1);
+    expect(limits.hit).toHaveBeenCalledTimes(2); // per-prefix AND per-IP
   });
 
   it('authenticates a valid key, records NO failure, and clears the IP budget', async () => {
@@ -93,7 +98,8 @@ describe('ApiKeyAuthGuard — failed-attempt limiting (the surface attackers ham
     expect(limits.hit).not.toHaveBeenCalled();
     // Collateral protection: a partner sharing an egress IP with an attacker
     // wipes the budget every time they succeed.
-    expect(limits.clear).toHaveBeenCalledWith('rl:authfail:203.0.113.9:REALKEY1', 60);
+    expect(limits.clear).toHaveBeenCalledWith('rl:authfail:key:203.0.113.9:REALKEY1', 60);
+    expect(limits.markTrusted).toHaveBeenCalled();
     expect((req.principal as { userId: string }).userId).toBe('key-1');
   });
 
@@ -176,16 +182,16 @@ describe('ApiKeyRateLimitGuard — company Whish Pay stays capped', () => {
 describe('failureBucketKey — isolates a real partner from an attacker on the same IP', () => {
   it('gives each well-formed key prefix its own budget', () => {
     expect(failureBucketKey('1.2.3.4', 'Bearer tsk_REALKEY1_abc')).toBe(
-      'rl:authfail:1.2.3.4:REALKEY1',
+      'rl:authfail:key:1.2.3.4:REALKEY1',
     );
     expect(failureBucketKey('1.2.3.4', 'Bearer tsk_GUESSED1_abc')).toBe(
-      'rl:authfail:1.2.3.4:GUESSED1',
+      'rl:authfail:key:1.2.3.4:GUESSED1',
     );
   });
 
   it('pools every malformed/missing credential into ONE bucket (no unbounded Redis keys)', () => {
     for (const junk of [undefined, '', 'Bearer nonsense', 'Bearer tsk_short_x', 'Basic abc']) {
-      expect(failureBucketKey('1.2.3.4', junk)).toBe('rl:authfail:1.2.3.4:na');
+      expect(failureBucketKey('1.2.3.4', junk)).toBe('rl:authfail:key:1.2.3.4:na');
     }
   });
 
@@ -193,5 +199,48 @@ describe('failureBucketKey — isolates a real partner from an attacker on the s
     const partner = failureBucketKey('1.2.3.4', 'Bearer tsk_REALKEY1_good');
     const attacker = failureBucketKey('1.2.3.4', 'Bearer tsk_GUESSED1_bad');
     expect(partner).not.toBe(attacker);
+  });
+});
+
+describe('closing the bypasses the review found', () => {
+  const GOOD = { companyId: null, sourceId: null, keyId: 'key-1' };
+  const IP = '203.0.113.9';
+
+  it('an attacker ROTATING the key prefix is still caught by the per-IP budget', async () => {
+    // Each fresh prefix has an empty per-prefix bucket, so only the IP-wide
+    // budget (max * 5) can stop prefix rotation.
+    const limits = storeStub(null, null, {
+      peekByKey: { [`rl:authfail:ip:${IP}`]: { count: 100, resetSeconds: 30 } },
+    });
+    const guard = new ApiKeyAuthGuard(keysWith(null), prisma, limits, cfg(20));
+    const { ctx } = ctxWith({ authorization: 'Bearer tsk_NEWGUESS_abc' }, IP);
+
+    await expect(guard.canActivate(ctx)).rejects.toMatchObject({ httpStatus: 429 });
+  });
+
+  it('a TRUSTED credential skips the budgets, so a flooded IP cannot block a real partner', async () => {
+    const limits = storeStub(null, null, {
+      trusted: true,
+      peekByKey: {
+        [`rl:authfail:ip:${IP}`]: { count: 9999, resetSeconds: 30 },
+        [`rl:authfail:key:${IP}:REALKEY1`]: { count: 9999, resetSeconds: 30 },
+      },
+    });
+    const guard = new ApiKeyAuthGuard(keysWith(GOOD), prisma, limits, cfg(20));
+    const { ctx } = ctxWith({ authorization: 'Bearer tsk_REALKEY1_good' }, IP);
+
+    await expect(guard.canActivate(ctx)).resolves.toBe(true);
+    expect(limits.peek).not.toHaveBeenCalled();
+  });
+
+  it('the auth 429 advertises Retry-After like every other 429 on this API', async () => {
+    const limits = storeStub(null, null, {
+      peekByKey: { [`rl:authfail:key:${IP}:GUESSED1`]: { count: 20, resetSeconds: 17 } },
+    });
+    const guard = new ApiKeyAuthGuard(keysWith(null), prisma, limits, cfg(20));
+    const { ctx, res } = ctxWith({ authorization: 'Bearer tsk_GUESSED1_abc' }, IP);
+
+    await expect(guard.canActivate(ctx)).rejects.toMatchObject({ httpStatus: 429 });
+    expect(res.setHeader).toHaveBeenCalledWith('Retry-After', 17);
   });
 });

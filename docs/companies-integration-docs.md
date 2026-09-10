@@ -176,7 +176,7 @@ There are two independent limiters:
 
 **2. Per-API-key limiter** (`ApiKeyRateLimitGuard`) — applies to the source **ingest** endpoint and the `integrations/whish` endpoints **only**, keyed on the API key (not IP), so one high-volume integration behind a single IP isn't capped by the per-IP limiter.
 
-- **300 requests / 60s** per key (`MAX_PER_WINDOW = 300`, `WINDOW_SECONDS = 60`), fixed-window.
+- **300 requests / 60s** per key (`INTEGRATION_RATE_LIMIT_MAX`, default 300), fixed-window. Applies to `/v1/integrations/whish/*` only.
 - Fails **open** if Redis is unavailable.
 
 > **Which limiter applies to you.** Every `/v1/company/*` route — including `/company/whish/payments`, `/company/withdrawals` and `/company/transactions` — is governed by limiter 1 **only**, even when you call it with an API key. Only `/v1/integrations/whish/*` gets the per-key 300/60s allowance and the `RateLimit-*` headers below. (The source ingest endpoint is a separate surface, not reachable with a company key, and is unlimited by default.) If you drive `company/*` at volume, pace against the per-IP budget (default 100/60s).

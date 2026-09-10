@@ -7,7 +7,7 @@
 import type { CanActivate, ExecutionContext } from '@nestjs/common';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { Request } from 'express';
+import type { Request, Response } from 'express';
 import { RateLimitError, UnauthorizedError } from '../../../common/errors/domain.error';
 import type { AuthenticatedRequest, AuthPrincipal } from '../../../common/types/request.types';
 import { UserRole } from '@app/shared';
@@ -18,6 +18,16 @@ import type { Env } from '../../../config/env.schema';
 import { assertCompanyActive, assertSourceActive } from '../../../common/company-status';
 
 const FAILURE_WINDOW_SECONDS = 60;
+/** How long a successful (IP, prefix) pair skips the failure budgets. */
+const TRUSTED_TTL_SECONDS = 10 * 60;
+/**
+ * The per-IP budget is a multiple of the per-prefix one. The prefix budget
+ * bounds argon2 burn for ONE credential; this one bounds an attacker who
+ * ROTATES the prefix every attempt (each rotation would otherwise start a fresh
+ * prefix budget and never trip anything). Failures are ~0 for real callers, so
+ * a generous multiple stays far from legitimate traffic.
+ */
+const IP_BUDGET_MULTIPLIER = 5;
 
 /**
  * Failure budgets are keyed by client IP **and the presented key prefix**, not
@@ -35,9 +45,24 @@ const FAILURE_WINDOW_SECONDS = 60;
  * matches a live key. Prefixes that aren't well-formed share one bucket, so an
  * attacker can't mint unbounded Redis keys with junk.
  */
-export function failureBucketKey(ip: string, authHeader: string | undefined): string {
+export function credentialPrefix(authHeader: string | undefined): string {
   const m = /^Bearer\s+tsk_([A-Za-z0-9]{8})_/.exec(authHeader ?? '');
-  return `rl:authfail:${ip}:${m ? m[1] : 'na'}`;
+  return m ? m[1] : 'na';
+}
+
+/** Budget for ONE credential from one IP — bounds argon2 burn per prefix. */
+export function failureBucketKey(ip: string, authHeader: string | undefined): string {
+  return `rl:authfail:key:${ip}:${credentialPrefix(authHeader)}`;
+}
+
+/** Budget for the IP as a whole — bounds an attacker rotating prefixes. */
+export function ipFailureBucketKey(ip: string): string {
+  return `rl:authfail:ip:${ip}`;
+}
+
+/** Marker proving this credential recently authenticated from this IP. */
+export function trustedKey(ip: string, authHeader: string | undefined): string {
+  return `rl:authok:${ip}:${credentialPrefix(authHeader)}`;
 }
 
 /**
@@ -80,24 +105,51 @@ export class ApiKeyAuthGuard implements CanActivate {
     // client, not Cloudflare's edge. Without an IP we skip the limiter rather
     // than bucket every caller together — a shared bucket could be filled by
     // one attacker and would then block real deposits.
-    const failureKey = req.ip ? failureBucketKey(req.ip, req.headers.authorization) : null;
+    const auth0 = req.headers.authorization;
+    const keys = req.ip
+      ? {
+          perKey: failureBucketKey(req.ip, auth0),
+          perIp: ipFailureBucketKey(req.ip),
+          trusted: trustedKey(req.ip, auth0),
+        }
+      : null;
 
-    if (failureKey) {
-      const seen = await this.limits.peek(failureKey, FAILURE_WINDOW_SECONDS);
-      if (seen && seen.count >= this.failureMax) {
-        throw new RateLimitError({ limit: this.failureMax, windowSeconds: FAILURE_WINDOW_SECONDS });
+    // Fast path: a credential that recently authenticated from this IP skips
+    // the budgets entirely, so an attacker flooding a shared egress IP can
+    // never stop a real partner's deposits.
+    const trusted = keys ? await this.limits.isTrusted(keys.trusted) : false;
+    if (keys && !trusted) {
+      const [perKey, perIp] = await Promise.all([
+        this.limits.peek(keys.perKey, FAILURE_WINDOW_SECONDS),
+        this.limits.peek(keys.perIp, FAILURE_WINDOW_SECONDS),
+      ]);
+      const ipMax = this.failureMax * IP_BUDGET_MULTIPLIER;
+      const over =
+        (perKey && perKey.count >= this.failureMax
+          ? { limit: this.failureMax, reset: perKey.resetSeconds }
+          : null) ??
+        (perIp && perIp.count >= ipMax ? { limit: ipMax, reset: perIp.resetSeconds } : null);
+      if (over) {
+        // Mirror the headers every other 429 on this API sets, so a client that
+        // self-paces has something to pace against.
+        const res = ctx.switchToHttp().getResponse<Response>();
+        res.setHeader('RateLimit-Limit', over.limit);
+        res.setHeader('RateLimit-Remaining', 0);
+        res.setHeader('RateLimit-Reset', over.reset);
+        res.setHeader('Retry-After', over.reset);
+        throw new RateLimitError({ limit: over.limit, windowSeconds: FAILURE_WINDOW_SECONDS });
       }
     }
 
-    const auth = req.headers.authorization;
+    const auth = auth0;
     if (!auth || !auth.startsWith('Bearer ')) {
-      await this.recordFailure(failureKey);
+      await this.recordFailure(keys);
       throw new UnauthorizedError('Missing API key');
     }
     const plaintext = auth.slice('Bearer '.length).trim();
     const result = await this.apiKeys.verify(plaintext);
     if (!result) {
-      await this.recordFailure(failureKey);
+      await this.recordFailure(keys);
       throw new UnauthorizedError('Invalid or revoked API key');
     }
     // Company-scoped keys are gated on the tenant being active. Source keys
@@ -106,8 +158,14 @@ export class ApiKeyAuthGuard implements CanActivate {
     await assertCompanyActive(this.prisma, result.companyId);
     await assertSourceActive(this.prisma, result.sourceId);
 
-    // The credential is good: wipe this IP's failure budget (see class docs).
-    if (failureKey) await this.limits.clear(failureKey, FAILURE_WINDOW_SECONDS);
+    // The credential is good: clear its budgets and mark it trusted so a later
+    // flood against this IP cannot block it.
+    if (keys) {
+      await Promise.all([
+        this.limits.clear(keys.perKey, FAILURE_WINDOW_SECONDS),
+        this.limits.markTrusted(keys.trusted, TRUSTED_TTL_SECONDS),
+      ]);
+    }
 
     const principal: AuthPrincipal = {
       // Use the key's id as the "user" surrogate.
@@ -122,8 +180,11 @@ export class ApiKeyAuthGuard implements CanActivate {
   }
 
   /** Best-effort: a counter outage must never change the auth outcome. */
-  private async recordFailure(key: string | null): Promise<void> {
-    if (!key) return;
-    await this.limits.hit(key, FAILURE_WINDOW_SECONDS).catch(() => undefined);
+  private async recordFailure(keys: { perKey: string; perIp: string } | null): Promise<void> {
+    if (!keys) return;
+    await Promise.all([
+      this.limits.hit(keys.perKey, FAILURE_WINDOW_SECONDS).catch(() => undefined),
+      this.limits.hit(keys.perIp, FAILURE_WINDOW_SECONDS).catch(() => undefined),
+    ]);
   }
 }
