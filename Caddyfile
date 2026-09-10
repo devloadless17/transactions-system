@@ -16,6 +16,33 @@
 # contact the account is anonymous and a silent renewal failure stays silent.
 {
 	email dev@loadless.ai
+
+	# Cloudflare fronts the prod domain, so the peer Caddy sees is a CF edge — not
+	# the visitor. Since v2.7 `reverse_proxy` only PRESERVES an incoming
+	# X-Forwarded-For when the peer is a declared trusted proxy; otherwise it
+	# OVERWRITES it with the peer's address (anti-spoofing). Undeclared, that meant
+	# the API received `X-Forwarded-For: <cloudflare-ip>` with the visitor stripped,
+	# so every prod request logged and rate-limited as a CF edge IP (104.22.x /
+	# 172.7x.x) — measured 2026-09-10, and the reason the Sept 9 export
+	# investigation could not identify a session by IP.
+	#
+	# Declaring CF's published ranges makes Caddy trust their XFF and append its own
+	# peer, so the API sees `<visitor>, <cloudflare-ip>` and resolves the visitor.
+	# Safe for the staging site on this same Caddy too: its callers are NOT in these
+	# ranges, so their XFF stays untrusted and is overwritten with the real peer —
+	# still correct, still unspoofable.
+	#
+	# Keep in sync with apps/api/src/common/http/trusted-proxies.ts (same list, one
+	# hop further in). Source: https://www.cloudflare.com/ips/
+	servers {
+		trusted_proxies static \
+			173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 \
+			141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 \
+			197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 \
+			104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 \
+			2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 \
+			2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32
+	}
 }
 #
 # Zero-downtime deploys: each upstream has a short connection-retry window
