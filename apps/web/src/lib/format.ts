@@ -52,6 +52,18 @@ export function isZeroAmount(s: string | null | undefined): boolean {
 }
 
 /**
+ * True only for a money STRING that parses to more than zero. The guard for a
+ * figure that renders only when it was actually charged — the optional network
+ * fee — so a missing value, "", "0" and "0.00" all render exactly as if the
+ * field did not exist.
+ */
+export function isPositiveAmount(s: string | null | undefined): boolean {
+  if (typeof s !== 'string') return false;
+  const t = s.trim();
+  return t !== '' && Number(t) > 0;
+}
+
+/**
  * Display a money string EXACTLY, grouped but never rounded or padded.
  * For the append-only ledger, whose historical legs keep their original scale:
  * truncating them would make a displayed set stop tying out, the same reason the

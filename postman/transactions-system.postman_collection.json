@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "f7c0a6b2-9d40-4cda-9c01-7d5b1ec23a91",
     "name": "Transactions System",
-    "description": "Full end-to-end test flow for the multi-tenant transaction platform.\n\nTwo distinct API key types:\n- **Source key** — held by external providers (OMT, Wish). Can POST transactions on behalf of any company via `/ingest/:sourceCode/transactions`, and discover companies via `GET /ingest/companies`.\n- **Company key** — held by the company itself. READ-ONLY. Used for programmatic dashboards/exports against `/company/*` endpoints.\n\nRun the requests **in order** from the top folder down:\n\n1. **00 — Health** — sanity check the API is up\n2. **01 — Admin** — log in as super admin, create a test company\n3. **02 — Company Owner** — log in as the new owner, create a read-only company key\n4. **02b — Admin: Source Keys** — mint a source key for a provider (e.g. OMT)\n5. **03 — Ingestion (external provider)** — discover companies, then POST a transaction using the source key + companySlug\n6. **04 — Owner reads** — wallets, transactions, ledger\n7. **05 — Withdrawals** — request one, then admin approves with a reference\n8. **07 — Analytics** — admin dashboards\n9. **08 — Negative tests** — confirm validation/auth errors fire correctly\n\nThe collection has **test scripts that auto-capture** the CSRF token, company ID, owner credentials, source/company API keys, and withdrawal ID into collection variables — so you just click Send in order and everything flows.\n\n**Cookies**: Postman manages them per-host. When you switch from admin to owner login, the older session is overwritten automatically. If you want to log out fully, click the Cookies icon and clear `localhost`.",
+    "description": "Full end-to-end test flow for the multi-tenant transaction platform.\n\nTwo distinct API key types:\n- **Source key** — held by external providers (OMT, Wish). Can POST transactions on behalf of any company via `/ingest/:sourceCode/transactions`, and discover companies via `GET /ingest/companies`.\n- **Company key** — held by the company itself. READ-ONLY. Used for programmatic dashboards/exports against `/company/*` endpoints.\n\nRun the requests **in order** from the top folder down:\n\n1. **00 — Health** — sanity check the API is up\n2. **01 — Admin** — log in as super admin, create a test company\n3. **02 — Company Owner** — log in as the new owner, create a read-only company key\n4. **02b — Admin: Source Keys** — mint a source key for a provider (e.g. OMT)\n5. **03 — Ingestion (external provider)** — discover companies, then POST a transaction using the source key + companySlug\n6. **04 — Owner reads** — wallets, transactions, ledger\n7. **05 — Withdrawals** — request one, then admin approves with a reference\n8. **07 — Analytics** — admin dashboards\n9. **08 — Negative tests** — confirm validation/auth errors fire correctly\n10. **09 — Network fee (super admin)** — switch on a 1% deposit network fee for the test company, ingest a deposit, read the fee back with the company key, then switch it off again (local/staging only)\n\nThe collection has **test scripts that auto-capture** the CSRF token, company ID, owner credentials, source/company API keys, and withdrawal ID into collection variables — so you just click Send in order and everything flows.\n\n**Cookies**: Postman manages them per-host. When you switch from admin to owner login, the older session is overwritten automatically. If you want to log out fully, click the Cookies icon and clear `localhost`.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -75,6 +75,12 @@
       "key": "transactionId",
       "value": "",
       "type": "string"
+    },
+    {
+      "key": "networkFeeTransactionId",
+      "value": "",
+      "type": "string",
+      "description": "Deposit ingested by folder 09 — read back with the company key"
     },
     {
       "key": "keyId",
@@ -527,7 +533,8 @@
                   "const j = pm.response.json().data; // responses are enveloped: { success, statusCode, data }",
                   "pm.collectionVariables.set('transactionId', j.id);",
                   "pm.test('Fee is hidden from sources (no commissionAmount)', () => pm.expect(j).to.not.have.property('commissionAmount'));",
-                  "pm.test('Net is hidden from sources (no netAmount)', () => pm.expect(j).to.not.have.property('netAmount'));"
+                  "pm.test('Net is hidden from sources (no netAmount)', () => pm.expect(j).to.not.have.property('netAmount'));",
+                  "pm.test('Network fee is hidden from sources (no networkFeeAmount)', () => pm.expect(j).to.not.have.property('networkFeeAmount'));"
                 ]
               }
             }
@@ -751,7 +758,10 @@
                   "const j = pm.response.json().data; // responses are enveloped: { success, statusCode, data }",
                   "pm.collectionVariables.set('withdrawalId', j.id);",
                   "pm.test('Status is PENDING', () => pm.expect(j.status).to.equal('PENDING'));",
-                  "pm.test('Payout method captured', () => pm.expect(j.payoutMethod).to.equal('CRYPTO'));"
+                  "pm.test('Payout method captured', () => pm.expect(j.payoutMethod).to.equal('CRYPTO'));",
+                  "const cents = (s) => Math.round(Number(s) * 100);",
+                  "pm.test('networkFeeAmount is present (\"0\" when not charged)', () => pm.expect(j).to.have.property('networkFeeAmount'));",
+                  "pm.test('totalAmount == netAmount + feeAmount + networkFeeAmount', () => pm.expect(cents(j.totalAmount)).to.equal(cents(j.netAmount) + cents(j.feeAmount) + cents(j.networkFeeAmount)));"
                 ]
               }
             }
@@ -951,7 +961,10 @@
                   "const j = pm.response.json().data;",
                   "pm.collectionVariables.set('withdrawalId', j.id);",
                   "pm.test('Status is PENDING', () => pm.expect(j.status).to.equal('PENDING'));",
-                  "pm.test('Payout method captured', () => pm.expect(j.payoutMethod).to.equal('BANK'));"
+                  "pm.test('Payout method captured', () => pm.expect(j.payoutMethod).to.equal('CASH'));",
+                  "const cents = (s) => Math.round(Number(s) * 100);",
+                  "pm.test('networkFeeAmount is present (\"0\" when not charged)', () => pm.expect(j).to.have.property('networkFeeAmount'));",
+                  "pm.test('totalAmount == netAmount + feeAmount + networkFeeAmount', () => pm.expect(cents(j.totalAmount)).to.equal(cents(j.netAmount) + cents(j.feeAmount) + cents(j.networkFeeAmount)));"
                 ]
               }
             }
@@ -1035,7 +1048,10 @@
                   "pm.test('201 Created', () => pm.expect([200, 201]).to.include(pm.response.code));",
                   "const j = pm.response.json().data;",
                   "pm.collectionVariables.set('payoutId', j.id);",
-                  "pm.test('Status is PENDING', () => pm.expect(j.status).to.equal('PENDING'));"
+                  "pm.test('Status is PENDING', () => pm.expect(j.status).to.equal('PENDING'));",
+                  "const cents = (s) => Math.round(Number(s) * 100);",
+                  "pm.test('networkFeeAmount is present (\"0\" when not charged)', () => pm.expect(j).to.have.property('networkFeeAmount'));",
+                  "pm.test('totalAmount == netAmount + feeAmount + networkFeeAmount', () => pm.expect(cents(j.totalAmount)).to.equal(cents(j.netAmount) + cents(j.feeAmount) + cents(j.networkFeeAmount)));"
                 ]
               }
             }
@@ -1093,7 +1109,10 @@
                   "pm.test('201 Created', () => pm.expect([200, 201]).to.include(pm.response.code));",
                   "const j = pm.response.json().data;",
                   "pm.collectionVariables.set('loadId', j.id);",
-                  "pm.test('Status is PENDING', () => pm.expect(j.status).to.equal('PENDING'));"
+                  "pm.test('Status is PENDING', () => pm.expect(j.status).to.equal('PENDING'));",
+                  "const cents = (s) => Math.round(Number(s) * 100);",
+                  "pm.test('networkFeeAmount is present (\"0\" when not charged)', () => pm.expect(j).to.have.property('networkFeeAmount'));",
+                  "pm.test('totalAmount == netAmount + feeAmount + networkFeeAmount', () => pm.expect(cents(j.totalAmount)).to.equal(cents(j.netAmount) + cents(j.feeAmount) + cents(j.networkFeeAmount)));"
                 ]
               }
             }
@@ -1791,6 +1810,268 @@
               "path": ["company", "api-keys"]
             },
             "description": "Run as company owner. Send WITHOUT the `x-csrf-token` header — the CSRF guard should return 403."
+          }
+        }
+      ]
+    },
+    {
+      "name": "09 — Network fee (super admin)",
+      "description": "Exercises the optional per-company **network fee** — a second platform fee charged next to the commission, configured by a `SUPER_ADMIN` per company and per flow (`TRANSACTION` = deposits, `WITHDRAWAL`, `PAYOUT`, `LOAD`) as a `PERCENTAGE` or a `FIXED` amount. It is **not** a blockchain/gas fee and is unrelated to `payoutDetails.network` on CRYPTO payouts. Companies cannot set it; they only read `networkFeeAmount` (`\"0\"` when not charged).\n\nFlow: read the config → switch on 1% for deposits → ingest a 100 USD deposit with the **source** key (the response must carry no fee fields) → read it back with the **company** key (`networkFeeAmount` = `\"1\"`) → switch the fee off again → confirm `enabled: true` with no rates is rejected.\n\nNeeds `{{companyId}}`, `{{companySlug}}`, `{{sourceApiKey}}` and `{{apiKey}}` from folders 01–03. The admin routes need a dashboard session + CSRF (never an API key), and `PUT` is `SUPER_ADMIN`-only.\n\n**Local / staging only.** These requests change what a company is charged — never point this folder at production.",
+      "item": [
+        {
+          "name": "(switch to admin) Login as super admin",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const c = pm.cookies.get('csrf-token');",
+                  "if (c) pm.collectionVariables.set('csrfToken', c);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{adminEmail}}\",\n  \"password\": \"{{adminPassword}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "login"]
+            },
+            "description": "The network-fee routes are admin routes: they take a dashboard session (cookie + CSRF), never an API key."
+          }
+        },
+        {
+          "name": "Get network fee config",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json().data; // responses are enveloped: { success, statusCode, data }",
+                  "pm.test('Shape is { enabled, rates[] }', () => { pm.expect(j.enabled).to.be.a('boolean'); pm.expect(j.rates).to.be.an('array'); });",
+                  "console.log('Network fee before this folder:', JSON.stringify(j));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/companies/{{companyId}}/network-fee",
+              "host": ["{{baseUrl}}"],
+              "path": ["admin", "companies", "{{companyId}}", "network-fee"]
+            },
+            "description": "Returns `{ enabled, rates: [{ operationType, feeType, feeValue }] }` — rates in flow order (deposits, withdrawals, payouts, loads); a flow that is absent is not charged. Ships OFF: a new company reads `{ \"enabled\": false, \"rates\": [] }`. Readable by `SUPER_ADMIN` and `ADMIN_OPERATOR`."
+          }
+        },
+        {
+          "name": "Enable a 1% network fee on deposits",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json().data;",
+                  "pm.test('Switch is on', () => pm.expect(j.enabled).to.equal(true));",
+                  "pm.test('Only deposits are charged, 1%', () => pm.expect(j.rates).to.eql([{ operationType: 'TRANSACTION', feeType: 'PERCENTAGE', feeValue: '1' }]));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-csrf-token",
+                "value": "{{csrfToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": true,\n  \"rates\": [\n    {\n      \"operationType\": \"TRANSACTION\",\n      \"feeType\": \"PERCENTAGE\",\n      \"feeValue\": \"1\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/admin/companies/{{companyId}}/network-fee",
+              "host": ["{{baseUrl}}"],
+              "path": ["admin", "companies", "{{companyId}}", "network-fee"]
+            },
+            "description": "`SUPER_ADMIN` only (an `ADMIN_OPERATOR` gets `403`). Replaces the **whole** configuration: the master switch plus every flow's rate — a flow left out is not charged. Every value must be greater than 0: a `PERCENTAGE` is a rate (at most 100, up to 8 decimals); a `FIXED` value is dollars (at most 2 decimals). The change applies to the next operation; existing rows keep the fees frozen on them."
+          }
+        },
+        {
+          "name": "Ingest 100 USD with the source key (no fee fields)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.expect([200, 201]).to.include(pm.response.code));",
+                  "const j = pm.response.json().data;",
+                  "pm.collectionVariables.set('networkFeeTransactionId', j.id);",
+                  "pm.test('Source never sees the commission', () => pm.expect(j).to.not.have.property('commissionAmount'));",
+                  "pm.test('Source never sees the network fee', () => pm.expect(j).to.not.have.property('networkFeeAmount'));",
+                  "pm.test('Source never sees the net', () => pm.expect(j).to.not.have.property('netAmount'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{sourceApiKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"companySlug\": \"{{companySlug}}\",\n  \"externalTransactionId\": \"postman-{{$timestamp}}-network-fee\",\n  \"amount\": \"100\",\n  \"currency\": \"USD\",\n  \"payload\": {\n    \"customer\": \"Network fee test\",\n    \"note\": \"network-fee-from-postman\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/ingest/{{sourceCode}}/transactions",
+              "host": ["{{baseUrl}}"],
+              "path": ["ingest", "{{sourceCode}}", "transactions"]
+            },
+            "description": "The network fee is computed alongside the commission, inside the same booking — and is just as invisible to the source: the ingest response is unchanged. Saves the id as `{{networkFeeTransactionId}}`."
+          }
+        },
+        {
+          "name": "Company key reads the deposit (networkFeeAmount \"1\")",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json().data;",
+                  "const cents = (s) => Math.round(Number(s) * 100);",
+                  "pm.test('1% of 100 = network fee 1', () => pm.expect(j.networkFeeAmount).to.equal('1'));",
+                  "pm.test('DEDUCTED deposit: amount == commissionAmount + networkFeeAmount + netAmount', () => pm.expect(cents(j.amount)).to.equal(cents(j.commissionAmount) + cents(j.networkFeeAmount) + cents(j.netAmount)));",
+                  "console.log('commission', j.commissionAmount, '· network fee', j.networkFeeAmount, '· net', j.netAmount);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/company/transactions/{{networkFeeTransactionId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["company", "transactions", "{{networkFeeTransactionId}}"]
+            },
+            "description": "The company sees both fees. With the seeded global rule (0–100 USD → FIXED 1) this reads `commissionAmount` `\"1\"`, `networkFeeAmount` `\"1\"`, `netAmount` `\"98\"`. Try `/detail` on the same id to see the fourth ledger leg: `NETWORK_FEE` CREDIT `1`."
+          }
+        },
+        {
+          "name": "Restore: switch the network fee off",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json().data;",
+                  "pm.test('Switch is off', () => pm.expect(j.enabled).to.equal(false));",
+                  "pm.test('No rates left', () => pm.expect(j.rates).to.eql([]));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-csrf-token",
+                "value": "{{csrfToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": false,\n  \"rates\": []\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/admin/companies/{{companyId}}/network-fee",
+              "host": ["{{baseUrl}}"],
+              "path": ["admin", "companies", "{{companyId}}", "network-fee"]
+            },
+            "description": "Puts the test company back to \"not charged\". Switching off may also keep the rates (send them with `enabled: false`) so turning it back on does not lose the setup; here they are cleared. The deposit booked above keeps its frozen fee."
+          }
+        },
+        {
+          "name": "Enabled with no rates is rejected (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('VALIDATION_ERROR', () => pm.expect(pm.response.json().error.code).to.equal('VALIDATION_ERROR'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-csrf-token",
+                "value": "{{csrfToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": true,\n  \"rates\": []\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/admin/companies/{{companyId}}/network-fee",
+              "host": ["{{baseUrl}}"],
+              "path": ["admin", "companies", "{{companyId}}", "network-fee"]
+            },
+            "description": "Turning the switch on requires a rate for at least one flow (\"Set a network fee for at least one flow, or turn the network fee off\")."
           }
         }
       ]

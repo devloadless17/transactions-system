@@ -32,11 +32,15 @@ export const currencyRollupSchema = z.object({
   // the fee. Mirrors the per-company cards and walletSummary.
   volumeIn: z.string(),
   feesEarned: z.string(), // platform fee revenue (FEE ledger, all flows)
+  // Network-fee revenue (NETWORK_FEE ledger, all flows) — the optional
+  // per-company second fee. "0" until a company is charged one.
+  networkFeesEarned: z.string(),
   // What upstream sources (e.g. Whish) charge the PLATFORM on this currency's
   // deposits — the platform's cost of funds. Computed per-deposit from each
   // source's fee schedule. Admin/system-only; never shown to companies.
   sourceFees: z.string(),
-  // The platform's real take-home: feesEarned − sourceFees. Admin/system-only.
+  // The platform's real take-home: feesEarned + networkFeesEarned − sourceFees.
+  // Admin/system-only.
   netRevenue: z.string(),
   volumeOut: z.string(),
   netHeld: z.string(), // wallet total still parked in the platform (sum of available + pending + reserved)
@@ -78,9 +82,10 @@ export type FlowsRange = z.infer<typeof flowsRangeSchema>;
 
 export const flowsBucketSchema = z.object({
   date: z.string(), // START of the bucket (day/week/month)
-  in: z.string(), // money in that bucket (transactions + loads), net + fee
-  out: z.string(), // money out that day (withdrawals + payouts), net + fee
+  in: z.string(), // money in that bucket (transactions + loads), net + fee + network fee
+  out: z.string(), // money out that day (withdrawals + payouts), net + fee + network fee
   fees: z.string(), // fees earned that day (FEE ledger, all flows)
+  networkFees: z.string(), // network fees earned that day (NETWORK_FEE ledger)
 });
 export type FlowsBucket = z.infer<typeof flowsBucketSchema>;
 

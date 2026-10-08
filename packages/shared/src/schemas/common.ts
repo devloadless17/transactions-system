@@ -24,6 +24,18 @@ const decimalStringBase = z
 const fractionDigits = (v: string): number => v.split('.')[1]?.length ?? 0;
 
 /**
+ * True when `v` is a decimal string `Money.of` can parse. zod keeps running
+ * object-level refinements after a field's OWN check has failed (the value is
+ * "dirty", not aborted), so a refinement that calls `Money.of` on a malformed
+ * value would throw a DecimalError — a 500 — instead of failing validation with
+ * a 400. Every such refinement guards with this first; the field's own error
+ * already reports the bad value.
+ */
+export function isDecimalString(v: unknown): v is string {
+  return typeof v === 'string' && /^\d+(\.\d+)?$/.test(v);
+}
+
+/**
  * A money amount as a decimal STRING (never a float). Bounded to the platform
  * money scale — at most 2 fractional digits, i.e. whole cents — and 12 integer
  * digits. Shared by every flow (transaction / withdrawal / payout / load /

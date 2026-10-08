@@ -99,6 +99,9 @@ enum LedgerAccountType {
   // Debt owed by the company to the platform (e.g. the uncovered remainder of a
   // reversal after available was drained). No wallet projection — like FEE/EXTERNAL.
   RECEIVABLE
+  // Platform revenue from the optional per-company network fee, booked apart
+  // from FEE so every FEE-based figure keeps its meaning. No wallet projection.
+  NETWORK_FEE
 }
 
 enum LedgerDirection {
@@ -225,6 +228,11 @@ model Company {
   crmEnabled      Boolean       @default(false) @map("crm_enabled")
   crmDemoToken    String?       @unique @map("crm_demo_token")
   crmDemoKey      String?       @map("crm_demo_key")
+  // Master switch for the optional network fee — a second platform fee charged
+  // next to the commission, priced per flow in company_network_fees. OFF (the
+  // default) means no network fee anywhere: every flow behaves exactly as if the
+  // feature did not exist. Toggled by SUPER_ADMIN only.
+  networkFeeEnabled Boolean @default(false) @map("network_fee_enabled")
   createdAt       DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt       DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -243,6 +251,7 @@ model Company {
   webhookDeliveries WebhookDelivery[]
   crmDemoEvents     CrmDemoEvent[]
   slugHistory       CompanySlugHistory[]
+  networkFees       CompanyNetworkFee[]
 
   @@index([status])
   @@map("companies")
@@ -261,6 +270,27 @@ model CompanySlugHistory {
 
   @@index([companyId])
   @@map("company_slug_history")
+}
+
+// Per-company, per-flow network fee rate. A row exists only for a flow that is
+// charged; no row = no network fee on that flow. Only applied while the
+// company's networkFeeEnabled switch is on, and frozen onto each money row at
+// request/booking time, so editing a rate never reprices an existing row.
+// RLS: a tenant may READ its own rows (the money flows read them inside the
+// company-scoped transaction); only admin/bypass may write.
+model CompanyNetworkFee {
+  companyId     String           @map("company_id") @db.Uuid
+  company       Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  operationType FeeOperationType @map("operation_type")
+  feeType       CommissionType   @map("fee_type")
+  // DUAL-TYPED like commission_rules.commission_value: dollars when FIXED, a
+  // RATE (percent, up to 8 dp) when PERCENTAGE. Validated per type.
+  feeValue      Decimal          @map("fee_value") @db.Decimal(20, 8)
+  createdAt     DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@id([companyId, operationType])
+  @@map("company_network_fees")
 }
 
 // --------------------------- Sources -----------------------------
@@ -405,6 +435,10 @@ model Transaction {
   currency              String            @db.Char(3)
   commissionAmount      Decimal           @map("commission_amount") @db.Decimal(20, 8)
   netAmount             Decimal           @map("net_amount") @db.Decimal(20, 8)
+  // Optional per-company network fee (company_network_fees), frozen at booking.
+  // 0 whenever the company's switch is off. Booked to the NETWORK_FEE ledger
+  // account; gross = net_amount + commission_amount + network_fee_amount.
+  networkFeeAmount      Decimal           @default(0) @map("network_fee_amount") @db.Decimal(20, 2)
   // What the upstream source charged THE PLATFORM on this deposit (cost of funds),
   // frozen at settlement from the source's fee schedule. Net revenue =
   // Σ commission_amount (FEE ledger) − Σ source_fee_amount. Admin/system-only;
@@ -516,6 +550,9 @@ model Withdrawal {
   amount            Decimal          @db.Decimal(20, 8)
   currency          String           @db.Char(3)
   feeAmount         Decimal          @default(0) @map("fee_amount") @db.Decimal(20, 8)
+  // Optional per-company network fee, frozen at request (0 when the switch is
+  // off). total = net_amount + fee_amount + network_fee_amount.
+  networkFeeAmount  Decimal          @default(0) @map("network_fee_amount") @db.Decimal(20, 2)
   netAmount         Decimal          @default(0) @map("net_amount") @db.Decimal(20, 8)
   // Sub-dollar cents kept by the platform when an auto Whish W2W transfer floors
   // the net to a whole dollar (net 18.67 → transfer 18 → 0.67 here). 0 for every
@@ -560,6 +597,9 @@ model Payout {
   amount            Decimal          @db.Decimal(20, 2)
   currency          String           @db.Char(3)
   feeAmount         Decimal          @default(0) @map("fee_amount") @db.Decimal(20, 2)
+  // Optional per-company network fee, frozen at request (0 when the switch is
+  // off). total = net_amount + fee_amount + network_fee_amount.
+  networkFeeAmount  Decimal          @default(0) @map("network_fee_amount") @db.Decimal(20, 2)
   netAmount         Decimal          @default(0) @map("net_amount") @db.Decimal(20, 2)
   feeApplication    FeeApplication   @default(DEDUCTED) @map("fee_application")
   status            WithdrawalStatus @default(PENDING)
@@ -598,6 +638,9 @@ model Load {
   amount            Decimal          @db.Decimal(20, 2)
   currency          String           @db.Char(3)
   feeAmount         Decimal          @default(0) @map("fee_amount") @db.Decimal(20, 2)
+  // Optional per-company network fee, frozen at request (0 when the switch is
+  // off). total = net_amount + fee_amount + network_fee_amount.
+  networkFeeAmount  Decimal          @default(0) @map("network_fee_amount") @db.Decimal(20, 2)
   netAmount         Decimal          @default(0) @map("net_amount") @db.Decimal(20, 2)
   feeApplication    FeeApplication   @default(DEDUCTED) @map("fee_application")
   status            WithdrawalStatus @default(PENDING)

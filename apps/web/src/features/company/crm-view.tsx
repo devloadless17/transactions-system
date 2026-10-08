@@ -315,10 +315,11 @@ x-crm-signature: t=1781018591,sha256=<hex>
     "status": "COMPLETED",
     "source": "whish",
     "externalTransactionId": "10231",
-    "amount": "25.00",
+    "amount": "25",
     "currency": "USD",
-    "netAmount": "24.50",
-    "commissionAmount": "0.50",
+    "netAmount": "24.5",
+    "commissionAmount": "0.5",
+    "networkFeeAmount": "0",
     "customer": "John Doe",
     "tradingAccount": null,
     "phone": "+961…",
@@ -336,11 +337,12 @@ x-crm-signature: t=1781018591,sha256=<hex>
   "withdrawal": {
     "id": "d4f2a1c0-…",
     "status": "COMPLETED",              // approved by an admin & paid out
-    "amount": "500.00",                 // the amount you requested
-    "totalAmount": "500.00",            // what left your wallet (net + fee)
-    "feeAmount": "5.00",                // the platform fee we charged
-    "netAmount": "495.00",              // what the recipient received
-    "feeApplication": "DEDUCTED",       // DEDUCTED or ON_TOP
+    "amount": "500",                    // the amount you requested
+    "totalAmount": "500",               // what left your wallet (net + fee + network fee)
+    "feeAmount": "5",                   // the platform fee we charged
+    "networkFeeAmount": "0",            // the optional network fee ("0" if not charged)
+    "netAmount": "495",                 // what the recipient received
+    "feeApplication": "DEDUCTED",       // DEDUCTED or ON_TOP (applies to both fees)
     "currency": "USD",
     "payoutMethod": "CASH",
     "payoutDetails": {                  // recipient + all instructions, one place
@@ -462,7 +464,22 @@ x-crm-signature: t=1781018591,sha256=<hex>
             <code className="font-mono">processedAt</code> is when it was decided (null while{' '}
             <code className="font-mono">PENDING</code>). The full payout instructions — phone,
             pickup, wallet / bank details — are in <code className="font-mono">payoutDetails</code>.
-            Money: <code className="font-mono">totalAmount − feeAmount = netAmount</code>.
+            Money:{' '}
+            <code className="font-mono">
+              totalAmount − feeAmount − networkFeeAmount = netAmount
+            </code>
+            .
+          </p>
+          <p className="mt-2 text-xs text-muted-foreground">
+            <strong className="text-foreground">Fees on events.</strong> Both bodies carry{' '}
+            <code className="font-mono">networkFeeAmount</code>, the optional network fee (
+            <code className="font-mono">&quot;0&quot;</code> if you&apos;re not charged one). On
+            deposit events it is <code className="font-mono">null</code> until the deposit
+            completes, exactly like <code className="font-mono">commissionAmount</code> and{' '}
+            <code className="font-mono">netAmount</code>; on withdrawal events it is always a
+            string. An event queued before the field existed may omit it — treat a missing{' '}
+            <code className="font-mono">networkFeeAmount</code> as{' '}
+            <code className="font-mono">&quot;0&quot;</code>.
           </p>
         </div>
         <div>

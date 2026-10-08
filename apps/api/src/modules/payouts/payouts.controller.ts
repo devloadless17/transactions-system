@@ -28,6 +28,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { CsrfGuard } from '../auth/guards/csrf.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { backofficeList, backofficePayOut, isBackoffice } from '../../common/backoffice-view';
 import { Audited } from '../audit/audit.decorator';
 import type { AuthPrincipal } from '../../common/types/request.types';
 import { SkipResponseEnvelope } from '../../common/decorators/skip-response-envelope.decorator';
@@ -106,21 +107,29 @@ export class PayoutsController {
 
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
   @Get('admin/payouts')
-  async adminList(@Query(new ZodPipe(listPayoutsQuerySchema)) query: ListPayoutsQuery) {
-    return this.payouts.list({ query });
+  async adminList(
+    @Query(new ZodPipe(listPayoutsQuerySchema)) query: ListPayoutsQuery,
+    @CurrentUser() user: AuthPrincipal,
+  ) {
+    const page = await this.payouts.list({ query });
+    return isBackoffice(user) ? backofficeList(page, backofficePayOut) : page;
   }
 
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
   @Get('admin/payouts/export.csv')
   @SkipResponseEnvelope()
-  adminExport(@Query(new ZodPipe(listPayoutsQuerySchema)) query: ListPayoutsQuery): StreamableFile {
-    return this.payouts.streamCsv({ query });
+  adminExport(
+    @Query(new ZodPipe(listPayoutsQuerySchema)) query: ListPayoutsQuery,
+    @CurrentUser() user: AuthPrincipal,
+  ): StreamableFile {
+    return this.payouts.streamCsv({ query, backoffice: isBackoffice(user) });
   }
 
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
   @Get('admin/payouts/:id')
-  async adminGet(@Param('id', new ParseUUIDPipe()) id: string) {
-    return this.payouts.getById(id);
+  async adminGet(@Param('id', new ParseUUIDPipe()) id: string, @CurrentUser() user: AuthPrincipal) {
+    const row = await this.payouts.getById(id);
+    return isBackoffice(user) ? backofficePayOut(row) : row;
   }
 
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
@@ -131,7 +140,8 @@ export class PayoutsController {
     @Body(new ZodPipe(approvePayoutSchema)) body: ApprovePayoutInput,
     @CurrentUser() user: AuthPrincipal,
   ) {
-    return this.payouts.approve(id, user.userId, body);
+    const row = await this.payouts.approve(id, user.userId, body);
+    return isBackoffice(user) ? backofficePayOut(row) : row;
   }
 
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
@@ -142,6 +152,7 @@ export class PayoutsController {
     @Body(new ZodPipe(rejectPayoutSchema)) body: RejectPayoutInput,
     @CurrentUser() user: AuthPrincipal,
   ) {
-    return this.payouts.reject(id, user.userId, body);
+    const row = await this.payouts.reject(id, user.userId, body);
+    return isBackoffice(user) ? backofficePayOut(row) : row;
   }
 }

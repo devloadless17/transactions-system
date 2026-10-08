@@ -20,7 +20,18 @@ import { PrismaService } from '../../database/prisma.service';
 import { CommissionResolverService } from '../commissions/commission-resolver.service';
 import { CommissionsRepository } from '../commissions/commissions.repository';
 import { LedgerService } from '../ledger/ledger.service';
-import { netOfFee, reservedTotal } from '../ledger/flow-ledger';
+import {
+  moneyInEntries,
+  netOfFee,
+  reservedTotal,
+  reversalEntries,
+  type FeeParts,
+} from '../ledger/flow-ledger';
+import {
+  boundDepositNetworkFee,
+  computeNetworkFee,
+  readNetworkFeeRate,
+} from '../commissions/network-fee';
 import { WalletsService } from '../wallets/wallets.service';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { RealtimeService } from '../realtime/realtime.service';
@@ -33,6 +44,7 @@ import {
   ValidationError,
 } from '../../common/errors/domain.error';
 import { csvCell } from '../../common/csv';
+import { backofficeCsvCells } from '../../common/backoffice-view';
 
 // The per-tenant list COUNT is cached briefly so paging reuses it and a whale
 // tenant's COUNT(*) doesn't re-run on every page load. The total can lag by up
@@ -153,7 +165,7 @@ export class TransactionsService {
       // resolves as before. Rows must match ctx.sourceId / input.companyId.
       preloaded?: {
         source: { id: string; code: string; status: string };
-        company: { id: string; status: string };
+        company: { id: string; status: string; networkFeeEnabled: boolean };
       };
     },
     input: IngestTransactionInput,
@@ -205,6 +217,9 @@ export class TransactionsService {
     // company was hidden still settles here. The single hard "this company can do
     // nothing" switch is deactivation (status !== ACTIVE), enforced just above.
     const companyId = company.id;
+    // The network-fee master switch, read from the same fresh (uncached) company
+    // row as the status check — so a company with it OFF adds no query at all.
+    const networkFeeEnabled = company.networkFeeEnabled;
     const source: { id: string; code: string; status: string } = foundSource;
 
     // Source fee = what this source charges THE PLATFORM on this deposit (cost of
@@ -249,9 +264,8 @@ export class TransactionsService {
     // Run the whole financial mutation scoped to the target company, so RLS
     // WITH CHECK validates that every row written (transaction, ledger, wallet)
     // belongs to `companyId` — a bug can't mis-book into another tenant.
-    const { result, replayed, pricingIssue } = await this.prisma.runSerializableAsTenant(
-      companyId,
-      async (tx) => {
+    const { result, replayed, pricingIssue, networkCapped } =
+      await this.prisma.runSerializableAsTenant(companyId, async (tx) => {
         const cTx = tx as unknown as PrismaClient;
 
         // ---- idempotency: explicit key OR natural (source,external) pair ----
@@ -264,6 +278,7 @@ export class TransactionsService {
               result: await this.mapTransaction(cTx, existing),
               replayed: true,
               pricingIssue: null,
+              networkCapped: false,
             };
           }
         }
@@ -280,6 +295,7 @@ export class TransactionsService {
             result: await this.mapTransaction(cTx, dup),
             replayed: true,
             pricingIssue: null,
+            networkCapped: false,
           };
         }
 
@@ -324,7 +340,30 @@ export class TransactionsService {
         // Unpriced falls back to DEDUCTED with fee = amount (net 0).
         const feeApplication = resolution?.feeApplication ?? 'DEDUCTED';
         const fee = resolution?.commissionAmount ?? amount;
-        const { externalDebit, availableCredit } = ingestSplit(amount, fee, feeApplication);
+
+        // ---- network fee ----
+        // The optional per-company second fee, computed BESIDE the commission
+        // above (which is untouched) and on the same amount. Only a properly
+        // priced deposit carries one: an unpriced or commission-capped booking
+        // already withholds the whole amount. Under DEDUCTED it may take only
+        // what the commission leaves, so it can never push net below zero —
+        // switching it on never makes a deposit that books today fail or park.
+        let network = Money.zero();
+        let networkCapped = false;
+        if (networkFeeEnabled && resolution && !resolution.capped) {
+          const computed = computeNetworkFee(
+            amount,
+            await readNetworkFeeRate(cTx, companyId, 'TRANSACTION', { switchKnownOn: true }),
+          );
+          ({ network, capped: networkCapped } = boundDepositNetworkFee({
+            amount,
+            commission: fee,
+            feeApplication,
+            computed,
+          }));
+        }
+        const fees: FeeParts = { commission: fee, network };
+        const { externalDebit, availableCredit } = ingestSplit(amount, fees, feeApplication);
 
         // ---- insert transaction row ----
         // A different company reusing the same (source, externalTransactionId)
@@ -341,6 +380,7 @@ export class TransactionsService {
               amount: amount.toString(),
               currency: input.currency,
               commissionAmount: fee.toString(),
+              networkFeeAmount: network.toString(),
               netAmount: availableCredit.toString(),
               sourceFeeAmount: sourceFeeAmount.toString(),
               status: 'COMPLETED',
@@ -360,40 +400,19 @@ export class TransactionsService {
         }
 
         // ---- ledger: balanced double-entry ----
-        // DEBIT  EXTERNAL  externalDebit   (the outside world owes us this)
-        // CREDIT AVAILABLE availableCredit (company's spendable balance grows) [skip if 0]
-        // CREDIT FEE       fee             (platform fee revenue)              [skip if 0]
-        const ledgerLines: import('../ledger/ledger.service').LedgerEntryInput[] = [
-          {
-            companyId,
-            transactionId: txRow.id,
-            accountType: 'EXTERNAL',
-            direction: 'DEBIT',
-            amount: externalDebit,
-            currency: input.currency,
-          },
-        ];
-        if (availableCredit.isPositive()) {
-          ledgerLines.push({
-            companyId,
-            transactionId: txRow.id,
-            accountType: 'AVAILABLE',
-            direction: 'CREDIT',
-            amount: availableCredit,
-            currency: input.currency,
-          });
-        }
-        if (fee.isPositive()) {
-          ledgerLines.push({
-            companyId,
-            transactionId: txRow.id,
-            accountType: 'FEE',
-            direction: 'CREDIT',
-            amount: fee,
-            currency: input.currency,
-          });
-        }
-        await this.ledger.writeEntries(cTx, ledgerLines);
+        // DEBIT  EXTERNAL    externalDebit   (the outside world owes us this)
+        // CREDIT AVAILABLE   availableCredit (company's spendable balance grows) [skip if 0]
+        // CREDIT FEE         fee             (platform fee revenue)              [skip if 0]
+        // CREDIT NETWORK_FEE network         (network-fee revenue)               [skip if 0]
+        await this.ledger.writeEntries(
+          cTx,
+          moneyInEntries({ transactionId: txRow.id }, companyId, input.currency, {
+            externalDebit,
+            receivableSettle: Money.zero(),
+            availableCredit,
+            fees,
+          }),
+        );
 
         // ---- wallet delta (only if the company is credited something) ----
         if (availableCredit.isPositive()) {
@@ -407,13 +426,18 @@ export class TransactionsService {
         this.logger.log(
           `ingest tx=${txRow.id} co=${companyId} src=${source.code} ` +
             `amount=${amount.toString()} fee=${fee.toString()} ` +
+            `${network.isPositive() ? `network=${network.toString()} ` : ''}` +
             `net=${availableCredit.toString()} app=${feeApplication}` +
             `${pricingIssue ? ` pricing=${pricingIssue}` : ''} ${input.currency}`,
         );
 
-        return { result: await this.mapTransaction(cTx, txRow), replayed: false, pricingIssue };
-      },
-    );
+        return {
+          result: await this.mapTransaction(cTx, txRow),
+          replayed: false,
+          pricingIssue,
+          networkCapped,
+        };
+      });
 
     // A pricing gap no longer blocks the deposit (it books at net 0), but it is
     // still an operator problem: the company is credited nothing until the rule
@@ -436,6 +460,13 @@ export class TransactionsService {
         this.noRuleCounter.inc({ source_code: source.code, currency: input.currency });
       }
       void this.warnPricingIssue(pricingIssue, companyId, source.code, source.id, input);
+    }
+
+    // A network fee reduced to fit a small DEDUCTED deposit. Configured pricing
+    // meeting a tiny amount, not a pricing gap, so it never sets pricing_issue or
+    // the pricing alert metric — but the deposit nets 0, so it is logged (deduped).
+    if (networkCapped) {
+      void this.warnNetworkCapped(companyId, source.code, source.id, input);
     }
 
     // An idempotent replay (explicit key or natural (source,externalId) pair)
@@ -503,6 +534,35 @@ export class TransactionsService {
   }
 
   /**
+   * Best-effort, deduped log when a deposit's network fee was reduced so the
+   * deposit could book (net 0). Unlike warnPricingIssue this is NOT an operator
+   * alert: the price is configured, the deposit was simply smaller than the fees.
+   * Never throws — logging must not affect the money path.
+   */
+  private async warnNetworkCapped(
+    companyId: string,
+    sourceCode: string,
+    sourceId: string,
+    input: IngestTransactionInput,
+  ): Promise<void> {
+    try {
+      const token = await this.cache.tryLock(
+        `ingest-network-capped:${companyId}:${sourceId}`,
+        NO_RULE_ALERT_TTL_MS,
+      );
+      if (!token) return; // already logged within the window
+      this.logger.warn(
+        `Network fee capped — company ${companyId}, source ${sourceCode}: a ` +
+          `${input.currency} ${input.amount} deposit was smaller than its commission plus ` +
+          `network fee, so the network fee was reduced to what the commission left and ` +
+          `the deposit booked at net 0.`,
+      );
+    } catch {
+      // Best-effort: logging must never affect the money path.
+    }
+  }
+
+  /**
    * Reverse a COMPLETED transaction. Writes compensating ledger entries
    * (mirror of the original) and claws the credited funds back from available.
    * If the company has already spent/withdrawn some of the credit, the part
@@ -539,13 +599,15 @@ export class TransactionsService {
 
       // fromDb: quantize the stored amounts ONCE here, so every leg derived below
       // is at scale and the reversal set balances by construction.
-      const fee = Money.fromDb(orig.commissionAmount);
+      const fees: FeeParts = {
+        commission: Money.fromDb(orig.commissionAmount),
+        network: Money.fromDb(orig.networkFeeAmount),
+      };
       const net = Money.fromDb(orig.netAmount);
-      // The original EXTERNAL debit was net + fee for BOTH fee applications
-      // (DEDUCTED: amount = net + fee; ON_TOP: amount + fee = net + fee), so we
-      // can reconstruct it from the stored net/fee without a feeApplication
-      // column and keep the reversal balanced in either case.
-      const externalAmount = net.add(fee);
+      // The original EXTERNAL debit was net + commission + network for BOTH fee
+      // applications (DEDUCTED: amount = net + fees; ON_TOP: amount + fees =
+      // net + fees), so reversalEntries reconstructs it from the stored net/fees
+      // without a feeApplication column and the reversal balances either way.
 
       // Claw `net` back from available; whatever available can't cover becomes a
       // RECEIVABLE (a debt the company owes). This keeps available >= 0 and the
@@ -557,55 +619,20 @@ export class TransactionsService {
       const { fromAvailable, receivable } = splitClawback(net, available);
 
       // Compensating ledger entries: mirror the original signs.
-      // original was: DEBIT EXTERNAL, CREDIT AVAILABLE, CREDIT FEE
+      // original was: DEBIT EXTERNAL, CREDIT AVAILABLE, CREDIT FEE, CREDIT NETWORK_FEE
       // reversal is:  CREDIT EXTERNAL, DEBIT AVAILABLE (+ DEBIT RECEIVABLE for the
-      // uncovered remainder), DEBIT FEE. debits (fromAvailable + receivable + fee)
-      // == credit (net + fee), so the set stays balanced.
-      const lines: import('../ledger/ledger.service').LedgerEntryInput[] = [
-        {
-          companyId: orig.companyId,
-          transactionId: orig.id,
-          accountType: 'EXTERNAL',
-          direction: 'CREDIT',
-          amount: externalAmount,
-          currency: orig.currency,
-          metadata: { kind: 'reversal', reason: args.reason },
-        },
-      ];
-      if (fromAvailable.isPositive()) {
-        lines.push({
-          companyId: orig.companyId,
-          transactionId: orig.id,
-          accountType: 'AVAILABLE',
-          direction: 'DEBIT',
-          amount: fromAvailable,
-          currency: orig.currency,
-          metadata: { kind: 'reversal' },
-        });
-      }
-      if (receivable.isPositive()) {
-        lines.push({
-          companyId: orig.companyId,
-          transactionId: orig.id,
-          accountType: 'RECEIVABLE',
-          direction: 'DEBIT',
-          amount: receivable,
-          currency: orig.currency,
-          metadata: { kind: 'reversal', shortfall: true },
-        });
-      }
-      if (fee.isPositive()) {
-        lines.push({
-          companyId: orig.companyId,
-          transactionId: orig.id,
-          accountType: 'FEE',
-          direction: 'DEBIT',
-          amount: fee,
-          currency: orig.currency,
-          metadata: { kind: 'reversal' },
-        });
-      }
-      await this.ledger.writeEntries(cTx, lines);
+      // uncovered remainder), DEBIT FEE, DEBIT NETWORK_FEE. debits (fromAvailable +
+      // receivable + fees) == credit (net + fees), so the set stays balanced.
+      await this.ledger.writeEntries(
+        cTx,
+        reversalEntries({ transactionId: orig.id }, orig.companyId, orig.currency, {
+          net,
+          fees,
+          fromAvailable,
+          receivable,
+          reason: args.reason,
+        }),
+      );
 
       // Wallet: subtract only what available could cover (stays >= 0).
       if (fromAvailable.isPositive()) {
@@ -656,7 +683,12 @@ export class TransactionsService {
    * own short RLS-scoped query and emitted as it's produced, so memory stays
    * bounded to one chunk and no transaction is held open across the download.
    */
-  streamCsv(args: { companyId?: string; query: ListTransactionsQuery }): StreamableFile {
+  streamCsv(args: {
+    companyId?: string;
+    query: ListTransactionsQuery;
+    /** Back office gets only what the customer paid — see common/backoffice-view.ts. */
+    backoffice?: boolean;
+  }): StreamableFile {
     const header = [
       'id',
       'created_at',
@@ -675,6 +707,9 @@ export class TransactionsService {
       // Appended last (positions above stay stable for existing parsers):
       // when the transaction settled — mirrors the flow exports' processed_at.
       'processed_at',
+      // The optional per-company network fee (0.00 when not charged). Appended
+      // after processed_at for the same reason.
+      'network_fee_amount',
     ];
 
     const where: Prisma.TransactionWhereInput = {};
@@ -696,6 +731,7 @@ export class TransactionsService {
 
     const prisma = this.prisma;
     const scope = args.companyId ?? null;
+    const backoffice = args.backoffice === true;
 
     async function* generate(): AsyncGenerator<string> {
       // Lead with a UTF-8 BOM so Excel reads the file as UTF-8 (else “•” etc. shows as mojibake). Matches the shared CSV exporter.
@@ -726,24 +762,36 @@ export class TransactionsService {
         if (page.length === 0) break;
         let buf = '';
         for (const r of page) {
+          const commission = Money.fromDb(r.commissionAmount);
+          const networkFee = Money.fromDb(r.networkFeeAmount);
+          const net = Money.fromDb(r.netAmount);
+          const cells = [
+            r.id,
+            r.createdAt.toISOString(),
+            r.companyId,
+            r.source.code,
+            csvCell(r.externalTransactionId),
+            Money.fromDb(r.amount).toFixed(2),
+            r.currency.trim(),
+            commission.toFixed(2),
+            net.toFixed(2),
+            r.status,
+            csvCell(payloadString(r.payload, 'customer') ?? ''),
+            csvCell(payloadString(r.payload, 'target') ?? ''),
+            csvCell(payloadString(r.payload, 'phone') ?? ''),
+            csvCell(payloadString(r.payload, 'note') ?? ''),
+            r.processedAt?.toISOString() ?? '',
+            networkFee.toFixed(2),
+          ];
           buf +=
-            [
-              r.id,
-              r.createdAt.toISOString(),
-              r.companyId,
-              r.source.code,
-              csvCell(r.externalTransactionId),
-              Money.fromDb(r.amount).toFixed(2),
-              r.currency.trim(),
-              Money.fromDb(r.commissionAmount).toFixed(2),
-              Money.fromDb(r.netAmount).toFixed(2),
-              r.status,
-              csvCell(payloadString(r.payload, 'customer') ?? ''),
-              csvCell(payloadString(r.payload, 'target') ?? ''),
-              csvCell(payloadString(r.payload, 'phone') ?? ''),
-              csvCell(payloadString(r.payload, 'note') ?? ''),
-              r.processedAt?.toISOString() ?? '',
-            ].join(',') + '\n';
+            (backoffice
+              ? // Only what the customer paid; the split columns stay, blank.
+                backofficeCsvCells(header, cells, {
+                  hide: ['commission_amount', 'net_amount', 'network_fee_amount'],
+                  overrides: { amount: net.add(commission).add(networkFee).toFixed(2) },
+                })
+              : cells
+            ).join(',') + '\n';
         }
         yield buf;
         if (page.length < CSV_EXPORT_CHUNK) break;
@@ -877,6 +925,7 @@ export class TransactionsService {
       amount: { toString(): string };
       currency: string;
       commissionAmount: { toString(): string };
+      networkFeeAmount: { toString(): string };
       netAmount: { toString(): string };
       status: TransactionResponse['status'];
       payload?: unknown;
@@ -894,23 +943,23 @@ export class TransactionsService {
 
 /**
  * Split an ingest amount into the EXTERNAL debit and the AVAILABLE credit
- * according to how the fee is applied:
- *   - DEDUCTED: the fee comes out of the amount → external = amount, the
- *     company is credited amount − fee.
- *   - ON_TOP:   the fee is charged on top → external = amount + fee, the
- *     company is credited the full amount.
- * In both cases external = credit + fee, so the ledger set stays balanced.
+ * according to how the fees are applied:
+ *   - DEDUCTED: the fees come out of the amount → external = amount, the
+ *     company is credited amount − commission − network.
+ *   - ON_TOP:   the fees are charged on top → external = amount + both fees,
+ *     the company is credited the full amount.
+ * In both cases external = credit + both fees, so the ledger set stays balanced.
  */
 export function ingestSplit(
   amount: Money,
-  fee: Money,
+  fees: FeeParts,
   feeApplication: FeeApplication,
 ): { externalDebit: Money; availableCredit: Money } {
   // Delegate to the canonical split so the ON_TOP/DEDUCTED arithmetic can't drift
   // between ingest, loads, and the money-out flows.
   return {
-    externalDebit: reservedTotal(amount, fee, feeApplication),
-    availableCredit: netOfFee(amount, fee, feeApplication),
+    externalDebit: reservedTotal(amount, fees, feeApplication),
+    availableCredit: netOfFee(amount, fees, feeApplication),
   };
 }
 
@@ -942,6 +991,7 @@ function mapTxRow(
     amount: { toString(): string };
     currency: string;
     commissionAmount: { toString(): string };
+    networkFeeAmount: { toString(): string };
     netAmount: { toString(): string };
     status: TransactionResponse['status'];
     payload?: unknown;
@@ -961,6 +1011,7 @@ function mapTxRow(
     amount: Money.fromDb(row.amount).toString(),
     currency: row.currency.trim(),
     commissionAmount: Money.fromDb(row.commissionAmount).toString(),
+    networkFeeAmount: Money.fromDb(row.networkFeeAmount).toString(),
     netAmount: Money.fromDb(row.netAmount).toString(),
     status: row.status,
     customer: payloadString(row.payload, 'customer'),

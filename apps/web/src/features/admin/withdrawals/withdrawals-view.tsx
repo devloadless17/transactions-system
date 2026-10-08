@@ -25,9 +25,10 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { NetworkFeeLine } from '@/components/network-fee-line';
 import { apiFetch } from '@/lib/api.client';
 import { ApiClientError } from '@/lib/api';
-import { trimAmount, isZeroAmount } from '@/lib/format';
+import { trimAmount, isPositiveAmount, isZeroAmount } from '@/lib/format';
 import {
   EMPTY_FLOW_FILTERS,
   feeApplicationLabel,
@@ -116,9 +117,10 @@ export function AdminWithdrawalsView({
   const companyNames = useCompanyNames(listQ.data?.data.map((w) => w.companyId) ?? []);
   const companyName = (id: string) => companyNames.get(id) ?? id.slice(0, 8);
 
-  // Money columns: full admins see Amount (gross = net+fee) / Fee / Net; back
-  // office sees only a single "Amount" — the money they physically handle — with
-  // no fee/gross breakdown. For OUTbound flows (withdrawal/payout) that's the NET
+  // Money columns: full admins see Amount (gross = net + fee + any network fee)
+  // / Fee (with the network fee beneath it, when charged) / Net; back office
+  // sees only a single "Amount" — the money they physically handle — with no
+  // fee/gross breakdown. For OUTbound flows (withdrawal/payout) that's the NET
   // they pay the recipient (platform keeps the fee). For INbound LOADS the company
   // hands them the GROSS (net + fee) to credit the wallet — back office collects
   // the fee too — so they must see the full total, not the net.
@@ -150,7 +152,12 @@ export function AdminWithdrawalsView({
           header: 'Fee',
           align: 'right',
           className: 'font-mono text-xs text-muted-foreground',
-          cell: (w) => (isZeroAmount(w.feeAmount) ? '—' : trimAmount(w.feeAmount)),
+          cell: (w) => (
+            <>
+              {isZeroAmount(w.feeAmount) ? '—' : trimAmount(w.feeAmount)}
+              <NetworkFeeLine amount={w.networkFeeAmount} />
+            </>
+          ),
         },
         {
           key: 'net',
@@ -322,6 +329,7 @@ export function AdminWithdrawalsView({
       <EntityDetailDrawer
         scope="admin"
         target={detail ? { kind: detailKind, id: detail.id } : null}
+        backoffice={backoffice}
         onClose={() => setDetail(null)}
       />
     </div>
@@ -438,6 +446,9 @@ function ReviewDialog({
   // Loads are INbound (collect gross from the company, credit net); withdrawals
   // and payouts are OUTbound (pay net to the recipient, fee already taken).
   const isLoad = config.noun === 'load';
+  // A network fee charged on this request — full admins only. Back office never
+  // sees a fee, so its copy and amounts stay exactly as they were.
+  const hasNetworkFee = !backoffice && isPositiveAmount(review?.withdrawal.networkFeeAmount);
 
   return (
     <Dialog open={!!review} onOpenChange={(v) => !v && onClose()}>
@@ -452,10 +463,10 @@ function ReviewDialog({
                 ? isLoad
                   ? // INbound: the operator collects the gross (incl. fee) from the
                     // company, then approves to credit the wallet with the net.
-                    `Confirm you received ${trimAmount(review.withdrawal.totalAmount)} ${review.withdrawal.currency} (fee included) from the company, then approve to credit their wallet with ${trimAmount(review.withdrawal.netAmount)} ${review.withdrawal.currency}.`
+                    `Confirm you received ${trimAmount(review.withdrawal.totalAmount)} ${review.withdrawal.currency} (${hasNetworkFee ? 'fees' : 'fee'} included) from the company, then approve to credit their wallet with ${trimAmount(review.withdrawal.netAmount)} ${review.withdrawal.currency}.`
                   : // OUTbound: the operator pays the recipient the net; the system
                     // already deducted the fee from the wallet.
-                    `Pay the recipient ${trimAmount(review.withdrawal.netAmount)} ${review.withdrawal.currency} out-of-band (the fee is already deducted), then record the reference here.`
+                    `Pay the recipient ${trimAmount(review.withdrawal.netAmount)} ${review.withdrawal.currency} out-of-band (${hasNetworkFee ? 'the fees are' : 'the fee is'} already deducted), then record the reference here.`
                 : `Reserved ${trimAmount(review.withdrawal.totalAmount)} ${review.withdrawal.currency} returns to available.`)}
           </DialogDescription>
         </DialogHeader>
@@ -509,6 +520,18 @@ function ReviewDialog({
                         )})`}
                   </span>
                 </div>
+                {hasNetworkFee && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-muted-foreground">
+                      Network fee (platform revenue)
+                    </span>
+                    <span className="font-mono">
+                      {`${trimAmount(review.withdrawal.networkFeeAmount)} ${review.withdrawal.currency} (${feeApplicationLabel(
+                        review.withdrawal.feeApplication,
+                      )})`}
+                    </span>
+                  </div>
+                )}
                 <div className="flex items-center justify-between">
                   <span
                     className={

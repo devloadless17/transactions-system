@@ -33,6 +33,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { CsrfGuard } from '../auth/guards/csrf.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { backofficeList, backofficePayOut, isBackoffice } from '../../common/backoffice-view';
 import { Audited } from '../audit/audit.decorator';
 import type { AuthPrincipal } from '../../common/types/request.types';
 import { SkipResponseEnvelope } from '../../common/decorators/skip-response-envelope.decorator';
@@ -122,8 +123,12 @@ export class WithdrawalsController {
 
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
   @Get('admin/withdrawals')
-  async adminList(@Query(new ZodPipe(listWithdrawalsQuerySchema)) query: ListWithdrawalsQuery) {
-    return this.withdrawals.list({ query });
+  async adminList(
+    @Query(new ZodPipe(listWithdrawalsQuerySchema)) query: ListWithdrawalsQuery,
+    @CurrentUser() user: AuthPrincipal,
+  ) {
+    const page = await this.withdrawals.list({ query });
+    return isBackoffice(user) ? backofficeList(page, backofficePayOut) : page;
   }
 
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
@@ -131,8 +136,9 @@ export class WithdrawalsController {
   @SkipResponseEnvelope()
   adminExport(
     @Query(new ZodPipe(listWithdrawalsQuerySchema)) query: ListWithdrawalsQuery,
+    @CurrentUser() user: AuthPrincipal,
   ): StreamableFile {
-    return this.withdrawals.streamCsv({ query });
+    return this.withdrawals.streamCsv({ query, backoffice: isBackoffice(user) });
   }
 
   // Auto-approval config (SUPER_ADMIN only). Declared BEFORE the `:id` routes so
@@ -154,8 +160,9 @@ export class WithdrawalsController {
 
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
   @Get('admin/withdrawals/:id')
-  async adminGet(@Param('id', new ParseUUIDPipe()) id: string) {
-    return this.withdrawals.getById(id);
+  async adminGet(@Param('id', new ParseUUIDPipe()) id: string, @CurrentUser() user: AuthPrincipal) {
+    const row = await this.withdrawals.getById(id);
+    return isBackoffice(user) ? backofficePayOut(row) : row;
   }
 
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
@@ -166,7 +173,8 @@ export class WithdrawalsController {
     @Body(new ZodPipe(approveWithdrawalSchema)) body: ApproveWithdrawalInput,
     @CurrentUser() user: AuthPrincipal,
   ) {
-    return this.withdrawals.approve(id, user.userId, body);
+    const row = await this.withdrawals.approve(id, user.userId, body);
+    return isBackoffice(user) ? backofficePayOut(row) : row;
   }
 
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
@@ -177,7 +185,8 @@ export class WithdrawalsController {
     @Body(new ZodPipe(rejectWithdrawalSchema)) body: RejectWithdrawalInput,
     @CurrentUser() user: AuthPrincipal,
   ) {
-    return this.withdrawals.reject(id, user.userId, body);
+    const row = await this.withdrawals.reject(id, user.userId, body);
+    return isBackoffice(user) ? backofficePayOut(row) : row;
   }
 
   // Operator escape hatch for a row stuck in PROCESSING (auto-approval left it

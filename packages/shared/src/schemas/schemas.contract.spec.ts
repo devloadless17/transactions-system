@@ -259,6 +259,7 @@ describe('crmEventPayloadSchema (deposit vs withdrawal body)', () => {
     currency: 'USD',
     netAmount: '97.50',
     commissionAmount: '2.50',
+    networkFeeAmount: '0',
     customer: 'John Doe',
     tradingAccount: null,
     phone: '+9613000000',
@@ -271,6 +272,7 @@ describe('crmEventPayloadSchema (deposit vs withdrawal body)', () => {
     amount: '500.00',
     totalAmount: '500.00',
     feeAmount: '5.00',
+    networkFeeAmount: '0',
     netAmount: '495.00',
     feeApplication: 'DEDUCTED',
     currency: 'USD',
@@ -336,6 +338,36 @@ describe('crmEventPayloadSchema (deposit vs withdrawal body)', () => {
       reference: 'payout:1',
       sentAt: '2026-06-22T09:20:00.123Z',
       withdrawal: withdrawalBody,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  // The network fee travels on every money event, mirroring the REST resource:
+  // "0" when the company is not charged one, null only before the fees are known.
+  it('ACCEPTS a pending Whish deposit whose fees are not known yet (all null)', () => {
+    const result = crmEventPayloadSchema.safeParse({
+      event: 'transaction.pending',
+      reference: 'whish:184523',
+      sentAt: '2026-06-22T09:20:00.123Z',
+      transaction: {
+        ...depositBody,
+        id: null,
+        status: 'PENDING',
+        netAmount: null,
+        commissionAmount: null,
+        networkFeeAmount: null,
+      },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('REJECTS a withdrawal body without networkFeeAmount', () => {
+    const { networkFeeAmount: _omit, ...withoutNetworkFee } = withdrawalBody;
+    const result = crmEventPayloadSchema.safeParse({
+      event: 'withdrawal.completed',
+      reference: 'withdrawal:d4f2a1c0-5e6f-4a7b-8c9d-0e1f2a3b4c5d',
+      sentAt: '2026-06-22T09:20:00.123Z',
+      withdrawal: withoutNetworkFee,
     });
     expect(result.success).toBe(false);
   });

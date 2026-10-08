@@ -81,4 +81,8 @@ scale permanently:
   wallet is that ledger's projection and must match it exactly, so it stays wide
   too. New rows are constrained to cents by a `CHECK`, not by the column type.
 
+`network_fee_amount` (on `transactions`, `withdrawals`, `payouts` and `loads`) is
+`DECIMAL(20, 2)`: a column added after the scale change has no pre-cent history, so
+the column type itself enforces whole cents.
+
 The data migration shipped in 2026-08 (cent-tier re-derivation + safe column narrowing); the runbook has been retired.

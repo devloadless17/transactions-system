@@ -18,7 +18,13 @@ import {
 import type { Prisma, PrismaClient } from '@app/db';
 import { PrismaService } from '../../database/prisma.service';
 import { LedgerService } from '../ledger/ledger.service';
-import { netOfFee, reservedTotal } from '../ledger/flow-ledger';
+import {
+  feesConsumeAmountError,
+  moneyInEntries,
+  netOfFee,
+  reservedTotal,
+  type FeeParts,
+} from '../ledger/flow-ledger';
 import { WalletsService } from '../wallets/wallets.service';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { RealtimeService } from '../realtime/realtime.service';
@@ -90,22 +96,19 @@ export class LoadsService {
     const row = await this.prisma.runSerializableAsTenant(companyId, async (tx) => {
       const cTx = tx as unknown as PrismaClient;
 
-      const { fee, feeApplication } = await this.fees.resolveFlowFee(cTx, {
+      const { fees, feeApplication } = await this.fees.resolveFlowFee(cTx, {
         companyId,
         amount,
         operationType: 'LOAD',
       });
       // Net credited to the wallet on approval.
-      const net = netOfFee(amount, fee, feeApplication);
-      // Mirror withdrawals/payouts: a fee that consumes the ENTIRE amount is a
-      // surely-misconfigured rule, and unlike a deposit (already-collected
+      const net = netOfFee(amount, fees, feeApplication);
+      // Mirror withdrawals/payouts: fees that consume the ENTIRE amount are a
+      // surely-misconfigured price, and unlike a deposit (already-collected
       // money that must book), a load REQUEST can safely be rejected up front —
       // before the company hands over real cash for a net-0 credit.
       if (!net.isPositive()) {
-        throw new ValidationError(
-          `The ${fee.toString()} ${input.currency} fee consumes the entire amount — nothing would be credited. Increase the amount or fix the fee rule.`,
-          { amount: amount.toString(), fee: fee.toString() },
-        );
+        throw feesConsumeAmountError(amount, fees, input.currency, 'nothing would be credited');
       }
 
       return cTx.load.create({
@@ -114,7 +117,8 @@ export class LoadsService {
           requestedById,
           amount: amount.toString(),
           currency: input.currency,
-          feeAmount: fee.toString(),
+          feeAmount: fees.commission.toString(),
+          networkFeeAmount: fees.network.toString(),
           netAmount: net.toString(),
           feeApplication,
           status: REQUESTABLE_STATUS,
@@ -135,7 +139,12 @@ export class LoadsService {
         flow: 'LOAD',
         companyId: row.companyId,
         entityId: row.id,
-        amount: row.amount.toString(),
+        // What the operator collects (net + both fees) — the one figure admins
+        // (incl. back office) act on; never a figure a fee could be derived from.
+        amount: Money.fromDb(row.netAmount)
+          .add(Money.fromDb(row.feeAmount))
+          .add(Money.fromDb(row.networkFeeAmount))
+          .toString(),
         currency: row.currency,
       });
     }
@@ -186,11 +195,15 @@ export class LoadsService {
         throw new ConflictError(`Load is in status ${l.status} and cannot be approved`);
       }
 
-      // fromDb: quantize the stored inputs once; the remaining legs derive from them.
+      // fromDb: quantize the stored inputs once; the remaining legs derive from
+      // them. Both fees were frozen on the row at request time.
       const amount = Money.fromDb(l.amount);
-      const fee = Money.fromDb(l.feeAmount);
-      const externalDebit = reservedTotal(amount, fee, l.feeApplication);
-      const availableCredit = netOfFee(amount, fee, l.feeApplication);
+      const fees: FeeParts = {
+        commission: Money.fromDb(l.feeAmount),
+        network: Money.fromDb(l.networkFeeAmount),
+      };
+      const externalDebit = reservedTotal(amount, fees, l.feeApplication);
+      const availableCredit = netOfFee(amount, fees, l.feeApplication);
 
       // Incoming funds settle any outstanding RECEIVABLE (debt the company owes
       // the platform from a prior reversal clawback) FIRST; the remainder credits
@@ -214,49 +227,17 @@ export class LoadsService {
       const creditToAvailable = availableCredit.sub(settle);
 
       // Money in: DEBIT external; CREDIT receivable(settle) + available(remainder)
-      // + fee. Stays balanced: settle + remainder + fee == net + fee == external.
-      const entries: Parameters<typeof this.ledger.writeEntries>[1] = [
-        {
-          companyId: l.companyId,
-          loadId: l.id,
-          accountType: 'EXTERNAL',
-          direction: 'DEBIT',
-          amount: externalDebit,
-          currency: l.currency,
-        },
-      ];
-      if (settle.isPositive()) {
-        entries.push({
-          companyId: l.companyId,
-          loadId: l.id,
-          accountType: 'RECEIVABLE',
-          direction: 'CREDIT',
-          amount: settle,
-          currency: l.currency,
-          metadata: { kind: 'receivable_settlement' },
-        });
-      }
-      if (creditToAvailable.isPositive()) {
-        entries.push({
-          companyId: l.companyId,
-          loadId: l.id,
-          accountType: 'AVAILABLE',
-          direction: 'CREDIT',
-          amount: creditToAvailable,
-          currency: l.currency,
-        });
-      }
-      if (fee.isPositive()) {
-        entries.push({
-          companyId: l.companyId,
-          loadId: l.id,
-          accountType: 'FEE',
-          direction: 'CREDIT',
-          amount: fee,
-          currency: l.currency,
-        });
-      }
-      await this.ledger.writeEntries(cTx, entries);
+      // + FEE + NETWORK_FEE. Stays balanced: settle + remainder + both fees ==
+      // net + both fees == external.
+      await this.ledger.writeEntries(
+        cTx,
+        moneyInEntries({ loadId: l.id }, l.companyId, l.currency, {
+          externalDebit,
+          receivableSettle: settle,
+          availableCredit: creditToAvailable,
+          fees,
+        }),
+      );
       await this.wallets.applyDelta(cTx, {
         companyId: l.companyId,
         currency: l.currency,
@@ -440,13 +421,19 @@ export class LoadsService {
    * chunks. Mirrors the list query's filters; each chunk is its own short
    * RLS-scoped query.
    */
-  streamCsv(args: { companyId?: string; query: ListLoadsQuery }): StreamableFile {
+  streamCsv(args: {
+    companyId?: string;
+    query: ListLoadsQuery;
+    /** Back office gets one money figure per row — see common/backoffice-view.ts. */
+    backoffice?: boolean;
+  }): StreamableFile {
     const where = this.exportWhere(args);
     const scope = args.companyId ?? null;
     const prisma = this.prisma;
     return streamFlowCsv({
       noun: 'loads',
       now: Date.now(),
+      backoffice: args.backoffice ? 'collect' : undefined,
       baseWhere: where as Record<string, unknown>,
       findPage: (pageWhere, take) =>
         prisma.runAsScoped(scope, (tx) =>
@@ -482,6 +469,7 @@ function mapLoad(row: {
   amount: { toString(): string };
   currency: string;
   feeAmount: { toString(): string };
+  networkFeeAmount: { toString(): string };
   feeApplication: FeeApplication;
   netAmount: { toString(): string };
   status: WithdrawalStatus;
@@ -501,14 +489,19 @@ function mapLoad(row: {
     companyId: row.companyId,
     // Quantized on the way out so the API, the CSV export and the CRM webhook
     // all report the same figure — and the same figure the ledger books. Deriving
-    // totalAmount from these (not from the raw columns) keeps net + fee == total
-    // exact, because a sum of two at-scale values is itself at scale.
+    // totalAmount from these (not from the raw columns) keeps
+    // net + fee + networkFee == total exact, because a sum of at-scale values is
+    // itself at scale.
     amount: Money.fromDb(row.amount).toString(),
     currency: row.currency.trim(),
     feeAmount: Money.fromDb(row.feeAmount).toString(),
+    networkFeeAmount: Money.fromDb(row.networkFeeAmount).toString(),
     feeApplication: row.feeApplication,
     netAmount: Money.fromDb(row.netAmount).toString(),
-    totalAmount: Money.fromDb(row.netAmount).add(Money.fromDb(row.feeAmount)).toString(),
+    totalAmount: Money.fromDb(row.netAmount)
+      .add(Money.fromDb(row.feeAmount))
+      .add(Money.fromDb(row.networkFeeAmount))
+      .toString(),
     status: row.status,
     payoutMethod: row.payoutMethod,
     payoutDetails: (row.payoutDetails as PayoutDetails | null) ?? null,

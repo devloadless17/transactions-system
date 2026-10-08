@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Pagination } from '@/components/ui/pagination';
 import { EmptyState } from '@/components/empty-state';
 import { apiFetch } from '@/lib/api.client';
-import { formatMoney, trimAmount } from '@/lib/format';
+import { formatMoney, isPositiveAmount, trimAmount } from '@/lib/format';
 import { cn } from '@/lib/cn';
 import { useDebouncedValue } from '@/lib/use-debounced-value';
 import {
@@ -21,7 +21,7 @@ import {
 import { CompanyFilter } from '@/features/admin/company-filter';
 import { ExportCsvButton } from '@/components/export-csv-button';
 import { ActivityDetailDrawer } from './activity-detail-drawer';
-import { activityHeadlineAmount } from './headline-amount';
+import { activityHeadlineAmount, backofficeActivityAmount } from './headline-amount';
 
 const PAGE_SIZE = 20;
 
@@ -42,8 +42,17 @@ const KINDS: Array<{ value: KindFilter; label: string }> = [
  * the Whish-style "ins and outs" view. COMPLETED operations only. When a single
  * currency + no type/direction/search filter is active the API also returns a
  * running wallet balance per row (balance mode), shown under each amount.
+ *
+ * `backoffice` (admin scope only): BACKOFFICE never sees a platform fee — each
+ * row leads with the single amount its own lists show, with no fee lines.
  */
-export function ActivityView({ scope }: { scope: 'admin' | 'company' }) {
+export function ActivityView({
+  scope,
+  backoffice = false,
+}: {
+  scope: 'admin' | 'company';
+  backoffice?: boolean;
+}) {
   const [direction, setDirection] = useState<Direction>('');
   const [kind, setKind] = useState<KindFilter>('');
   const [range, setRange] = useState<DateRange>(DEFAULT_RANGE);
@@ -178,6 +187,7 @@ export function ActivityView({ scope }: { scope: 'admin' | 'company' }) {
                   key={item.id}
                   item={item}
                   scope={scope}
+                  backoffice={backoffice}
                   balanceMode={balanceMode}
                   onSelect={setSelected}
                 />
@@ -197,7 +207,12 @@ export function ActivityView({ scope }: { scope: 'admin' | 'company' }) {
         />
       )}
 
-      <ActivityDetailDrawer scope={scope} item={selected} onClose={() => setSelected(null)} />
+      <ActivityDetailDrawer
+        scope={scope}
+        backoffice={backoffice}
+        item={selected}
+        onClose={() => setSelected(null)}
+      />
     </div>
   );
 }
@@ -221,11 +236,13 @@ function channel(item: ActivityItem): string {
 function FeedRow({
   item,
   scope,
+  backoffice,
   balanceMode,
   onSelect,
 }: {
   item: ActivityItem;
   scope: 'admin' | 'company';
+  backoffice: boolean;
   balanceMode: boolean;
   onSelect: (item: ActivityItem) => void;
 }) {
@@ -272,10 +289,18 @@ function FeedRow({
             )}
           >
             {isIn ? '+' : '−'}
-            {formatMoney(activityHeadlineAmount(item))} {item.currency}
+            {formatMoney(
+              backoffice ? backofficeActivityAmount(item) : activityHeadlineAmount(item),
+            )}{' '}
+            {item.currency}
           </div>
-          {Number(item.fee) > 0 && (
+          {!backoffice && Number(item.fee) > 0 && (
             <div className="text-xs text-muted-foreground">fee {trimAmount(item.fee)}</div>
+          )}
+          {!backoffice && isPositiveAmount(item.networkFee) && (
+            <div className="text-xs text-muted-foreground">
+              network fee {trimAmount(item.networkFee)}
+            </div>
           )}
           {balanceMode && item.balanceAfter != null && (
             <div className="text-xs tabular-nums text-muted-foreground">

@@ -10,7 +10,7 @@ import { Badge } from '@/components/ui/badge';
 import { DataTable, type Column } from '@/components/ui/data-table';
 import { apiFetch } from '@/lib/api.client';
 import { granularityWord } from '@/lib/date-presets';
-import { formatNumber as fmt } from '@/lib/format';
+import { formatNumber as fmt, isPositiveAmount } from '@/lib/format';
 import { KpiCard } from '@/features/analytics/kpi-card';
 import { FlowsChart } from '@/features/analytics/flows-chart.lazy';
 import {
@@ -69,8 +69,14 @@ export function AdminOverview() {
   const currencies = platformQ.data?.byCurrency.map((c) => c.currency) ?? [];
   // Hero KPIs pick the "primary" currency: first with any fees, else first in the list.
   const primary =
-    platformQ.data?.byCurrency.find((c) => Number(c.feesEarned) > 0) ??
-    platformQ.data?.byCurrency[0];
+    platformQ.data?.byCurrency.find(
+      (c) => Number(c.feesEarned) > 0 || isPositiveAmount(c.networkFeesEarned),
+    ) ?? platformQ.data?.byCurrency[0];
+  // Network-fee revenue only exists once some company is charged the optional
+  // network fee; until then its card and column don't render at all.
+  const primaryNetworkFees = isPositiveAmount(primary?.networkFeesEarned);
+  const anyNetworkFees =
+    platformQ.data?.byCurrency.some((c) => isPositiveAmount(c.networkFeesEarned)) ?? false;
 
   // Per-source cost (what each source charged the platform) in the By-source
   // currency, joined onto topSources by id — keeps the company-shared topSource
@@ -107,6 +113,17 @@ export function AdminOverview() {
       className: 'font-mono',
       cell: (c) => fmt(c.feesEarned),
     },
+    ...(anyNetworkFees
+      ? [
+          {
+            key: 'networkFeesEarned',
+            header: 'Network fees',
+            align: 'right',
+            className: 'font-mono',
+            cell: (c: CurrencyRow) => fmt(c.networkFeesEarned),
+          } as Column<CurrencyRow>,
+        ]
+      : []),
     {
       key: 'sourceFees',
       header: 'Source fees',
@@ -188,8 +205,11 @@ export function AdminOverview() {
         <DateRangeControls value={range} onChange={setRange} className="self-start sm:self-auto" />
       </div>
 
-      {/* Revenue trio: platform revenue − source fees = net revenue. */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      {/* Revenue trio: platform revenue − source fees = net revenue. Once a
+          network fee is earned it joins as a fourth card (+ network fees). */}
+      <div
+        className={`grid grid-cols-1 gap-4 sm:grid-cols-2 ${primaryNetworkFees ? 'lg:grid-cols-4' : 'lg:grid-cols-3'}`}
+      >
         <KpiCard
           label="Platform revenue"
           value={primary ? `${fmt(primary.feesEarned)} ${primary.currency}` : '—'}
@@ -198,6 +218,13 @@ export function AdminOverview() {
             (currencies.length > 1 ? ` (primary: ${primary?.currency})` : '')
           }
         />
+        {primary && primaryNetworkFees && (
+          <KpiCard
+            label="Network fees"
+            value={`${fmt(primary.networkFeesEarned)} ${primary.currency}`}
+            hint={`Network fees earned · ${rangeLabel(range)}`}
+          />
+        )}
         <KpiCard
           label="Source fees"
           value={primary ? `− ${fmt(primary.sourceFees)} ${primary.currency}` : '—'}
@@ -206,7 +233,11 @@ export function AdminOverview() {
         <KpiCard
           label="Net revenue"
           value={primary ? `${fmt(primary.netRevenue)} ${primary.currency}` : '—'}
-          hint="Platform revenue − source fees (your real take-home)"
+          hint={
+            primaryNetworkFees
+              ? 'Platform revenue + network fees − source fees (your real take-home)'
+              : 'Platform revenue − source fees (your real take-home)'
+          }
         />
       </div>
 

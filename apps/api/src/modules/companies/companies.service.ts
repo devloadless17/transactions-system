@@ -4,12 +4,15 @@ import crypto from 'node:crypto';
 import {
   type AuditChanges,
   type CompanyBalance,
+  type CompanyDetailResponse,
   type CompanyListResponse,
   type CompanyResponse,
   type CompanyStatus,
   type CreateCompanyInput,
   type CreateCompanyResponse,
   type ListCompaniesQuery,
+  type NetworkFeeConfigResponse,
+  type SetNetworkFeeConfigInput,
   type UpdateCompanyInput,
   UserRole,
   UserStatus,
@@ -21,6 +24,7 @@ import { assertListOffset } from '../../common/pagination';
 import { expand } from '../commissions/commissions.service';
 import { diffFields } from '../audit/audit-changes';
 import type { Prisma } from '@app/db';
+import { diffNetworkFeeConfig, toNetworkFeeConfig } from './network-fee-config';
 
 /**
  * The ONLY company fields whose changes are written to the audit log.
@@ -228,10 +232,87 @@ export class CompaniesService {
     });
   }
 
-  async getById(id: string): Promise<CompanyResponse> {
-    const row = await this.prisma.runAsAdmin((tx) => tx.company.findUnique({ where: { id } }));
+  /**
+   * The admin company-detail resource: the company plus its network-fee
+   * configuration. Only the full-admin detail route returns it — list, create
+   * and update stay `CompanyResponse`, so roles that may list companies never
+   * see a tenant's pricing.
+   */
+  async getById(id: string): Promise<CompanyDetailResponse> {
+    const row = await this.prisma.runAsAdmin((tx) =>
+      tx.company.findUnique({ where: { id }, include: { networkFees: true } }),
+    );
     if (!row) throw new NotFoundError('Company', id);
-    return mapCompany(row);
+    return {
+      ...mapCompany(row),
+      networkFee: toNetworkFeeConfig(row.networkFeeEnabled, row.networkFees),
+    };
+  }
+
+  async getNetworkFee(id: string): Promise<NetworkFeeConfigResponse> {
+    const row = await this.prisma.runAsAdmin((tx) =>
+      tx.company.findUnique({
+        where: { id },
+        select: { networkFeeEnabled: true, networkFees: true },
+      }),
+    );
+    if (!row) throw new NotFoundError('Company', id);
+    return toNetworkFeeConfig(row.networkFeeEnabled, row.networkFees);
+  }
+
+  /**
+   * Replace a company's whole network-fee configuration — the master switch and
+   * every flow's rate (a flow left out is not charged) — in one transaction.
+   * Authorization (SUPER_ADMIN) is enforced on the route.
+   *
+   * New operations pick the change up immediately (the money flows read the
+   * config fresh, uncached); rows already booked or pending keep the fees that
+   * were frozen onto them, so nothing existing is ever repriced.
+   *
+   * Runs under runAsAdmin (READ COMMITTED) — never a serializable transaction.
+   * The money flows read this config inside their own SERIALIZABLE
+   * transactions; keeping every writer of `companies` at READ COMMITTED is what
+   * guarantees a save here can never cause a serialization failure in a
+   * deposit or withdrawal.
+   */
+  async setNetworkFee(
+    id: string,
+    input: SetNetworkFeeConfigInput,
+    opts?: Pick<CompanyUpdateOpts, 'onChanges'>,
+  ): Promise<NetworkFeeConfigResponse> {
+    const { config, changes } = await this.prisma.runAsAdmin(async (tx) => {
+      // Lock the company row so two concurrent saves run one after the other
+      // instead of interleaving their delete/insert of the rates.
+      const locked = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM companies WHERE id = ${id}::uuid FOR UPDATE`;
+      if (locked.length === 0) throw new NotFoundError('Company', id);
+      const existing = await tx.company.findUniqueOrThrow({
+        where: { id },
+        select: { networkFeeEnabled: true, networkFees: true },
+      });
+      const changes = diffNetworkFeeConfig(
+        toNetworkFeeConfig(existing.networkFeeEnabled, existing.networkFees),
+        input,
+      );
+      await tx.company.update({ where: { id }, data: { networkFeeEnabled: input.enabled } });
+      await tx.companyNetworkFee.deleteMany({ where: { companyId: id } });
+      if (input.rates.length > 0) {
+        await tx.companyNetworkFee.createMany({
+          data: input.rates.map((r) => ({
+            companyId: id,
+            operationType: r.operationType,
+            feeType: r.feeType,
+            feeValue: r.feeValue,
+          })),
+        });
+      }
+      const rows = await tx.companyNetworkFee.findMany({ where: { companyId: id } });
+      return { config: toNetworkFeeConfig(input.enabled, rows), changes };
+    });
+    // Publish AFTER the transaction commits — see update().
+    if (Object.keys(changes).length > 0) opts?.onChanges?.(changes);
+    this.realtime.admin(['companies'], id);
+    return config;
   }
 
   async update(

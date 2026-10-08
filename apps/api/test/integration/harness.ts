@@ -17,6 +17,7 @@ import type {
   CreatePayoutInput,
   CreateWithdrawalInput,
   IngestTransactionInput,
+  SetNetworkFeeConfigInput,
 } from '@app/shared';
 import { PrismaService } from '../../src/database/prisma.service';
 import { LedgerService } from '../../src/modules/ledger/ledger.service';
@@ -29,6 +30,7 @@ import { WithdrawalsService } from '../../src/modules/withdrawals/withdrawals.se
 import { PayoutsService } from '../../src/modules/payouts/payouts.service';
 import { LoadsService } from '../../src/modules/loads/loads.service';
 import { WhishPaymentsService } from '../../src/modules/whish/whish-payments.service';
+import { CompaniesService } from '../../src/modules/companies/companies.service';
 import type { CacheService } from '../../src/modules/cache/cache.service';
 import type { AnalyticsService } from '../../src/modules/analytics/analytics.service';
 import type { RealtimeService } from '../../src/modules/realtime/realtime.service';
@@ -59,6 +61,8 @@ export interface Harness {
   whishClient: FakeWhishClient;
   /** Records every CRM dispatch, so tests can assert WHICH event fired. */
   crm: FakeCrmDispatch;
+  /** The real company admin service — e.g. the network-fee config write path. */
+  companies: CompaniesService;
 }
 
 /**
@@ -112,8 +116,9 @@ export class FakeCrmDispatch {
   emitWhish(payload: Record<string, unknown>): void {
     this.events.push({ kind: 'whish', event: String(payload.event), payload });
   }
-  emitFromTransaction(_txn: unknown, event: string): void {
-    this.events.push({ kind: 'transaction', event, payload: {} });
+  emitFromTransaction(txn: unknown, event: string): void {
+    // The mapped transaction the real dispatcher builds its CRM body from.
+    this.events.push({ kind: 'transaction', event, payload: txn as Record<string, unknown> });
   }
   emitWithdrawal(payload: Record<string, unknown>): void {
     this.events.push({ kind: 'withdrawal', event: String(payload.event), payload });
@@ -141,6 +146,7 @@ const fakeAnalytics = {
 
 const fakeRealtime = {
   company: () => undefined,
+  admin: () => undefined,
 } as unknown as RealtimeService;
 
 const fakeNotifications = {
@@ -271,6 +277,8 @@ export function buildHarness(): Harness {
     fakeTxLogs,
   );
 
+  const companies = new CompaniesService(prisma, fakeRealtime);
+
   return {
     prisma,
     transactions,
@@ -282,6 +290,7 @@ export function buildHarness(): Harness {
     whish,
     whishClient,
     crm: crmRecorder,
+    companies,
   };
 }
 
@@ -355,6 +364,64 @@ export async function addFlowFee(
   );
 }
 
+/** Add a company-scoped FIXED-dollar fee rule for an operation type. */
+export async function addFixedFlowFee(
+  h: Harness,
+  companyId: string,
+  operationType: FlowOp,
+  dollars: string,
+  feeApplication: 'DEDUCTED' | 'ON_TOP' = 'DEDUCTED',
+): Promise<void> {
+  await h.prisma.runAsAdmin((tx) =>
+    tx.commissionRule.create({
+      data: {
+        companyId,
+        sourceId: null,
+        operationType,
+        feeApplication,
+        minAmount: '0.01',
+        maxAmount: '100000000',
+        commissionType: 'FIXED',
+        commissionValue: dollars,
+        priority: 100,
+        active: true,
+      },
+    }),
+  );
+}
+
+/**
+ * Configure a company's network fee through the REAL admin write path
+ * (CompaniesService.setNetworkFee), exactly as the SUPER_ADMIN endpoint does.
+ */
+export async function setNetworkFee(
+  h: Harness,
+  companyId: string,
+  config: SetNetworkFeeConfigInput,
+): Promise<void> {
+  await h.companies.setNetworkFee(companyId, config);
+}
+
+/**
+ * The ledger legs booked for one row, as `ACCOUNT:DIRECTION → amount` (a leg
+ * that was not booked is simply absent). Read under the company's RLS scope.
+ */
+export async function legsFor(
+  h: Harness,
+  companyId: string,
+  ref: { transactionId?: string; withdrawalId?: string; payoutId?: string; loadId?: string },
+): Promise<Record<string, string>> {
+  return h.prisma.runAsScoped(companyId, async (tx) => {
+    const rows = await tx.ledgerEntry.findMany({ where: { companyId, ...ref } });
+    const legs: Record<string, Money> = {};
+    for (const r of rows) {
+      const key = `${r.accountType}:${r.direction}`;
+      legs[key] = (legs[key] ?? Money.zero()).add(Money.of(r.amount.toString()));
+    }
+    return Object.fromEntries(Object.entries(legs).map(([k, v]) => [k, v.toString()]));
+  });
+}
+
 /**
  * TRANSACTION fee. Ingest must price every transaction, so an ingest test
  * needs a matching rule (unlike the money-out/in flows, where a missing rule
@@ -420,6 +487,9 @@ export interface Snapshot {
   reservedLedger: string;
   /** Debit-normal: positive ⇒ company owes the platform. */
   receivableLedger: string;
+  /** Platform revenue accounts (credit-normal): the commission and the network fee. */
+  feeLedger: string;
+  networkFeeLedger: string;
   wallet: { available: string; reserved: string; pending: string } | null;
 }
 
@@ -457,6 +527,8 @@ export async function snapshot(
       availableLedger: net('AVAILABLE').toString(),
       reservedLedger: net('RESERVED').toString(),
       receivableLedger: net('RECEIVABLE').mul(-1).toString(),
+      feeLedger: net('FEE').toString(),
+      networkFeeLedger: net('NETWORK_FEE').toString(),
       wallet: w
         ? {
             available: Money.of(w.availableBalance.toString()).toString(),

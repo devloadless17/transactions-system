@@ -76,18 +76,21 @@ const WITHDRAWAL_RESPONSE = `{
   "data": {
     "id": "d4f2a1c0-...",
     "status": "PENDING",
-    "amount": "500.00",
+    "amount": "500",
     "currency": "USD",
-    "feeAmount": "5.00",            // the platform fee on this payout
-    "feeApplication": "DEDUCTED",   // DEDUCTED or ON_TOP (see below)
-    "netAmount": "495.00",          // what the recipient receives
-    "totalAmount": "500.00",        // what leaves your wallet (net + fee)
+    "feeAmount": "5",               // the platform fee (commission) on this payout
+    "networkFeeAmount": "0",        // the optional network fee ("0" if you're not charged one)
+    "feeApplication": "DEDUCTED",   // DEDUCTED or ON_TOP, for both fees (see below)
+    "netAmount": "495",             // what the recipient receives
+    "totalAmount": "500",           // what leaves your wallet (net + fee + network fee)
     "payoutMethod": "CASH",
     "createdAt": "2026-06-10T10:00:00.000Z"
   }
 }
-# Fees are returned up front. DEDUCTED → recipient gets netAmount (amount − fee).
-# ON_TOP → recipient gets the full amount and the fee is added, so totalAmount = amount + fee.`;
+# Fees are returned up front. DEDUCTED → recipient gets netAmount (amount − fee − network fee).
+# ON_TOP → recipient gets the full amount and the fees are added on top, so
+# totalAmount = amount + feeAmount + networkFeeAmount.
+# Money fields drop trailing zeros ("500", "2.5", "0") — compare them numerically.`;
 
 const STATUS_CURL = `curl ${API_BASE}/company/withdrawals/<id> \\
   -H "Authorization: Bearer tsk_<company-key>"
@@ -100,12 +103,13 @@ const STATUS_CURL = `curl ${API_BASE}/company/withdrawals/<id> \\
   "data": {
     "id": "d4f2a1c0-...",
     "status": "COMPLETED",
-    "amount": "500.00",
+    "amount": "500",
     "currency": "USD",
-    "feeAmount": "5.00",                 // the platform fee we charged
+    "feeAmount": "5",                    // the platform fee we charged
+    "networkFeeAmount": "0",             // the optional network fee ("0" if not charged)
     "feeApplication": "DEDUCTED",
-    "netAmount": "495.00",               // what the recipient received
-    "totalAmount": "500.00",             // what left your wallet (net + fee)
+    "netAmount": "495",                  // what the recipient received
+    "totalAmount": "500",                // what left your wallet (net + fee + network fee)
     "payoutMethod": "CASH",
     "externalReference": "WIRE-88231",   // our proof we sent it (set on approval)
     "notes": "Weekly settlement",        // your original request note (never overwritten)
@@ -224,10 +228,28 @@ export function CompanyApiView() {
                 <strong className="text-foreground">
                   You can&apos;t choose feeApplication per request.
                 </strong>{' '}
-                It comes from the commission rule your platform admin configures; sending it in the
-                body has no effect. Want recipients to receive the full amount with the fee billed
-                to your wallet? Ask your account manager to set that rule to{' '}
-                <code className="font-mono">ON_TOP</code>.
+                It comes from the commission rule your platform admin configures (the network fee
+                follows the same application); sending it in the body has no effect. Want recipients
+                to receive the full amount with the fees billed to your wallet? Ask your account
+                manager to set that rule to <code className="font-mono">ON_TOP</code>.
+              </li>
+              <li>
+                <strong className="text-foreground">Network fee.</strong> Rival may charge your
+                company an optional second platform fee, set per flow (deposits, withdrawals,
+                payouts, loads) as a percentage or a fixed amount. It is returned as{' '}
+                <code className="font-mono">networkFeeAmount</code> —{' '}
+                <code className="font-mono">&quot;0&quot;</code> when you&apos;re not charged one —
+                applied the same way as the fee and frozen on each request, so{' '}
+                <code className="font-mono">
+                  totalAmount = netAmount + feeAmount + networkFeeAmount
+                </code>{' '}
+                always holds. E.g. a 100 withdrawal with an{' '}
+                <code className="font-mono">ON_TOP</code> $2 fee and a $1 network fee debits 103 and
+                pays the recipient the full 100. You can&apos;t set it through the API, and it is a
+                platform fee — not a blockchain fee, and unrelated to{' '}
+                <code className="font-mono">payoutDetails.network</code>. If{' '}
+                <code className="font-mono">DEDUCTED</code> fees would consume the whole amount, the
+                request is refused with <code className="font-mono">400 VALIDATION_ERROR</code>.
               </li>
               <li>
                 <strong className="text-foreground">
@@ -297,6 +319,7 @@ export function CompanyApiView() {
               CRM webhook
             </Link>{' '}
             in real time, carrying the same <code className="font-mono">feeAmount</code> /{' '}
+            <code className="font-mono">networkFeeAmount</code> /{' '}
             <code className="font-mono">netAmount</code> /{' '}
             <code className="font-mono">totalAmount</code> breakdown, so you never have to poll.
             Payouts and loads are managed over this API only — read their status with the GET below.
@@ -344,13 +367,30 @@ export function CompanyApiView() {
           <p className="rounded-md border-l-4 border-primary bg-primary/5 p-3 text-xs text-muted-foreground">
             <strong className="text-foreground">Fees are transparent.</strong> Every transaction
             returns <code className="font-mono">amount</code> (gross),{' '}
-            <code className="font-mono">commissionAmount</code> (the platform fee we took), and{' '}
-            <code className="font-mono">netAmount</code> (what you were credited). Withdrawals,
-            payouts and loads return the same breakdown as{' '}
-            <code className="font-mono">totalAmount</code> /{' '}
+            <code className="font-mono">commissionAmount</code> (the platform fee we took),{' '}
+            <code className="font-mono">networkFeeAmount</code> (the optional network fee —{' '}
+            <code className="font-mono">&quot;0&quot;</code> if you&apos;re not charged one), and{' '}
+            <code className="font-mono">netAmount</code> (what you were credited) — e.g. a $100
+            deposit with a $2 commission and a 1% network fee credits $97. Withdrawals, payouts and
+            loads return the same breakdown as <code className="font-mono">totalAmount</code> /{' '}
             <code className="font-mono">feeAmount</code> /{' '}
+            <code className="font-mono">networkFeeAmount</code> /{' '}
             <code className="font-mono">netAmount</code> — so after any completed transaction you
             always know exactly what we charged.
+          </p>
+          <p className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+            <strong className="text-foreground">CSV exports.</strong> Transactions, withdrawals,
+            payouts, loads, ledger and activity each have an{' '}
+            <code className="font-mono">/export.csv</code> (same filters as the list; the raw file,
+            no envelope). Columns are only ever appended, so parse by header name. The newest is{' '}
+            <code className="font-mono">network_fee_amount</code> — the last column of the
+            transactions, withdrawals, payouts, loads and activity exports,{' '}
+            <code className="font-mono">0.00</code> when you&apos;re not charged a network fee. In
+            the withdrawals, payouts, loads and activity exports,{' '}
+            <code className="font-mono">
+              gross_amount = fee_amount + network_fee_amount + net_amount
+            </code>
+            .
           </p>
         </CardContent>
       </Card>
@@ -378,19 +418,19 @@ export function CompanyApiView() {
             />
             <EndpointGroup
               label="Activity"
-              endpoints="GET /company/activity · /operations/counts"
+              endpoints="GET /company/activity · /export.csv · /operations/counts"
             />
             <EndpointGroup
               label="Withdrawals"
-              endpoints="GET /company/withdrawals · GET /:id · POST · POST /:id/cancel"
+              endpoints="GET /company/withdrawals · GET /:id · /export.csv · POST · POST /:id/cancel"
             />
             <EndpointGroup
               label="Payouts"
-              endpoints="GET /company/payouts · GET /:id · POST · POST /:id/cancel"
+              endpoints="GET /company/payouts · GET /:id · /export.csv · POST · POST /:id/cancel"
             />
             <EndpointGroup
               label="Loads"
-              endpoints="GET /company/loads · GET /:id · POST · POST /:id/cancel"
+              endpoints="GET /company/loads · GET /:id · /export.csv · POST · POST /:id/cancel"
             />
             <EndpointGroup
               label="API keys (dashboard session only)"

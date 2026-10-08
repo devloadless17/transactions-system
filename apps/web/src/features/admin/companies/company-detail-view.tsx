@@ -9,6 +9,7 @@ import {
   companyNameSchema,
   slugSchema,
   type AuditLogResponse,
+  type CompanyDetailResponse,
   type CompanyResponse,
   type OverviewResponse,
   type PaginatedResponse,
@@ -32,10 +33,11 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { DataTable, type Column } from '@/components/ui/data-table';
+import { NetworkFeeLine } from '@/components/network-fee-line';
 import { apiFetch } from '@/lib/api.client';
 import { granularityWord } from '@/lib/date-presets';
 import { ApiClientError } from '@/lib/api';
-import { formatNumber as fmt, trimAmount } from '@/lib/format';
+import { formatNumber as fmt, isPositiveAmount, trimAmount } from '@/lib/format';
 import { KpiCard } from '@/features/analytics/kpi-card';
 import { VolumeChart } from '@/features/analytics/volume-chart.lazy';
 import {
@@ -50,14 +52,18 @@ import {
 } from '@/features/analytics/date-range';
 import { AuditChangesCell } from '@/features/admin/audit/audit-changes';
 import { CompanyUsersCard } from './company-users-card';
+import { NetworkFeeCard } from './network-fee-card';
 
 export function CompanyDetailView({
   companyId,
   canEditIdentity = false,
+  canEditNetworkFee = false,
 }: {
   companyId: string;
   /** SUPER_ADMIN: may rename the company and change its slug. */
   canEditIdentity?: boolean;
+  /** SUPER_ADMIN: may change the network fee (others see it read-only). */
+  canEditNetworkFee?: boolean;
 }) {
   const qc = useQueryClient();
   const [chartCurrency, setChartCurrency] = useState<string>('USD');
@@ -77,7 +83,7 @@ export function CompanyDetailView({
 
   const companyQ = useQuery({
     queryKey: ['admin', 'company', companyId],
-    queryFn: () => apiFetch<CompanyResponse>(`/admin/companies/${companyId}`),
+    queryFn: () => apiFetch<CompanyDetailResponse>(`/admin/companies/${companyId}`),
   });
 
   const overviewQ = useQuery({
@@ -228,7 +234,12 @@ export function CompanyDetailView({
       header: 'Fee',
       align: 'right',
       className: 'font-mono text-xs',
-      cell: (t) => trimAmount(t.commissionAmount),
+      cell: (t) => (
+        <>
+          {trimAmount(t.commissionAmount)}
+          <NetworkFeeLine amount={t.networkFeeAmount} />
+        </>
+      ),
     },
     {
       key: 'status',
@@ -540,6 +551,15 @@ export function CompanyDetailView({
         </Card>
       )}
 
+      {companyQ.data?.networkFee && (
+        <NetworkFeeCard
+          companyId={companyId}
+          companyName={companyQ.data.name}
+          config={companyQ.data.networkFee}
+          canEdit={canEditNetworkFee}
+        />
+      )}
+
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <KpiCard
           label="Deposits"
@@ -594,6 +614,20 @@ export function CompanyDetailView({
           }
           hint={`Commission earned · ${rangeLabel(range)}`}
         />
+        {/* Network fees — admin-only like the card above. Shown while the
+            company is charged one, or once it has earned some in the range. */}
+        {(companyQ.data?.networkFee?.enabled ||
+          isPositiveAmount(overviewQ.data?.kpi.totalNetworkFees)) && (
+          <KpiCard
+            label="Network fees"
+            value={
+              overviewQ.data?.kpi.totalNetworkFees
+                ? `${fmt(overviewQ.data.kpi.totalNetworkFees)} ${chartCurrency}`
+                : '—'
+            }
+            hint={`Network fee earned · ${rangeLabel(range)}`}
+          />
+        )}
       </div>
 
       <Card>
@@ -709,12 +743,17 @@ export function CompanyDetailView({
 }
 
 // KPI sub-line: settled count, the net vs. fee split of the completed total
-// (gross = net + fee; per-flow fees tie out to the Platform fees card), plus
-// any money still in-flight for that operation type.
+// (gross = net + fee + network fee; per-flow fees tie out to the Platform fees
+// card, network fees to the Network fees card), plus any money still in-flight
+// for that operation type. The network part only appears once one is charged.
 function inflightHint(m: VolumeMetric, currency: string): string {
   const parts = [`${m.completedCount.toLocaleString()} completed`];
-  if (Number(m.completedFees) > 0) {
-    parts.push(`${fmt(m.completedNet)} net`, `${fmt(m.completedFees)} fee`);
+  const hasFee = Number(m.completedFees) > 0;
+  const hasNetworkFee = isPositiveAmount(m.completedNetworkFees);
+  if (hasFee || hasNetworkFee) {
+    parts.push(`${fmt(m.completedNet)} net`);
+    if (hasFee) parts.push(`${fmt(m.completedFees)} fee`);
+    if (hasNetworkFee) parts.push(`${fmt(m.completedNetworkFees)} network`);
   }
   if (m.pendingCount > 0 || Number(m.pendingTotal) > 0) {
     parts.push(`${fmt(m.pendingTotal)} ${currency} in-flight`);

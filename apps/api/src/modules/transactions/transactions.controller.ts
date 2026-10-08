@@ -26,6 +26,12 @@ import { Audited } from '../audit/audit.decorator';
 import type { AuthPrincipal } from '../../common/types/request.types';
 import { SkipResponseEnvelope } from '../../common/decorators/skip-response-envelope.decorator';
 import { TransactionsService } from './transactions.service';
+import {
+  backofficeList,
+  backofficeTransaction,
+  backofficeTransactionDetail,
+  isBackoffice,
+} from '../../common/backoffice-view';
 import { ForbiddenError } from '../../common/errors/domain.error';
 
 @UseGuards(CompanyAccessGuard, RolesGuard)
@@ -36,8 +42,12 @@ export class TransactionsReadController {
   // ---------- Admin ----------
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
   @Get('admin/transactions')
-  async adminList(@Query(new ZodPipe(listTransactionsQuerySchema)) query: ListTransactionsQuery) {
-    return this.transactions.list({ query });
+  async adminList(
+    @Query(new ZodPipe(listTransactionsQuerySchema)) query: ListTransactionsQuery,
+    @CurrentUser() user: AuthPrincipal,
+  ) {
+    const page = await this.transactions.list({ query });
+    return isBackoffice(user) ? backofficeList(page, backofficeTransaction) : page;
   }
 
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
@@ -45,20 +55,26 @@ export class TransactionsReadController {
   @SkipResponseEnvelope()
   adminExport(
     @Query(new ZodPipe(listTransactionsQuerySchema)) query: ListTransactionsQuery,
+    @CurrentUser() user: AuthPrincipal,
   ): StreamableFile {
-    return this.transactions.streamCsv({ query });
+    return this.transactions.streamCsv({ query, backoffice: isBackoffice(user) });
   }
 
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
   @Get('admin/transactions/:id')
-  async adminGet(@Param('id', new ParseUUIDPipe()) id: string) {
-    return this.transactions.getById(id);
+  async adminGet(@Param('id', new ParseUUIDPipe()) id: string, @CurrentUser() user: AuthPrincipal) {
+    const row = await this.transactions.getById(id);
+    return isBackoffice(user) ? backofficeTransaction(row) : row;
   }
 
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
   @Get('admin/transactions/:id/detail')
-  async adminGetDetail(@Param('id', new ParseUUIDPipe()) id: string) {
-    return this.transactions.getDetail(id);
+  async adminGetDetail(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @CurrentUser() user: AuthPrincipal,
+  ) {
+    const detail = await this.transactions.getDetail(id);
+    return isBackoffice(user) ? backofficeTransactionDetail(detail) : detail;
   }
 
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR)

@@ -1,7 +1,13 @@
 import { z } from 'zod';
 import { CommissionType, SourceFeeChannel, SourceStatus } from '../enums';
 import { Money } from '../money';
-import { MONEY_INPUT_DP, RATE_INPUT_DP, moneyAmountSchema, rateStringSchema } from './common';
+import {
+  MONEY_INPUT_DP,
+  RATE_INPUT_DP,
+  isDecimalString,
+  moneyAmountSchema,
+  rateStringSchema,
+} from './common';
 
 const codeRegex = /^[a-z][a-z0-9_]{1,49}$/;
 
@@ -54,14 +60,27 @@ export const sourceFeeRuleInputSchema = z
     feeValue: rateStringSchema,
     active: z.boolean().default(true),
   })
-  .refine((v) => v.maxAmount === null || Money.of(v.minAmount).lte(Money.of(v.maxAmount)), {
-    message: 'minAmount must be <= maxAmount',
-    path: ['maxAmount'],
-  })
-  .refine((v) => v.feeType !== CommissionType.PERCENTAGE || Money.of(v.feeValue).lte(HUNDRED), {
-    message: 'a PERCENTAGE fee must be between 0 and 100',
-    path: ['feeValue'],
-  })
+  .refine(
+    (v) =>
+      v.maxAmount === null ||
+      !isDecimalString(v.minAmount) ||
+      !isDecimalString(v.maxAmount) ||
+      Money.of(v.minAmount).lte(Money.of(v.maxAmount)),
+    {
+      message: 'minAmount must be <= maxAmount',
+      path: ['maxAmount'],
+    },
+  )
+  .refine(
+    (v) =>
+      v.feeType !== CommissionType.PERCENTAGE ||
+      !isDecimalString(v.feeValue) ||
+      Money.of(v.feeValue).lte(HUNDRED),
+    {
+      message: 'a PERCENTAGE fee must be between 0 and 100',
+      path: ['feeValue'],
+    },
+  )
   // Dual-typed split, mirroring commissionTierSchema: a FIXED fee is money and
   // takes cents; a PERCENTAGE fee is a rate and keeps full precision.
   .superRefine((v, ctx) => {
@@ -103,6 +122,15 @@ export const setSourceFeeRulesSchema = z
       byChannel.set(r.channel, list);
     }
     for (const [, list] of byChannel) {
+      // A malformed bound already failed its own check; sorting it would throw.
+      if (
+        !list.every(
+          (r) =>
+            isDecimalString(r.minAmount) && (r.maxAmount === null || isDecimalString(r.maxAmount)),
+        )
+      ) {
+        continue;
+      }
       const sorted = [...list].sort((a, b) => Money.of(a.minAmount).cmp(Money.of(b.minAmount)));
       for (let i = 0; i < sorted.length; i++) {
         const cur = sorted[i]!;

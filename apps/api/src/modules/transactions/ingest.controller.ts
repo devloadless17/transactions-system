@@ -107,12 +107,18 @@ export function toSourceFacingError(e: unknown, companySlug: string): unknown {
 
 /**
  * Translate an internal transaction response back to source-facing names.
- * Deliberately OMITS `commissionAmount` and `netAmount` (sources must not see
- * the fee Rival takes — netAmount would also reveal it as `amount − netAmount`)
- * and every internal UUID: the company is identified by its slug, the source by
- * its code.
+ * Deliberately OMITS `commissionAmount`, `networkFeeAmount` and `netAmount`
+ * (sources must not see the fees Rival takes — netAmount would also reveal them
+ * as `amount − netAmount`) and every internal UUID: the company is identified by
+ * its slug, the source by its code. An explicit field list, never a spread, so a
+ * field added to TransactionResponse can't leak to a source by default.
+ * (Exported for its contract test.)
  */
-function toSourceTransaction(r: TransactionResponse, companySlug: string, replayed: boolean) {
+export function toSourceTransaction(
+  r: TransactionResponse,
+  companySlug: string,
+  replayed: boolean,
+) {
   return {
     id: r.id,
     companySlug,

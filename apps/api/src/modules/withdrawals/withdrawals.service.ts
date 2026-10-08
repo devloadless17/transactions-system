@@ -39,11 +39,13 @@ import {
 } from './auto-approval-rules';
 import {
   assertSufficient,
+  feesConsumeAmountError,
   netOfFee,
   releaseEntries,
   reserveEntries,
   reservedTotal,
   settleEntries,
+  type FeeParts,
 } from '../ledger/flow-ledger';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain.error';
 import { assertListOffset } from '../../common/pagination';
@@ -153,26 +155,24 @@ export class WithdrawalsService {
         );
       }
 
-      // Resolve the WITHDRAWAL fee (free if no rule). ON_TOP reserves
-      // amount+fee; DEDUCTED reserves amount and the recipient gets amount−fee.
-      const { fee, feeApplication } = await this.fees.resolveFlowFee(cTx, {
+      // Resolve the WITHDRAWAL fees (commission free if no rule; network fee 0
+      // unless the company's switch is on). ON_TOP reserves amount + fees;
+      // DEDUCTED reserves amount and the recipient gets amount − fees.
+      const { fees, feeApplication } = await this.fees.resolveFlowFee(cTx, {
         companyId,
         amount,
         operationType: 'WITHDRAWAL',
       });
-      const reserved = reservedTotal(amount, fee, feeApplication);
-      const net = netOfFee(amount, fee, feeApplication);
+      const reserved = reservedTotal(amount, fees, feeApplication);
+      const net = netOfFee(amount, fees, feeApplication);
 
-      // A DEDUCTED fee >= amount would make the recipient receive 0 while the
-      // full amount still leaves the wallet to the platform FEE account — a
+      // DEDUCTED fees >= amount would make the recipient receive 0 while the
+      // full amount still leaves the wallet to the platform fee accounts — a
       // balanced but surely-misconfigured money-out. Reject clearly at request
       // time, before anything is reserved. (ON_TOP nets = amount, so this can
-      // only trip on a DEDUCTED rule; deposits are untouched.)
+      // only trip on DEDUCTED fees; deposits are untouched.)
       if (!net.isPositive()) {
-        throw new ValidationError(
-          `The ${fee.toString()} ${input.currency} fee consumes the entire amount — the recipient would receive 0. Increase the amount or fix the fee rule.`,
-          { amount: amount.toString(), fee: fee.toString() },
-        );
+        throw feesConsumeAmountError(amount, fees, input.currency, 'the recipient would receive 0');
       }
 
       // Clear "top up" error if available can't cover the reserved total.
@@ -184,7 +184,8 @@ export class WithdrawalsService {
           requestedById,
           amount: amount.toString(),
           currency: input.currency,
-          feeAmount: fee.toString(),
+          feeAmount: fees.commission.toString(),
+          networkFeeAmount: fees.network.toString(),
           netAmount: net.toString(),
           feeApplication,
           status: REQUESTABLE_STATUS,
@@ -221,7 +222,9 @@ export class WithdrawalsService {
       flow: 'WITHDRAWAL',
       companyId: row.companyId,
       entityId: row.id,
-      amount: row.amount.toString(),
+      // What the operator pays the recipient — the one figure admins (incl.
+      // back office) act on; never a figure a fee could be derived from.
+      amount: Money.fromDb(row.netAmount).toString(),
       currency: row.currency,
       resolveManualActionReason: () => this.resolveManualReason(row),
     });
@@ -331,21 +334,31 @@ export class WithdrawalsService {
       // while only floor(net) actually left.
       const floorWhole = opts?.floorWhole === true || w.status === 'PROCESSING';
       // fromDb: a legacy row can carry a wider tail than the money scale; quantize
-      // both INPUTS once here and derive reserved/net/fee by exact subtraction.
+      // the INPUTS once here and derive reserved/net/fees by exact subtraction.
+      // Both fees were frozen on the row at request time.
       const amount = Money.fromDb(w.amount);
-      const fee = Money.fromDb(w.feeAmount);
-      const reserved = reservedTotal(amount, fee, w.feeApplication);
-      const net = netOfFee(amount, fee, w.feeApplication);
+      const fees: FeeParts = {
+        commission: Money.fromDb(w.feeAmount),
+        network: Money.fromDb(w.networkFeeAmount),
+      };
+      const reserved = reservedTotal(amount, fees, w.feeApplication);
+      const net = netOfFee(amount, fees, w.feeApplication);
       // The money that actually leaves. floorWhole sends whole dollars and keeps
       // the cents; otherwise the recipient gets the full net.
       const external = floorWhole ? net.floorToWhole() : net;
-      // What the platform realizes = original fee + any floored remainder. By
-      // construction `external + feeRealized == reserved`, so debits == credits.
-      const feeRealized = reserved.sub(external);
+      // What the platform realizes = both original fees + any floored remainder,
+      // which stays on FEE (so true commission = FEE − Σ rounding_remainder still
+      // holds). By construction external + commission + network == reserved,
+      // so debits == credits.
+      const realized: FeeParts = {
+        commission: reserved.sub(external).sub(fees.network),
+        network: fees.network,
+      };
       const rounding = net.sub(external); // 0 unless floored
 
-      // Funds leave the platform; the fee (incl. any rounding) is realized to FEE.
-      // Ledger: reserved → external + FEE(feeRealized). Zero lines are skipped.
+      // Funds leave the platform; the fees (incl. any rounding) are realized to
+      // FEE and NETWORK_FEE. Ledger: reserved → external + FEE + NETWORK_FEE.
+      // Zero lines are skipped.
       await this.ledger.writeEntries(
         cTx,
         settleEntries(
@@ -354,7 +367,7 @@ export class WithdrawalsService {
           w.currency,
           reserved,
           external,
-          feeRealized,
+          realized,
         ),
       );
       await this.wallets.applyDelta(cTx, {
@@ -465,7 +478,7 @@ export class WithdrawalsService {
 
       const reserved = reservedTotal(
         Money.fromDb(w.amount),
-        Money.fromDb(w.feeAmount),
+        { commission: Money.fromDb(w.feeAmount), network: Money.fromDb(w.networkFeeAmount) },
         w.feeApplication,
       );
 
@@ -769,13 +782,19 @@ export class WithdrawalsService {
    * keyset chunks. Mirrors the list query's filters so the export matches what
    * the user sees. Each chunk is its own short RLS-scoped query.
    */
-  streamCsv(args: { companyId?: string; query: ListWithdrawalsQuery }): StreamableFile {
+  streamCsv(args: {
+    companyId?: string;
+    query: ListWithdrawalsQuery;
+    /** Back office gets one money figure per row — see common/backoffice-view.ts. */
+    backoffice?: boolean;
+  }): StreamableFile {
     const where = this.exportWhere(args);
     const scope = args.companyId ?? null;
     const prisma = this.prisma;
     return streamFlowCsv({
       noun: 'withdrawals',
       now: Date.now(),
+      backoffice: args.backoffice ? 'pay' : undefined,
       baseWhere: where as Record<string, unknown>,
       findPage: (pageWhere, take) =>
         prisma.runAsScoped(scope, (tx) =>
@@ -814,6 +833,7 @@ function mapWithdrawal(row: {
   amount: { toString(): string };
   currency: string;
   feeAmount: { toString(): string };
+  networkFeeAmount: { toString(): string };
   feeApplication: FeeApplication;
   netAmount: { toString(): string };
   roundingRemainder: { toString(): string };
@@ -835,15 +855,20 @@ function mapWithdrawal(row: {
     companyId: row.companyId,
     // Quantized on the way out so the API, the CSV export and the CRM webhook
     // all report the same figure — and the same figure the ledger books. Deriving
-    // totalAmount from these (not from the raw columns) keeps net + fee == total
-    // exact, because a sum of two at-scale values is itself at scale.
+    // totalAmount from these (not from the raw columns) keeps
+    // net + fee + networkFee == total exact, because a sum of at-scale values is
+    // itself at scale.
     amount: Money.fromDb(row.amount).toString(),
     currency: row.currency.trim(),
     feeAmount: Money.fromDb(row.feeAmount).toString(),
+    networkFeeAmount: Money.fromDb(row.networkFeeAmount).toString(),
     feeApplication: row.feeApplication,
     netAmount: Money.fromDb(row.netAmount).toString(),
     roundingRemainder: Money.fromDb(row.roundingRemainder).toString(),
-    totalAmount: Money.fromDb(row.netAmount).add(Money.fromDb(row.feeAmount)).toString(),
+    totalAmount: Money.fromDb(row.netAmount)
+      .add(Money.fromDb(row.feeAmount))
+      .add(Money.fromDb(row.networkFeeAmount))
+      .toString(),
     status: row.status,
     payoutMethod: row.payoutMethod,
     payoutDetails: (row.payoutDetails as PayoutDetails | null) ?? null,

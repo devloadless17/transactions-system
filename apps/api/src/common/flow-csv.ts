@@ -1,6 +1,7 @@
 import type { StreamableFile } from '@nestjs/common';
 import { Money } from '@app/shared';
 import { streamCsvKeyset } from './csv';
+import { backofficeCsvCells } from './backoffice-view';
 
 // Shared CSV projection for the three sibling money-movement flows
 // (withdrawal / payout / load) — they have an identical row shape, so one
@@ -10,8 +11,8 @@ import { streamCsvKeyset } from './csv';
 // NOT emit the raw requested `amount`: for an ON_TOP fee it equals the net and
 // for a DEDUCTED fee it equals the gross, so a bare `amount` column silently
 // duplicates one of the others depending on fee_application. `gross_amount` is
-// the money that actually moves (net + fee); `net_amount` is what the recipient
-// receives; `fee_application` says how the fee was applied.
+// the money that actually moves (net + fee + network fee); `net_amount` is what
+// the recipient receives; `fee_application` says how the fees were applied.
 export const FLOW_CSV_HEADER = [
   'id',
   'created_at',
@@ -29,6 +30,9 @@ export const FLOW_CSV_HEADER = [
   'recipient_contact',
   'notes',
   'admin_notes',
+  // The optional per-company network fee (0.00 when not charged). Appended last
+  // so every existing column keeps its position for anyone already parsing it.
+  'network_fee_amount',
 ] as const;
 
 // One persisted withdrawal/payout/load row (the fields the three Prisma models
@@ -39,6 +43,7 @@ export interface FlowCsvRow {
   amount: { toString(): string };
   currency: string;
   feeAmount: { toString(): string };
+  networkFeeAmount: { toString(): string };
   netAmount: { toString(): string };
   feeApplication: string;
   status: string;
@@ -69,16 +74,18 @@ function recipient(details: unknown): { name: string; contact: string } {
 
 export function flowCsvCells(r: FlowCsvRow): Array<string | null> {
   const rec = recipient(r.payoutDetails);
-  // gross = net + fee = the money that actually moves (debited for a
-  // withdrawal/payout, paid in for a load); matches the API's totalAmount and
+  // gross = net + fee + network fee = the money that actually moves (debited for
+  // a withdrawal/payout, paid in for a load); matches the API's totalAmount and
   // the app's "Debited" / "You pay" column.
   // Built from the SAME quantized parts the API reports, so gross == totalAmount
-  // and gross == fee + net in the exported columns. Quantizing each part and then
-  // summing is safe here precisely because a sum of at-scale values is at scale —
-  // unlike rounding a total and its parts independently, which would not tie out.
+  // and gross == fee + network fee + net in the exported columns. Quantizing each
+  // part and then summing is safe here precisely because a sum of at-scale values
+  // is at scale — unlike rounding a total and its parts independently, which
+  // would not tie out.
   const fee = Money.fromDb(r.feeAmount);
+  const networkFee = Money.fromDb(r.networkFeeAmount);
   const net = Money.fromDb(r.netAmount);
-  const gross = net.add(fee).toFixed(2);
+  const gross = net.add(fee).add(networkFee).toFixed(2);
   return [
     r.id,
     r.createdAt.toISOString(),
@@ -96,6 +103,7 @@ export function flowCsvCells(r: FlowCsvRow): Array<string | null> {
     rec.contact,
     r.notes ?? '',
     r.adminNotes ?? '',
+    networkFee.toFixed(2),
   ];
 }
 
@@ -109,7 +117,16 @@ export function streamFlowCsv(opts: {
   baseWhere: Record<string, unknown>;
   findPage: (pageWhere: Record<string, unknown>, take: number) => Promise<FlowCsvRow[]>;
   now: number;
+  /**
+   * Back office sees one money figure per row and nothing a fee could be
+   * derived from (common/backoffice-view.ts): 'pay' keeps net_amount (what a
+   * withdrawal/payout recipient is paid), 'collect' keeps gross_amount (what a
+   * load collects). Every other money cell is blanked; the header is unchanged.
+   */
+  backoffice?: 'pay' | 'collect';
 }): StreamableFile {
+  const hidden = ['fee_amount', 'network_fee_amount', 'fee_application'];
+  const backoffice = opts.backoffice;
   return streamCsvKeyset<FlowCsvRow>({
     filename: `${opts.noun}-${opts.now}.csv`,
     header: FLOW_CSV_HEADER,
@@ -126,6 +143,11 @@ export function streamFlowCsv(opts: {
       return opts.findPage(pageWhere, take);
     },
     cursorOf: (r) => ({ createdAt: r.createdAt, id: r.id }),
-    toCells: flowCsvCells,
+    toCells: backoffice
+      ? (r) =>
+          backofficeCsvCells(FLOW_CSV_HEADER, flowCsvCells(r), {
+            hide: [backoffice === 'pay' ? 'gross_amount' : 'net_amount', ...hidden],
+          })
+      : flowCsvCells,
   });
 }

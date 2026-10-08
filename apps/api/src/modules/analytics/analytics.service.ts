@@ -82,12 +82,13 @@ export class AnalyticsService {
       args.scope === 'admin'
         ? `admin:${args.range.companyId ?? 'all'}`
         : `co:${args.scope.companyId}`;
-    // `v2` because the payload gained `daily.granularity`: without the bump a
-    // post-deploy read could serve a pre-deploy entry whose granularity is
-    // undefined, and the chart would label the axis wrongly for a whole TTL.
+    // Versioned because the payload shape changes between releases: `v2` added
+    // `daily.granularity`, `v3` the network-fee figures (completedNetworkFees,
+    // kpi.totalNetworkFees). Without a bump a post-deploy read could serve a
+    // pre-deploy entry missing them for a whole TTL.
     // The granularity is in the key too — it is derivable from the window today,
     // but that stops being true the moment the thresholds are ever retuned.
-    const cacheKey = `analytics:overview:v2:${scopeKey}:${currency}:${window.from.toISOString()}:${window.to.toISOString()}:${window.granularity}`;
+    const cacheKey = `analytics:overview:v3:${scopeKey}:${currency}:${window.from.toISOString()}:${window.to.toISOString()}:${window.granularity}`;
 
     return this.cache.wrap(cacheKey, 60, () => this.compute({ args, currency, window }));
   }
@@ -123,19 +124,19 @@ export class AnalyticsService {
       const [deposits, loads, withdrawals, payouts] = await Promise.all([
         tx.transaction.aggregate({
           where: { ...base, status: 'COMPLETED' },
-          _sum: { netAmount: true, commissionAmount: true },
+          _sum: { netAmount: true, commissionAmount: true, networkFeeAmount: true },
         }),
         tx.load.aggregate({
           where: { ...base, status: 'COMPLETED' },
-          _sum: { netAmount: true, feeAmount: true },
+          _sum: { netAmount: true, feeAmount: true, networkFeeAmount: true },
         }),
         tx.withdrawal.aggregate({
           where: { ...base, status: { in: [...ACTIVE] } },
-          _sum: { netAmount: true, feeAmount: true },
+          _sum: { netAmount: true, feeAmount: true, networkFeeAmount: true },
         }),
         tx.payout.aggregate({
           where: { ...base, status: { in: [...ACTIVE] } },
-          _sum: { netAmount: true, feeAmount: true },
+          _sum: { netAmount: true, feeAmount: true, networkFeeAmount: true },
         }),
       ]);
       // Outstanding RECEIVABLE (debt owed by the company to the platform from a
@@ -148,17 +149,27 @@ export class AnalyticsService {
       const receivable = await this.ledger.outstandingReceivable(tx, companyId, currency);
       const m = (v: { toString(): string } | null | undefined) => Money.of((v ?? 0).toString());
       const depNet = m(deposits._sum.netAmount);
-      // Deposits gross = net + fee, matching loads.gross — so gross - net is the
-      // (unshown) fee on both in-flow rows. Transactions carry the fee in
-      // commissionAmount. (Summing `amount` would be net for an ON_TOP deposit.)
-      const depGross = depNet.add(m(deposits._sum.commissionAmount));
+      // Deposits gross = net + fee + network fee, matching loads.gross — so
+      // gross - net is the (unshown) fees on both in-flow rows. Transactions
+      // carry the fee in commissionAmount. (Summing `amount` would be net for an
+      // ON_TOP deposit.)
+      const depGross = depNet
+        .add(m(deposits._sum.commissionAmount))
+        .add(m(deposits._sum.networkFeeAmount));
       const loadNet = m(loads._sum.netAmount);
-      const wdTotal = m(withdrawals._sum.netAmount).add(m(withdrawals._sum.feeAmount));
-      const poTotal = m(payouts._sum.netAmount).add(m(payouts._sum.feeAmount));
+      const loadGross = loadNet.add(m(loads._sum.feeAmount)).add(m(loads._sum.networkFeeAmount));
+      // What left the wallet: net + both fees (the reserved total, either fee
+      // application) — so the identity above still holds with a network fee.
+      const wdTotal = m(withdrawals._sum.netAmount)
+        .add(m(withdrawals._sum.feeAmount))
+        .add(m(withdrawals._sum.networkFeeAmount));
+      const poTotal = m(payouts._sum.netAmount)
+        .add(m(payouts._sum.feeAmount))
+        .add(m(payouts._sum.networkFeeAmount));
       return {
         currency,
         deposits: { gross: depGross.toString(), net: depNet.toString() },
-        loads: { gross: loadNet.add(m(loads._sum.feeAmount)).toString(), net: loadNet.toString() },
+        loads: { gross: loadGross.toString(), net: loadNet.toString() },
         withdrawals: { total: wdTotal.toString() },
         payouts: { total: poTotal.toString() },
         receivable: receivable.toString(),
@@ -181,7 +192,8 @@ export class AnalyticsService {
       args.range.preset === 'all' ? await originForSource(this.originDeps, args.sourceId) : null;
     const window = resolveWindow(args.range, origin);
 
-    const cacheKey = `analytics:source-overview:v2:${args.sourceId}:${currency}:${window.from.toISOString()}:${window.to.toISOString()}:${window.granularity}`;
+    // v3: the KPI gained totalNetworkFees.
+    const cacheKey = `analytics:source-overview:v3:${args.sourceId}:${currency}:${window.from.toISOString()}:${window.to.toISOString()}:${window.granularity}`;
     return this.cache.wrap(cacheKey, 60, () =>
       this.computeSource({ sourceId: args.sourceId, currency, window }),
     );
@@ -211,7 +223,7 @@ export class AnalyticsService {
 
         const agg = await tx.transaction.aggregate({
           where,
-          _sum: { amount: true, netAmount: true, commissionAmount: true },
+          _sum: { amount: true, netAmount: true, commissionAmount: true, networkFeeAmount: true },
           _count: { _all: true },
         });
 
@@ -221,7 +233,7 @@ export class AnalyticsService {
           `
         SELECT
           date_trunc($5::text, created_at AT TIME ZONE 'UTC')::date AS day,
-          SUM(net_amount + commission_amount)::text    AS volume,
+          SUM(net_amount + commission_amount + network_fee_amount)::text AS volume,
           SUM(commission_amount)::text                 AS fees,
           COUNT(*)::bigint                             AS count
         FROM transactions
@@ -249,7 +261,7 @@ export class AnalyticsService {
         const companyRows = await tx.transaction.groupBy({
           by: ['companyId'],
           where,
-          _sum: { amount: true, netAmount: true, commissionAmount: true },
+          _sum: { amount: true, netAmount: true, commissionAmount: true, networkFeeAmount: true },
           _count: { _all: true },
           orderBy: { _sum: { amount: 'desc' } },
           take: SOURCE_COMPANY_CAP,
@@ -262,9 +274,11 @@ export class AnalyticsService {
         const byCompany = companyRows.map((r) => ({
           companyId: r.companyId,
           companyName: nameById.get(r.companyId) ?? r.companyId.slice(0, 8),
-          // net + fee (money moved), consistent with the platform/volume surfaces.
+          // net + fee + network fee (money moved), consistent with the
+          // platform/volume surfaces.
           volume: Money.of((r._sum.netAmount ?? 0).toString())
             .add(Money.of((r._sum.commissionAmount ?? 0).toString()))
+            .add(Money.of((r._sum.networkFeeAmount ?? 0).toString()))
             .toString(),
           fees: Money.of((r._sum.commissionAmount ?? 0).toString()).toString(),
           count: r._count._all,
@@ -273,6 +287,11 @@ export class AnalyticsService {
         // What this source charged THE PLATFORM on its deposits (cost of funds).
         // Admin-only endpoint — never surfaced to companies.
         const sourceFees = await sourceFeeForSource(tx, p.sourceId, p.currency, from, to);
+        // Volume = net + fee + network fee (money moved), shared by the KPI total
+        // and the average below so the two can never disagree.
+        const sourceVolume = Money.of((agg._sum.netAmount ?? 0).toString())
+          .add(Money.of((agg._sum.commissionAmount ?? 0).toString()))
+          .add(Money.of((agg._sum.networkFeeAmount ?? 0).toString()));
 
         return {
           range: { from: from.toISOString(), to: to.toISOString() },
@@ -284,25 +303,18 @@ export class AnalyticsService {
           },
           sourceFees,
           kpi: {
-            // Volume = net + fee (money moved), consistent with the daily series,
-            // the by-company rows, and every other volume surface. NOT SUM(amount)
-            // — for an ON_TOP deposit `amount` is the net, so it would drop the fee
-            // and disagree with the rest of this very page.
-            totalVolume: Money.of((agg._sum.netAmount ?? 0).toString())
-              .add(Money.of((agg._sum.commissionAmount ?? 0).toString()))
-              .toString(),
+            // Volume = net + fee + network fee (money moved), consistent with the
+            // daily series, the by-company rows, and every other volume surface.
+            // NOT SUM(amount) — for an ON_TOP deposit `amount` is the net, so it
+            // would drop the fees and disagree with the rest of this very page.
+            totalVolume: sourceVolume.toString(),
             totalFees: Money.of((agg._sum.commissionAmount ?? 0).toString()).toString(),
+            totalNetworkFees: Money.of((agg._sum.networkFeeAmount ?? 0).toString()).toString(),
             transactionCount: agg._count._all,
             // Average = volume ÷ count (the volume shown on this same card), not
             // avg(amount): for an ON_TOP fee `amount` is the net, so avg(amount)
-            // wouldn't tie out with the net+fee volume beside it.
-            averageAmount:
-              agg._count._all > 0
-                ? Money.of((agg._sum.netAmount ?? 0).toString())
-                    .add(Money.of((agg._sum.commissionAmount ?? 0).toString()))
-                    .div(agg._count._all)
-                    .toString()
-                : '0',
+            // wouldn't tie out with the volume beside it.
+            averageAmount: agg._count._all > 0 ? sourceVolume.div(agg._count._all).toString() : '0',
             currency: p.currency,
           },
           daily: { currency: p.currency, granularity, buckets },
@@ -338,15 +350,17 @@ export class AnalyticsService {
             createdAt: { gte: from, lte: to },
             ...(companyFilter ? { companyId: companyFilter } : {}),
           },
-          _sum: { amount: true, netAmount: true, commissionAmount: true },
+          _sum: { amount: true, netAmount: true, commissionAmount: true, networkFeeAmount: true },
           _count: { _all: true },
         });
 
-        // Volume = net + fee (the money that moved). Equals `amount` for a
-        // DEDUCTED fee; for ON_TOP the fee is on top, so net+fee is the figure
-        // that matches the Deposits card, the daily chart, and platform volumeIn.
+        // Volume = net + fee + network fee (the money that moved). Equals
+        // `amount` for DEDUCTED fees; for ON_TOP the fees are on top, so this sum
+        // is the figure that matches the Deposits card, the daily chart, and
+        // platform volumeIn.
         const totalVolume = Money.of((agg._sum.netAmount ?? 0).toString())
           .add(Money.of((agg._sum.commissionAmount ?? 0).toString()))
+          .add(Money.of((agg._sum.networkFeeAmount ?? 0).toString()))
           .toString();
         // Total platform fees = realized fees from EVERY flow (transactions,
         // loads, withdrawals, payouts), read from the FEE ledger account — not
@@ -368,6 +382,27 @@ export class AnalyticsService {
           ...(companyFilter ? [companyFilter] : []),
         );
         const totalFees = Money.of(feeRow[0]?.fees ?? '0').toString();
+        // Network-fee revenue, from its own ledger account (NETWORK_FEE) so the
+        // FEE figure above keeps its meaning. Admin-only like totalFees, so the
+        // query is skipped for company-scoped callers.
+        let totalNetworkFees: string | undefined;
+        if (p.args.scope === 'admin') {
+          const networkFeeRow = await tx.$queryRawUnsafe<Array<{ fees: string }>>(
+            `
+            SELECT COALESCE(SUM(CASE WHEN direction = 'CREDIT' THEN amount ELSE -amount END), 0)::text AS fees
+            FROM ledger_entries
+            WHERE account_type = 'NETWORK_FEE'
+              AND currency = $1
+              AND created_at >= $2 AND created_at <= $3
+              ${companyFilter ? 'AND company_id = $4::uuid' : ''}
+            `,
+            p.currency,
+            from,
+            to,
+            ...(companyFilter ? [companyFilter] : []),
+          );
+          totalNetworkFees = Money.of(networkFeeRow[0]?.fees ?? '0').toString();
+        }
         const transactionCount = agg._count._all;
         // Average ties to the volume on the same card (volume ÷ count), not
         // avg(amount): for an ON_TOP fee `amount` is the net, so avg(amount)
@@ -397,17 +432,18 @@ export class AnalyticsService {
           processedAt: { gte: from, lte: to },
           ...(companyFilter ? { companyId: companyFilter } : {}),
         };
-        // Sum net + fee (not `amount`) for every group. The card TOTAL is the
-        // money that actually moved = net + fee: for a DEDUCTED fee that equals
-        // `amount`, but for an ON_TOP fee the fee is charged on top, so `amount`
+        // Sum net + fee + network fee (not `amount`) for every group. The card
+        // TOTAL is the money that actually moved: for DEDUCTED fees that equals
+        // `amount`, but for ON_TOP fees they are charged on top, so `amount`
         // alone (= net) understates the real total. Withdrawals/payouts/loads
-        // carry feeAmount; transactions carry commissionAmount.
+        // carry feeAmount; transactions carry commissionAmount; all four carry
+        // networkFeeAmount.
         const flowSums = {
-          _sum: { netAmount: true, feeAmount: true },
+          _sum: { netAmount: true, feeAmount: true, networkFeeAmount: true },
           _count: { _all: true },
         } as const;
         const txSums = {
-          _sum: { netAmount: true, commissionAmount: true },
+          _sum: { netAmount: true, commissionAmount: true, networkFeeAmount: true },
           _count: { _all: true },
         } as const;
         const PENDING_STATUSES = ['PENDING', 'APPROVED', 'PROCESSING'] as const;
@@ -441,31 +477,41 @@ export class AnalyticsService {
           }),
         ]);
 
-        // Fee summed per group: transactions = commissionAmount, the money
-        // in/out flows = feeAmount.
-        const feeOf = (m: { _sum: { feeAmount?: { toString(): string } | null } }) =>
-          Money.of((m._sum.feeAmount ?? 0).toString()).toString();
-        const commissionOf = (m: { _sum: { commissionAmount?: { toString(): string } | null } }) =>
-          Money.of((m._sum.commissionAmount ?? 0).toString()).toString();
+        // Fees summed per group: transactions = commissionAmount, the money
+        // in/out flows = feeAmount; every group carries networkFeeAmount.
+        const sumOf = (v: { toString(): string } | null | undefined) =>
+          Money.of((v ?? 0).toString()).toString();
+        const flowFees = (m: {
+          _sum: {
+            feeAmount?: { toString(): string } | null;
+            networkFeeAmount?: { toString(): string } | null;
+          };
+        }) => ({ fee: sumOf(m._sum.feeAmount), network: sumOf(m._sum.networkFeeAmount) });
+        const txFees = (m: {
+          _sum: {
+            commissionAmount?: { toString(): string } | null;
+            networkFeeAmount?: { toString(): string } | null;
+          };
+        }) => ({ fee: sumOf(m._sum.commissionAmount), network: sumOf(m._sum.networkFeeAmount) });
         const volume = {
-          deposits: toVolumeMetric(
-            agg,
-            commissionOf(agg),
-            depositsPending,
-            commissionOf(depositsPending),
-          ),
+          deposits: toVolumeMetric(agg, txFees(agg), depositsPending, txFees(depositsPending)),
           withdrawals: toVolumeMetric(
             withdrawalsDone,
-            feeOf(withdrawalsDone),
+            flowFees(withdrawalsDone),
             withdrawalsPending,
-            feeOf(withdrawalsPending),
+            flowFees(withdrawalsPending),
           ),
-          loads: toVolumeMetric(loadsDone, feeOf(loadsDone), loadsPending, feeOf(loadsPending)),
+          loads: toVolumeMetric(
+            loadsDone,
+            flowFees(loadsDone),
+            loadsPending,
+            flowFees(loadsPending),
+          ),
           payouts: toVolumeMetric(
             payoutsDone,
-            feeOf(payoutsDone),
+            flowFees(payoutsDone),
             payoutsPending,
-            feeOf(payoutsPending),
+            flowFees(payoutsPending),
           ),
         };
 
@@ -480,7 +526,7 @@ export class AnalyticsService {
           `
         SELECT
           date_trunc($${truncParam}::text, created_at AT TIME ZONE 'UTC')::date AS day,
-          SUM(net_amount + commission_amount)::text    AS volume,
+          SUM(net_amount + commission_amount + network_fee_amount)::text AS volume,
           SUM(commission_amount)::text                 AS fees,
           COUNT(*)::bigint                             AS count
         FROM transactions
@@ -517,7 +563,7 @@ export class AnalyticsService {
           `
           SELECT
             source_id                                    AS "sourceId",
-            SUM(net_amount + commission_amount)::text    AS volume,
+            SUM(net_amount + commission_amount + network_fee_amount)::text AS volume,
             SUM(commission_amount)::text                 AS fees,
             COUNT(*)::bigint                             AS count
           FROM transactions
@@ -527,7 +573,7 @@ export class AnalyticsService {
             AND created_at <= $3
             ${companyFilter ? 'AND company_id = $4::uuid' : ''}
           GROUP BY source_id
-          ORDER BY SUM(net_amount + commission_amount) DESC
+          ORDER BY SUM(net_amount + commission_amount + network_fee_amount) DESC
           ${companyFilter ? '' : `LIMIT ${TOP_LIMIT}`}
           `,
           p.currency,
@@ -543,7 +589,8 @@ export class AnalyticsService {
         const topSources = topSrcRows.map((r) => ({
           sourceId: r.sourceId,
           sourceCode: sourceCode.get(r.sourceId) ?? '',
-          // net + fee (money moved), matching totalVolume and the deposit card.
+          // net + fee + network fee (money moved), matching totalVolume and the
+          // deposit card.
           volume: Money.of(r.volume ?? '0').toString(),
           fees: Money.of(r.fees ?? '0').toString(),
           count: Number(r.count),
@@ -565,7 +612,7 @@ export class AnalyticsService {
             `
             SELECT
               company_id                                   AS "companyId",
-              SUM(net_amount + commission_amount)::text    AS volume,
+              SUM(net_amount + commission_amount + network_fee_amount)::text AS volume,
               COUNT(*)::bigint                             AS count
             FROM transactions
             WHERE status = 'COMPLETED'
@@ -573,7 +620,7 @@ export class AnalyticsService {
               AND created_at >= $2
               AND created_at <= $3
             GROUP BY company_id
-            ORDER BY SUM(net_amount + commission_amount) DESC
+            ORDER BY SUM(net_amount + commission_amount + network_fee_amount) DESC
             LIMIT ${TOP_LIMIT}
             `,
             p.currency,
@@ -602,7 +649,7 @@ export class AnalyticsService {
             // Company-scoped callers never receive the aggregate fee — they only
             // see per-transaction fees. Admins (scope === 'admin', incl. when
             // drilling into one company) get the total.
-            ...(p.args.scope === 'admin' ? { totalFees } : {}),
+            ...(p.args.scope === 'admin' ? { totalFees, totalNetworkFees } : {}),
             transactionCount,
             averageAmount,
             currency: p.currency,
@@ -622,23 +669,27 @@ export class AnalyticsService {
 // VolumeMetric the dashboard consumes. Amounts become Decimal strings.
 function toVolumeMetric(
   completed: { _sum: { netAmount?: { toString(): string } | null }; _count: { _all: number } },
-  completedFees: string,
+  completedFees: { fee: string; network: string },
   pending: { _sum: { netAmount?: { toString(): string } | null }; _count: { _all: number } },
-  pendingFees: string,
+  pendingFees: { fee: string; network: string },
 ): VolumeMetric {
-  // Total = net + fee (the money that actually moved). Equals `amount` for
-  // DEDUCTED fees; for ON_TOP the fee is on top, so summing net + fee is the
-  // only figure that's correct for both — and it keeps gross = net + fee.
+  // Total = net + fee + network fee (the money that actually moved). Equals
+  // `amount` for DEDUCTED fees; for ON_TOP the fees are on top, so summing the
+  // parts is the only figure that's correct for both — and it keeps
+  // gross = net + fee + network fee.
   const cNet = Money.of((completed._sum.netAmount ?? 0).toString());
-  const cFee = Money.of(completedFees);
+  const cFee = Money.of(completedFees.fee);
+  const cNetwork = Money.of(completedFees.network);
   const pNet = Money.of((pending._sum.netAmount ?? 0).toString());
-  const pFee = Money.of(pendingFees);
+  const pFee = Money.of(pendingFees.fee);
+  const pNetwork = Money.of(pendingFees.network);
   return {
-    completedTotal: cNet.add(cFee).toString(),
+    completedTotal: cNet.add(cFee).add(cNetwork).toString(),
     completedNet: cNet.toString(),
     completedFees: cFee.toString(),
+    completedNetworkFees: cNetwork.toString(),
     completedCount: completed._count._all,
-    pendingTotal: pNet.add(pFee).toString(),
+    pendingTotal: pNet.add(pFee).add(pNetwork).toString(),
     pendingCount: pending._count._all,
   };
 }

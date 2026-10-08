@@ -41,9 +41,10 @@ const CREATE_RESPONSE = `{
 const STATUS_CURL = `curl ${API_BASE}/integrations/whish/payments/1781018591 \\
   -H "Authorization: Bearer tsk_<company-key>"
 # Same shape as create. Watch \`status\` (and \`transactionId\` once PAID).
-# This object shows only the GROSS amount. For the fee we took + your net, read the
+# This object shows only the GROSS amount. For the fees we took + your net, read the
 # settled transaction (reference whish:<externalId>): GET /company/transactions returns
-# commissionAmount + netAmount (also sent on the transaction.completed CRM event).`;
+# commissionAmount + networkFeeAmount + netAmount (also sent on the transaction.completed
+# CRM event). networkFeeAmount is "0" unless your company is charged a network fee.`;
 
 /**
  * Whish Pay — what it is, how it flows, and how to create links from your
@@ -62,8 +63,8 @@ export function WhishPayDocsView() {
             Whish Pay
           </Link>{' '}
           page, or from your own backend via the API below. Share the link with your customer and
-          the money settles into your wallet automatically once they pay — net of commission, with
-          no card details ever touching your system.
+          the money settles into your wallet automatically once they pay — net of fees, with no card
+          details ever touching your system.
         </p>
       </div>
 
@@ -95,7 +96,7 @@ function HowItWorks() {
     ['Share it', 'Send the generated link to your customer — they pay on the secure Whish page.'],
     [
       'It settles automatically',
-      'Once paid, we verify with Whish, apply your commission, and credit your wallet with the net.',
+      'Once paid, we verify with Whish, apply your fees, and credit your wallet with the net.',
     ],
     [
       'Stay in sync',
@@ -156,7 +157,7 @@ function ApiSection() {
       'PENDING',
       'Link created, waiting for the customer to pay. A failed attempt does not close the link — the customer can try again on the same link until it lapses.',
     ],
-    ['PAID', 'Customer paid — settled into your wallet (net of commission); transactionId is set.'],
+    ['PAID', 'Customer paid — settled into your wallet (net of fees); transactionId is set.'],
     [
       'FAILED',
       'The payment will not be collected — the link lapsed unpaid, or a completed payment was refunded. (Whish reports no separate “expired”, so a lapsed link also arrives as FAILED.)',

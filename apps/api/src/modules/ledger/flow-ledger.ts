@@ -1,6 +1,6 @@
 import { Money, type FeeApplication } from '@app/shared';
 import type { PrismaClient } from '@app/db';
-import { InsufficientBalanceError } from '../../common/errors/domain.error';
+import { InsufficientBalanceError, ValidationError } from '../../common/errors/domain.error';
 import type { LedgerEntryInput } from './ledger.service';
 
 /**
@@ -10,36 +10,93 @@ import type { LedgerEntryInput } from './ledger.service';
  * money-IN (transaction ingest + load approval debit), so the ON_TOP/DEDUCTED
  * arithmetic can't drift between flows.
  *
- * The reserve/release/settle ENTRY builders below are money-OUT only: withdrawals
- * and payouts share an identical lifecycle — available → reserved on request,
- * reserved → external (+ realized fee) on approval, reserved → available on
- * reject/cancel — and loads (money-IN) build their own entries directly.
+ * Every ledger set a money flow books is built here, so each one carries BOTH
+ * fees the same way: reserve/release/settle for money-OUT (withdrawals and
+ * payouts share an identical lifecycle — available → reserved on request,
+ * reserved → external (+ realized fees) on approval, reserved → available on
+ * reject/cancel), `moneyInEntries` for money-IN (deposit ingest + load approval),
+ * and `reversalEntries` for a deposit reversal.
  */
 
 /**
- * Gross amount that moves for a row = amount, or amount + fee when the fee is ON_TOP.
+ * Every fee taken on one row, both already at MONEY_SCALE:
+ *   - `commission` — the commission-rule fee (commission_amount / fee_amount);
+ *   - `network`    — the optional per-company network fee (network_fee_amount).
+ *     It is 0 whenever the company's switch is off, and then every helper below
+ *     behaves exactly as it did with a single fee.
+ * One object rather than two arguments so a call site cannot forget the network
+ * fee: the compiler rejects a lone commission figure.
+ */
+export interface FeeParts {
+  readonly commission: Money;
+  readonly network: Money;
+}
+
+/** Both fees together — the full amount the platform takes on the row. */
+export function totalFee(fees: FeeParts): Money {
+  return fees.commission.add(fees.network);
+}
+
+/**
+ * Gross amount that moves for a row = amount, or amount + both fees when the
+ * fees are ON_TOP.
  *
- * PRECONDITION: both arguments are already at MONEY_SCALE. This does not round —
+ * PRECONDITION: every argument is already at MONEY_SCALE. This does not round —
  * sums and differences of at-scale values are exact, which is what lets the
  * resulting ledger set balance by construction. Quantize on the way IN
  * (Money.fromDb at the DB read), never on the way out.
  */
-export function reservedTotal(amount: Money, fee: Money, feeApplication: FeeApplication): Money {
-  return feeApplication === 'ON_TOP' ? amount.add(fee) : amount;
+export function reservedTotal(
+  amount: Money,
+  fees: FeeParts,
+  feeApplication: FeeApplication,
+): Money {
+  return feeApplication === 'ON_TOP' ? amount.add(totalFee(fees)) : amount;
 }
 
 /**
  * The recipient's net for a flow:
- *   - ON_TOP:   the fee is charged on top, so the recipient gets the full `amount`.
- *   - DEDUCTED: the fee comes out of the amount, so the recipient gets amount − fee.
+ *   - ON_TOP:   the fees are charged on top, so the recipient gets the full `amount`.
+ *   - DEDUCTED: the fees come out of the amount, so the recipient gets
+ *               amount − commission − network.
  * One definition shared by withdrawals/payouts (the `net` at request, the
  * `external` at approval) and loads (the credited net), so the split can't drift
  * between the sibling flows.
  *
- * PRECONDITION: both arguments are already at MONEY_SCALE — see reservedTotal.
+ * PRECONDITION: every argument is already at MONEY_SCALE — see reservedTotal.
  */
-export function netOfFee(amount: Money, fee: Money, feeApplication: FeeApplication): Money {
-  return feeApplication === 'ON_TOP' ? amount : amount.sub(fee);
+export function netOfFee(amount: Money, fees: FeeParts, feeApplication: FeeApplication): Money {
+  return feeApplication === 'ON_TOP' ? amount : amount.sub(totalFee(fees));
+}
+
+/**
+ * The request-time rejection when DEDUCTED fees leave nothing for the recipient
+ * (withdrawals, payouts) or nothing to credit (loads) — a surely-misconfigured
+ * price, refused before anything is reserved. `consequence` completes the
+ * sentence ("the recipient would receive 0" / "nothing would be credited").
+ * With no network fee, the message and details are exactly what they always were.
+ */
+export function feesConsumeAmountError(
+  amount: Money,
+  fees: FeeParts,
+  currency: string,
+  consequence: string,
+): ValidationError {
+  const fee = fees.commission.toString();
+  if (!fees.network.isPositive()) {
+    return new ValidationError(
+      `The ${fee} ${currency} fee consumes the entire amount — ${consequence}. Increase the amount or fix the fee rule.`,
+      { amount: amount.toString(), fee },
+    );
+  }
+  const networkFee = fees.network.toString();
+  const what = fees.commission.isPositive()
+    ? `The ${fee} ${currency} fee and the ${networkFee} ${currency} network fee consume`
+    : `The ${networkFee} ${currency} network fee consumes`;
+  return new ValidationError(
+    `${what} the entire amount — ${consequence}. Increase the amount or adjust the fees.`,
+    { amount: amount.toString(), fee, networkFee },
+  );
 }
 
 /** Read available inside the current tx and throw a clear "top up" error if it can't cover `required`. */
@@ -105,9 +162,11 @@ export function releaseEntries(
 }
 
 /**
- * Approve: reserved → external(net) + FEE(fee). Zero lines are skipped because
- * the ledger rejects non-positive amounts; debits still equal credits since the
- * reserved DEBIT equals external + fee.
+ * Approve: reserved → external(net) + FEE(commission) + NETWORK_FEE(network).
+ * Zero lines are skipped because the ledger rejects non-positive amounts; debits
+ * still equal credits since the reserved DEBIT equals external + both fees.
+ * `realized.commission` may exceed the stored fee by a whole-dollar rounding
+ * remainder (auto Whish transfers) — that remainder stays on FEE.
  */
 export function settleEntries(
   ref: FlowRef,
@@ -115,7 +174,7 @@ export function settleEntries(
   currency: string,
   reserved: Money,
   external: Money,
-  fee: Money,
+  realized: FeeParts,
 ): LedgerEntryInput[] {
   const entries: LedgerEntryInput[] = [
     { ...ref, companyId, accountType: 'RESERVED', direction: 'DEBIT', amount: reserved, currency },
@@ -130,14 +189,176 @@ export function settleEntries(
       currency,
     });
   }
-  if (fee.isPositive()) {
+  if (realized.commission.isPositive()) {
     entries.push({
       ...ref,
       companyId,
       accountType: 'FEE',
       direction: 'CREDIT',
-      amount: fee,
+      amount: realized.commission,
       currency,
+    });
+  }
+  if (realized.network.isPositive()) {
+    entries.push({
+      ...ref,
+      companyId,
+      accountType: 'NETWORK_FEE',
+      direction: 'CREDIT',
+      amount: realized.network,
+      currency,
+    });
+  }
+  return entries;
+}
+
+/** Ties money-IN ledger entries back to the deposit or load row. */
+export type MoneyInRef = Pick<LedgerEntryInput, 'transactionId' | 'loadId'>;
+
+/**
+ * Money in (deposit ingest, load approval): DEBIT EXTERNAL the gross that
+ * arrived; CREDIT RECEIVABLE whatever settles an outstanding company debt
+ * (loads only), AVAILABLE the remainder of the net, FEE the commission and
+ * NETWORK_FEE the network fee. Zero lines are skipped; the set balances because
+ * externalDebit = receivableSettle + availableCredit + commission + network.
+ */
+export function moneyInEntries(
+  ref: MoneyInRef,
+  companyId: string,
+  currency: string,
+  legs: {
+    externalDebit: Money;
+    receivableSettle: Money;
+    availableCredit: Money;
+    fees: FeeParts;
+  },
+): LedgerEntryInput[] {
+  const entries: LedgerEntryInput[] = [
+    {
+      ...ref,
+      companyId,
+      accountType: 'EXTERNAL',
+      direction: 'DEBIT',
+      amount: legs.externalDebit,
+      currency,
+    },
+  ];
+  if (legs.receivableSettle.isPositive()) {
+    entries.push({
+      ...ref,
+      companyId,
+      accountType: 'RECEIVABLE',
+      direction: 'CREDIT',
+      amount: legs.receivableSettle,
+      currency,
+      metadata: { kind: 'receivable_settlement' },
+    });
+  }
+  if (legs.availableCredit.isPositive()) {
+    entries.push({
+      ...ref,
+      companyId,
+      accountType: 'AVAILABLE',
+      direction: 'CREDIT',
+      amount: legs.availableCredit,
+      currency,
+    });
+  }
+  if (legs.fees.commission.isPositive()) {
+    entries.push({
+      ...ref,
+      companyId,
+      accountType: 'FEE',
+      direction: 'CREDIT',
+      amount: legs.fees.commission,
+      currency,
+    });
+  }
+  if (legs.fees.network.isPositive()) {
+    entries.push({
+      ...ref,
+      companyId,
+      accountType: 'NETWORK_FEE',
+      direction: 'CREDIT',
+      amount: legs.fees.network,
+      currency,
+    });
+  }
+  return entries;
+}
+
+/**
+ * Deposit reversal — the mirror of the original booking. CREDIT EXTERNAL the
+ * original external debit (net + commission + network, true for BOTH fee
+ * applications); DEBIT AVAILABLE what the wallet can cover and RECEIVABLE the
+ * uncovered rest of the net; DEBIT FEE and NETWORK_FEE to refund both fees.
+ * Balanced: fromAvailable + receivable = net, so debits = net + both fees.
+ */
+export function reversalEntries(
+  ref: { transactionId: string },
+  companyId: string,
+  currency: string,
+  legs: {
+    net: Money;
+    fees: FeeParts;
+    fromAvailable: Money;
+    receivable: Money;
+    reason: string;
+  },
+): LedgerEntryInput[] {
+  const entries: LedgerEntryInput[] = [
+    {
+      ...ref,
+      companyId,
+      accountType: 'EXTERNAL',
+      direction: 'CREDIT',
+      amount: legs.net.add(totalFee(legs.fees)),
+      currency,
+      metadata: { kind: 'reversal', reason: legs.reason },
+    },
+  ];
+  if (legs.fromAvailable.isPositive()) {
+    entries.push({
+      ...ref,
+      companyId,
+      accountType: 'AVAILABLE',
+      direction: 'DEBIT',
+      amount: legs.fromAvailable,
+      currency,
+      metadata: { kind: 'reversal' },
+    });
+  }
+  if (legs.receivable.isPositive()) {
+    entries.push({
+      ...ref,
+      companyId,
+      accountType: 'RECEIVABLE',
+      direction: 'DEBIT',
+      amount: legs.receivable,
+      currency,
+      metadata: { kind: 'reversal', shortfall: true },
+    });
+  }
+  if (legs.fees.commission.isPositive()) {
+    entries.push({
+      ...ref,
+      companyId,
+      accountType: 'FEE',
+      direction: 'DEBIT',
+      amount: legs.fees.commission,
+      currency,
+      metadata: { kind: 'reversal' },
+    });
+  }
+  if (legs.fees.network.isPositive()) {
+    entries.push({
+      ...ref,
+      companyId,
+      accountType: 'NETWORK_FEE',
+      direction: 'DEBIT',
+      amount: legs.fees.network,
+      currency,
+      metadata: { kind: 'reversal' },
     });
   }
   return entries;

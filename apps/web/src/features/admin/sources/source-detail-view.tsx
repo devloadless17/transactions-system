@@ -14,7 +14,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { DataTable, type Column } from '@/components/ui/data-table';
 import { apiFetch } from '@/lib/api.client';
 import { granularityWord } from '@/lib/date-presets';
-import { formatNumber as fmt } from '@/lib/format';
+import { formatNumber as fmt, isPositiveAmount } from '@/lib/format';
 import { KpiCard } from '@/features/analytics/kpi-card';
 import { VolumeChart } from '@/features/analytics/volume-chart.lazy';
 import { SourceFeeSchedule } from './source-fee-schedule';
@@ -132,6 +132,15 @@ export function SourceDetailView({ sourceId }: { sourceId: string }) {
           value={overviewQ.data ? `${fmt(overviewQ.data.kpi.totalFees ?? '0')} ${currency}` : '—'}
           hint="Platform fees on this source (revenue)"
         />
+        {/* Only once a deposit through this source has paid the optional
+            network fee (no company is charged one by default). */}
+        {overviewQ.data && isPositiveAmount(overviewQ.data.kpi.totalNetworkFees) && (
+          <KpiCard
+            label="Network fees"
+            value={`${fmt(overviewQ.data.kpi.totalNetworkFees)} ${currency}`}
+            hint="Network fees on this source (revenue)"
+          />
+        )}
         <KpiCard
           label="Source fees (cost)"
           value={overviewQ.data ? `${fmt(overviewQ.data.sourceFees)} ${currency}` : '—'}

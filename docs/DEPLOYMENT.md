@@ -156,6 +156,51 @@ release ran a destructive migration, restore the DB from a backup.
 > pruned), and never recreates the database container — the new image ref only
 > changes api/web, so the `postgres_data` volume is preserved untouched.
 
+### Release notes — migrations that limit a rollback
+
+Read the entry for every release you are about to roll back across. Newest first.
+
+#### Network fee — `20261008120000_network_fee_ledger_account`, `20261008120100_network_fees`
+
+- **Two additive migrations.** The first adds the `NETWORK_FEE` value to the
+  `LedgerAccountType` enum (its own file: Postgres cannot use an enum value inside
+  the transaction that added it). The second adds a
+  `network_fee_amount DECIMAL(20,2) NOT NULL DEFAULT 0` column (with a
+  `NOT VALID` non-negative `CHECK`) to `transactions`, `withdrawals`, `payouts`
+  and `loads`, creates the `company_network_fees` table (RLS: a tenant may read
+  its own rows, only admin/bypass may write), and adds
+  `companies.network_fee_enabled BOOLEAN NOT NULL DEFAULT false`.
+- **Catalog-only, no backfill.** Every new column has a constant default
+  (metadata-only, no table rewrite), the `CHECK`s skip the scan, and no index is
+  built on a hot table. Existing rows read as `0` / `false` — exactly the old
+  behaviour — so the previous API image keeps serving while it runs.
+- **Ships OFF.** No company is charged a network fee until a `SUPER_ADMIN` turns
+  it on for that company (`PUT /v1/admin/companies/:id/network-fee`). With the
+  switch off, every flow books exactly as before.
+- **ROLLBACK RULE.** Rolling the API image back past this release is safe **only
+  while no company has the network fee enabled**. Once any company has
+  `NETWORK_FEE` ledger rows (or a pending request carrying a network fee), roll
+  **forward only**: the previous image does not know the `NETWORK_FEE` enum value
+  and ignores `network_fee_amount`, so it would fail to read those ledger rows and
+  mis-book an approval or reversal of a row that carries one. The emergency lever
+  is the per-company switch — turning the network fee off stops it on every new
+  operation, while rows already booked or pending keep the fees frozen on them.
+
+  Before any rollback across this release, confirm every count is `0`
+  (read-only):
+
+  ```bash
+  cd /home/deploy/transactions-system
+  docker compose -f docker-compose.prod.yml exec -T postgres \
+    sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tA' <<'SQL'
+  SELECT count(*) FROM companies WHERE network_fee_enabled;
+  SELECT (SELECT count(*) FROM transactions WHERE network_fee_amount > 0)
+       + (SELECT count(*) FROM withdrawals  WHERE network_fee_amount > 0)
+       + (SELECT count(*) FROM payouts      WHERE network_fee_amount > 0)
+       + (SELECT count(*) FROM loads        WHERE network_fee_amount > 0);
+  SQL
+  ```
+
 ## Scaling & operational notes (from the production-readiness audit)
 
 The single-instance default is solid. Before scaling to **multiple API instances**

@@ -5,6 +5,7 @@ import { CompanyAccessGuard } from '../api-keys/guards/company-access.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { backofficeActivityItem, backofficeList, isBackoffice } from '../../common/backoffice-view';
 import type { AuthPrincipal } from '../../common/types/request.types';
 import { SkipResponseEnvelope } from '../../common/decorators/skip-response-envelope.decorator';
 import { ForbiddenError } from '../../common/errors/domain.error';
@@ -18,8 +19,15 @@ export class ActivityController {
   // ---------- Admin: unified activity across all (or one) company ----------
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
   @Get('admin/activity')
-  async adminList(@Query(new ZodPipe(listActivityQuerySchema)) query: ListActivityQuery) {
-    return this.activity.list({ query });
+  async adminList(
+    @Query(new ZodPipe(listActivityQuerySchema)) query: ListActivityQuery,
+    @CurrentUser() user: AuthPrincipal,
+  ) {
+    const page = await this.activity.list({ query });
+    if (!isBackoffice(user)) return page;
+    // No running wallet balance for back office (it would reveal each net).
+    const view = backofficeList(page, backofficeActivityItem);
+    return { ...view, meta: { ...view.meta, balanceMode: false } };
   }
 
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
@@ -27,8 +35,9 @@ export class ActivityController {
   @SkipResponseEnvelope()
   adminExport(
     @Query(new ZodPipe(listActivityQuerySchema)) query: ListActivityQuery,
+    @CurrentUser() user: AuthPrincipal,
   ): StreamableFile {
-    return this.activity.streamCsv({ query });
+    return this.activity.streamCsv({ query, backoffice: isBackoffice(user) });
   }
 
   // Platform-wide PENDING request counts for the admin sidebar badges.

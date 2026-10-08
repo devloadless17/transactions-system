@@ -103,6 +103,17 @@ export const FeeApplication = {
 } as const;
 export type FeeApplication = (typeof FeeApplication)[keyof typeof FeeApplication];
 
+/**
+ * The conventional fee application per flow: withdrawals ON_TOP (the company
+ * pays the fee on top, so the withdrawal pays out in full), everything else
+ * DEDUCTED. The admin rule editor uses it as the default when an operation is
+ * first added, and the network fee falls back to it for a flow that carries a
+ * network fee but no matching commission rule (keeping "withdrawals are ON_TOP").
+ */
+export function defaultFeeApplicationFor(op: FeeOperationType): FeeApplication {
+  return op === FeeOperationType.WITHDRAWAL ? FeeApplication.ON_TOP : FeeApplication.DEDUCTED;
+}
+
 // The four money flows that carry a fee + reserved-balance lifecycle.
 export const FEE_OPERATION_TYPES = [
   FeeOperationType.TRANSACTION,
@@ -131,6 +142,9 @@ export const LedgerAccountType = {
   // of a reversal/clawback after the company's available balance was drained.
   // Has no wallet projection (like FEE/EXTERNAL), so the wallet stays >= 0.
   RECEIVABLE: 'RECEIVABLE',
+  // Platform revenue from the optional per-company network fee — booked apart
+  // from FEE so FEE-based figures keep their meaning. No wallet projection.
+  NETWORK_FEE: 'NETWORK_FEE',
 } as const;
 export type LedgerAccountType = (typeof LedgerAccountType)[keyof typeof LedgerAccountType];
 

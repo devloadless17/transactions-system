@@ -4,6 +4,7 @@ export * from './common';
 export * from './source';
 export * from './company-source';
 export * from './commission';
+export * from './network-fee';
 export * from './transaction';
 export * from './wallet';
 export * from './api-key';

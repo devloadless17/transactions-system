@@ -173,7 +173,7 @@ Endpoints for external payment/transfer providers ("sources" — OMT, Whish, ban
 
 ### POST /v1/ingest/:sourceCode/transactions
 
-Ingest one completed transaction for a company. The transaction is booked atomically as `status: "COMPLETED"` — the platform computes its own fee from a commission rule, credits the company's wallet with the net, and writes the double-entry ledger. **The response deliberately omits the fee and net amounts** — a source must never see what the platform charges.
+Ingest one completed transaction for a company. The transaction is booked atomically as `status: "COMPLETED"` — the platform computes its own fee from a commission rule (plus the company's network fee, if it is charged one), credits the company's wallet with the net, and writes the double-entry ledger. **The response deliberately omits the fee and net amounts** — the commission, any network fee, and the net — because a source must never see what the platform charges.
 
 `:sourceCode` is a lowercase slug (`omt`, `wish_money_code`, `bank_transfer`), regex `^[a-z0-9][a-z0-9_-]{0,49}$`. It must resolve to a source **and** match the source your key is bound to.
 
@@ -198,10 +198,12 @@ Ingest one completed transaction for a company. The transaction is booked atomic
 
 The platform resolves a **commission rule** for `(company, source, amount)`:
 
-- `DEDUCTED`: company is credited `amount − fee`; the outside owes `amount`.
-- `ON_TOP`: company is credited the full `amount`; the outside owes `amount + fee`.
+- `DEDUCTED`: company is credited `amount − fee − networkFee`; the outside owes `amount`.
+- `ON_TOP`: company is credited the full `amount`; the outside owes `amount + fee + networkFee`.
 
-The wallet's available balance increases by the net; the fee is platform revenue. **Pricing can never bounce a deposit** — money that already entered the system must book:
+`networkFee` is the company's optional **network fee** — a second platform fee configured by Rival per company and per flow (a percentage or a fixed amount), computed alongside the commission on the same amount and applied the same way. It is `0` for a company that is not charged one, and it is just as invisible to the source as the commission: nothing in the request, the response, or any error mentions it. Under `DEDUCTED` it only ever takes what the commission leaves (net never goes below 0), so it can never stop a deposit from booking; a network fee reduced that way is configured pricing meeting a small deposit, not a pricing gap — it sets no `pricing_issue` and no alert, only a deduped log line. An unpriced or capped (net-0) deposit carries no network fee.
+
+The wallet's available balance increases by the net; the fees are platform revenue (booked to the `FEE` and `NETWORK_FEE` ledger accounts). **Pricing can never bounce a deposit** — money that already entered the system must book:
 
 - **No active commission rule matches** (internally `NO_COMMISSION_RULE` — no longer thrown on this endpoint): the deposit books **unpriced at net 0** — the full amount is withheld as platform fee, the company is credited nothing, and operators are alerted automatically (metric + deduped alert) to configure pricing and compensate. Withholding is recoverable by a later credit; bouncing would strand money the source cannot re-send.
 - **A `DEDUCTED` fee computes larger than the amount** (internally `COMMISSION_EXCEEDS_AMOUNT` — no longer thrown on this endpoint): the fee is **capped at the amount** — same net-0 booking, operators warned to fix the rule. Both codes remain possible on money-out flows and on the internal Whish settlement path (which deliberately stays strict: a parked link later settles at the CORRECT fee), where rejecting is the safe behaviour.
@@ -248,7 +250,7 @@ A replay returns the **existing** transaction with the **same `201`** status, pl
 }
 ```
 
-There is **no `commissionAmount` / `netAmount`** in this payload — by design. `replayed` is `true` only when this request matched an existing transaction (idempotent replay); see [Idempotency](#idempotency-precise).
+There is **no `commissionAmount` / `networkFeeAmount` / `netAmount`** in this payload — by design. `replayed` is `true` only when this request matched an existing transaction (idempotent replay); see [Idempotency](#idempotency-precise).
 
 #### Example request
 

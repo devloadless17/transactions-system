@@ -2,20 +2,28 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
+  activityItemSchema,
   createLoadSchema,
   createPayoutSchema,
   createWhishPaymentSchema,
   createWithdrawalSchema,
+  crmEventTransactionSchema,
+  crmEventWithdrawalSchema,
+  Money,
   WHISH_AMOUNT_RULES,
   listNotificationsQuerySchema,
   listWhishPaymentsQuerySchema,
   loadResponseSchema,
   paginationSchema,
   payoutResponseSchema,
+  transactionResponseSchema,
   whishPaymentResponseSchema,
   withdrawalResponseSchema,
   WithdrawalStatus,
 } from '@app/shared';
+import { FLOW_CSV_HEADER } from '../common/flow-csv';
+import { computeNetworkFee } from '../modules/commissions/network-fee';
+import { feesConsumeAmountError, netOfFee, reservedTotal } from '../modules/ledger/flow-ledger';
 
 // Fields on a company-facing response schema that are deliberately NOT shown in the
 // example field table (admin/internal projections or rarely-needed extras). Adding a
@@ -558,5 +566,192 @@ describe('docs contract — facts clients asked about', () => {
   it('states the Whish link amount is fixed (no partial or over-payment)', () => {
     expect(GUIDE).toMatch(/fixed on the hosted link/i);
     expect(DEV_GUIDE).toMatch(/fixed on the hosted page/i);
+  });
+});
+
+/**
+ * The network fee (2026-10): an optional second platform fee charged next to
+ * the commission, surfaced as `networkFeeAmount` / `networkFee` /
+ * `network_fee_amount`. Most companies integrate over the API, so every place
+ * the docs list fee fields must carry it, the reconciliation invariant must be
+ * the three-term one, and sources must still never hear of it.
+ */
+describe('docs contract — network fee', () => {
+  const WEB_CRM = read('apps/web/src/features/company/crm-view.tsx');
+  const WEB_COMPANY_API = read('apps/web/src/features/company/company-api-view.tsx');
+  const WEB_WHISH = read('apps/web/src/features/company/whish-pay-docs-view.tsx');
+
+  const documentedIn = (doc: string, field: string) =>
+    doc.includes(`\`${field}\``) || doc.includes(`"${field}"`);
+
+  // The text of `doc` from the heading `from` up to the next `to` — so a field
+  // has to be documented in the RIGHT section, not just somewhere in the file.
+  const section = (doc: string, from: string, to: string): string => {
+    const start = doc.indexOf(from);
+    expect(start, `section "${from}" not found`).toBeGreaterThan(-1);
+    const end = doc.indexOf(to, start + from.length);
+    expect(end, `end of section "${from}" ("${to}") not found`).toBeGreaterThan(start);
+    return doc.slice(start, end);
+  };
+
+  // The column names of the `header` array literal that follows `anchor` in a
+  // service file: one quoted name per line, so comment lines are skipped.
+  const csvHeaderAfter = (src: string, anchor: string): string[] => {
+    const at = src.indexOf(anchor);
+    expect(at, `anchor "${anchor}" not found`).toBeGreaterThan(-1);
+    const open = src.indexOf('[', at);
+    const close = src.indexOf(']', open);
+    return [...src.slice(open, close).matchAll(/^\s*'([a-z_]+)',?\s*$/gm)].map((m) => m[1]!);
+  };
+
+  it('every transactionResponseSchema field is in the TransactionResponse table', () => {
+    const table = section(GUIDE, '### `TransactionResponse` fields', '### Status lifecycle');
+    const missing = Object.keys(transactionResponseSchema.shape).filter(
+      (k) => !documentedIn(table, k),
+    );
+    expect(missing, `transaction fields not documented: ${missing.join(', ')}`).toEqual([]);
+  });
+
+  it('every activityItemSchema field is documented in the activity section', () => {
+    const activity = section(
+      GUIDE,
+      '### GET `/company/activity`',
+      '### GET `/company/operations/counts`',
+    );
+    const missing = Object.keys(activityItemSchema.shape).filter((k) => !documentedIn(activity, k));
+    expect(missing, `activity fields not documented: ${missing.join(', ')}`).toEqual([]);
+  });
+
+  it('every CRM event body field is documented in the CRM payload section', () => {
+    const payload = section(
+      GUIDE,
+      '### The outbound payload we POST to your CRM',
+      '#### Which events fire, and when',
+    );
+    for (const [name, schema] of [
+      ['transaction', crmEventTransactionSchema],
+      ['withdrawal', crmEventWithdrawalSchema],
+    ] as const) {
+      const missing = Object.keys(schema.shape).filter((k) => !documentedIn(payload, k));
+      expect(missing, `${name} event fields not documented: ${missing.join(', ')}`).toEqual([]);
+    }
+  });
+
+  // The invariant a CRM reconciles a withdrawal on. The two-term form silently
+  // stops tying out the moment a company is charged a network fee.
+  const OLD_INVARIANT = 'totalAmount − feeAmount = netAmount';
+  const NEW_INVARIANT = 'totalAmount − feeAmount − networkFeeAmount = netAmount';
+  it.each([
+    ['companies-integration-docs.md', () => GUIDE],
+    ['company-developer-guide.md', () => DEV_GUIDE],
+    ['crm-view.tsx', () => WEB_CRM],
+  ])('%s states the three-term withdrawal invariant, never the two-term one', (_name, doc) => {
+    expect(doc()).not.toContain(OLD_INVARIANT);
+    expect(doc()).toContain(NEW_INVARIANT);
+  });
+
+  it.each([
+    [
+      'transactions',
+      () =>
+        csvHeaderAfter(
+          read('apps/api/src/modules/transactions/transactions.service.ts'),
+          'const header = [',
+        ),
+    ],
+    ['withdrawals / payouts / loads', (): string[] => [...FLOW_CSV_HEADER]],
+    [
+      'activity',
+      () =>
+        csvHeaderAfter(
+          read('apps/api/src/modules/activity/activity.service.ts'),
+          'ACTIVITY_CSV_HEADER = [',
+        ),
+    ],
+  ])('the %s CSV header is documented exactly, ending in network_fee_amount', (_name, cols) => {
+    const header = cols();
+    expect(header.length, 'the header extraction found no columns').toBeGreaterThan(10);
+    expect(header[header.length - 1]).toBe('network_fee_amount');
+    expect(GUIDE).toContain(header.join(','));
+  });
+
+  it('explains the network fee is an optional platform fee, not a blockchain fee', () => {
+    const fees = section(GUIDE, '### Fees: commission and network fee', '### Pagination');
+    expect(fees).toMatch(/not a blockchain fee/i);
+    expect(fees).toContain('payoutDetails.network');
+    expect(fees).toMatch(/cannot set, change or remove it through the API/);
+    expect(DEV_GUIDE).toMatch(/not a blockchain fee/i);
+  });
+
+  it('the worked examples match what the money code computes', () => {
+    // $100 deposit, $2 commission, 1% network fee (DEDUCTED) → 2 / 1 / 97.
+    const network = computeNetworkFee(Money.of('100'), { feeType: 'PERCENTAGE', feeValue: '1' });
+    const deposit = { commission: Money.of('2'), network };
+    expect(network.toString()).toBe('1');
+    expect(netOfFee(Money.of('100'), deposit, 'DEDUCTED').toString()).toBe('97');
+    // Withdrawal of 100, ON_TOP $2 fee + $1 network fee → 103 debited, 100 received.
+    const withdrawal = { commission: Money.of('2'), network: Money.of('1') };
+    expect(reservedTotal(Money.of('100'), withdrawal, 'ON_TOP').toString()).toBe('103');
+    expect(netOfFee(Money.of('100'), withdrawal, 'ON_TOP').toString()).toBe('100');
+
+    const fees = section(GUIDE, '### Fees: commission and network fee', '### Pagination');
+    for (const line of ['"networkFeeAmount": "1"', '"netAmount": "97"', '"totalAmount": "103"']) {
+      expect(fees).toContain(line);
+    }
+  });
+
+  it('documents the exact error when DEDUCTED fees consume the whole amount', () => {
+    const both = feesConsumeAmountError(
+      Money.of('10'),
+      { commission: Money.of('5'), network: Money.of('5') },
+      'USD',
+      'the recipient would receive 0',
+    );
+    expect(both.code).toBe('VALIDATION_ERROR');
+    expect(both.details).toEqual({ amount: '10', fee: '5', networkFee: '5' });
+    expect(GUIDE).toContain(both.message);
+    expect(GUIDE).toContain('"details": { "amount": "10", "fee": "5", "networkFee": "5" }');
+    const commissionOnly = feesConsumeAmountError(
+      Money.of('10'),
+      { commission: Money.of('10'), network: Money.zero() },
+      'USD',
+      'nothing would be credited',
+    );
+    expect(commissionOnly.message.endsWith('Increase the amount or fix the fee rule.')).toBe(true);
+    expect(GUIDE).toContain('Increase the amount or fix the fee rule.');
+  });
+
+  it('tells integrators to treat a missing networkFeeAmount on an older event as "0"', () => {
+    for (const [name, doc] of [
+      ['companies guide', GUIDE],
+      ['developer guide', DEV_GUIDE],
+      ['crm-view.tsx', WEB_CRM],
+    ] as const) {
+      expect(doc, `${name} must cover events queued before the field existed`).toMatch(
+        /treat a missing[\s\S]{0,60}networkFeeAmount/,
+      );
+    }
+  });
+
+  it('the developer guide and in-app pages mirror the new fields', () => {
+    for (const [name, doc] of [
+      ['developer guide', DEV_GUIDE],
+      ['company-api-view.tsx', WEB_COMPANY_API],
+    ] as const) {
+      expect(doc, `${name} should document networkFeeAmount`).toContain('networkFeeAmount');
+      expect(doc, `${name} should document the CSV column`).toContain('network_fee_amount');
+    }
+    // Both CRM sample payloads (deposit + withdrawal) carry the field.
+    expect(WEB_CRM.match(/"networkFeeAmount": "0"/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
+    expect(WEB_WHISH).toContain('networkFeeAmount');
+  });
+
+  it('the sources doc states the ingest response omits the network fee too', () => {
+    expect(INGEST_DOC).toMatch(/deliberately omits the fee/i);
+    expect(INGEST_DOC).toContain('no `commissionAmount` / `networkFeeAmount` / `netAmount`');
+  });
+
+  it('the partner doc never mentions a network fee (sources never see pricing)', () => {
+    expect(read('docs/rival-ingest-api-integration.md')).not.toMatch(/network ?fee/i);
   });
 });

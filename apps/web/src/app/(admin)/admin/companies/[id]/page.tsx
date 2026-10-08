@@ -14,7 +14,10 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
   // The API enforces both per-field in CompaniesService.update; this prop just
   // hides the controls. One prop, because the two share one rule and one role
   // check: two props here could only ever drift apart wrongly.
+  // The network fee is pricing: also SUPER_ADMIN-only (PUT is @Roles(SUPER_ADMIN));
+  // ADMIN_OPERATOR sees it read-only. A separate prop — a different rule.
+  const superAdmin = session.role === UserRole.SUPER_ADMIN;
   return (
-    <CompanyDetailView companyId={id} canEditIdentity={session.role === UserRole.SUPER_ADMIN} />
+    <CompanyDetailView companyId={id} canEditIdentity={superAdmin} canEditNetworkFee={superAdmin} />
   );
 }

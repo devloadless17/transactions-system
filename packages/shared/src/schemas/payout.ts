@@ -35,11 +35,14 @@ export const payoutResponseSchema = z.object({
   amount: z.string(),
   currency: z.string(),
   feeAmount: z.string(),
+  // Optional per-company network fee, applied the same way as `feeAmount`
+  // (see feeApplication). "0" when the company is not charged one.
+  networkFeeAmount: z.string(),
   feeApplication: z.nativeEnum(FeeApplication),
   netAmount: z.string(),
-  // Total the company is actually charged = net + fee (the money that moves).
-  // Equals `amount` for a DEDUCTED fee; for ON_TOP the fee is added on top, so
-  // this exceeds the requested `amount`.
+  // Total the company is actually charged = net + fee + networkFee (the money
+  // that moves). Equals `amount` for DEDUCTED fees; for ON_TOP the fees are
+  // added on top, so this exceeds the requested `amount`.
   totalAmount: z.string(),
   status: z.nativeEnum(WithdrawalStatus),
   payoutMethod: z.nativeEnum(PayoutMethod),

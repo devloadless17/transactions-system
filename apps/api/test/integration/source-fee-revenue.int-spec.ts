@@ -137,14 +137,22 @@ describe('source fees & net revenue', () => {
     expect(eq(overview.sourceFees, '5')).toBe(true);
 
     // (3) platform breakdown attributes $5 to this source, and the net-revenue
-    //     identity holds for the USD rollup (netRevenue == feesEarned − sourceFees).
+    //     identity holds for the USD rollup (netRevenue == feesEarned +
+    //     networkFeesEarned − sourceFees; the network-fee term is 0 unless some
+    //     company in the shared test DB is charged one).
     const platform = await platformAnalytics.platform({});
     const mine = platform.sourceFeeBreakdown.find((b) => b.sourceId === sourceId);
     expect(mine).toBeTruthy();
     expect(eq(mine!.fees, '5')).toBe(true);
     const usd = platform.byCurrency.find((c) => c.currency === 'USD')!;
     expect(
-      eq(usd.netRevenue, Money.of(usd.feesEarned).sub(Money.of(usd.sourceFees)).toString()),
+      eq(
+        usd.netRevenue,
+        Money.of(usd.feesEarned)
+          .add(Money.of(usd.networkFeesEarned))
+          .sub(Money.of(usd.sourceFees))
+          .toString(),
+      ),
     ).toBe(true);
   });
 

@@ -68,8 +68,9 @@ export const crmEventStatusSchema = z.enum(CRM_EVENT_STATUSES);
 export type CrmEventStatus = z.infer<typeof crmEventStatusSchema>;
 
 // The transaction body inside a CRM event. `id` is null while a Whish link is
-// still PENDING (no ledger transaction exists yet). `netAmount`/`commissionAmount`
-// are present once the platform fee is known (i.e. once COMPLETED).
+// still PENDING (no ledger transaction exists yet). `netAmount`/`commissionAmount`/
+// `networkFeeAmount` are present once the platform fees are known (i.e. once
+// COMPLETED); `networkFeeAmount` is "0" when the company is not charged one.
 export const crmEventTransactionSchema = z.object({
   id: z.string().uuid().nullable(),
   status: crmTransactionStatusSchema,
@@ -79,6 +80,7 @@ export const crmEventTransactionSchema = z.object({
   currency: z.string(),
   netAmount: z.string().nullable(),
   commissionAmount: z.string().nullable(),
+  networkFeeAmount: z.string().nullable(),
   customer: z.string().nullable(),
   tradingAccount: z.string().nullable(),
   phone: z.string().nullable(),
@@ -100,9 +102,10 @@ export type CrmEventTransaction = z.infer<typeof crmEventTransactionSchema>;
 // is no separate "approved-but-unpaid" state.)
 //
 // Money (always consistent): amount = the requested payout; totalAmount = what
-// left your wallet (= amount for a DEDUCTED fee; amount + fee for ON_TOP);
-// feeAmount = the platform fee; netAmount = what the recipient receives
-// (totalAmount − feeAmount = netAmount).
+// left your wallet (= amount for DEDUCTED fees; amount + feeAmount +
+// networkFeeAmount for ON_TOP); feeAmount = the platform fee; networkFeeAmount =
+// the optional network fee ("0" when not charged); netAmount = what the
+// recipient receives (totalAmount − feeAmount − networkFeeAmount = netAmount).
 export const crmEventWithdrawalSchema = z.object({
   id: z.string().uuid(),
   // PENDING → COMPLETED (approved + paid) / REJECTED / CANCELLED. From the event.
@@ -110,6 +113,7 @@ export const crmEventWithdrawalSchema = z.object({
   amount: z.string(),
   totalAmount: z.string(),
   feeAmount: z.string(),
+  networkFeeAmount: z.string(),
   netAmount: z.string(),
   // How the fee was applied: "DEDUCTED" (recipient gets amount − fee) or
   // "ON_TOP" (recipient gets the full amount; the fee is charged on top).

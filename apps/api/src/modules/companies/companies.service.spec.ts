@@ -435,3 +435,131 @@ describe('CompaniesService.update — audit diff', () => {
     expect(Object.keys(changes)).toEqual(['name']);
   });
 });
+
+/**
+ * The network-fee configuration write (SUPER_ADMIN, enforced on the route):
+ * one transaction that locks the company row, flips the switch and replaces the
+ * rates; the audit diff is published only after it commits.
+ */
+describe('CompaniesService.setNetworkFee', () => {
+  function makeNetworkFeeService(opts: {
+    locked?: boolean;
+    enabled?: boolean;
+    rates?: Array<{ operationType: string; feeType: string; feeValue: string }>;
+  }) {
+    let stored = (opts.rates ?? []).map((r) => ({ ...r, feeValue: dec(r.feeValue) }));
+    const calls: string[] = [];
+    const queryRaw = vi.fn(() => {
+      calls.push('lock');
+      return Promise.resolve(opts.locked === false ? [] : [{ id: 'c1' }]);
+    });
+    const findUniqueOrThrow = vi.fn(() =>
+      Promise.resolve({ networkFeeEnabled: opts.enabled ?? false, networkFees: stored }),
+    );
+    const update = vi.fn(() => {
+      calls.push('switch');
+      return Promise.resolve({});
+    });
+    const deleteMany = vi.fn(() => {
+      calls.push('delete');
+      stored = [];
+      return Promise.resolve({ count: 0 });
+    });
+    const createMany = vi.fn(
+      (args: { data: Array<{ operationType: string; feeType: string; feeValue: string }> }) => {
+        calls.push('insert');
+        stored = args.data.map((r) => ({ ...r, feeValue: dec(r.feeValue) }));
+        return Promise.resolve({ count: args.data.length });
+      },
+    );
+    const findMany = vi.fn(() => Promise.resolve(stored));
+    const tx = {
+      $queryRaw: queryRaw,
+      company: { findUniqueOrThrow, update },
+      companyNetworkFee: { deleteMany, createMany, findMany },
+    };
+    const prisma = {
+      runAsAdmin: vi.fn((cb: (t: typeof tx) => unknown) => cb(tx)),
+    } as unknown as PrismaService;
+    const realtime = { admin: vi.fn() } as unknown as RealtimeService;
+    return {
+      svc: new CompaniesService(prisma, realtime),
+      prisma,
+      realtime,
+      calls,
+      update,
+      createMany,
+    };
+  }
+
+  it('locks the row, flips the switch and replaces the rates — in ONE transaction, in that order', async () => {
+    const { svc, prisma, calls, update } = makeNetworkFeeService({});
+    const res = await svc.setNetworkFee('c1', {
+      enabled: true,
+      rates: [{ operationType: 'TRANSACTION', feeType: 'PERCENTAGE', feeValue: '1' }],
+    });
+    expect(prisma.runAsAdmin).toHaveBeenCalledTimes(1);
+    expect(calls).toEqual(['lock', 'switch', 'delete', 'insert']);
+    expect(update).toHaveBeenCalledWith({ where: { id: 'c1' }, data: { networkFeeEnabled: true } });
+    expect(res).toEqual({
+      enabled: true,
+      rates: [{ operationType: 'TRANSACTION', feeType: 'PERCENTAGE', feeValue: '1' }],
+    });
+  });
+
+  it('switching off with no rates deletes them and inserts nothing', async () => {
+    const { svc, calls, createMany } = makeNetworkFeeService({
+      enabled: true,
+      rates: [{ operationType: 'LOAD', feeType: 'FIXED', feeValue: '2' }],
+    });
+    const res = await svc.setNetworkFee('c1', { enabled: false, rates: [] });
+    expect(createMany).not.toHaveBeenCalled();
+    expect(calls).toEqual(['lock', 'switch', 'delete']);
+    expect(res).toEqual({ enabled: false, rates: [] });
+  });
+
+  it('404s an unknown company and writes nothing', async () => {
+    const { svc, calls } = makeNetworkFeeService({ locked: false });
+    await expect(svc.setNetworkFee('nope', { enabled: false, rates: [] })).rejects.toMatchObject({
+      httpStatus: 404,
+    });
+    expect(calls).toEqual(['lock']);
+  });
+
+  it('publishes the audit diff after the commit, and refreshes the admin views', async () => {
+    const { svc, realtime } = makeNetworkFeeService({
+      enabled: true,
+      rates: [{ operationType: 'WITHDRAWAL', feeType: 'FIXED', feeValue: '2' }],
+    });
+    const onChanges = vi.fn();
+    await svc.setNetworkFee(
+      'c1',
+      {
+        enabled: true,
+        rates: [{ operationType: 'WITHDRAWAL', feeType: 'FIXED', feeValue: '3' }],
+      },
+      { onChanges },
+    );
+    expect(onChanges).toHaveBeenCalledWith({
+      'networkFee.WITHDRAWAL': { from: 'FIXED 2', to: 'FIXED 3' },
+    });
+    expect(realtime.admin).toHaveBeenCalledWith(['companies'], 'c1');
+  });
+
+  it('an identical save publishes no diff', async () => {
+    const { svc } = makeNetworkFeeService({
+      enabled: true,
+      rates: [{ operationType: 'WITHDRAWAL', feeType: 'FIXED', feeValue: '2' }],
+    });
+    const onChanges = vi.fn();
+    await svc.setNetworkFee(
+      'c1',
+      {
+        enabled: true,
+        rates: [{ operationType: 'WITHDRAWAL', feeType: 'FIXED', feeValue: '2.00' }],
+      },
+      { onChanges },
+    );
+    expect(onChanges).not.toHaveBeenCalled();
+  });
+});

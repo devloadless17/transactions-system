@@ -1,24 +1,23 @@
 import { describe, expect, it } from 'vitest';
 import { Money } from '@app/shared';
+import type { FeeParts } from '../ledger/flow-ledger';
 import { ingestSplit, splitClawback } from './transactions.service';
+
+/** Both fees on a row; the network fee defaults to 0 (the switch-off case). */
+const fees = (commission: string, network = '0'): FeeParts => ({
+  commission: Money.of(commission),
+  network: Money.of(network),
+});
 
 describe('ingestSplit', () => {
   it('DEDUCTED: fee comes out of the amount', () => {
-    const { externalDebit, availableCredit } = ingestSplit(
-      Money.of('100'),
-      Money.of('3'),
-      'DEDUCTED',
-    );
+    const { externalDebit, availableCredit } = ingestSplit(Money.of('100'), fees('3'), 'DEDUCTED');
     expect(externalDebit.toString()).toBe('100');
     expect(availableCredit.toString()).toBe('97');
   });
 
   it('ON_TOP: fee is added on top; company gets the full amount', () => {
-    const { externalDebit, availableCredit } = ingestSplit(
-      Money.of('100'),
-      Money.of('3'),
-      'ON_TOP',
-    );
+    const { externalDebit, availableCredit } = ingestSplit(Money.of('100'), fees('3'), 'ON_TOP');
     expect(externalDebit.toString()).toBe('103');
     expect(availableCredit.toString()).toBe('100');
   });
@@ -27,7 +26,7 @@ describe('ingestSplit', () => {
     for (const app of ['DEDUCTED', 'ON_TOP'] as const) {
       const amount = Money.of('250.50');
       const fee = Money.of('2.75');
-      const { externalDebit, availableCredit } = ingestSplit(amount, fee, app);
+      const { externalDebit, availableCredit } = ingestSplit(amount, fees('2.75'), app);
       expect(externalDebit.toString()).toBe(availableCredit.add(fee).toString());
     }
   });
@@ -37,7 +36,7 @@ describe('ingestSplit', () => {
     const amount = Money.of('100');
     const fee = Money.of('3');
     for (const app of ['DEDUCTED', 'ON_TOP'] as const) {
-      const { externalDebit, availableCredit } = ingestSplit(amount, fee, app);
+      const { externalDebit, availableCredit } = ingestSplit(amount, fees('3'), app);
       const reconstructed = availableCredit.add(fee); // net + fee
       expect(reconstructed.toString()).toBe(externalDebit.toString());
     }
@@ -46,11 +45,45 @@ describe('ingestSplit', () => {
   it('DEDUCTED with a full-amount fee credits zero (net 0)', () => {
     const { externalDebit, availableCredit } = ingestSplit(
       Money.of('100'),
-      Money.of('100'),
+      fees('100'),
       'DEDUCTED',
     );
     expect(externalDebit.toString()).toBe('100');
     expect(availableCredit.toString()).toBe('0');
+  });
+
+  // The tech lead's example: a $100 deposit with a $2 fee and a 1% network fee.
+  it('DEDUCTED with a network fee: both fees come out of the amount', () => {
+    const { externalDebit, availableCredit } = ingestSplit(
+      Money.of('100'),
+      fees('2', '1'),
+      'DEDUCTED',
+    );
+    expect(externalDebit.toString()).toBe('100');
+    expect(availableCredit.toString()).toBe('97');
+  });
+
+  it('ON_TOP with a network fee: both fees are added on top', () => {
+    const { externalDebit, availableCredit } = ingestSplit(
+      Money.of('100'),
+      fees('2', '1'),
+      'ON_TOP',
+    );
+    expect(externalDebit.toString()).toBe('103');
+    expect(availableCredit.toString()).toBe('100');
+  });
+
+  it('external == credit + commission + network for both applications', () => {
+    for (const app of ['DEDUCTED', 'ON_TOP'] as const) {
+      const { externalDebit, availableCredit } = ingestSplit(
+        Money.of('250.50'),
+        fees('2.75', '1.25'),
+        app,
+      );
+      expect(externalDebit.toString()).toBe(
+        availableCredit.add(Money.of('2.75')).add(Money.of('1.25')).toString(),
+      );
+    }
   });
 });
 

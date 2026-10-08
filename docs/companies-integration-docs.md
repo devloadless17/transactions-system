@@ -95,7 +95,7 @@ All errors share the `{ success:false, statusCode, error:{ code, message, detail
 | `NOT_FOUND`            | 404    | Entity missing. Domain `details`: `{ entity, id }`. Prisma `P2025` → bare `NOT_FOUND` (`Record not found`, no `details`).                                                                                                                                                                                                                                |
 | `CONFLICT`             | 409    | Unique/FK/state conflict. Prisma `P2002` → `details.target`; `P2003` → `details.field`.                                                                                                                                                                                                                                                                  |
 | `WRITE_CONFLICT`       | 409    | Serializable write conflict / deadlock (Prisma `P2034`). **Safe to retry** the same request.                                                                                                                                                                                                                                                             |
-| `INSUFFICIENT_BALANCE` | 409    | Not enough available balance for amount (+fee). `details`: `{ currency, required, available, shortfall }`.                                                                                                                                                                                                                                               |
+| `INSUFFICIENT_BALANCE` | 409    | Not enough available balance for the reserved total (the amount, plus both fees when they are `ON_TOP`). `details`: `{ currency, required, available, shortfall }`.                                                                                                                                                                                      |
 | domain 422 codes       | 422    | Semantically invalid request that passed schema validation — surfaced with a **domain code**, e.g. `NO_COMMISSION_RULE` (`details: { companyId, sourceId, amount }`) or `COMMISSION_EXCEEDS_AMOUNT` (`details: { ruleId, amount, commission }`). The bare `UNPROCESSABLE` code only appears as a fallback for a framework `HttpException` raised at 422. |
 | `RATE_LIMITED`         | 429    | Rate limit exceeded (see [Rate limits](#rate-limits)).                                                                                                                                                                                                                                                                                                   |
 | `INTERNAL_ERROR`       | 500    | Unexpected server error. Internals are never leaked in `message`.                                                                                                                                                                                                                                                                                        |
@@ -135,6 +135,100 @@ Always send and parse amounts as strings to avoid floating-point drift.
 | `currency` | enum             | yes | Validated by `currencySchema`. **Supported values: `USD` only** today (`SUPPORTED_CURRENCIES`). |
 
 Timestamps are ISO-8601 strings (e.g. `"2026-06-22T14:05:00.000Z"`).
+
+### Fees: commission and network fee
+
+Every money operation can carry **two platform fees**, and every company-facing record shows both, so you always know exactly what was charged:
+
+| Fee             | What it is                                                                                       | Deposits (`TransactionResponse`, `transaction.*` events) | Withdrawals, payouts, loads (and `withdrawal.*` events) | Activity feed |
+| --------------- | ------------------------------------------------------------------------------------------------ | -------------------------------------------------------- | ------------------------------------------------------- | ------------- |
+| **Commission**  | The platform fee, priced by the commission rules configured for your company and operation type. | `commissionAmount`                                       | `feeAmount`                                             | `fee`         |
+| **Network fee** | An **optional** second platform fee, charged alongside the commission.                           | `networkFeeAmount`                                       | `networkFeeAmount`                                      | `networkFee`  |
+
+**What the network fee is**
+
+- **Configured by Rival, per company and per flow.** Rival sets it for your company separately for deposits, withdrawals, payouts and loads — each either a **percentage** of the amount or a **fixed** amount. You cannot set, change or remove it through the API; ask your account manager about your configuration.
+- **Optional — `"0"` when not charged.** If your company is not charged a network fee (or a flow has none configured), `networkFeeAmount` is `"0"`. The field is always present in REST responses.
+- **Not a blockchain fee.** Despite the name, it is not a crypto network, gas or miner fee, and it is unrelated to `payoutDetails.network` on `CRYPTO` requests (that is only the chain name, e.g. `TRC20`). It is a Rival platform fee, charged the same way whatever the payout method.
+- **Computed like the commission**, on the same amount: a percentage is `amount × rate %`, a fixed fee is its dollar value, and each is rounded once to whole cents.
+- **Applied the same way as the commission** — the record's `feeApplication`:
+  - `DEDUCTED` — both fees come out of the amount.
+  - `ON_TOP` — both fees are charged on top of the amount.
+  - A flow that carries a network fee but has no commission rule uses its conventional application: `ON_TOP` for withdrawals (the recipient still receives the full amount), `DEDUCTED` for payouts and loads. The record's `feeApplication` always tells you which one applied.
+- **Frozen on each record.** Withdrawals, payouts and loads freeze both fees when you request them; deposits freeze them when they are booked. A later configuration change never changes an existing record — a pending request is approved with the fees it was requested at, and an idempotent replay returns the original figures.
+
+**Invariants** — these hold on every record:
+
+| Record                                              | Invariant                                                                      |
+| --------------------------------------------------- | ------------------------------------------------------------------------------ |
+| Withdrawals, payouts, loads                         | `totalAmount = netAmount + feeAmount + networkFeeAmount`                       |
+| … with `DEDUCTED` fees                              | `totalAmount = amount` and `netAmount = amount − feeAmount − networkFeeAmount` |
+| … with `ON_TOP` fees                                | `netAmount = amount` and `totalAmount = amount + feeAmount + networkFeeAmount` |
+| Deposits (`DEDUCTED`, the normal deposit setup)     | `netAmount = amount − commissionAmount − networkFeeAmount`                     |
+| `withdrawal.*` CRM events                           | `totalAmount − feeAmount − networkFeeAmount = netAmount`                       |
+| Activity feed items                                 | `amount = fee + networkFee + net`                                              |
+| CSV exports (withdrawals, payouts, loads, activity) | `gross_amount = fee_amount + network_fee_amount + net_amount`                  |
+
+(If your deposits are ever priced `ON_TOP`, `netAmount = amount` and both fees are charged on top of the deposit.)
+
+**Worked examples.** A **$100 deposit** with a **$2 commission** and a **1% network fee** credits **$97** to your wallet:
+
+```json
+{
+  "amount": "100",
+  "currency": "USD",
+  "commissionAmount": "2",
+  "networkFeeAmount": "1",
+  "netAmount": "97"
+}
+```
+
+Its ledger reads `EXTERNAL` DEBIT `100` → `AVAILABLE` CREDIT `97` → `FEE` CREDIT `2` → `NETWORK_FEE` CREDIT `1`.
+
+A **withdrawal of 100** with an **`ON_TOP` $2 fee** and a **$1 network fee** debits **103** from your wallet and pays the recipient the full **100**:
+
+```json
+{
+  "amount": "100",
+  "currency": "USD",
+  "feeAmount": "2",
+  "networkFeeAmount": "1",
+  "feeApplication": "ON_TOP",
+  "netAmount": "100",
+  "totalAmount": "103"
+}
+```
+
+**Edge cases**
+
+- **A deposit always books.** On a `DEDUCTED` deposit the network fee never takes more than what the commission leaves, so `netAmount` never goes below `0`. For example, a $0.50 deposit with a $0.10 commission and a $1 fixed network fee books `networkFeeAmount: "0.4"` and `netAmount: "0"`. A deposit booked with its whole amount withheld as commission carries no network fee.
+- **Withdrawals, payouts and loads refuse fees that consume the whole amount.** If `DEDUCTED` fees would leave the recipient nothing (withdrawals, payouts) or credit nothing (loads), the request is rejected with `400 VALIDATION_ERROR` before anything is reserved. When a network fee applies, the message names both fees and `details` carries both:
+
+  ```json
+  {
+    "success": false,
+    "statusCode": 400,
+    "error": {
+      "code": "VALIDATION_ERROR",
+      "message": "The 5 USD fee and the 5 USD network fee consume the entire amount — the recipient would receive 0. Increase the amount or adjust the fees.",
+      "details": { "amount": "10", "fee": "5", "networkFee": "5" }
+    }
+  }
+  ```
+
+  A load says `nothing would be credited` instead. Without a network fee the message is `The <fee> USD fee consumes the entire amount — … Increase the amount or fix the fee rule.` with `details: { amount, fee }`. A commission that on its own exceeds the amount is refused with `422 COMMISSION_EXCEEDS_AMOUNT`, as before.
+
+- **Rejected or cancelled requests cost nothing.** A rejected or cancelled withdrawal or payout releases its whole reserved total back to `available`, both fees included; a load moves no money until it is approved.
+- **A reversed deposit refunds both fees.** Its compensating ledger entries debit `FEE` and `NETWORK_FEE`.
+
+**Where you see it**
+
+- **REST:** `networkFeeAmount` on transactions (deposits), withdrawals, payouts and loads — a decimal string formatted exactly like its sibling money fields, with trailing zeros dropped (`"0"`, `"1"`, `"2.5"`). Compare amounts numerically, never as raw strings.
+- **CRM webhooks:** `networkFeeAmount` on both event bodies. On `transaction.*` it is nullable exactly like `commissionAmount` (`null` while a Whish payment is pending or failed); on `withdrawal.*` it is always a string. An event queued before the field existed may omit it — **treat a missing `networkFeeAmount` as `"0"`**.
+- **Activity feed:** `networkFee`.
+- **CSV exports:** a `network_fee_amount` column, appended as the **last** column of the transactions, withdrawals, payouts, loads and activity exports — written with two decimals (`0.00` when you are not charged one).
+- **Ledger:** its own `NETWORK_FEE` account, present only if you are charged a network fee.
+- **Never to sources:** the providers that push deposits to Rival see neither fee.
 
 ### Pagination
 
@@ -314,7 +408,7 @@ Read-only endpoints for a company to query the transactions ingested against it 
 
 The key is bound to one company; the server forces every query to that company's tenant scope. The `companyId` query parameter (below) is **admin-only** and is silently ignored for company-key callers — you only ever see your own transactions.
 
-Unlike the ingest responses (which deliberately hide the platform fee), these company-facing responses **do** include `commissionAmount` and `netAmount`: that is your money, so you are entitled to see the fee taken and the net you were credited.
+Unlike the ingest responses (which deliberately hide the platform fees), these company-facing responses **do** include `commissionAmount`, `networkFeeAmount` and `netAmount`: that is your money, so you are entitled to see every fee taken and the net you were credited (see [Fees: commission and network fee](#fees-commission-and-network-fee)).
 
 > Reversing a transaction is an **admin-only** action (`POST /admin/transactions/:id/reverse`, roles `SUPER_ADMIN`/`ADMIN_OPERATOR`, requires a dashboard session + CSRF). A company API key **cannot** reverse — there is no `company/transactions/:id/reverse` route, and the admin route rejects company principals with `403 FORBIDDEN`. A transaction you ingested can only move to `REVERSED` via platform staff.
 
@@ -322,24 +416,25 @@ Unlike the ingest responses (which deliberately hide the platform fee), these co
 
 Returned by the list, get-one, and (nested under `transaction`) the detail endpoint.
 
-| Field                   | Type             | Notes                                                                                       |
-| ----------------------- | ---------------- | ------------------------------------------------------------------------------------------- |
-| `id`                    | string (uuid)    | Platform transaction id. Use this in the get-one / detail URLs.                             |
-| `companyId`             | string (uuid)    | Always your company.                                                                        |
-| `sourceId`              | string (uuid)    | The source that ingested it. Use as the `sourceId` list filter.                             |
-| `sourceCode`            | string           | Human-readable source code (e.g. the provider short code).                                  |
-| `externalTransactionId` | string           | The id your source supplied at ingest. Target of the `search` filter.                       |
-| `amount`                | string (decimal) | Gross amount as ingested. Decimal string, quantized to 2 dp (whole cents). Never a float.   |
-| `commissionAmount`      | string (decimal) | Platform fee applied.                                                                       |
-| `netAmount`             | string (decimal) | Amount credited to your available balance (gross − fee for `DEDUCTED`; gross for `ON_TOP`). |
-| `currency`              | string           | ISO-4217, 3 chars. Currently only `USD` is supported.                                       |
-| `status`                | enum             | See lifecycle below.                                                                        |
-| `customer`              | string \| null   | Lifted from the ingest `payload.customer`. `null` if not provided.                          |
-| `target`                | string \| null   | Lifted from `payload.target` (the trading account / payee). `null` if absent.               |
-| `phone`                 | string \| null   | From `payload.phone`. `null` if absent.                                                     |
-| `note`                  | string \| null   | From `payload.note`. `null` if absent.                                                      |
-| `processedAt`           | string \| null   | ISO-8601 timestamp when booked (set at ingest). `null` if not yet processed.                |
-| `createdAt`             | string           | ISO-8601 row-creation timestamp. Also the list sort key (desc).                             |
+| Field                   | Type             | Notes                                                                                                                                        |
+| ----------------------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                    | string (uuid)    | Platform transaction id. Use this in the get-one / detail URLs.                                                                              |
+| `companyId`             | string (uuid)    | Always your company.                                                                                                                         |
+| `sourceId`              | string (uuid)    | The source that ingested it. Use as the `sourceId` list filter.                                                                              |
+| `sourceCode`            | string           | Human-readable source code (e.g. the provider short code).                                                                                   |
+| `externalTransactionId` | string           | The id your source supplied at ingest. Target of the `search` filter.                                                                        |
+| `amount`                | string (decimal) | Gross amount as ingested. Decimal string, quantized to 2 dp (whole cents). Never a float.                                                    |
+| `commissionAmount`      | string (decimal) | The commission (platform fee) taken on this deposit.                                                                                         |
+| `networkFeeAmount`      | string (decimal) | The network fee taken on this deposit, next to the commission. `"0"` when not charged.                                                       |
+| `netAmount`             | string (decimal) | Credited to your available balance: `amount − commissionAmount − networkFeeAmount` for `DEDUCTED` (the normal setup); `amount` for `ON_TOP`. |
+| `currency`              | string           | ISO-4217, 3 chars. Currently only `USD` is supported.                                                                                        |
+| `status`                | enum             | See lifecycle below.                                                                                                                         |
+| `customer`              | string \| null   | Lifted from the ingest `payload.customer`. `null` if not provided.                                                                           |
+| `target`                | string \| null   | Lifted from `payload.target` (the trading account / payee). `null` if absent.                                                                |
+| `phone`                 | string \| null   | From `payload.phone`. `null` if absent.                                                                                                      |
+| `note`                  | string \| null   | From `payload.note`. `null` if absent.                                                                                                       |
+| `processedAt`           | string \| null   | ISO-8601 timestamp when booked (set at ingest). `null` if not yet processed.                                                                 |
+| `createdAt`             | string           | ISO-8601 row-creation timestamp. Also the list sort key (desc).                                                                              |
 
 The **detail** endpoint adds two fields inside `transaction` and a `ledgerEntries` array:
 
@@ -349,7 +444,7 @@ The **detail** endpoint adds two fields inside `transaction` and a `ledgerEntrie
 | `transaction.idempotencyKey`  | string \| null   | The idempotency key supplied at ingest, if any.                                                                     |
 | `ledgerEntries[]`             | array            | The balanced double-entry trail for this transaction (see fields below).                                            |
 | `ledgerEntries[].id`          | string (uuid)    |                                                                                                                     |
-| `ledgerEntries[].accountType` | string           | One of `AVAILABLE`, `PENDING`, `RESERVED`, `FEE`, `EXTERNAL`, `RECEIVABLE`.                                         |
+| `ledgerEntries[].accountType` | string           | One of `AVAILABLE`, `PENDING`, `RESERVED`, `FEE`, `EXTERNAL`, `RECEIVABLE`, `NETWORK_FEE`.                          |
 | `ledgerEntries[].direction`   | string           | `DEBIT` or `CREDIT`.                                                                                                |
 | `ledgerEntries[].amount`      | string (decimal) |                                                                                                                     |
 | `ledgerEntries[].currency`    | string           | 3-char ISO-4217.                                                                                                    |
@@ -407,10 +502,11 @@ curl -s "https://portal.rivalpayments.com/v1/company/transactions?status=COMPLET
         "sourceId": "a1b2c3d4-e5f6-4789-9abc-def012345678",
         "sourceCode": "WHISH",
         "externalTransactionId": "WX-2026-0001",
-        "amount": "100.00000000",
+        "amount": "100",
         "currency": "USD",
-        "commissionAmount": "2.50000000",
-        "netAmount": "97.50000000",
+        "commissionAmount": "2.5",
+        "networkFeeAmount": "0",
+        "netAmount": "97.5",
         "status": "COMPLETED",
         "customer": "Jane Doe",
         "target": "ACCT-7781",
@@ -496,10 +592,11 @@ curl -s "https://portal.rivalpayments.com/v1/company/transactions/8b1f0e2a-1c3d-
       "sourceId": "a1b2c3d4-e5f6-4789-9abc-def012345678",
       "sourceCode": "WHISH",
       "externalTransactionId": "WX-2026-0001",
-      "amount": "100.00000000",
+      "amount": "100",
       "currency": "USD",
-      "commissionAmount": "2.50000000",
-      "netAmount": "97.50000000",
+      "commissionAmount": "2.5",
+      "networkFeeAmount": "0",
+      "netAmount": "97.5",
       "status": "COMPLETED",
       "customer": "Jane Doe",
       "target": "ACCT-7781",
@@ -520,7 +617,7 @@ curl -s "https://portal.rivalpayments.com/v1/company/transactions/8b1f0e2a-1c3d-
         "id": "…",
         "accountType": "EXTERNAL",
         "direction": "DEBIT",
-        "amount": "100.00000000",
+        "amount": "100",
         "currency": "USD",
         "metadata": null,
         "createdAt": "2026-06-20T14:02:11.000Z"
@@ -529,7 +626,7 @@ curl -s "https://portal.rivalpayments.com/v1/company/transactions/8b1f0e2a-1c3d-
         "id": "…",
         "accountType": "AVAILABLE",
         "direction": "CREDIT",
-        "amount": "97.50000000",
+        "amount": "97.5",
         "currency": "USD",
         "metadata": null,
         "createdAt": "2026-06-20T14:02:11.000Z"
@@ -538,7 +635,7 @@ curl -s "https://portal.rivalpayments.com/v1/company/transactions/8b1f0e2a-1c3d-
         "id": "…",
         "accountType": "FEE",
         "direction": "CREDIT",
-        "amount": "2.50000000",
+        "amount": "2.5",
         "currency": "USD",
         "metadata": null,
         "createdAt": "2026-06-20T14:02:11.000Z"
@@ -548,11 +645,19 @@ curl -s "https://portal.rivalpayments.com/v1/company/transactions/8b1f0e2a-1c3d-
 }
 ```
 
+This company is not charged a network fee, so there is no `NETWORK_FEE` entry. When a network fee is taken, a fourth entry credits it to `NETWORK_FEE` (`direction: "CREDIT"`, `amount` = `networkFeeAmount`), and on a `DEDUCTED` deposit `AVAILABLE` is credited that much less — see [Fees: commission and network fee](#fees-commission-and-network-fee).
+
 ### `GET /company/transactions/export.csv`
 
 Stream **all** matching transactions as CSV (no row cap; streamed in keyset chunks). Accepts the **same query parameters** as the list endpoint (`status`, `sourceId`, `currency`, `from`, `to`, `search`; `page`/`pageSize` are accepted/validated but ignored — the export is not paginated, and the page-too-deep cap does not apply). This endpoint is exempt from the JSON envelope: on success you get a raw `text/csv` body with `Content-Disposition: attachment`. Errors (e.g. validation) still return the JSON error envelope.
 
-Columns (header row): `id, created_at, company_id, source_code, external_transaction_id, amount, currency, commission_amount, net_amount, status, customer, target, phone, note, processed_at`. New columns are only ever **appended**, so parse by header name rather than a fixed column count. User-derived cells are CSV-escaped; cells that could execute as spreadsheet formulas are neutralized with a leading `'` (a cell that is one pure signed number — a phone like `+96176851162`, an amount — exports verbatim).
+Columns (header row):
+
+```text
+id,created_at,company_id,source_code,external_transaction_id,amount,currency,commission_amount,net_amount,status,customer,target,phone,note,processed_at,network_fee_amount
+```
+
+New columns are only ever **appended**, so parse by header name rather than a fixed column count — `network_fee_amount` (the [network fee](#fees-commission-and-network-fee), `0.00` when you are not charged one) is the newest, after `processed_at`. Money cells (`amount`, `commission_amount`, `net_amount`, `network_fee_amount`) are written with two decimals; for a `DEDUCTED` deposit, `amount = commission_amount + network_fee_amount + net_amount`. User-derived cells are CSV-escaped; cells that could execute as spreadsheet formulas are neutralized with a leading `'` (a cell that is one pure signed number — a phone like `+96176851162`, an amount — exports verbatim).
 
 ```bash
 curl -s "https://portal.rivalpayments.com/v1/company/transactions/export.csv?status=COMPLETED&from=2026-06-01T00:00:00Z" \
@@ -576,25 +681,25 @@ curl -s "https://portal.rivalpayments.com/v1/company/transactions/export.csv?sta
 
 ## Loads (Wallet Top-Ups)
 
-A **Load** is how a company adds funds to its own wallet (money **in**). The company files a load request describing the amount and how the money was sent; an operator later confirms the funds actually arrived and **approves** it, which credits the wallet. An optional platform fee may be taken on approval.
+A **Load** is how a company adds funds to its own wallet (money **in**). The company files a load request describing the amount and how the money was sent; an operator later confirms the funds actually arrived and **approves** it, which credits the wallet. Optional platform fees (the commission and, if Rival charges you one, a [network fee](#fees-commission-and-network-fee)) may be taken on approval.
 
 > Loads are the inbound sibling of [Withdrawals/Payouts](#). They reuse the same `payoutDetails` shape and the same shared status enum, but here the `payout` block records **how the money arrived** (the Whish phone it was sent from, the crypto tx network/address, a cash drop, etc.), not where it is going.
 
 ### Lifecycle & wallet effects
 
 ```
-                approve (operator)        ┌── COMPLETED  (wallet credited net; fee → platform)
+                approve (operator)        ┌── COMPLETED  (wallet credited net; fees → platform)
   request ──▶ PENDING ──────────────────▶─┤
   (company)                               ├── REJECTED   (operator; nothing moved)
                                           └── CANCELLED  (company; nothing moved)
 ```
 
-| Transition  | Who                      | Wallet / ledger effect                                                                                                                                        |
-| ----------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **request** | Company key or dashboard | None. Row is persisted `PENDING`. The fee is only **previewed** (`feeAmount`/`netAmount` are stored) — no money moves because the funds have not arrived yet. |
-| **approve** | Operator only            | `available` is credited the **net** (`netAmount`); the fee is credited to the platform FEE account; `EXTERNAL` is debited the gross. Status → `COMPLETED`.    |
-| **reject**  | Operator only            | Pure status change → `REJECTED`. Nothing was reserved, so nothing is released.                                                                                |
-| **cancel**  | Company key or dashboard | Pure status change → `CANCELLED`. Only allowed while `PENDING`.                                                                                               |
+| Transition  | Who                      | Wallet / ledger effect                                                                                                                                                                                                   |
+| ----------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **request** | Company key or dashboard | None. Row is persisted `PENDING`. The fees are only **previewed** (`feeAmount`/`networkFeeAmount`/`netAmount` are stored, frozen at request) — no money moves because the funds have not arrived yet.                    |
+| **approve** | Operator only            | `available` is credited the **net** (`netAmount`); the commission is credited to the platform `FEE` account and any network fee to `NETWORK_FEE`; `EXTERNAL` is debited the gross (`totalAmount`). Status → `COMPLETED`. |
+| **reject**  | Operator only            | Pure status change → `REJECTED`. Nothing was reserved, so nothing is released.                                                                                                                                           |
+| **cancel**  | Company key or dashboard | Pure status change → `CANCELLED`. Only allowed while `PENDING`.                                                                                                                                                          |
 
 Only **`PENDING`** loads can be approved, rejected, or cancelled. Acting on a load in any other status returns `409 CONFLICT`.
 
@@ -602,19 +707,22 @@ Only **`PENDING`** loads can be approved, rejected, or cancelled. Acting on a lo
 
 ### Fee & net behavior
 
-The fee is resolved from the company's commission rules for `operationType = LOAD`. **No rule means free** (`feeAmount` = `"0"`). The response always exposes the full breakdown:
+The fee is resolved from the company's commission rules for `operationType = LOAD`. **No rule means free** (`feeAmount` = `"0"`). If Rival charges your company a [network fee](#fees-commission-and-network-fee) on loads, it is computed on the same amount and applied the same way. The response always exposes the full breakdown:
 
-| Field            | Meaning                                                                                                                 |
-| ---------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `amount`         | The figure the company requested.                                                                                       |
-| `feeApplication` | `DEDUCTED` (fee comes out of `amount`) or `ON_TOP` (fee added on top of `amount`).                                      |
-| `feeAmount`      | The platform fee.                                                                                                       |
-| `netAmount`      | What lands in the wallet on approval. `DEDUCTED` → `amount − fee`; `ON_TOP` → `amount`.                                 |
-| `totalAmount`    | The money that actually moves = `netAmount + feeAmount`. Equals `amount` for `DEDUCTED`; exceeds `amount` for `ON_TOP`. |
+| Field              | Meaning                                                                                                                                    |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `amount`           | The figure the company requested.                                                                                                          |
+| `feeApplication`   | `DEDUCTED` (both fees come out of `amount`) or `ON_TOP` (both fees added on top of `amount`).                                              |
+| `feeAmount`        | The platform fee (commission).                                                                                                             |
+| `networkFeeAmount` | The optional network fee, applied the same way as `feeAmount`. `"0"` when you are not charged one.                                         |
+| `netAmount`        | What lands in the wallet on approval. `DEDUCTED` → `amount − feeAmount − networkFeeAmount`; `ON_TOP` → `amount`.                           |
+| `totalAmount`      | The money that actually moves = `netAmount + feeAmount + networkFeeAmount`. Equals `amount` for `DEDUCTED`; exceeds `amount` for `ON_TOP`. |
 
-Unlike the ingest boundary, the load endpoints **do** expose `feeAmount`/`netAmount` to a company key — this is correct, because the company is the party paying the fee on its own top-up.
+If `DEDUCTED` fees would consume the whole amount (nothing would be credited), the request is refused with `400 VALIDATION_ERROR` before anything is stored — see [Fees: commission and network fee](#fees-commission-and-network-fee).
 
-> **`feeApplication` is not a request field.** Whether a fee is `DEDUCTED` or charged `ON_TOP` is a property of the commission rule your operator configures for your company and operation type; you cannot select it per call, and sending it in the body has no effect. To switch a flow (for example, so a payout recipient receives the full amount and the fee is billed to your wallet instead), ask your account manager to set the rule to `ON_TOP`.
+Unlike the ingest boundary, the load endpoints **do** expose `feeAmount`/`networkFeeAmount`/`netAmount` to a company key — this is correct, because the company is the party paying the fees on its own top-up.
+
+> **`feeApplication` is not a request field.** Whether the fees are `DEDUCTED` or charged `ON_TOP` is a property of the commission rule your operator configures for your company and operation type (the network fee follows the same application); you cannot select it per call, and sending it in the body has no effect. To switch a flow (for example, so a payout recipient receives the full amount and the fee is billed to your wallet instead), ask your account manager to set the rule to `ON_TOP`.
 
 ---
 
@@ -627,6 +735,7 @@ A company API key authenticates as a surrogate `COMPANY_OWNER`, so it can drive 
 | Request a load        | `POST https://portal.rivalpayments.com/v1/company/loads`                       | Yes                             |
 | List loads            | `GET https://portal.rivalpayments.com/v1/company/loads`                        | Yes                             |
 | Get one load          | `GET https://portal.rivalpayments.com/v1/company/loads/:id`                    | Yes                             |
+| Export loads as CSV   | `GET https://portal.rivalpayments.com/v1/company/loads/export.csv`             | Yes                             |
 | Cancel a pending load | `POST https://portal.rivalpayments.com/v1/company/loads/:id/cancel`            | Yes                             |
 | Approve / reject      | `POST https://portal.rivalpayments.com/v1/admin/loads/:id/approve` · `/reject` | **No — operator only (403)**    |
 | Direct admin load     | `POST https://portal.rivalpayments.com/v1/admin/loads`                         | **No — super-admin only (403)** |
@@ -672,7 +781,7 @@ curl -X POST "https://portal.rivalpayments.com/v1/company/loads" \
   }'
 ```
 
-**`201` success** (example assumes a 2% `DEDUCTED` load fee):
+**`201` success** (example assumes a 2% `DEDUCTED` load fee and no network fee):
 
 ```json
 {
@@ -681,12 +790,13 @@ curl -X POST "https://portal.rivalpayments.com/v1/company/loads" \
   "data": {
     "id": "b3f1c2a8-0d4e-4c1a-9f2b-7e6d5c4b3a21",
     "companyId": "11111111-2222-3333-4444-555555555555",
-    "amount": "1000.00",
+    "amount": "1000",
     "currency": "USD",
-    "feeAmount": "20.00",
+    "feeAmount": "20",
+    "networkFeeAmount": "0",
     "feeApplication": "DEDUCTED",
-    "netAmount": "980.00",
-    "totalAmount": "1000.00",
+    "netAmount": "980",
+    "totalAmount": "1000",
     "status": "PENDING",
     "payoutMethod": "WISH",
     "payoutDetails": {
@@ -813,6 +923,12 @@ curl -X POST "https://portal.rivalpayments.com/v1/company/loads/b3f1c2a8-.../can
 
 ---
 
+### `GET https://portal.rivalpayments.com/v1/company/loads/export.csv` — Export loads as CSV
+
+Streams **all** your loads matching the list filters (`status`, `currency`, `payoutMethod`, `from`, `to`; pagination is ignored) as raw `text/csv` — no JSON envelope. It has exactly the same columns as the withdrawal / payout export, including `network_fee_amount` as the last column; see [Export requests as CSV](#export-requests-as-csv).
+
+---
+
 ### Operator-only (for reference; not callable with a company key)
 
 - `POST https://portal.rivalpayments.com/v1/admin/loads/:id/approve` — body `{ "externalReference": string (2–200, required), "notes"?: string }`. Credits the wallet net and moves the load to `COMPLETED`. A company key receives `403 FORBIDDEN`.
@@ -833,8 +949,8 @@ All `company/loads*` routes are behind `CompanyAccessGuard` (company API key **o
 
 Both flows move money **out** of a company's wallet through an identical lifecycle. The difference is only the recipient:
 
-- **Withdrawal** — the company pays an **external third party** (e.g. a vendor, a driver). A `WITHDRAWAL`-type fee may apply.
-- **Payout** — the company moves funds **to itself** (off-platform settlement to its own account). A `PAYOUT`-type fee may apply.
+- **Withdrawal** — the company pays an **external third party** (e.g. a vendor, a driver). A `WITHDRAWAL`-type fee (and, if Rival charges you one, a withdrawal [network fee](#fees-commission-and-network-fee)) may apply.
+- **Payout** — the company moves funds **to itself** (off-platform settlement to its own account). A `PAYOUT`-type fee (and, if Rival charges you one, a payout network fee) may apply.
 
 Everything else — request/cancel via your company API key, list/get, the balance movement, the payout-method fields, the operator-only approve/reject step, the response shape — is the same. Endpoints are identical except for the path segment `withdrawals` vs `payouts`. Below, `{flow}` stands for either `withdrawals` or `payouts`.
 
@@ -847,6 +963,7 @@ Everything else — request/cancel via your company API key, list/get, the balan
 | Request          | `POST https://portal.rivalpayments.com/v1/company/{flow}`                                                          | Company API key **or** dashboard session | `COMPANY_OWNER`, `COMPANY_MANAGER`                   |
 | List (own)       | `GET https://portal.rivalpayments.com/v1/company/{flow}`                                                           | Company API key **or** session           | `COMPANY_OWNER`, `COMPANY_MANAGER`, `COMPANY_VIEWER` |
 | Get one (own)    | `GET https://portal.rivalpayments.com/v1/company/{flow}/:id`                                                       | Company API key **or** session           | `COMPANY_OWNER`, `COMPANY_MANAGER`, `COMPANY_VIEWER` |
+| Export (own)     | `GET https://portal.rivalpayments.com/v1/company/{flow}/export.csv`                                                | Company API key **or** session           | `COMPANY_OWNER`, `COMPANY_MANAGER`, `COMPANY_VIEWER` |
 | Cancel           | `POST https://portal.rivalpayments.com/v1/company/{flow}/:id/cancel`                                               | Company API key **or** session           | `COMPANY_OWNER`, `COMPANY_MANAGER`                   |
 | **Approve**      | `POST https://portal.rivalpayments.com/v1/admin/{flow}/:id/approve`                                                | **Operator only** (dashboard session)    | `SUPER_ADMIN`, `ADMIN_OPERATOR`, `BACKOFFICE`        |
 | **Reject**       | `POST https://portal.rivalpayments.com/v1/admin/{flow}/:id/reject`                                                 | **Operator only**                        | `SUPER_ADMIN`, `ADMIN_OPERATOR`, `BACKOFFICE`        |
@@ -856,18 +973,20 @@ A company API key is mapped to a surrogate `COMPANY_OWNER` role and is **scoped 
 
 ### Balance movement (available → reserved → external)
 
-| Step                                          | Who                | Ledger / wallet effect                                                                                                          |
-| --------------------------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
-| **Request**                                   | Company            | `available → reserved` for the full **reserved total** (see fee rules). The funds are held but have not left. Status `PENDING`. |
-| **Approve**                                   | Operator           | `reserved → external` for the net, and the fee is realized to the platform `FEE` account. Money is gone; status `COMPLETED`.    |
-| **Reject** (operator) or **Cancel** (company) | Operator / Company | `reserved → available` for the full reserved total. **No fee is charged.** Status `REJECTED` / `CANCELLED`.                     |
+| Step                                          | Who                | Ledger / wallet effect                                                                                                                                               |
+| --------------------------------------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Request**                                   | Company            | `available → reserved` for the full **reserved total** (see fee rules). The funds are held but have not left. Status `PENDING`.                                      |
+| **Approve**                                   | Operator           | `reserved → external` for the net; the commission is realized to the platform `FEE` account and any network fee to `NETWORK_FEE`. Money is gone; status `COMPLETED`. |
+| **Reject** (operator) or **Cancel** (company) | Operator / Company | `reserved → available` for the full reserved total. **No fee is charged** — neither the commission nor the network fee. Status `REJECTED` / `CANCELLED`.             |
 
-**Fee rules** (a fee rule may or may not be configured; with no rule the fee is `0`):
+**Fee rules** (a fee rule may or may not be configured; with no rule `feeAmount` is `0`). If Rival charges your company a [network fee](#fees-commission-and-network-fee) on this flow, it is applied the same way as the fee (with no fee rule, a withdrawal network fee is charged `ON_TOP` and a payout network fee `DEDUCTED`); otherwise `networkFeeAmount` is `0`:
 
-- **`DEDUCTED`** — the recipient receives `amount − fee`; the reserved/charged total equals `amount`. `totalAmount == amount`.
-- **`ON_TOP`** — the recipient receives the full `amount`; the company is charged `amount + fee`. The reserved total (and `totalAmount`) is `amount + fee`.
+- **`DEDUCTED`** — the recipient receives `amount − feeAmount − networkFeeAmount`; the reserved/charged total equals `amount`. `totalAmount == amount`.
+- **`ON_TOP`** — the recipient receives the full `amount`; the company is charged `amount + feeAmount + networkFeeAmount`. The reserved total (and `totalAmount`) is `amount + feeAmount + networkFeeAmount`.
 
-Which of the two applies is set on the commission rule your operator configures for your company and operation type — it is **not** a request field and cannot be chosen per call. If you want recipients to receive the full requested amount and the fee billed to your wallet instead, ask your account manager to configure the rule as `ON_TOP`.
+Either way `totalAmount = netAmount + feeAmount + networkFeeAmount`. If `DEDUCTED` fees would leave the recipient nothing, the request is refused with `400 VALIDATION_ERROR` before anything is reserved — see [Fees: commission and network fee](#fees-commission-and-network-fee).
+
+Which of the two applies is set on the commission rule your operator configures for your company and operation type — it is **not** a request field and cannot be chosen per call. If you want recipients to receive the full requested amount and the fees billed to your wallet instead, ask your account manager to configure the rule as `ON_TOP`.
 
 The reservation is checked against your **available** balance at request time, and **re-checked at approval**. If your available balance can't cover the reserved total you get a `409 INSUFFICIENT_BALANCE` (see error example). If your company **owes the platform** (an outstanding receivable from a reversal clawback), all money-out is blocked at both request and approve with a `409 CONFLICT` until the debt is settled.
 
@@ -925,7 +1044,7 @@ curl -X POST "https://portal.rivalpayments.com/v1/company/withdrawals" \
   }'
 ```
 
-**Success (201)** — note `feeAmount`/`netAmount`/`totalAmount` are returned to the company (these are NOT hidden the way the ingest path hides fees):
+**Success (201)** — note `feeAmount`/`networkFeeAmount`/`netAmount`/`totalAmount` are returned to the company (these are NOT hidden the way the ingest path hides fees). This example assumes a 1% `DEDUCTED` withdrawal fee and no network fee:
 
 ```json
 {
@@ -934,12 +1053,13 @@ curl -X POST "https://portal.rivalpayments.com/v1/company/withdrawals" \
   "data": {
     "id": "a3f1c2d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
     "companyId": "11111111-2222-3333-4444-555555555555",
-    "amount": "250.00",
+    "amount": "250",
     "currency": "USD",
-    "feeAmount": "2.50",
+    "feeAmount": "2.5",
+    "networkFeeAmount": "0",
     "feeApplication": "DEDUCTED",
-    "netAmount": "247.50",
-    "totalAmount": "250.00",
+    "netAmount": "247.5",
+    "totalAmount": "250",
     "status": "PENDING",
     "payoutMethod": "CASH",
     "payoutDetails": {
@@ -969,10 +1089,11 @@ curl -X POST "https://portal.rivalpayments.com/v1/company/withdrawals" \
 | `companyId`               | uuid                   | Always your own company.                                                                                                                                                                                                                                                                                                                                     |
 | `amount`                  | string                 | The requested amount.                                                                                                                                                                                                                                                                                                                                        |
 | `currency`                | string                 | e.g. `USD`.                                                                                                                                                                                                                                                                                                                                                  |
-| `feeAmount`               | string                 | Platform fee (`0` if no rule).                                                                                                                                                                                                                                                                                                                               |
-| `feeApplication`          | `DEDUCTED` \| `ON_TOP` | How the fee is applied.                                                                                                                                                                                                                                                                                                                                      |
-| `netAmount`               | string                 | What the recipient receives. `DEDUCTED`→`amount−fee`; `ON_TOP`→`amount`.                                                                                                                                                                                                                                                                                     |
-| `totalAmount`             | string                 | What the company is charged (`net + fee`). `==amount` for `DEDUCTED`; `amount+fee` for `ON_TOP`.                                                                                                                                                                                                                                                             |
+| `feeAmount`               | string                 | Platform fee — the commission (`0` if no rule).                                                                                                                                                                                                                                                                                                              |
+| `networkFeeAmount`        | string                 | The optional [network fee](#fees-commission-and-network-fee), applied the same way as `feeAmount` (`0` if Rival does not charge you one).                                                                                                                                                                                                                    |
+| `feeApplication`          | `DEDUCTED` \| `ON_TOP` | How the fees are applied — both the commission and the network fee.                                                                                                                                                                                                                                                                                          |
+| `netAmount`               | string                 | What the recipient receives. `DEDUCTED` → `amount − feeAmount − networkFeeAmount`; `ON_TOP` → `amount`.                                                                                                                                                                                                                                                      |
+| `totalAmount`             | string                 | What the company is charged (`netAmount + feeAmount + networkFeeAmount`). `== amount` for `DEDUCTED`; `amount + feeAmount + networkFeeAmount` for `ON_TOP`.                                                                                                                                                                                                  |
 | `status`                  | `WithdrawalStatus`     | `PENDING` / `COMPLETED` / `REJECTED` / `CANCELLED`.                                                                                                                                                                                                                                                                                                          |
 | `payoutMethod`            | `PayoutMethod`         | `CASH` / `WISH` / `CRYPTO` / `BANK_TRANSFER` / `OTHER`.                                                                                                                                                                                                                                                                                                      |
 | `payoutDetails`           | object \| null         | The method object you submitted (may be `null` for old rows).                                                                                                                                                                                                                                                                                                |
@@ -1096,11 +1217,28 @@ curl "https://portal.rivalpayments.com/v1/company/payouts/a3f1c2d4-5e6f-4a7b-8c9
   -H "Authorization: Bearer tsk_live_xxx"
 ```
 
+### Export requests as CSV
+
+`GET https://portal.rivalpayments.com/v1/company/{flow}/export.csv` → **200** `text/csv` (raw file, no JSON envelope). Streams **all** your requests matching the list filters (`status`, `currency`, `payoutMethod`, `from`, `to`; pagination is ignored). Loads export the same columns from `GET /company/loads/export.csv`. Header row:
+
+```text
+id,created_at,processed_at,company_id,status,currency,gross_amount,fee_amount,net_amount,fee_application,payout_method,external_reference,recipient_name,recipient_contact,notes,admin_notes,network_fee_amount
+```
+
+- `gross_amount` is the money that actually moved — debited for a withdrawal/payout, paid in for a load — and always equals `fee_amount + network_fee_amount + net_amount` (the API's `totalAmount`). There is deliberately no bare `amount` column: for `ON_TOP` fees it would equal the net, for `DEDUCTED` fees the gross.
+- `network_fee_amount` is the [network fee](#fees-commission-and-network-fee) (`0.00` when you are not charged one). It is the newest column, appended after `admin_notes`; new columns are only ever appended, so parse by header name.
+- Money cells are written with two decimals. User-derived cells are CSV-escaped and neutralized against spreadsheet formula injection, exactly like the transactions export.
+
+```bash
+curl -s "https://portal.rivalpayments.com/v1/company/withdrawals/export.csv?status=COMPLETED&from=2026-06-01T00:00:00Z" \
+  -H "Authorization: Bearer tsk_live_xxx" -o withdrawals.csv
+```
+
 ### Approve / Reject (operator only — for reference)
 
 Your CRM cannot call these (company keys get 403). They are listed so you understand the lifecycle.
 
-- **Approve** `POST https://portal.rivalpayments.com/v1/admin/{flow}/:id/approve` — body requires `externalReference` (2–200 chars, the off-platform proof the money moved) and optional `notes` (≤500). Moves `reserved → external` + realizes the fee; status → `COMPLETED`.
+- **Approve** `POST https://portal.rivalpayments.com/v1/admin/{flow}/:id/approve` — body requires `externalReference` (2–200 chars, the off-platform proof the money moved) and optional `notes` (≤500). Moves `reserved → external` + realizes the fees (commission to `FEE`, network fee to `NETWORK_FEE`); status → `COMPLETED`.
 - **Reject** `POST https://portal.rivalpayments.com/v1/admin/{flow}/:id/reject` — body optional `notes` (≤500). Releases `reserved → available`; status → `REJECTED`.
 
 ### Notes for integrators
@@ -1111,7 +1249,7 @@ Your CRM cannot call these (company keys get 403). They are listed so you unders
 - **Two key types:** these endpoints take a **company** key (`tsk_...` bound to your company). Source/ingest keys are rejected (`401`).
 - **CSRF:** API-key requests skip CSRF. Session (dashboard) requests need the CSRF token.
 - **Rate limits:** company endpoints use the global per-IP throttler (`RATE_LIMIT_MAX`, default 100/60s); a `429 RATE_LIMITED` is returned when exceeded.
-- **CRM webhooks (withdrawals only):** every withdrawal status change is also pushed to your CRM — `withdrawal.pending` then `withdrawal.completed` / `rejected` / `cancelled`, carrying the same `feeAmount` / `netAmount` / `totalAmount` breakdown — so you needn't poll. See [Outbound CRM Notifications](#outbound-crm-notifications-webhooks). **Payouts and loads are not pushed** — read their status over the REST API.
+- **CRM webhooks (withdrawals only):** every withdrawal status change is also pushed to your CRM — `withdrawal.pending` then `withdrawal.completed` / `rejected` / `cancelled`, carrying the same `feeAmount` / `networkFeeAmount` / `netAmount` / `totalAmount` breakdown — so you needn't poll. See [Outbound CRM Notifications](#outbound-crm-notifications-webhooks). **Payouts and loads are not pushed** — read their status over the REST API.
 
 ---
 
@@ -1172,18 +1310,18 @@ Paginated, append-only double-entry ledger — the authoritative record. Every m
 
 **Query params:**
 
-| Field           | Type              | Req | Notes                                                                      |
-| --------------- | ----------------- | --- | -------------------------------------------------------------------------- |
-| `page`          | int ≥ 1           | no  | Default `1`                                                                |
-| `pageSize`      | int 1–200         | no  | Default `50`. Hard cap **200**                                             |
-| `currency`      | enum              | no  | Currently only `USD`                                                       |
-| `accountType`   | enum              | no  | One of `AVAILABLE`, `PENDING`, `RESERVED`, `FEE`, `EXTERNAL`, `RECEIVABLE` |
-| `transactionId` | uuid              | no  | Filter to entries of one deposit/transaction                               |
-| `withdrawalId`  | uuid              | no  | Filter to one withdrawal                                                   |
-| `payoutId`      | uuid              | no  | Filter to one payout                                                       |
-| `loadId`        | uuid              | no  | Filter to one load                                                         |
-| `from`          | ISO-8601 datetime | no  | Inclusive lower bound on `createdAt`                                       |
-| `to`            | ISO-8601 datetime | no  | Inclusive upper bound on `createdAt`                                       |
+| Field           | Type              | Req | Notes                                                                                     |
+| --------------- | ----------------- | --- | ----------------------------------------------------------------------------------------- |
+| `page`          | int ≥ 1           | no  | Default `1`                                                                               |
+| `pageSize`      | int 1–200         | no  | Default `50`. Hard cap **200**                                                            |
+| `currency`      | enum              | no  | Currently only `USD`                                                                      |
+| `accountType`   | enum              | no  | One of `AVAILABLE`, `PENDING`, `RESERVED`, `FEE`, `EXTERNAL`, `RECEIVABLE`, `NETWORK_FEE` |
+| `transactionId` | uuid              | no  | Filter to entries of one deposit/transaction                                              |
+| `withdrawalId`  | uuid              | no  | Filter to one withdrawal                                                                  |
+| `payoutId`      | uuid              | no  | Filter to one payout                                                                      |
+| `loadId`        | uuid              | no  | Filter to one load                                                                        |
+| `from`          | ISO-8601 datetime | no  | Inclusive lower bound on `createdAt`                                                      |
+| `to`            | ISO-8601 datetime | no  | Inclusive upper bound on `createdAt`                                                      |
 
 Deep paging is capped: an effective offset `(page-1)*pageSize > 50000` returns `400 VALIDATION_ERROR` ("narrow with filters"). For full-history pulls use the CSV export below instead of paging.
 
@@ -1208,10 +1346,11 @@ Deep paging is capped: an effective offset `(page-1)*pageSize > 50000` returns `
 
 - `AVAILABLE` / `PENDING` / `RESERVED` — project directly to the matching wallet balance bucket. Sum of (`CREDIT` − `DEBIT`) over `AVAILABLE` for a currency equals that wallet's `availableBalance`.
 - `FEE` — the platform commission/fee leg (revenue to the platform).
+- `NETWORK_FEE` — the platform's [network fee](#fees-commission-and-network-fee) leg, booked apart from `FEE` so the two fees never mix. Present only if your company is charged a network fee. Like `FEE`, it has no wallet projection.
 - `EXTERNAL` — the counterparty/world side (the source provider on a deposit, the destination on a payout). Balances the wallet-side legs.
 - `RECEIVABLE` — debt the company owes the platform (e.g. the uncovered remainder of a reversal/clawback after `available` was drained). Has no wallet projection, which is how the wallet stays ≥ 0.
 
-Lines within one event are returned in a stable order: newest first, then `DEBIT` before `CREDIT`, then by account-type enum order. A standard deposit reads `EXTERNAL(DEBIT) → AVAILABLE(CREDIT) → FEE(CREDIT)`.
+Lines within one event are returned in a stable order: newest first, then `DEBIT` before `CREDIT`, then by account-type enum order. A standard deposit reads `EXTERNAL(DEBIT) → AVAILABLE(CREDIT) → FEE(CREDIT)`, followed by `NETWORK_FEE(CREDIT)` when a network fee was taken. A reversal mirrors the original, debiting `FEE` and `NETWORK_FEE` to refund both fees.
 
 ```bash
 curl -s "https://portal.rivalpayments.com/v1/company/ledger?accountType=AVAILABLE&from=2026-06-01T00:00:00Z&pageSize=50" \
@@ -1292,23 +1431,24 @@ Deep paging capped at offset `50000` (same `400 VALIDATION_ERROR` as ledger). Th
 
 **Response item** (`data.data[]`):
 
-| Field          | Type                      | Notes                                                                                      |
-| -------------- | ------------------------- | ------------------------------------------------------------------------------------------ |
-| `id`           | string (uuid)             | Id of the underlying operation                                                             |
-| `kind`         | enum                      | `DEPOSIT` / `LOAD` / `WITHDRAWAL` / `PAYOUT`                                               |
-| `direction`    | enum                      | Derived: `IN` for deposit/load, `OUT` for withdrawal/payout                                |
-| `amount`       | string (decimal)          | Gross amount of the operation                                                              |
-| `fee`          | string (decimal)          | Platform fee/commission on this operation                                                  |
-| `net`          | string (decimal)          | Net after fee                                                                              |
-| `currency`     | string                    | ISO-4217                                                                                   |
-| `description`  | string                    | Source code (deposits) or payout method (load/withdrawal/payout); falls back to `kind`     |
-| `details`      | string \| null            | Counterparty/recipient (customer, phone, masked account, recipient name…)                  |
-| `reference`    | string \| null            | External ref: `externalTransactionId` (deposit) or `externalReference` (others)            |
-| `createdAt`    | string (ISO-8601)         | When the operation was created                                                             |
-| `completedAt`  | string (ISO-8601) \| null | When it settled                                                                            |
-| `companyId`    | null                      | Always `null` on the company feed (single-tenant)                                          |
-| `companyName`  | null                      | Always `null` on the company feed                                                          |
-| `balanceAfter` | string (decimal) \| null  | Running **AVAILABLE** balance after this op — populated only in _balance mode_ (see below) |
+| Field          | Type                      | Notes                                                                                                              |
+| -------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `id`           | string (uuid)             | Id of the underlying operation                                                                                     |
+| `kind`         | enum                      | `DEPOSIT` / `LOAD` / `WITHDRAWAL` / `PAYOUT`                                                                       |
+| `direction`    | enum                      | Derived: `IN` for deposit/load, `OUT` for withdrawal/payout                                                        |
+| `amount`       | string (decimal)          | Gross money that moved — always `fee + networkFee + net` (matches `totalAmount` on withdrawals, payouts and loads) |
+| `fee`          | string (decimal)          | Platform fee (commission) on this operation                                                                        |
+| `networkFee`   | string (decimal)          | [Network fee](#fees-commission-and-network-fee) on this operation — `"0.00"` when you are not charged one          |
+| `net`          | string (decimal)          | Net after both fees                                                                                                |
+| `currency`     | string                    | ISO-4217                                                                                                           |
+| `description`  | string                    | Source code (deposits) or payout method (load/withdrawal/payout); falls back to `kind`                             |
+| `details`      | string \| null            | Counterparty/recipient (customer, phone, masked account, recipient name…)                                          |
+| `reference`    | string \| null            | External ref: `externalTransactionId` (deposit) or `externalReference` (others)                                    |
+| `createdAt`    | string (ISO-8601)         | When the operation was created                                                                                     |
+| `completedAt`  | string (ISO-8601) \| null | When it settled                                                                                                    |
+| `companyId`    | null                      | Always `null` on the company feed (single-tenant)                                                                  |
+| `companyName`  | null                      | Always `null` on the company feed                                                                                  |
+| `balanceAfter` | string (decimal) \| null  | Running **AVAILABLE** balance after this op — populated only in _balance mode_ (see below)                         |
 
 **Balance mode** (`meta.balanceMode`): when the feed resolves to a **single currency** and you pass **no** `kind`, `direction`, or `search` filter, each row carries `balanceAfter` — the absolute running `available` balance after that operation. Because the platform is currently single-currency (`USD`), balance mode is **on by default** for an unfiltered company feed; passing `kind`/`direction`/`search` turns it off (those filters would punch holes in the chronological sum) and sets every `balanceAfter` to `null`. A `from`/`to` date filter keeps balance mode on (the running sum is computed over full history first, then the window is sliced), so balances stay absolute. The newest row's `balanceAfter` reconciles to `wallets.availableBalance` in normal operation; the only documented divergence is a rare partial-reversal clawback (a `RECEIVABLE` was booked), which self-corrects as new operations arrive.
 
@@ -1331,6 +1471,7 @@ curl -s "https://portal.rivalpayments.com/v1/company/activity?pageSize=20" \
         "direction": "IN",
         "amount": "100.00000000",
         "fee": "5.00000000",
+        "networkFee": "0.00",
         "net": "95.00000000",
         "currency": "USD",
         "description": "OMT",
@@ -1347,6 +1488,18 @@ curl -s "https://portal.rivalpayments.com/v1/company/activity?pageSize=20" \
   }
 }
 ```
+
+> Activity money strings keep the decimal places they are stored with, so on one row `fee` may read `"5.00000000"` while `networkFee` reads `"0.00"`. Parse them as decimals and compare numerically — `amount = fee + networkFee + net` always holds.
+
+#### GET `/company/activity/export.csv`
+
+Same filters as `/company/activity` (`direction`, `kind`, `currency`, `from`, `to`, `search`; pagination ignored), streamed as raw `text/csv` with no JSON envelope and no row cap. Header row:
+
+```text
+id,kind,direction,created_at,completed_at,company_id,company_name,description,details,reference,currency,gross_amount,fee_amount,net_amount,fee_application,recipient_name,recipient_contact,target,notes,admin_notes,network_fee_amount
+```
+
+`gross_amount = fee_amount + network_fee_amount + net_amount` on every row. `network_fee_amount` is the newest column, appended after `admin_notes` (`0.00` when you are not charged a network fee); new columns are only ever appended, so parse by header name. For a deposit, `fee_application` and `admin_notes` are empty and the recipient pair is the paying customer and phone.
 
 ---
 
@@ -1369,7 +1522,7 @@ Live counts of your **PENDING** (needs-action) requests per money flow. Powers d
 ### How a CRM reconciles its books
 
 1. **Snapshot:** `GET /company/wallets` for current `available` / `pending` / `reserved`. `available` is what you can move; `reserved` is held against in-flight money-out; `pending` is credited-but-not-final.
-2. **Per-period truth:** pull `GET /company/ledger/export.csv?from=…&to=…`. For each currency, `Σ(CREDIT − DEBIT)` over `AVAILABLE` rows = the change in `availableBalance`; the same over `FEE` = platform fees you paid; `RECEIVABLE` rows = debt owed to the platform.
+2. **Per-period truth:** pull `GET /company/ledger/export.csv?from=…&to=…`. For each currency, `Σ(CREDIT − DEBIT)` over `AVAILABLE` rows = the change in `availableBalance`; the same over `FEE` = the commission you paid (including any whole-dollar `roundingRemainder` kept on an automatic Whish withdrawal); the same over `NETWORK_FEE` = the network fees you paid (no rows if you are not charged one); `RECEIVABLE` rows = debt owed to the platform.
 3. **Human view / running balance:** `GET /company/activity` unfiltered (balance mode on) gives a per-operation statement with `balanceAfter` that ties out to the wallet's `availableBalance` on the newest row.
 
 Common error envelopes apply throughout: `401 UNAUTHORIZED` (bad/missing key), `403 FORBIDDEN`, `400 VALIDATION_ERROR` (bad query params, with Zod issues in `error.details`), `429 RATE_LIMITED`.
@@ -1434,7 +1587,7 @@ Returned (under the `data` envelope) by every create / get / refresh call.
 | `createdAt`        | string (ISO-8601)         |                                                                                                                                                                                                                                                                                 |
 | `paidAt`           | string (ISO-8601) \| null | Set when settled.                                                                                                                                                                                                                                                               |
 
-> **No fee/net fields on this object.** Like the ingest boundary, the payment object deliberately omits the platform commission and net amount — you see only the gross amount you asked to collect. **To see the fee we took and the net you were credited**, read the **settled transaction** once `PAID` (reference `whish:<externalId>`): `GET /company/transactions` returns `commissionAmount` + `netAmount`, and the `transaction.completed` CRM event carries them too.
+> **No fee/net fields on this object.** Like the ingest boundary, the payment object deliberately omits the platform fees (commission and network fee) and the net amount — you see only the gross amount you asked to collect. **To see the fees we took and the net you were credited**, read the **settled transaction** once `PAID` (reference `whish:<externalId>`): `GET /company/transactions` returns `commissionAmount` + `networkFeeAmount` + `netAmount`, and the `transaction.completed` CRM event carries them too. A Whish deposit is priced like any other deposit, so a deposit [network fee](#fees-commission-and-network-fee) applies to it too.
 
 #### Status lifecycle
 
@@ -1451,7 +1604,7 @@ A single deposit is visible through two objects with **different status vocabula
 | Payment link `status` | Transaction `status` (`GET /company/transactions`) | CRM event               | Notes                                                                    |
 | --------------------- | -------------------------------------------------- | ----------------------- | ------------------------------------------------------------------------ |
 | `PENDING`             | _(no transaction row yet)_                         | `transaction.pending`   | The event's `transaction.id` / this object's `transactionId` are `null`. |
-| `PAID`                | `COMPLETED`                                        | `transaction.completed` | Fee and net are known only now.                                          |
+| `PAID`                | `COMPLETED`                                        | `transaction.completed` | Fees and net are known only now.                                         |
 | `FAILED`              | _(no transaction row)_                             | `transaction.failed`    | Declined, refunded before settlement, or lapsed unpaid.                  |
 | —                     | `REVERSED`                                         | `transaction.reversed`  | An operator reversed an already-settled deposit.                         |
 
@@ -1913,10 +2066,11 @@ x-crm-signature: t=1750579200,sha256=9f86d0818...e3b0c44298fc1c149afbf4c8996fb
     "status": "COMPLETED",
     "source": "whish",
     "externalTransactionId": "184523",
-    "amount": "100.00",
+    "amount": "100",
     "currency": "USD",
-    "netAmount": "97.50",
-    "commissionAmount": "2.50",
+    "netAmount": "97.5",
+    "commissionAmount": "2.5",
+    "networkFeeAmount": "0",
     "customer": "John Doe",
     "tradingAccount": "ACC-99821",
     "phone": "+9613000000",
@@ -1954,21 +2108,22 @@ For withdrawals, `withdrawal.id` is the UUID returned by `POST /company/withdraw
 
 **`transaction` fields** (`crmEventTransactionSchema`) — deposit events only:
 
-| Field                   | Type                     | Notes                                                                                                                                                              |
-| ----------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `id`                    | string (uuid) \| null    | Ledger transaction id. **`null`** for Whish `PENDING`/`FAILED` events (no ledger row exists yet); populated on `COMPLETED`/`REVERSED`.                             |
-| `status`                | enum                     | `PENDING` \| `COMPLETED` \| `FAILED` \| `REVERSED` — derived from `event`.                                                                                         |
-| `source`                | string                   | Source code (e.g. `whish`, or your source's code).                                                                                                                 |
-| `externalTransactionId` | string                   | Your/the provider's id for this transaction.                                                                                                                       |
-| `amount`                | string (decimal)         | Gross amount, decimal string (never a float).                                                                                                                      |
-| `currency`              | string                   | ISO currency code.                                                                                                                                                 |
-| `netAmount`             | string (decimal) \| null | Amount after platform fee. **`null` until `COMPLETED`** (fee unknown earlier; always null for Whish PENDING/FAILED).                                               |
-| `commissionAmount`      | string (decimal) \| null | Platform fee. Same null rule as `netAmount`. NOTE: unlike the source-facing _ingest_ response, CRM events to the **company** intentionally **do** include fee/net. |
-| `customer`              | string \| null           | Customer name/label, if known.                                                                                                                                     |
-| `tradingAccount`        | string \| null           | The trading account (internally `target`). Null for Whish lifecycle events.                                                                                        |
-| `phone`                 | string \| null           | Payer phone, if known.                                                                                                                                             |
-| `note`                  | string \| null           | Free-text note / invoice.                                                                                                                                          |
-| `occurredAt`            | string (ISO-8601)        | When the underlying status change happened (`processedAt` if present, else `createdAt`; for Whish lifecycle, the emit time).                                       |
+| Field                   | Type                     | Notes                                                                                                                                                                                                           |
+| ----------------------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                    | string (uuid) \| null    | Ledger transaction id. **`null`** for Whish `PENDING`/`FAILED` events (no ledger row exists yet); populated on `COMPLETED`/`REVERSED`.                                                                          |
+| `status`                | enum                     | `PENDING` \| `COMPLETED` \| `FAILED` \| `REVERSED` — derived from `event`.                                                                                                                                      |
+| `source`                | string                   | Source code (e.g. `whish`, or your source's code).                                                                                                                                                              |
+| `externalTransactionId` | string                   | Your/the provider's id for this transaction.                                                                                                                                                                    |
+| `amount`                | string (decimal)         | Gross amount, decimal string (never a float).                                                                                                                                                                   |
+| `currency`              | string                   | ISO currency code.                                                                                                                                                                                              |
+| `netAmount`             | string (decimal) \| null | Amount after the platform fees. **`null` until `COMPLETED`** (fees unknown earlier; always null for Whish PENDING/FAILED).                                                                                      |
+| `commissionAmount`      | string (decimal) \| null | Platform fee (commission). Same null rule as `netAmount`. NOTE: unlike the source-facing _ingest_ response, CRM events to the **company** intentionally **do** include fees/net.                                |
+| `networkFeeAmount`      | string (decimal) \| null | The [network fee](#fees-commission-and-network-fee) — `"0"` when you are not charged one. Same null rule as `netAmount`. An event queued before this field existed may omit it: treat a missing value as `"0"`. |
+| `customer`              | string \| null           | Customer name/label, if known.                                                                                                                                                                                  |
+| `tradingAccount`        | string \| null           | The trading account (internally `target`). Null for Whish lifecycle events.                                                                                                                                     |
+| `phone`                 | string \| null           | Payer phone, if known.                                                                                                                                                                                          |
+| `note`                  | string \| null           | Free-text note / invoice.                                                                                                                                                                                       |
+| `occurredAt`            | string (ISO-8601)        | When the underlying status change happened (`processedAt` if present, else `createdAt`; for Whish lifecycle, the emit time).                                                                                    |
 
 #### Withdrawal events
 
@@ -1992,10 +2147,11 @@ x-crm-signature: t=1750579200,sha256=…
   "withdrawal": {
     "id": "d4f2a1c0-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
     "status": "COMPLETED",
-    "amount": "500.00",
-    "totalAmount": "500.00",
-    "feeAmount": "5.00",
-    "netAmount": "495.00",
+    "amount": "500",
+    "totalAmount": "500",
+    "feeAmount": "5",
+    "networkFeeAmount": "0",
+    "netAmount": "495",
     "feeApplication": "DEDUCTED",
     "currency": "USD",
     "payoutMethod": "CASH",
@@ -2024,11 +2180,12 @@ x-crm-signature: t=1750579200,sha256=…
 | ------------------- | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `id`                | string (uuid)     | The withdrawal id. Stable across the lifecycle; `reference` is `"withdrawal:<id>"`.                                                                                                                                                                                                                                                                                                                                                                       |
 | `status`            | enum              | `PENDING` \| `COMPLETED` \| `REJECTED` \| `CANCELLED`. **The decision:** `COMPLETED` = approved & paid, `REJECTED` = rejected, `CANCELLED` = cancelled by you.                                                                                                                                                                                                                                                                                            |
-| `amount`            | string (decimal)  | The payout amount you requested. For an `ON_TOP` fee this is less than `totalAmount`; for `DEDUCTED` they are equal.                                                                                                                                                                                                                                                                                                                                      |
-| `totalAmount`       | string (decimal)  | What left your wallet = `netAmount + feeAmount`.                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `feeAmount`         | string (decimal)  | The platform fee we charged on this payout (`"0"` if no rule).                                                                                                                                                                                                                                                                                                                                                                                            |
-| `netAmount`         | string (decimal)  | What the recipient receives. **`totalAmount − feeAmount = netAmount`.**                                                                                                                                                                                                                                                                                                                                                                                   |
-| `feeApplication`    | string            | `DEDUCTED` (recipient gets `amount − fee`) or `ON_TOP` (recipient gets the full `amount`; the fee is charged on top).                                                                                                                                                                                                                                                                                                                                     |
+| `amount`            | string (decimal)  | The payout amount you requested. For `ON_TOP` fees this is less than `totalAmount` (whenever a fee is charged); for `DEDUCTED` they are equal.                                                                                                                                                                                                                                                                                                            |
+| `totalAmount`       | string (decimal)  | What left your wallet = `netAmount + feeAmount + networkFeeAmount`.                                                                                                                                                                                                                                                                                                                                                                                       |
+| `feeAmount`         | string (decimal)  | The platform fee (commission) we charged on this payout (`"0"` if no rule).                                                                                                                                                                                                                                                                                                                                                                               |
+| `networkFeeAmount`  | string (decimal)  | The [network fee](#fees-commission-and-network-fee), applied the same way as `feeAmount` (`"0"` if you are not charged one). Always a string on withdrawal events; an event queued before this field existed may omit it — treat a missing value as `"0"`.                                                                                                                                                                                                |
+| `netAmount`         | string (decimal)  | What the recipient receives. **`totalAmount − feeAmount − networkFeeAmount = netAmount`.**                                                                                                                                                                                                                                                                                                                                                                |
+| `feeApplication`    | string            | `DEDUCTED` (recipient gets `amount − feeAmount − networkFeeAmount`) or `ON_TOP` (recipient gets the full `amount`; both fees are charged on top).                                                                                                                                                                                                                                                                                                         |
 | `currency`          | string            | ISO currency code.                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `payoutMethod`      | string            | `CASH` \| `WISH` \| `CRYPTO` \| `BANK_TRANSFER` \| `OTHER`.                                                                                                                                                                                                                                                                                                                                                                                               |
 | `payoutDetails`     | object \| null    | **The complete instructions you submitted — the single source for the destination.** Every method-specific field: `recipientName` + `recipientPhone` (+ `pickupLocation` + `instructions`) for `CASH`; `recipientName` + `recipientPhone` (+ `instructions`) for `WISH`; `network` + `walletAddress` (+ `memo`) for `CRYPTO`; `accountHolder`/`accountNumber`/`bankName`/`swiftBic`/`routingNumber` for a bank transfer. Same shape as the REST resource. |
@@ -2043,12 +2200,12 @@ x-crm-signature: t=1750579200,sha256=…
 
 **Deposit events** (`transaction.*`):
 
-| Event                   | Trigger (verified in code)                                                                                                                                                  | `id` | net/commission |
-| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- | -------------- |
-| `transaction.pending`   | A Whish payment link is minted (`POST /integrations/whish/payments`).                                                                                                       | null | null           |
-| `transaction.completed` | Any transaction is ingested/settled into the ledger (incl. Whish settlement, same `reference` as its earlier pending).                                                      | uuid | present        |
-| `transaction.failed`    | Whish link creation fails, or a Whish payment is marked FAILED — via the failure callback or the background reconciler (Whish reported failure, or the link lapsed unpaid). | null | null           |
-| `transaction.reversed`  | A ledger transaction is reversed.                                                                                                                                           | uuid | present        |
+| Event                   | Trigger (verified in code)                                                                                                                                                  | `id` | net/fees |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- | -------- |
+| `transaction.pending`   | A Whish payment link is minted (`POST /integrations/whish/payments`).                                                                                                       | null | null     |
+| `transaction.completed` | Any transaction is ingested/settled into the ledger (incl. Whish settlement, same `reference` as its earlier pending).                                                      | uuid | present  |
+| `transaction.failed`    | Whish link creation fails, or a Whish payment is marked FAILED — via the failure callback or the background reconciler (Whish reported failure, or the link lapsed unpaid). | null | null     |
+| `transaction.reversed`  | A ledger transaction is reversed.                                                                                                                                           | uuid | present  |
 
 > A Whish payment therefore typically produces two events with the **same `reference`** (`whish:<externalId>`): `transaction.pending` then `transaction.completed`. Upsert on `reference` so it becomes one evolving record, not two.
 
@@ -2056,12 +2213,12 @@ x-crm-signature: t=1750579200,sha256=…
 
 **Withdrawal events** (`withdrawal.*`):
 
-| Event                  | Trigger (verified in code)                                                                          | `status`  |
-| ---------------------- | --------------------------------------------------------------------------------------------------- | --------- |
-| `withdrawal.pending`   | A withdrawal is requested (`POST /company/withdrawals`).                                            | PENDING   |
-| `withdrawal.completed` | An operator approves it — funds paid out, the fee is realized, and `externalReference` is recorded. | COMPLETED |
-| `withdrawal.rejected`  | An operator rejects it — reserved funds are released; the reason is in `adminNote`.                 | REJECTED  |
-| `withdrawal.cancelled` | The company cancels its own still-pending request (`POST /company/withdrawals/:id/cancel`).         | CANCELLED |
+| Event                  | Trigger (verified in code)                                                                            | `status`  |
+| ---------------------- | ----------------------------------------------------------------------------------------------------- | --------- |
+| `withdrawal.pending`   | A withdrawal is requested (`POST /company/withdrawals`).                                              | PENDING   |
+| `withdrawal.completed` | An operator approves it — funds paid out, the fees are realized, and `externalReference` is recorded. | COMPLETED |
+| `withdrawal.rejected`  | An operator rejects it — reserved funds are released; the reason is in `adminNote`.                   | REJECTED  |
+| `withdrawal.cancelled` | The company cancels its own still-pending request (`POST /company/withdrawals/:id/cancel`).           | CANCELLED |
 
 > A withdrawal produces a `withdrawal.pending` then exactly one terminal event (`completed` / `rejected` / `cancelled`), all sharing the `reference` `withdrawal:<id>`. **Payouts and loads emit no CRM events** — read their status over the REST API.
 

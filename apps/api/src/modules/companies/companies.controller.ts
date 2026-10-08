@@ -6,6 +6,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Put,
   Query,
   Req,
   UseGuards,
@@ -13,10 +14,12 @@ import {
 import {
   createCompanySchema,
   listCompaniesQuerySchema,
+  setNetworkFeeConfigSchema,
   updateCompanySchema,
   UserRole,
   type CreateCompanyInput,
   type ListCompaniesQuery,
+  type SetNetworkFeeConfigInput,
   type UpdateCompanyInput,
 } from '@app/shared';
 import { ZodPipe } from '../../common/pipes/zod-validation.pipe';
@@ -95,6 +98,34 @@ export class CompaniesController {
       // Hand the post-commit field diff to AuditInterceptor through the request,
       // so the `company.updated` row records WHICH fields changed and their
       // before→after values. The interceptor cannot see the previous values.
+      onChanges: (changes) => recordAuditChanges(req, changes),
+    });
+  }
+
+  @Get(':id/network-fee')
+  async getNetworkFee(@Param('id', new ParseUUIDPipe()) id: string) {
+    return this.companies.getNetworkFee(id);
+  }
+
+  // The network fee is pricing — it changes what a tenant is charged — so only a
+  // SUPER_ADMIN may change it (this overrides the class-level roles), like the
+  // other money switch, withdrawal auto-approval. ADMIN_OPERATOR can read it
+  // (GET above / the company detail) but not change it. Session + CSRF only:
+  // admin routes are never reachable with an API key.
+  @Roles(UserRole.SUPER_ADMIN)
+  @Put(':id/network-fee')
+  @Audited({
+    action: 'company.network_fee_updated',
+    entityType: 'company',
+    idFrom: 'params.id',
+    companyIdFrom: 'params.id',
+  })
+  async setNetworkFee(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body(new ZodPipe(setNetworkFeeConfigSchema)) body: SetNetworkFeeConfigInput,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.companies.setNetworkFee(id, body, {
       onChanges: (changes) => recordAuditChanges(req, changes),
     });
   }

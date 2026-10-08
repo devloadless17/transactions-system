@@ -1,7 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import { MONEY_SCALE, Money, type FeeApplication } from '@app/shared';
-import { netOfFee, releaseEntries, reservedTotal, reserveEntries } from './flow-ledger';
+import {
+  moneyInEntries,
+  netOfFee,
+  releaseEntries,
+  reservedTotal,
+  reserveEntries,
+  reversalEntries,
+  settleEntries,
+  totalFee,
+  type FeeParts,
+} from './flow-ledger';
 import { ingestSplit, splitClawback } from '../transactions/transactions.service';
+import {
+  boundDepositNetworkFee,
+  computeNetworkFee,
+  type NetworkFeeRate,
+} from '../commissions/network-fee';
 
 /**
  * THE money-scale invariant, swept rather than sampled.
@@ -62,6 +77,19 @@ const RATES = ['0', '0.125', '0.5', '1', '1.5', '2', '2.5', '3.333333', '10', '3
 
 const APPLICATIONS: FeeApplication[] = ['ON_TOP', 'DEDUCTED'];
 
+// The optional per-company network fee, swept across "off" (null), awkward
+// rates and fixed amounts — so every builder is proven with BOTH fees, and the
+// off case keeps exercising the original single-fee sets.
+const NETWORK_RATES: Array<NetworkFeeRate | null> = [
+  null,
+  { feeType: 'PERCENTAGE', feeValue: '0.125' },
+  { feeType: 'PERCENTAGE', feeValue: '1' },
+  { feeType: 'PERCENTAGE', feeValue: '3.333333' },
+  { feeType: 'PERCENTAGE', feeValue: '50' },
+  { feeType: 'FIXED', feeValue: '0.01' },
+  { feeType: 'FIXED', feeValue: '5' },
+];
+
 interface Leg {
   direction: 'DEBIT' | 'CREDIT';
   amount: Money;
@@ -82,28 +110,34 @@ function assertSetIsSound(legs: Leg[], label: string): void {
   expect(dr.eq(cr), `${label}: debits ${dr.toString()} != credits ${cr.toString()}`).toBe(true);
 }
 
-/** Builders skip zero legs the way the real services do (a 0 fee books no FEE leg). */
-const nonZero = (legs: { direction: 'DEBIT' | 'CREDIT'; amount: Money }[]): Leg[] =>
-  legs.filter((l) => !l.amount.isZero());
-
 describe('every ledger set balances at the platform money scale', () => {
-  // The fee is quantized ONCE, exactly as the resolver does, and every remaining
-  // leg is derived from it — that is the contract the ledger asserts.
-  const cases: { amount: Money; fee: Money; app: FeeApplication }[] = [];
+  // Each fee is quantized ONCE, exactly as the resolver / computeNetworkFee do,
+  // and every remaining leg is derived from them — that is the contract the
+  // ledger asserts.
+  const priced: { amount: Money; fee: Money; network: Money; app: FeeApplication }[] = [];
   for (const a of AMOUNTS) {
     for (const r of RATES) {
       for (const app of APPLICATIONS) {
-        const amount = Money.of(a);
-        const fee = amount.percent(r).round();
-        // DEDUCTED with a fee >= amount is refused upstream (CommissionExceedsAmount).
-        if (app === 'DEDUCTED' && fee.gte(amount)) continue;
-        cases.push({ amount, fee, app });
+        for (const rate of NETWORK_RATES) {
+          const amount = Money.of(a);
+          const fee = amount.percent(r).round();
+          // DEDUCTED with a fee >= amount is refused upstream (CommissionExceedsAmount).
+          if (app === 'DEDUCTED' && fee.gte(amount)) continue;
+          priced.push({ amount, fee, network: computeNetworkFee(amount, rate), app });
+        }
       }
     }
   }
+  // Money-out flows and loads: DEDUCTED fees that consume the whole amount are
+  // refused at request time (feesConsumeAmountError), so they never book.
+  const cases = priced
+    .filter((c) => !(c.app === 'DEDUCTED' && c.fee.add(c.network).gte(c.amount)))
+    .map((c) => ({ ...c, fees: { commission: c.fee, network: c.network } as FeeParts }));
 
-  it(`sweeps ${AMOUNTS.length} amounts x ${RATES.length} rates x 2 applications`, () => {
-    expect(cases.length).toBeGreaterThan(500);
+  it(`sweeps ${AMOUNTS.length} amounts x ${RATES.length} rates x 2 applications x ${NETWORK_RATES.length} network fees`, () => {
+    expect(cases.length).toBeGreaterThan(3000);
+    // The sweep genuinely carries a network fee, not just the off case.
+    expect(cases.filter((c) => c.network.isPositive()).length).toBeGreaterThan(2000);
   });
 
   // A sweep that cannot fail proves nothing — pin that the assertion itself
@@ -148,24 +182,36 @@ describe('every ledger set balances at the platform money scale', () => {
     expect(half.round().add(half.round()).eq(half.add(half).round())).toBe(false);
   });
 
-  it('ingest (deposit) books a balanced, at-scale set', () => {
-    for (const { amount, fee, app } of cases) {
-      const s = ingestSplit(amount, fee, app);
-      assertSetIsSound(
-        nonZero([
-          { direction: 'DEBIT', amount: s.externalDebit },
-          { direction: 'CREDIT', amount: s.availableCredit },
-          { direction: 'CREDIT', amount: fee },
-        ]),
-        `ingest ${amount.toString()}/${fee.toString()}/${app}`,
-      );
+  it('ingest (deposit) books a balanced, at-scale set — network fee bounded to what the commission leaves', () => {
+    // Every priced deposit books, including those whose fees would exceed the
+    // amount: the network fee is bounded, never the deposit refused.
+    for (const { amount, fee, network: computed, app } of priced) {
+      const { network } = boundDepositNetworkFee({
+        amount,
+        commission: fee,
+        feeApplication: app,
+        computed,
+      });
+      const fees: FeeParts = { commission: fee, network };
+      const s = ingestSplit(amount, fees, app);
+      const label = `ingest ${amount.toString()}/${fee.toString()}/${network.toString()}/${app}`;
+      expect(s.availableCredit.isNegative(), `${label}: negative net`).toBe(false);
+      const legs = moneyInEntries({ transactionId: 't-1' }, CO, USD, {
+        externalDebit: s.externalDebit,
+        receivableSettle: Money.zero(),
+        availableCredit: s.availableCredit,
+        fees,
+      });
+      assertSetIsSound(legs as unknown as Leg[], label);
+      // The external leg is exactly what the reversal reconstructs.
+      expect(s.externalDebit.eq(s.availableCredit.add(totalFee(fees))), label).toBe(true);
     }
   });
 
   it('reserve + release (request, then reject/cancel) balance and mirror each other', () => {
-    for (const { amount, fee, app } of cases) {
-      const reserved = reservedTotal(amount, fee, app);
-      const label = `reserve ${amount.toString()}/${fee.toString()}/${app}`;
+    for (const { amount, fees, app } of cases) {
+      const reserved = reservedTotal(amount, fees, app);
+      const label = `reserve ${amount.toString()}/${totalFee(fees).toString()}/${app}`;
       assertSetIsSound(reserveEntries(REF, CO, USD, reserved) as unknown as Leg[], label);
       // The release must move exactly what the reserve moved, or the wallet drifts.
       assertSetIsSound(releaseEntries(REF, CO, USD, reserved) as unknown as Leg[], `re${label}`);
@@ -173,32 +219,82 @@ describe('every ledger set balances at the platform money scale', () => {
   });
 
   it('settle (approval) balances, including the whole-dollar floor path', () => {
-    for (const { amount, fee, app } of cases) {
-      const reserved = reservedTotal(amount, fee, app);
-      const net = netOfFee(amount, fee, app);
+    for (const { amount, fees, app } of cases) {
+      const reserved = reservedTotal(amount, fees, app);
+      const net = netOfFee(amount, fees, app);
       for (const floorWhole of [false, true]) {
         const external = floorWhole ? net.floorToWhole() : net;
         // A zero payout is refused upstream (AUTO_APPROVE_MIN_NET) — skip it here
         // rather than assert a leg the real flow would never build.
         if (!external.isPositive()) continue;
-        const feeRealized = reserved.sub(external);
+        // Exactly what WithdrawalsService.approve realizes: the network fee as
+        // stored, the rest (commission + any floored remainder) on FEE.
+        const realized: FeeParts = {
+          commission: reserved.sub(external).sub(fees.network),
+          network: fees.network,
+        };
+        const label = `settle ${amount.toString()}/${fees.commission.toString()}/${fees.network.toString()}/${app}/floor=${floorWhole}`;
         assertSetIsSound(
-          nonZero([
-            { direction: 'DEBIT', amount: reserved },
-            { direction: 'CREDIT', amount: external },
-            { direction: 'CREDIT', amount: feeRealized },
-          ]),
-          `settle ${amount.toString()}/${fee.toString()}/${app}/floor=${floorWhole}`,
+          settleEntries(REF, CO, USD, reserved, external, realized) as unknown as Leg[],
+          label,
         );
+        // FEE realizes the commission plus the remainder — never less.
+        expect(realized.commission.gte(fees.commission), label).toBe(true);
         // The remainder kept by the platform is itself representable.
         expect(net.sub(external).isAtScale()).toBe(true);
       }
     }
   });
 
+  it('load approval balances while settling an outstanding receivable first', () => {
+    for (const { amount, fees, app } of cases) {
+      const externalDebit = reservedTotal(amount, fees, app);
+      const availableCredit = netOfFee(amount, fees, app);
+      // owed: none, part of the net, all of it, more than it.
+      for (const owed of [
+        Money.zero(),
+        availableCredit.div(2).floorToScale(),
+        availableCredit,
+        availableCredit.add(Money.of('1')),
+      ]) {
+        const settle = owed.gt(availableCredit) ? availableCredit : owed;
+        const legs = moneyInEntries({ loadId: 'l-1' }, CO, USD, {
+          externalDebit,
+          receivableSettle: settle,
+          availableCredit: availableCredit.sub(settle),
+          fees,
+        });
+        assertSetIsSound(
+          legs as unknown as Leg[],
+          `load ${amount.toString()}/${totalFee(fees).toString()}/${app}/owed=${owed.toString()}`,
+        );
+      }
+    }
+  });
+
+  it('reversal refunds both fees and balances for every clawback split', () => {
+    for (const { amount, fees, app } of cases) {
+      const net = netOfFee(amount, fees, app);
+      for (const available of [Money.zero(), net.div(2), net]) {
+        const { fromAvailable, receivable } = splitClawback(net, available);
+        const legs = reversalEntries({ transactionId: 't-1' }, CO, USD, {
+          net,
+          fees,
+          fromAvailable,
+          receivable,
+          reason: 'sweep',
+        });
+        assertSetIsSound(
+          legs as unknown as Leg[],
+          `reversal ${amount.toString()}/${totalFee(fees).toString()}/${app}`,
+        );
+      }
+    }
+  });
+
   it('reversal clawback splits across AVAILABLE and RECEIVABLE without drift', () => {
-    for (const { amount, fee, app } of cases) {
-      const net = netOfFee(amount, fee, app);
+    for (const { amount, fees, app } of cases) {
+      const net = netOfFee(amount, fees, app);
       if (!net.isPositive()) continue;
       // Sweep the wallet from empty to fully-funded, including a legacy balance
       // carrying a sub-cent tail — the case that used to overdraw the wallet.

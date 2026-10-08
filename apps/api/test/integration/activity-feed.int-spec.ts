@@ -325,9 +325,13 @@ describe('activity feed — gross amounts with non-zero fees', () => {
     expect(moneyEq(dep.fee, '100')).toBe(true);
     expect(moneyEq(dep.net, '900')).toBe(true);
 
-    // The invariant the export/UI rely on: amount is always fee + net.
+    // The invariant the export/UI rely on: amount is always fee + network fee + net.
     for (const row of r.data) {
-      expect(Money.of(row.amount).eq(Money.of(row.fee).add(Money.of(row.net)))).toBe(true);
+      expect(
+        Money.of(row.amount).eq(
+          Money.of(row.fee).add(Money.of(row.networkFee)).add(Money.of(row.net)),
+        ),
+      ).toBe(true);
     }
 
     // Balance mode still reconciles — proves the gross change didn't leak into
@@ -451,7 +455,11 @@ describe('activity feed — ON_TOP deposit reports the gross that actually moved
     expect(moneyEq(dep.fee, '100')).toBe(true);
     expect(moneyEq(dep.net, '1000')).toBe(true);
     // The invariant the export/UI rely on must hold for deposits too.
-    expect(Money.of(dep.amount).eq(Money.of(dep.fee).add(Money.of(dep.net)))).toBe(true);
+    expect(
+      Money.of(dep.amount).eq(
+        Money.of(dep.fee).add(Money.of(dep.networkFee)).add(Money.of(dep.net)),
+      ),
+    ).toBe(true);
 
     // The gross fix must not leak into the ledger-driven running balance: the
     // wallet was credited the net (1000), not the gross.

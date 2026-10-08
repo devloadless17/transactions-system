@@ -1,6 +1,6 @@
 'use client';
 import { useQuery } from '@tanstack/react-query';
-import type { TransactionDetailResponse, TransactionResponse } from '@app/shared';
+import { type TransactionDetailResponse, type TransactionResponse } from '@app/shared';
 import {
   Sheet,
   SheetContent,
@@ -18,15 +18,26 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { apiFetch } from '@/lib/api.client';
-import { trimAmount } from '@/lib/format';
+import { isPositiveAmount, trimAmount } from '@/lib/format';
 
 interface Props {
   scope: 'admin' | 'company';
   transaction: TransactionResponse | null;
   onClose: () => void;
+  // BACKOFFICE sees the one figure its deposits list shows — what the customer
+  // paid — and never a platform fee: no fee/net breakdown and no ledger legs.
+  // The API already strips them for back office (common/backoffice-view.ts);
+  // this keeps the UI from rendering an empty breakdown. Full admins and the
+  // company are unchanged.
+  backoffice?: boolean;
 }
 
-export function TransactionDetailDrawer({ scope, transaction, onClose }: Props) {
+export function TransactionDetailDrawer({
+  scope,
+  transaction,
+  onClose,
+  backoffice = false,
+}: Props) {
   const path =
     scope === 'admin'
       ? `/admin/transactions/${transaction?.id}/detail`
@@ -39,6 +50,8 @@ export function TransactionDetailDrawer({ scope, transaction, onClose }: Props) 
   });
 
   const tx = detailQ.data?.transaction ?? transaction;
+  // No ledger section for back office: EXTERNAL next to AVAILABLE would reveal the fee.
+  const ledgerEntries = backoffice ? undefined : detailQ.data?.ledgerEntries;
 
   return (
     <Sheet open={!!transaction} onOpenChange={(v) => !v && onClose()}>
@@ -63,9 +76,22 @@ export function TransactionDetailDrawer({ scope, transaction, onClose }: Props) 
                 }
               />
               <DetailRow label="Currency" value={tx.currency} />
-              <DetailRow label="Amount" value={`${trimAmount(tx.amount)}`} mono />
-              <DetailRow label="Fee" value={`${trimAmount(tx.commissionAmount)}`} mono />
-              <DetailRow label="Net" value={`${trimAmount(tx.netAmount)}`} mono />
+              {backoffice ? (
+                <DetailRow label="Amount" value={`${trimAmount(tx.amount)}`} mono />
+              ) : (
+                <>
+                  <DetailRow label="Amount" value={`${trimAmount(tx.amount)}`} mono />
+                  <DetailRow label="Fee" value={`${trimAmount(tx.commissionAmount)}`} mono />
+                  {isPositiveAmount(tx.networkFeeAmount) && (
+                    <DetailRow
+                      label="Network fee"
+                      value={`${trimAmount(tx.networkFeeAmount)}`}
+                      mono
+                    />
+                  )}
+                  <DetailRow label="Net" value={`${trimAmount(tx.netAmount)}`} mono />
+                </>
+              )}
               <DetailRow
                 label="Processed at"
                 value={tx.processedAt ? new Date(tx.processedAt).toLocaleString() : '—'}
@@ -83,7 +109,7 @@ export function TransactionDetailDrawer({ scope, transaction, onClose }: Props) 
               </section>
             )}
 
-            {detailQ.data && (
+            {detailQ.data && ledgerEntries && (
               <>
                 <section className="space-y-2">
                   <h3 className="text-xs font-medium uppercase text-muted-foreground">
@@ -110,7 +136,7 @@ export function TransactionDetailDrawer({ scope, transaction, onClose }: Props) 
 
                 <section className="space-y-2">
                   <h3 className="text-xs font-medium uppercase text-muted-foreground">
-                    Ledger entries ({detailQ.data.ledgerEntries.length})
+                    Ledger entries ({ledgerEntries.length})
                   </h3>
                   <div className="rounded-md border">
                     <Table>
@@ -123,7 +149,7 @@ export function TransactionDetailDrawer({ scope, transaction, onClose }: Props) 
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {detailQ.data.ledgerEntries.map((e) => (
+                        {ledgerEntries.map((e) => (
                           <TableRow key={e.id}>
                             <TableCell className="font-mono text-xs">{e.accountType}</TableCell>
                             <TableCell>

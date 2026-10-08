@@ -9,11 +9,13 @@ export const activityItemSchema = z.object({
   id: z.string().uuid(),
   kind: z.nativeEnum(ActivityKind),
   direction: z.nativeEnum(ActivityDirection),
-  // Gross amount — the money that actually moves (net + fee); matches
-  // totalAmount on the flow resources. Always amount = fee + net.
+  // Gross amount — the money that actually moves (net + fee + network fee);
+  // matches totalAmount on the flow resources. Always amount = fee + networkFee + net.
   amount: z.string(),
   currency: z.string(),
   fee: z.string(),
+  // Optional per-company network fee ("0" when the company is not charged one).
+  networkFee: z.string(),
   net: z.string(),
   // Human label: source code (deposits) or payout method (withdrawal/payout/load).
   description: z.string(),

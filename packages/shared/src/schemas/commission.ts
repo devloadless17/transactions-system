@@ -1,7 +1,13 @@
 import { z } from 'zod';
 import { CommissionType, FeeApplication, FeeOperationType } from '../enums';
 import { Money } from '../money';
-import { MONEY_INPUT_DP, RATE_INPUT_DP, moneyAmountSchema, rateStringSchema } from './common';
+import {
+  MONEY_INPUT_DP,
+  RATE_INPUT_DP,
+  isDecimalString,
+  moneyAmountSchema,
+  rateStringSchema,
+} from './common';
 
 // Amounts and fee values are money; they are never negative. (A negative
 // commission would credit the company on a fee, and a negative range bound is
@@ -27,7 +33,8 @@ export function commissionValueWithinBounds(
   value: string,
 ): boolean {
   if (commissionType === CommissionType.PERCENTAGE) {
-    return Money.of(value).lte(HUNDRED);
+    // A malformed value is reported by its own field check; don't throw here.
+    return !isDecimalString(value) || Money.of(value).lte(HUNDRED);
   }
   return true;
 }
@@ -63,10 +70,17 @@ export const commissionTierSchema = z
     // (A field-level 2dp cap would fire FIRST and make that split unreachable.)
     commissionValue: rateStringSchema,
   })
-  .refine((t) => t.maxAmount === null || Money.of(t.minAmount).lte(Money.of(t.maxAmount)), {
-    message: 'minAmount must be <= maxAmount',
-    path: ['maxAmount'],
-  })
+  .refine(
+    (t) =>
+      t.maxAmount === null ||
+      !isDecimalString(t.minAmount) ||
+      !isDecimalString(t.maxAmount) ||
+      Money.of(t.minAmount).lte(Money.of(t.maxAmount)),
+    {
+      message: 'minAmount must be <= maxAmount',
+      path: ['maxAmount'],
+    },
+  )
   .refine((t) => commissionValueWithinBounds(t.commissionType, t.commissionValue), {
     message: 'PERCENTAGE value must be between 0 and 100',
     path: ['commissionValue'],
@@ -102,6 +116,15 @@ export type CommissionTierInput = z.infer<typeof commissionTierSchema>;
  * resolver's rule when editing the other.
  */
 function validateTierLadder(tiers: CommissionTierInput[], ctx: z.RefinementCtx): void {
+  // A tier with a malformed bound has already failed its own check; ordering an
+  // unparseable ladder would throw (see isDecimalString).
+  if (
+    !tiers.every(
+      (t) => isDecimalString(t.minAmount) && (t.maxAmount === null || isDecimalString(t.maxAmount)),
+    )
+  ) {
+    return;
+  }
   const sorted = [...tiers].sort((a, b) =>
     Money.of(a.minAmount).gte(Money.of(b.minAmount)) ? 1 : -1,
   );

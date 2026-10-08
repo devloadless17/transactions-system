@@ -2,13 +2,13 @@
 import * as React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ArrowDownLeft, ArrowUpRight } from 'lucide-react';
-import type {
-  ActivityItem,
-  ActivityKind,
-  LoadResponse,
-  PayoutResponse,
-  TransactionDetailResponse,
-  WithdrawalResponse,
+import {
+  type ActivityItem,
+  type ActivityKind,
+  type LoadResponse,
+  type PayoutResponse,
+  type TransactionDetailResponse,
+  type WithdrawalResponse,
 } from '@app/shared';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -20,13 +20,13 @@ import {
 } from '@/components/ui/sheet';
 import { apiFetch } from '@/lib/api.client';
 import { cn } from '@/lib/cn';
-import { formatMoney, trimAmount, isZeroAmount } from '@/lib/format';
+import { formatMoney, trimAmount, isPositiveAmount, isZeroAmount } from '@/lib/format';
 import {
   feeApplicationLabel,
   PayoutInstructions,
   prettyMethod,
 } from '@/features/company/withdrawals-view';
-import { activityHeadlineAmount } from './headline-amount';
+import { activityHeadlineAmount, backofficeActivityAmount } from './headline-amount';
 
 const KIND_LABEL: Record<ActivityKind, string> = {
   DEPOSIT: 'Deposit',
@@ -74,7 +74,20 @@ export function useEntityDetailQuery(
   });
 }
 
-function EntityDetailBody({ q }: { q: ReturnType<typeof useEntityDetailQuery> }) {
+// `backoffice`: BACKOFFICE never sees a platform fee. Each summary collapses to
+// the single "Amount" its lists show (see backofficeActivityAmount), and the
+// fee-revenue ledger legs are left out. `kind` only picks that figure for a
+// flow (a load is collected gross; everything else is net) — it never picks the
+// renderer, for the reason below.
+function EntityDetailBody({
+  q,
+  kind,
+  backoffice,
+}: {
+  q: ReturnType<typeof useEntityDetailQuery>;
+  kind: ActivityKind | undefined;
+  backoffice: boolean;
+}) {
   // Route off the SHAPE of the loaded data, never the requested `kind`. When the
   // selected item switches between a deposit and a flow (withdrawal/payout/load),
   // the `kind` prop updates synchronously while react-query's `data` can still
@@ -90,9 +103,9 @@ function EntityDetailBody({ q }: { q: ReturnType<typeof useEntityDetailQuery> })
       {q.isError && <p className="text-destructive">Couldn&apos;t load details — try again.</p>}
       {data &&
         ('transaction' in data ? (
-          <DepositDetail d={data as TransactionDetailResponse} />
+          <DepositDetail d={data as TransactionDetailResponse} backoffice={backoffice} />
         ) : (
-          <FlowDetail r={data as FlowRecord} />
+          <FlowDetail r={data as FlowRecord} isLoad={kind === 'LOAD'} backoffice={backoffice} />
         ))}
     </>
   );
@@ -102,10 +115,12 @@ export function ActivityDetailDrawer({
   scope,
   item,
   onClose,
+  backoffice = false,
 }: {
   scope: 'admin' | 'company';
   item: ActivityItem | null;
   onClose: () => void;
+  backoffice?: boolean;
 }) {
   const q = useEntityDetailQuery(scope, item?.kind, item?.id, !!item);
 
@@ -136,10 +151,13 @@ export function ActivityDetailDrawer({
               )}
             >
               {isIn ? '+' : '−'}
-              {formatMoney(activityHeadlineAmount(item))} {item.currency}
+              {formatMoney(
+                backoffice ? backofficeActivityAmount(item) : activityHeadlineAmount(item),
+              )}{' '}
+              {item.currency}
             </div>
 
-            <EntityDetailBody q={q} />
+            <EntityDetailBody q={q} kind={item.kind} backoffice={backoffice} />
 
             {scope === 'admin' && item.companyName && (
               <Section title="Company">
@@ -181,10 +199,12 @@ export function EntityDetailDrawer({
   scope,
   target,
   onClose,
+  backoffice = false,
 }: {
   scope: 'admin' | 'company';
   target: { kind: ActivityKind; id: string } | null;
   onClose: () => void;
+  backoffice?: boolean;
 }) {
   const q = useEntityDetailQuery(scope, target?.kind, target?.id, !!target);
   return (
@@ -196,7 +216,7 @@ export function EntityDetailDrawer({
         </SheetHeader>
         {target && (
           <div className="mt-4 space-y-6 text-sm">
-            <EntityDetailBody q={q} />
+            <EntityDetailBody q={q} kind={target.kind} backoffice={backoffice} />
           </div>
         )}
       </SheetContent>
@@ -204,17 +224,33 @@ export function EntityDetailDrawer({
   );
 }
 
-function DepositDetail({ d }: { d: TransactionDetailResponse }) {
+function DepositDetail({ d, backoffice }: { d: TransactionDetailResponse; backoffice: boolean }) {
   const t = d.transaction;
+  // No ledger section for back office (the API sends none): EXTERNAL next to
+  // AVAILABLE would reveal the fee.
+  const ledgerEntries = backoffice ? [] : d.ledgerEntries;
   return (
     <>
       <Section title="Summary">
         <Row label="Status" value={<Badge variant="success">{t.status}</Badge>} />
-        <Row label="Amount" value={`${trimAmount(t.amount)} ${t.currency}`} mono />
-        {!isZeroAmount(t.commissionAmount) && (
-          <Row label="Fee" value={`${trimAmount(t.commissionAmount)} ${t.currency}`} mono />
+        {backoffice ? (
+          <Row label="Amount" value={`${trimAmount(t.amount)} ${t.currency}`} mono />
+        ) : (
+          <>
+            <Row label="Amount" value={`${trimAmount(t.amount)} ${t.currency}`} mono />
+            {!isZeroAmount(t.commissionAmount) && (
+              <Row label="Fee" value={`${trimAmount(t.commissionAmount)} ${t.currency}`} mono />
+            )}
+            {isPositiveAmount(t.networkFeeAmount) && (
+              <Row
+                label="Network fee"
+                value={`${trimAmount(t.networkFeeAmount)} ${t.currency}`}
+                mono
+              />
+            )}
+            <Row label="Net" value={`${trimAmount(t.netAmount)} ${t.currency}`} mono />
+          </>
         )}
-        <Row label="Net" value={`${trimAmount(t.netAmount)} ${t.currency}`} mono />
         <Row label="Source" value={t.sourceCode} />
         <Row label="External ID" value={t.externalTransactionId} mono />
         <Row label="Created" value={new Date(t.createdAt).toLocaleString()} />
@@ -233,9 +269,9 @@ function DepositDetail({ d }: { d: TransactionDetailResponse }) {
         </Section>
       )}
 
-      {d.ledgerEntries.length > 0 && (
+      {ledgerEntries.length > 0 && (
         <Section title="Ledger">
-          {d.ledgerEntries.map((e) => (
+          {ledgerEntries.map((e) => (
             <Row
               key={e.id}
               label={e.accountType}
@@ -257,7 +293,15 @@ function DepositDetail({ d }: { d: TransactionDetailResponse }) {
   );
 }
 
-function FlowDetail({ r }: { r: FlowRecord }) {
+function FlowDetail({
+  r,
+  isLoad,
+  backoffice,
+}: {
+  r: FlowRecord;
+  isLoad: boolean;
+  backoffice: boolean;
+}) {
   return (
     <>
       <Section title="Summary">
@@ -277,15 +321,32 @@ function FlowDetail({ r }: { r: FlowRecord }) {
             </Badge>
           }
         />
-        <Row label="Amount" value={`${trimAmount(r.totalAmount)} ${r.currency}`} mono />
-        {!isZeroAmount(r.feeAmount) && (
+        {backoffice ? (
           <Row
-            label="Fee"
-            value={`${trimAmount(r.feeAmount)} ${r.currency} (${feeApplicationLabel(r.feeApplication)})`}
+            label="Amount"
+            value={`${trimAmount(isLoad ? r.totalAmount : r.netAmount)} ${r.currency}`}
             mono
           />
+        ) : (
+          <>
+            <Row label="Amount" value={`${trimAmount(r.totalAmount)} ${r.currency}`} mono />
+            {!isZeroAmount(r.feeAmount) && (
+              <Row
+                label="Fee"
+                value={`${trimAmount(r.feeAmount)} ${r.currency} (${feeApplicationLabel(r.feeApplication)})`}
+                mono
+              />
+            )}
+            {isPositiveAmount(r.networkFeeAmount) && (
+              <Row
+                label="Network fee"
+                value={`${trimAmount(r.networkFeeAmount)} ${r.currency} (${feeApplicationLabel(r.feeApplication)})`}
+                mono
+              />
+            )}
+            <Row label="Net" value={`${trimAmount(r.netAmount)} ${r.currency}`} mono />
+          </>
         )}
-        <Row label="Net" value={`${trimAmount(r.netAmount)} ${r.currency}`} mono />
         <Row label="Method" value={prettyMethod(r.payoutMethod)} />
         <Row label="Requested" value={new Date(r.createdAt).toLocaleString()} />
         <Row

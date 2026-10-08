@@ -81,6 +81,7 @@ function txResponse(
     amount: '25.00',
     currency: 'USD',
     commissionAmount: '0.50',
+    networkFeeAmount: '0',
     netAmount: '24.50',
     status: 'COMPLETED',
     customer: 'John Doe',

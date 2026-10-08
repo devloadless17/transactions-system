@@ -22,6 +22,14 @@ import { EntityDetailDrawer } from '@/features/activity/activity-detail-drawer';
 
 const PAGE_SIZE = 50;
 
+// The account-type filter. NETWORK_FEE is left out: it only ever appears for a
+// company that is charged the optional network fee, so offering it to every
+// company would add a filter that matches nothing for most of them. Its rows
+// still list (and badge) like any other account under "All".
+const FILTERABLE_ACCOUNT_TYPES = Object.values(LedgerAccountType).filter(
+  (a) => a !== LedgerAccountType.NETWORK_FEE,
+);
+
 export function LedgerView() {
   const [page, setPage] = useState(1);
   const [currency, setCurrency] = useState<string>('');
@@ -165,7 +173,7 @@ export function LedgerView() {
                 className="flex h-10 rounded-md border border-input bg-background px-3 text-sm"
               >
                 <option value="">All</option>
-                {Object.values(LedgerAccountType).map((a) => (
+                {FILTERABLE_ACCOUNT_TYPES.map((a) => (
                   <option key={a} value={a}>
                     {a}
                   </option>

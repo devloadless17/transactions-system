@@ -72,6 +72,11 @@ export class NotificationsService {
     flow: NotificationFlow;
     companyId: string;
     entityId: string;
+    /**
+     * The operator's figure: what to PAY the recipient (withdrawal/payout net)
+     * or what to COLLECT (load gross). Admin notifications reach back office,
+     * which must never see a figure a fee could be derived from.
+     */
     amount: string;
     currency: string;
     /**
@@ -99,7 +104,7 @@ export class NotificationsService {
         event: 'REQUESTED',
         entityId: p.entityId,
         title: `New ${FLOW_LABEL[p.flow]} request`,
-        body: `${name ?? 'A company'} requested a ${FLOW_LABEL[p.flow]} of ${p.amount} ${p.currency}.`,
+        body: `${name ?? 'A company'} requested a ${FLOW_LABEL[p.flow]}: ${p.amount} ${p.currency} to ${p.flow === 'LOAD' ? 'collect' : 'pay'}.`,
         link: `/admin/${FLOW_PATH[p.flow]}`,
       });
     } catch (e) {

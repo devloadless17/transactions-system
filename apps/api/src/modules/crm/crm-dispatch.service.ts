@@ -66,6 +66,7 @@ export class CrmDispatchService {
       currency: tr.currency,
       netAmount: tr.netAmount,
       commissionAmount: tr.commissionAmount,
+      networkFeeAmount: tr.networkFeeAmount,
       customer: tr.customer,
       tradingAccount: tr.target,
       phone: tr.phone,
@@ -104,6 +105,7 @@ export class CrmDispatchService {
       currency: input.currency.trim(),
       netAmount: null,
       commissionAmount: null,
+      networkFeeAmount: null,
       customer: null,
       tradingAccount: null,
       phone: input.payerPhoneNumber ?? null,
@@ -116,7 +118,7 @@ export class CrmDispatchService {
   /**
    * Emit a withdrawal lifecycle event (money out). The body mirrors the
    * withdrawal REST resource field-for-field (totalAmount / feeAmount /
-   * netAmount / payoutMethod / status), so a CRM sees the same shape over the
+   * networkFeeAmount / netAmount / payoutMethod / status), so a CRM sees the same shape over the
    * webhook as over GET /company/withdrawals/:id. Reference `withdrawal:<id>` is
    * stable PENDING → COMPLETED / REJECTED / CANCELLED, so the CRM upserts one
    * record. Payouts and loads are deliberately NOT emitted — API only.
@@ -128,6 +130,7 @@ export class CrmDispatchService {
       amount: wr.amount,
       totalAmount: wr.totalAmount,
       feeAmount: wr.feeAmount,
+      networkFeeAmount: wr.networkFeeAmount,
       netAmount: wr.netAmount,
       feeApplication: wr.feeApplication,
       currency: wr.currency,

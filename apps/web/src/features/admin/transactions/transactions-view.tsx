@@ -28,6 +28,7 @@ import { apiFetch } from '@/lib/api.client';
 import { ApiClientError } from '@/lib/api';
 import { trimAmount } from '@/lib/format';
 import { ExportCsvButton } from '@/components/export-csv-button';
+import { NetworkFeeLine } from '@/components/network-fee-line';
 import { useDebouncedValue } from '@/lib/use-debounced-value';
 import { EmptyState } from '@/components/empty-state';
 import { Inbox } from 'lucide-react';
@@ -94,8 +95,9 @@ export function TransactionsView({
 }: {
   scope: 'admin' | 'company';
   canReverse?: boolean;
-  // BACKOFFICE sees only the net amount (the money that actually settled), not
-  // the gross + platform fee. Full admins (and the company's own view) unchanged.
+  // BACKOFFICE sees only what the customer paid — never the net credited or a
+  // platform fee (the API strips both for back office). Full admins (and the
+  // company's own view) unchanged.
   backoffice?: boolean;
 }) {
   const qc = useQueryClient();
@@ -243,7 +245,8 @@ export function TransactionsView({
             header: 'Amount',
             align: 'right',
             className: 'font-mono text-xs',
-            cell: (t: TransactionResponse) => `${trimAmount(t.netAmount)} ${t.currency}`,
+            // What the customer paid — the API strips the net/fees for back office.
+            cell: (t: TransactionResponse) => `${trimAmount(t.amount)} ${t.currency}`,
           } as Column<TransactionResponse>,
         ]
       : [
@@ -259,7 +262,12 @@ export function TransactionsView({
             header: 'Fee',
             align: 'right',
             className: 'font-mono text-xs',
-            cell: (t: TransactionResponse) => trimAmount(t.commissionAmount),
+            cell: (t: TransactionResponse) => (
+              <>
+                {trimAmount(t.commissionAmount)}
+                <NetworkFeeLine amount={t.networkFeeAmount} />
+              </>
+            ),
           } as Column<TransactionResponse>,
           {
             key: 'net',
@@ -432,6 +440,7 @@ export function TransactionsView({
       <TransactionDetailDrawer
         scope={scope}
         transaction={detailTarget}
+        backoffice={backoffice}
         onClose={() => setDetailTarget(null)}
       />
 

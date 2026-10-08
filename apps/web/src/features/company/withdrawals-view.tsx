@@ -45,9 +45,10 @@ import { DateRangePicker } from '@/components/ui/date-range-picker';
 import { isoBound, quickRangePresets } from '@/lib/date-presets';
 import { CompanyFilter } from '@/features/admin/company-filter';
 import { ExportCsvButton } from '@/components/export-csv-button';
+import { NetworkFeeLine } from '@/components/network-fee-line';
 import { apiFetch } from '@/lib/api.client';
 import { ApiClientError } from '@/lib/api';
-import { trimAmount, isZeroAmount } from '@/lib/format';
+import { trimAmount, isPositiveAmount, isZeroAmount } from '@/lib/format';
 
 // Withdrawal/Payout/Load have the same response shape; we type the
 // shared UI against WithdrawalResponse and the per-process endpoint
@@ -304,8 +305,8 @@ export function WithdrawalsView({ config }: { config: ProcessConfig }) {
     },
     {
       key: 'amount',
-      // Gross = net + fee. For a load it's what the company pays in; for a
-      // withdrawal/payout it's what's debited from the wallet.
+      // Gross = net + fee (+ any network fee). For a load it's what the company
+      // pays in; for a withdrawal/payout it's what's debited from the wallet.
       header: isLoad ? 'You pay' : 'Debited',
       align: 'right',
       className: 'font-mono',
@@ -316,11 +317,16 @@ export function WithdrawalsView({ config }: { config: ProcessConfig }) {
       header: 'Fee',
       align: 'right',
       className: 'font-mono text-xs text-muted-foreground',
-      cell: (w) => (isZeroAmount(w.feeAmount) ? '—' : trimAmount(w.feeAmount)),
+      cell: (w) => (
+        <>
+          {isZeroAmount(w.feeAmount) ? '—' : trimAmount(w.feeAmount)}
+          <NetworkFeeLine amount={w.networkFeeAmount} />
+        </>
+      ),
     },
     {
       key: 'net',
-      // Net = gross − fee. For a load it's what lands in the wallet; for a
+      // Net = gross − fees. For a load it's what lands in the wallet; for a
       // withdrawal/payout it's what the recipient receives.
       header: isLoad ? 'Credited' : 'Recipient gets',
       align: 'right',
@@ -805,6 +811,15 @@ function DetailDrawer({
                   mono
                 />
               )}
+              {isPositiveAmount(withdrawal.networkFeeAmount) && (
+                <DetailRow
+                  label="Network fee"
+                  value={`${trimAmount(withdrawal.networkFeeAmount)} ${withdrawal.currency} (${feeApplicationLabel(
+                    withdrawal.feeApplication,
+                  )})`}
+                  mono
+                />
+              )}
               <DetailRow
                 label={isLoad ? 'Credited to wallet' : 'Recipient receives'}
                 value={`${trimAmount(withdrawal.netAmount)} ${withdrawal.currency}`}
@@ -933,7 +948,8 @@ function DetailRow({
 
 // How the fee was applied. "Deducted" comes out of the amount (recipient gets
 // amount − fee); "on top" is added to it (recipient gets the full amount, the
-// company pays amount + fee). Either way the company is charged the fee.
+// company pays amount + fee). Either way the company is charged the fee. An
+// optional network fee always follows the same application.
 export function feeApplicationLabel(app: FeeApplication): string {
   return app === 'ON_TOP' ? 'on top' : 'deducted';
 }

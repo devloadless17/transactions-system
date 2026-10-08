@@ -30,6 +30,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { CsrfGuard } from '../auth/guards/csrf.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { backofficeList, backofficeLoad, isBackoffice } from '../../common/backoffice-view';
 import { Audited } from '../audit/audit.decorator';
 import type { AuthPrincipal } from '../../common/types/request.types';
 import { SkipResponseEnvelope } from '../../common/decorators/skip-response-envelope.decorator';
@@ -121,21 +122,29 @@ export class LoadsController {
 
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
   @Get('admin/loads')
-  async adminList(@Query(new ZodPipe(listLoadsQuerySchema)) query: ListLoadsQuery) {
-    return this.loads.list({ query });
+  async adminList(
+    @Query(new ZodPipe(listLoadsQuerySchema)) query: ListLoadsQuery,
+    @CurrentUser() user: AuthPrincipal,
+  ) {
+    const page = await this.loads.list({ query });
+    return isBackoffice(user) ? backofficeList(page, backofficeLoad) : page;
   }
 
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
   @Get('admin/loads/export.csv')
   @SkipResponseEnvelope()
-  adminExport(@Query(new ZodPipe(listLoadsQuerySchema)) query: ListLoadsQuery): StreamableFile {
-    return this.loads.streamCsv({ query });
+  adminExport(
+    @Query(new ZodPipe(listLoadsQuerySchema)) query: ListLoadsQuery,
+    @CurrentUser() user: AuthPrincipal,
+  ): StreamableFile {
+    return this.loads.streamCsv({ query, backoffice: isBackoffice(user) });
   }
 
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
   @Get('admin/loads/:id')
-  async adminGet(@Param('id', new ParseUUIDPipe()) id: string) {
-    return this.loads.getById(id);
+  async adminGet(@Param('id', new ParseUUIDPipe()) id: string, @CurrentUser() user: AuthPrincipal) {
+    const row = await this.loads.getById(id);
+    return isBackoffice(user) ? backofficeLoad(row) : row;
   }
 
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
@@ -146,7 +155,8 @@ export class LoadsController {
     @Body(new ZodPipe(approveLoadSchema)) body: ApproveLoadInput,
     @CurrentUser() user: AuthPrincipal,
   ) {
-    return this.loads.approve(id, user.userId, body);
+    const row = await this.loads.approve(id, user.userId, body);
+    return isBackoffice(user) ? backofficeLoad(row) : row;
   }
 
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
@@ -157,6 +167,7 @@ export class LoadsController {
     @Body(new ZodPipe(rejectLoadSchema)) body: RejectLoadInput,
     @CurrentUser() user: AuthPrincipal,
   ) {
-    return this.loads.reject(id, user.userId, body);
+    const row = await this.loads.reject(id, user.userId, body);
+    return isBackoffice(user) ? backofficeLoad(row) : row;
   }
 }

@@ -115,13 +115,13 @@ curl https://<your-dashboard-domain>/v1/company/wallets \
 
 ## 2. Whish Pay
 
-Collect payments with a hosted link — by hand on the **Whish Pay** page in the dashboard, or from your own backend via the API below. Share the link with your customer and the money settles into your wallet automatically once they pay — net of commission, with no card details ever touching your system.
+Collect payments with a hosted link — by hand on the **Whish Pay** page in the dashboard, or from your own backend via the API below. Share the link with your customer and the money settles into your wallet automatically once they pay — net of fees, with no card details ever touching your system.
 
 ### How it works
 
 1. **Create a link** — On the Whish Pay page (or via the API below), enter the amount and an invoice label.
 2. **Share it** — Send the generated link to your customer; they pay on the secure Whish page.
-3. **It settles automatically** — Once paid, we verify with Whish, apply your commission, and credit your wallet with the net.
+3. **It settles automatically** — Once paid, we verify with Whish, apply your fees, and credit your wallet with the net.
 4. **Stay in sync** — The transaction is pushed to your CRM at every step (pending, then paid or failed), so your records update on their own.
 
 ### Create links from your backend (API)
@@ -190,7 +190,7 @@ curl https://<your-dashboard-domain>/v1/integrations/whish/payments/1781018591 \
   -H "Authorization: Bearer tsk_<company-key>"
 ```
 
-Same shape as create. Watch `status` (and `transactionId` once PAID). This object shows only the **gross** amount. For the fee we took + your net, read the settled transaction (reference `whish:<externalId>`): `GET /company/transactions` returns `commissionAmount` + `netAmount` (also sent on the `transaction.completed` CRM event).
+Same shape as create. Watch `status` (and `transactionId` once PAID). This object shows only the **gross** amount. For the fees we took + your net, read the settled transaction (reference `whish:<externalId>`): `GET /company/transactions` returns `commissionAmount` + `networkFeeAmount` + `netAmount` (also sent on the `transaction.completed` CRM event).
 
 Force a fresh pull from Whish (e.g. after a missed callback) with:
 
@@ -203,7 +203,7 @@ POST /integrations/whish/payments/{externalId}/refresh
 | Status    | Meaning                                                                                                                                                                                                                                                                                                  |
 | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `PENDING` | Link created, waiting for the customer to pay.                                                                                                                                                                                                                                                           |
-| `PAID`    | Customer paid — settled into your wallet (net of commission); `transactionId` is set.                                                                                                                                                                                                                    |
+| `PAID`    | Customer paid — settled into your wallet (net of fees); `transactionId` is set.                                                                                                                                                                                                                          |
 | `FAILED`  | The payment will not be collected — the link lapsed unpaid, or a completed payment was refunded. (Whish reports no separate "expired", so a lapsed link also arrives as FAILED.) A single failed _attempt_ does NOT close the link: the customer can retry on the same link while it is still `PENDING`. |
 
 > **These are payment-link statuses.** The same deposit also exists as a ledger **transaction**, with its own names: link `PAID` = transaction `COMPLETED` (event `transaction.completed`), link `FAILED` = event `transaction.failed`, link `PENDING` = event `transaction.pending` (no transaction row yet). There is no `EXPIRED` status in practice — nothing ever writes it. **Withdrawals are a third set again** — `PENDING` → `COMPLETED` / `REJECTED` / `CANCELLED`, plus a transient `PROCESSING` — so a withdrawal is never `PAID` and a link is never `CANCELLED`. Validate statuses against the object you actually queried.
@@ -331,12 +331,13 @@ curl -X POST https://<your-dashboard-domain>/v1/company/withdrawals \
   "data": {
     "id": "d4f2a1c0-...",
     "status": "PENDING",
-    "amount": "500.00",
+    "amount": "500",
     "currency": "USD",
-    "feeAmount": "5.00",
+    "feeAmount": "5",
+    "networkFeeAmount": "0",
     "feeApplication": "DEDUCTED",
-    "netAmount": "495.00",
-    "totalAmount": "500.00",
+    "netAmount": "495",
+    "totalAmount": "500",
     "payoutMethod": "CASH",
     "createdAt": "2026-06-10T10:00:00.000Z"
   }
@@ -345,12 +346,26 @@ curl -X POST https://<your-dashboard-domain>/v1/company/withdrawals \
 
 Fees are returned up front:
 
-- `feeAmount` — the platform fee on this payout.
-- `feeApplication` — `DEDUCTED` → recipient gets `netAmount` (amount − fee). `ON_TOP` → recipient gets the full `amount` and the fee is added, so `totalAmount = amount + fee`.
+- `feeAmount` — the platform fee (commission) on this payout.
+- `networkFeeAmount` — the optional network fee, applied the same way as the fee; `"0"` when you're not charged one (see [Fees](#fees-commission-and-network-fee) below).
+- `feeApplication` — `DEDUCTED` → recipient gets `netAmount` (amount − fee − network fee). `ON_TOP` → recipient gets the full `amount` and the fees are added, so `totalAmount = amount + feeAmount + networkFeeAmount`.
 - `netAmount` — what the recipient receives.
-- `totalAmount` — what leaves your wallet (net + fee).
+- `totalAmount` — what leaves your wallet (net + fee + network fee).
 
-> **You can't choose `feeApplication` per request.** It comes from the commission rule your platform admin configures for your company and operation type; sending it in the body has no effect. If you'd rather recipients received the full requested amount and the fee were billed to your wallet, ask your account manager to set that rule to `ON_TOP`.
+The money fields on these records are decimal strings with trailing zeros dropped (`"500"`, `"2.5"`, `"0"`) — compare them numerically, never as raw strings.
+
+#### Fees: commission and network fee
+
+Every record shows both platform fees: the **commission** (`commissionAmount` on deposits, `feeAmount` on withdrawals, payouts and loads, `fee` in the activity feed) and the optional **network fee** (`networkFeeAmount`; `networkFee` in the activity feed).
+
+- **The network fee is set by Rival**, per company and per flow (deposits, withdrawals, payouts, loads), as a percentage of the amount or a fixed amount. You can't set it through the API; if you're not charged one it is `"0"`.
+- **It is a platform fee, not a blockchain fee** — not a crypto network/gas fee, and unrelated to `payoutDetails.network` on `CRYPTO` payouts.
+- **It is applied the same way as the commission** (`feeApplication`) and **frozen on each record** when you request it (deposits: when booked), so a later configuration change never alters an existing record.
+- **Invariants:** `totalAmount = netAmount + feeAmount + networkFeeAmount` on withdrawals, payouts and loads; `netAmount = amount − commissionAmount − networkFeeAmount` on (`DEDUCTED`) deposits.
+- **Examples:** a $100 deposit with a $2 commission and a 1% network fee → `commissionAmount "2"`, `networkFeeAmount "1"`, `netAmount "97"`. A withdrawal of 100 with an `ON_TOP` $2 fee and a $1 network fee → `totalAmount "103"` debited, `netAmount "100"` to the recipient.
+- **Edge cases:** if `DEDUCTED` fees would consume the whole amount, a withdrawal, payout or load is refused with `400 VALIDATION_ERROR` (the message names both fees). A deposit always books — its network fee never takes more than the commission leaves, so `netAmount` never goes below `0`.
+
+> **You can't choose `feeApplication` per request.** It comes from the commission rule your platform admin configures for your company and operation type (the network fee follows the same application); sending it in the body has no effect. If you'd rather recipients received the full requested amount and the fees were billed to your wallet, ask your account manager to set that rule to `ON_TOP`.
 
 > **No idempotency key, and no field for your own order number.** Retrying a create after a timeout makes a **second** request and reserves the funds again — so on an ambiguous failure, call `GET /company/withdrawals?status=PENDING` and match on amount + payout details before retrying. To carry your own reference, put it in `notes` (≤ 500 chars): it is stored immutably, comes back on every read, and is echoed as `note` on the matching CRM event. For matching our records, use the `id` from the create response — the CRM event's `reference` is just `withdrawal:` + that id.
 
@@ -371,7 +386,7 @@ Every withdrawal, payout, and load moves through these statuses.
 
 > **These are the same values the webhooks carry.** `GET /company/withdrawals/:id` and the matching `withdrawal.*` CRM event report identical statuses, so you can poll, subscribe, or do both without translating anything. Note these are withdrawal statuses — Whish payment links use a different set (`PENDING` / `PAID` / `FAILED`); see [§2](#2-whish-pay).
 
-> **Withdrawals push to your CRM.** Every withdrawal status change — pending, completed, rejected, cancelled — is delivered to your [CRM webhook](#4-crm-integration) in real time, carrying the same `feeAmount` / `netAmount` / `totalAmount` breakdown, so you never have to poll. Payouts and loads are managed over this API only — read their status with the GET below.
+> **Withdrawals push to your CRM.** Every withdrawal status change — pending, completed, rejected, cancelled — is delivered to your [CRM webhook](#4-crm-integration) in real time, carrying the same `feeAmount` / `networkFeeAmount` / `netAmount` / `totalAmount` breakdown, so you never have to poll. Payouts and loads are managed over this API only — read their status with the GET below.
 
 **Check a request's status**
 
@@ -389,12 +404,13 @@ curl https://<your-dashboard-domain>/v1/company/withdrawals/<id> \
   "data": {
     "id": "d4f2a1c0-...",
     "status": "COMPLETED",
-    "amount": "500.00",
+    "amount": "500",
     "currency": "USD",
-    "feeAmount": "5.00",
+    "feeAmount": "5",
+    "networkFeeAmount": "0",
     "feeApplication": "DEDUCTED",
-    "netAmount": "495.00",
-    "totalAmount": "500.00",
+    "netAmount": "495",
+    "totalAmount": "500",
     "payoutMethod": "CASH",
     "externalReference": "WIRE-88231",
     "notes": "Weekly settlement",
@@ -431,7 +447,9 @@ curl "https://<your-dashboard-domain>/v1/company/transactions?page=1&pageSize=20
 
 The list array is at `data.data`, with paging info at `meta`. Page with `?page=N&pageSize=M` (`pageSize` max 100).
 
-> **Fees are transparent.** Every transaction returns `amount` (gross), `commissionAmount` (the platform fee we took), and `netAmount` (what you were credited). Withdrawals, payouts and loads return the same breakdown as `totalAmount` / `feeAmount` / `netAmount` — so after any completed transaction you always know exactly what we charged.
+> **Fees are transparent.** Every transaction returns `amount` (gross), `commissionAmount` (the platform fee we took), `networkFeeAmount` (the optional network fee — `"0"` if you're not charged one), and `netAmount` (what you were credited). Withdrawals, payouts and loads return the same breakdown as `totalAmount` / `feeAmount` / `networkFeeAmount` / `netAmount` — so after any completed transaction you always know exactly what we charged.
+
+**CSV exports.** Transactions, withdrawals, payouts, loads, ledger and activity each have an `/export.csv` (same filters as the list; the raw file, no envelope). Columns are only ever appended, so parse by header name. The newest is `network_fee_amount` — the last column of the transactions, withdrawals, payouts, loads and activity exports, `0.00` when you're not charged a network fee. In the withdrawals, payouts, loads and activity exports, `gross_amount = fee_amount + network_fee_amount + net_amount`.
 
 #### Date ranges
 
@@ -462,16 +480,16 @@ assuming daily buckets, otherwise a monthly series will be misread as consecutiv
 
 These `company/*` routes accept your company key.
 
-| Group        | Endpoints                                                             |
-| ------------ | --------------------------------------------------------------------- |
-| Wallets      | `GET /company/wallets`                                                |
-| Transactions | `GET /company/transactions` · `/:id` · `/:id/detail` · `/export.csv`  |
-| Ledger       | `GET /company/ledger` · `/export.csv`                                 |
-| Analytics    | `GET /company/analytics/overview` · `/wallet-summary`                 |
-| Activity     | `GET /company/activity` · `/operations/counts`                        |
-| Withdrawals  | `GET /company/withdrawals` · `GET /:id` · `POST` · `POST /:id/cancel` |
-| Payouts      | `GET /company/payouts` · `GET /:id` · `POST` · `POST /:id/cancel`     |
-| Loads        | `GET /company/loads` · `GET /:id` · `POST` · `POST /:id/cancel`       |
+| Group        | Endpoints                                                                             |
+| ------------ | ------------------------------------------------------------------------------------- |
+| Wallets      | `GET /company/wallets`                                                                |
+| Transactions | `GET /company/transactions` · `/:id` · `/:id/detail` · `/export.csv`                  |
+| Ledger       | `GET /company/ledger` · `/export.csv`                                                 |
+| Analytics    | `GET /company/analytics/overview` · `/wallet-summary`                                 |
+| Activity     | `GET /company/activity` · `/export.csv` · `/operations/counts`                        |
+| Withdrawals  | `GET /company/withdrawals` · `GET /:id` · `/export.csv` · `POST` · `POST /:id/cancel` |
+| Payouts      | `GET /company/payouts` · `GET /:id` · `/export.csv` · `POST` · `POST /:id/cancel`     |
+| Loads        | `GET /company/loads` · `GET /:id` · `/export.csv` · `POST` · `POST /:id/cancel`       |
 
 **Dashboard session only — these reject an API key with `403 FORBIDDEN`:** `company/api-keys` (list, create, rotate, revoke), `company/team` (list, invite, update, remove), `PUT`/`DELETE /company/crm/config`, and `POST /company/crm/demo/enable`. Use the dashboard for these. Reading the CRM config (`GET /company/crm/config`) does work with a key.
 
@@ -540,10 +558,11 @@ x-crm-signature: t=1781018591,sha256=<hex>
     "status": "COMPLETED",
     "source": "whish",
     "externalTransactionId": "10231",
-    "amount": "25.00",
+    "amount": "25",
     "currency": "USD",
-    "netAmount": "24.50",
-    "commissionAmount": "0.50",
+    "netAmount": "24.5",
+    "commissionAmount": "0.5",
+    "networkFeeAmount": "0",
     "customer": "John Doe",
     "tradingAccount": null,
     "phone": "+961…",
@@ -566,11 +585,12 @@ x-crm-event: withdrawal.completed
   "withdrawal": {
     "id": "d4f2a1c0-…",
     "status": "COMPLETED",              // approved by an admin & paid out
-    "amount": "500.00",                 // the amount you requested
-    "totalAmount": "500.00",            // what left your wallet (net + fee)
-    "feeAmount": "5.00",                // the platform fee we charged
-    "netAmount": "495.00",              // what the recipient received
-    "feeApplication": "DEDUCTED",       // DEDUCTED or ON_TOP
+    "amount": "500",                    // the amount you requested
+    "totalAmount": "500",               // what left your wallet (net + fee + network fee)
+    "feeAmount": "5",                   // the platform fee we charged
+    "networkFeeAmount": "0",            // the optional network fee ("0" if not charged)
+    "netAmount": "495",                 // what the recipient received
+    "feeApplication": "DEDUCTED",       // DEDUCTED or ON_TOP (applies to both fees)
     "currency": "USD",
     "payoutMethod": "CASH",
     "payoutDetails": {                  // recipient + all instructions, one place
@@ -590,7 +610,9 @@ x-crm-event: withdrawal.completed
 }
 ```
 
-The withdrawal body mirrors the `GET /company/withdrawals/:id` resource field-for-field. **The decision is in `status`:** `COMPLETED` = approved & paid (proof in `externalReference`), `REJECTED` = declined (reason in `adminNote`), `CANCELLED` = you cancelled it — and `processedAt` is when it was decided (null while `PENDING`). The full payout instructions — phone, pickup, wallet / bank details — are in `payoutDetails`. Money: `totalAmount − feeAmount = netAmount`.
+The withdrawal body mirrors the `GET /company/withdrawals/:id` resource field-for-field. **The decision is in `status`:** `COMPLETED` = approved & paid (proof in `externalReference`), `REJECTED` = declined (reason in `adminNote`), `CANCELLED` = you cancelled it — and `processedAt` is when it was decided (null while `PENDING`). The full payout instructions — phone, pickup, wallet / bank details — are in `payoutDetails`. Money: `totalAmount − feeAmount − networkFeeAmount = netAmount`.
+
+**Fees on events.** Both bodies carry `networkFeeAmount`, the optional [network fee](#fees-commission-and-network-fee) (`"0"` if you're not charged one). On deposit events it is `null` until the deposit completes, exactly like `commissionAmount` and `netAmount`; on withdrawal events it is always a string. An event queued before the field existed may omit it — treat a missing `networkFeeAmount` as `"0"`.
 
 ### 4.3 Event types
 

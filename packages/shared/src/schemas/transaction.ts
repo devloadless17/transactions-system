@@ -53,6 +53,9 @@ export const transactionResponseSchema = z.object({
   amount: z.string(),
   currency: z.string(),
   commissionAmount: z.string(),
+  // Optional per-company network fee taken on this deposit, next to the
+  // commission. "0" when the company is not charged one.
+  networkFeeAmount: z.string(),
   netAmount: z.string(),
   status: z.nativeEnum(TransactionStatus),
   // Descriptive fields lifted from the ingest payload (null when not provided).

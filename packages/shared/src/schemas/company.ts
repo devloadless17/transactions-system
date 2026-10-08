@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { CompanyStatus } from '../enums';
 import { currencySchema } from './common';
 import { companyScopedCommissionRuleSchema } from './commission';
+import { networkFeeConfigResponseSchema } from './network-fee';
 
 // Slugs: lowercase alphanumeric + dashes, 2-50 chars, no leading/trailing dash.
 // (first char + 0-48 middle chars + last char = 2..50.)
@@ -69,6 +70,17 @@ export const companyResponseSchema = z.object({
   updatedAt: z.string(),
 });
 export type CompanyResponse = z.infer<typeof companyResponseSchema>;
+
+/**
+ * The admin company-detail resource: the company plus its pricing switches.
+ * Only the full-admin detail route returns it — list/create/update responses
+ * stay `CompanyResponse`, so roles that may list companies (BACKOFFICE) never
+ * see a company's pricing.
+ */
+export const companyDetailResponseSchema = companyResponseSchema.extend({
+  networkFee: networkFeeConfigResponseSchema,
+});
+export type CompanyDetailResponse = z.infer<typeof companyDetailResponseSchema>;
 
 /**
  * A company's wallet balance in one currency. Kept per-currency (rather than a

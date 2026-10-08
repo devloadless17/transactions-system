@@ -12,12 +12,19 @@ import {
 } from 'recharts';
 import type { BucketGranularity, FlowsBucket } from '@app/shared';
 import { formatBucketTick, formatBucketTooltip } from '@/lib/date-presets';
+import { isPositiveAmount } from '@/lib/format';
+
+// The optional network-fee line. Blue: clear of the green/red areas and of the
+// primary-ink fees line in both themes (≥ 3:1 on either surface), and dashed so
+// it also reads apart from the fees line without colour.
+const NETWORK_FEE_STROKE = 'hsl(213 68% 50%)';
 
 /**
  * Money-in (deposits + loads) vs money-out (withdrawals + payouts) flows for a
  * currency, with fees overlaid as a line. "In" and "out" are stacked areas so
  * the operator can see net flow at a glance. One point per bucket, whose width
- * the server picks from the window (day / week / month).
+ * the server picks from the window (day / week / month). Network fees get their
+ * own dashed line, drawn only once any bucket in the window has earned one.
  */
 export function FlowsChart({
   buckets,
@@ -34,7 +41,9 @@ export function FlowsChart({
     in: Number(b.in),
     out: -Number(b.out), // negative so it draws below the axis
     fees: Number(b.fees),
+    networkFees: Number(b.networkFees),
   }));
+  const showNetworkFees = buckets.some((b) => isPositiveAmount(b.networkFees));
 
   return (
     <div className="h-80 w-full">
@@ -75,7 +84,9 @@ export function FlowsChart({
                 ? 'In (deposits + loads)'
                 : name === 'out'
                   ? 'Out (withdrawals + payouts)'
-                  : 'Fees',
+                  : name === 'networkFees'
+                    ? 'Network fees'
+                    : 'Fees',
             ]}
             labelFormatter={(
               _label: string,
@@ -92,7 +103,9 @@ export function FlowsChart({
                 ? 'In (deposits + loads)'
                 : value === 'out'
                   ? 'Out (withdrawals + payouts)'
-                  : 'Fees earned'
+                  : value === 'networkFees'
+                    ? 'Network fees'
+                    : 'Fees earned'
             }
           />
           {/* No draw animation on any series: the chart re-renders on every live
@@ -121,6 +134,17 @@ export function FlowsChart({
             dot={false}
             isAnimationActive={false}
           />
+          {showNetworkFees && (
+            <Line
+              type="monotone"
+              dataKey="networkFees"
+              stroke={NETWORK_FEE_STROKE}
+              strokeWidth={2}
+              strokeDasharray="5 4"
+              dot={false}
+              isAnimationActive={false}
+            />
+          )}
         </ComposedChart>
       </ResponsiveContainer>
     </div>

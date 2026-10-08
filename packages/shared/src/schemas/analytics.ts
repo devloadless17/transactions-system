@@ -28,6 +28,9 @@ export const kpiResponseSchema = z.object({
   // company sees the fee on each individual transaction, never a running
   // total (that figure is the platform's revenue, for admins only).
   totalFees: z.string().optional(),
+  // Aggregate network-fee revenue (NETWORK_FEE ledger). Admin-only, omitted on
+  // company-scoped responses for the same reason as totalFees.
+  totalNetworkFees: z.string().optional(),
   transactionCount: z.number().int(),
   averageAmount: z.string(),
   currency: z.string(),
@@ -74,11 +77,15 @@ export type TopCompany = z.infer<typeof topCompanySchema>;
 export const volumeMetricSchema = z.object({
   completedTotal: z.string(),
   // Of the completed total: how much actually moved to/from the external party
-  // (net) vs. the platform's fee. completedTotal = completedNet + completedFees
-  // for DEDUCTED fees; for ON_TOP the fee is charged on top (net == total). The
-  // sum of completedFees across all flow types equals the platform's revenue.
+  // (net) vs. the platform's fees. completedTotal = completedNet + completedFees
+  // + completedNetworkFees for DEDUCTED fees; for ON_TOP the fees are charged on
+  // top (net == amount). The sum of completedFees + completedNetworkFees across
+  // all flow types equals the platform's revenue.
   completedNet: z.string(),
   completedFees: z.string(),
+  // The optional per-company network fee on those completed operations ("0"
+  // when the company is not charged one).
+  completedNetworkFees: z.string(),
   completedCount: z.number().int(),
   pendingTotal: z.string(),
   pendingCount: z.number().int(),
@@ -123,8 +130,8 @@ export type SourceCompanyBreakdown = z.infer<typeof sourceCompanyBreakdownSchema
 // In-flows (deposits, loads) count COMPLETED only (money lands on settlement).
 // Out-flows (withdrawals, payouts) count COMPLETED + in-flight, because the
 // funds are reserved out of `available` the moment the request is made. `total`
-// is net + fee (what actually leaves the wallet); `gross` is net + fee on the
-// in-flow side too, so gross - net is the (unshown) fee.
+// is net + fee + network fee (what actually leaves the wallet); `gross` is the
+// same sum on the in-flow side too, so gross - net is the (unshown) fees.
 //
 // from/to scope the cards to a date window (by request time) so the dashboard's
 // range picker drives them. The identity above holds exactly only for an
