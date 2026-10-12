@@ -518,8 +518,25 @@ x-crm-signature: t=1781018591,sha256=<hex>
           retries with backoff (after roughly 1 minute, 5 minutes, 15 minutes, 1 hour and 6 hours).
           Only transient failures (timeouts, 429, and 5xx) are retried; a 4xx is treated as
           permanent and stops further attempts. Redirects are not followed, so a 3xx also stops
-          delivery. A retry re-sends the same body, so the same event can reach you more than once —
-          upserting by <code className="font-mono">reference</code> makes that harmless.
+          delivery.
+          <p className="mt-2">
+            A retry re-sends the same body (same <code className="font-mono">reference</code>, same{' '}
+            <code className="font-mono">sentAt</code>), so the same event can reach you more than
+            once. Deliveries are also <strong>not ordered</strong>: each event retries on its own
+            schedule, so an older event can arrive after a newer one for the same{' '}
+            <code className="font-mono">reference</code> — a{' '}
+            <code className="font-mono">withdrawal.pending</code> that timed out, re-sent after{' '}
+            <code className="font-mono">withdrawal.completed</code> has landed.
+          </p>
+          <p className="mt-2">
+            <strong className="text-foreground">
+              Upsert by reference, and never let an older event overwrite a newer one:
+            </strong>{' '}
+            keep the <code className="font-mono">sentAt</code> of the last event you applied to a
+            record and ignore any event whose <code className="font-mono">sentAt</code> is not
+            later. Upserting by <code className="font-mono">reference</code> alone would turn a
+            paid-out withdrawal back to <code className="font-mono">PENDING</code>.
+          </p>
         </div>
       </CardContent>
     </Card>

@@ -1,5 +1,6 @@
 'use client';
 import { useRouter } from 'next/navigation';
+import { useQueryClient } from '@tanstack/react-query';
 import { toast } from '@/lib/toast';
 import type { MeResponse } from '@app/shared';
 import { Button } from '@/components/ui/button';
@@ -12,6 +13,7 @@ import { adminNavItemsFor } from './sidebar';
 
 export function AdminTopbar({ session }: { session: MeResponse }) {
   const router = useRouter();
+  const qc = useQueryClient();
   const badges = usePendingCounts('admin');
 
   async function handleLogout() {
@@ -20,6 +22,9 @@ export function AdminTopbar({ session }: { session: MeResponse }) {
     } catch {
       // best effort
     }
+    // Signing out is a soft navigation, so the query cache would outlive it and
+    // show this user's data to whoever signs in next on this tab (see QueryProvider).
+    qc.clear();
     toast.success('Signed out');
     router.push('/login');
     router.refresh();

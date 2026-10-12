@@ -26,12 +26,13 @@ import { FeesService } from '../commissions/fees.service';
 import {
   assertSufficient,
   feesConsumeAmountError,
+  grossOf,
   netOfFee,
   releaseEntries,
-  reserveEntries,
   reservedTotal,
+  reserveEntries,
   settleEntries,
-  type FeeParts,
+  storedFees,
 } from '../ledger/flow-ledger';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain.error';
 import { assertListOffset } from '../../common/pagination';
@@ -214,10 +215,7 @@ export class PayoutsService {
       // fromDb: quantize the stored inputs once; the remaining legs derive from
       // them. Both fees were frozen on the row at request time.
       const amount = Money.fromDb(p.amount);
-      const fees: FeeParts = {
-        commission: Money.fromDb(p.feeAmount),
-        network: Money.fromDb(p.networkFeeAmount),
-      };
+      const fees = storedFees(p.feeAmount, p.networkFeeAmount);
       const reserved = reservedTotal(amount, fees, p.feeApplication);
       const external = netOfFee(amount, fees, p.feeApplication);
 
@@ -315,7 +313,7 @@ export class PayoutsService {
 
       const reserved = reservedTotal(
         Money.fromDb(p.amount),
-        { commission: Money.fromDb(p.feeAmount), network: Money.fromDb(p.networkFeeAmount) },
+        storedFees(p.feeAmount, p.networkFeeAmount),
         p.feeApplication,
       );
 
@@ -508,10 +506,10 @@ function mapPayout(row: {
     networkFeeAmount: Money.fromDb(row.networkFeeAmount).toString(),
     feeApplication: row.feeApplication,
     netAmount: Money.fromDb(row.netAmount).toString(),
-    totalAmount: Money.fromDb(row.netAmount)
-      .add(Money.fromDb(row.feeAmount))
-      .add(Money.fromDb(row.networkFeeAmount))
-      .toString(),
+    totalAmount: grossOf(
+      Money.fromDb(row.netAmount),
+      storedFees(row.feeAmount, row.networkFeeAmount),
+    ).toString(),
     status: row.status,
     payoutMethod: row.payoutMethod,
     payoutDetails: (row.payoutDetails as PayoutDetails | null) ?? null,

@@ -28,3 +28,21 @@ export function activityHeadlineAmount(item: ActivityItem): string {
 export function backofficeActivityAmount(item: ActivityItem): string {
   return item.amount;
 }
+
+/**
+ * The one figure BACKOFFICE sees on a withdrawal / payout / load RECORD (the
+ * detail drawers): what is collected for a load (`totalAmount`), what the
+ * recipient is paid for a withdrawal or payout (`netAmount`). The API sends
+ * back office only that one of the pair and strips the other
+ * (common/backoffice-view.ts), so a record that lacks the figure its kind calls
+ * for falls back to the one it does carry — its own single figure — and can
+ * never render "—" while it has one.
+ */
+export function backofficeFlowAmount(
+  record: { totalAmount?: string | null; netAmount?: string | null },
+  isLoad: boolean,
+): string | null | undefined {
+  return isLoad
+    ? (record.totalAmount ?? record.netAmount)
+    : (record.netAmount ?? record.totalAmount);
+}

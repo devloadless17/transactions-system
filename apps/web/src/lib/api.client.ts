@@ -64,7 +64,9 @@ function notifySessionExpired() {
   if (sessionExpiredToastShown) return;
   sessionExpiredToastShown = true;
   toast.error('Session expired — please sign in again');
-  // Bounce to login after a beat. window-only.
+  // Bounce to login after a beat. window-only. Deliberately a full page load,
+  // not router.push: it throws away the in-memory query cache with the page, so
+  // the next sign-in on this tab cannot be shown this session's data.
   if (typeof window !== 'undefined') {
     setTimeout(() => {
       window.location.href = '/login';

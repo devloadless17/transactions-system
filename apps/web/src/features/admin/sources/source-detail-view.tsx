@@ -12,6 +12,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { DataTable, type Column } from '@/components/ui/data-table';
+import { NetworkFeeLine } from '@/components/network-fee-line';
 import { apiFetch } from '@/lib/api.client';
 import { granularityWord } from '@/lib/date-presets';
 import { formatNumber as fmt, isPositiveAmount } from '@/lib/format';
@@ -80,7 +81,14 @@ export function SourceDetailView({ sourceId }: { sourceId: string }) {
       header: 'Fees',
       align: 'right',
       className: 'font-mono text-muted-foreground',
-      cell: (c) => fmt(c.fees),
+      // Commission, with the network fee on those same deposits underneath —
+      // the Volume beside it already includes both.
+      cell: (c) => (
+        <>
+          {fmt(c.fees)}
+          <NetworkFeeLine amount={c.networkFees} />
+        </>
+      ),
     },
   ];
 

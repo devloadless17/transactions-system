@@ -17,23 +17,40 @@
 {
 	email dev@loadless.ai
 
-	# Cloudflare fronts the prod domain, so the peer Caddy sees is a CF edge — not
-	# the visitor. Since v2.7 `reverse_proxy` only PRESERVES an incoming
-	# X-Forwarded-For when the peer is a declared trusted proxy; otherwise it
-	# OVERWRITES it with the peer's address (anti-spoofing). Undeclared, that meant
-	# the API received `X-Forwarded-For: <cloudflare-ip>` with the visitor stripped,
-	# so every prod request logged and rate-limited as a CF edge IP (104.22.x /
-	# 172.7x.x) — measured 2026-09-10, and the reason the Sept 9 export
-	# investigation could not identify a session by IP.
+	# WHO IS THE VISITOR? Decided HERE, once, for both sites.
 	#
-	# Declaring CF's published ranges makes Caddy trust their XFF and append its own
-	# peer, so the API sees `<visitor>, <cloudflare-ip>` and resolves the visitor.
-	# Safe for the staging site on this same Caddy too: its callers are NOT in these
-	# ranges, so their XFF stays untrusted and is overwritten with the real peer —
-	# still correct, still unspoofable.
+	# Cloudflare fronts the prod domain, so the peer Caddy sees there is a CF edge —
+	# not the visitor. Undeclared, the API received `X-Forwarded-For: <cloudflare-ip>`
+	# with the visitor stripped, so every prod request logged and rate-limited as a
+	# CF edge IP (104.22.x / 172.7x.x) — measured 2026-09-10, and the reason the
+	# Sept 9 export investigation could not identify a session by IP.
 	#
-	# Keep in sync with apps/api/src/common/http/trusted-proxies.ts (same list, one
-	# hop further in). Source: https://www.cloudflare.com/ips/
+	# The visitor's address is read from `CF-Connecting-IP`, and ONLY when the peer
+	# is one of Cloudflare's published ranges (`trusted_proxies` + `client_ip_headers`
+	# below). From any other peer the visitor is simply the peer — whatever headers
+	# it sent. Each site then hands the API exactly ONE address in X-Forwarded-For
+	# (`header_up X-Forwarded-For {client_ip}` in every reverse_proxy), replacing
+	# anything the request arrived with.
+	#
+	# Why CF-Connecting-IP and not the X-Forwarded-For chain: Cloudflare APPENDS to
+	# an X-Forwarded-For the caller already sent, so the chain carries caller-chosen
+	# text, and walking it past "trusted" hops stops being safe the moment the
+	# caller's own address is inside Cloudflare's space — a Cloudflare Worker is.
+	# Its forged left-most entry would become the client IP: a fresh rate-limit
+	# bucket per request (the login and API-key limits never trip) and a forged IP
+	# in the audit trail. CF-Connecting-IP is set by Cloudflare itself on every
+	# request and cannot be supplied by the caller (for a Worker it is the Worker's
+	# shared address, so Workers share ONE bucket).
+	#
+	# Staging is reached directly (no Cloudflare): its visitors are not in these
+	# ranges, so nothing they send is believed and they are identified by peer
+	# address. A caller that IS in Cloudflare's space but is not our edge (a Worker
+	# fetching the origin directly) cannot set CF-Connecting-IP either.
+	#
+	# The API in turn trusts only this proxy (apps/api/src/common/http/
+	# trusted-proxies.ts) — it never walks a forwarded chain itself.
+	# Ranges: https://www.cloudflare.com/ips/ (refresh if Cloudflare adds space; a
+	# range missing here is fail-safe — that edge is treated as the visitor).
 	servers {
 		trusted_proxies static \
 			173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 \
@@ -42,6 +59,7 @@
 			104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 \
 			2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 \
 			2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32
+		client_ip_headers CF-Connecting-IP
 	}
 }
 #
@@ -51,6 +69,10 @@
 # container to accept connections instead of returning a 502. Caddy only retries
 # when no connection could be established (the request never reached a backend),
 # so this is idempotent and has no effect on normal traffic.
+#
+# `header_up X-Forwarded-For {client_ip}` in every reverse_proxy: the upstream is
+# told ONE visitor address — the one resolved by the global options above — and
+# never a chain a caller could have seeded. See "WHO IS THE VISITOR?".
 {$DOMAIN} {
 	encode zstd gzip
 
@@ -70,6 +92,7 @@
 	@api path /v1/* /socket.io/*
 	handle @api {
 		reverse_proxy api:3001 {
+			header_up X-Forwarded-For {client_ip}
 			lb_try_duration 15s
 			lb_try_interval 250ms
 		}
@@ -78,6 +101,7 @@
 	# Everything else is the web app.
 	handle {
 		reverse_proxy web:3000 {
+			header_up X-Forwarded-For {client_ip}
 			lb_try_duration 15s
 			lb_try_interval 250ms
 		}
@@ -106,6 +130,7 @@ staging.portal.rivalpayments.com {
 	@api path /v1/* /socket.io/*
 	handle @api {
 		reverse_proxy api-staging:3001 {
+			header_up X-Forwarded-For {client_ip}
 			lb_try_duration 15s
 			lb_try_interval 250ms
 		}
@@ -113,6 +138,7 @@ staging.portal.rivalpayments.com {
 
 	handle {
 		reverse_proxy web-staging:3000 {
+			header_up X-Forwarded-For {client_ip}
 			lb_try_duration 15s
 			lb_try_interval 250ms
 		}

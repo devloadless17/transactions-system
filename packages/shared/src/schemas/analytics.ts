@@ -39,8 +39,12 @@ export type KpiResponse = z.infer<typeof kpiResponseSchema>;
 
 export const dailyBucketSchema = z.object({
   date: z.string(), // YYYY-MM-DD — START of the bucket (day/week/month)
+  // net + commission + network fee of the bucket's deposits (money moved).
   volume: z.string(),
+  // The commission on those deposits.
   fees: z.string(),
+  // The optional network fee on those deposits ("0" when none is charged).
+  networkFees: z.string(),
   count: z.number().int(),
 });
 export type DailyBucket = z.infer<typeof dailyBucketSchema>;
@@ -58,8 +62,12 @@ export type DailySeriesResponse = z.infer<typeof dailySeriesResponseSchema>;
 export const topSourceSchema = z.object({
   sourceId: z.string().uuid(),
   sourceCode: z.string(),
+  // net + commission + network fee of the source's deposits (money moved).
   volume: z.string(),
+  // The commission on those deposits.
   fees: z.string(),
+  // The optional network fee on those deposits ("0" when none is charged).
+  networkFees: z.string(),
   count: z.number().int(),
 });
 export type TopSource = z.infer<typeof topSourceSchema>;
@@ -118,8 +126,12 @@ export type OverviewResponse = z.infer<typeof overviewResponseSchema>;
 export const sourceCompanyBreakdownSchema = z.object({
   companyId: z.string().uuid(),
   companyName: z.string(),
+  // net + commission + network fee of the company's deposits (money moved).
   volume: z.string(),
+  // The commission on those deposits.
   fees: z.string(),
+  // The optional network fee on those deposits ("0" when none is charged).
+  networkFees: z.string(),
   count: z.number().int(),
 });
 export type SourceCompanyBreakdown = z.infer<typeof sourceCompanyBreakdownSchema>;

@@ -1,5 +1,6 @@
 import {
   Money,
+  feeOnAmount,
   type CommissionType,
   type FeeApplication,
   type FeeOperationType,
@@ -33,44 +34,35 @@ export interface NetworkFeeRate {
  * the switch is off, or that flow has no rate.
  *
  * Runs inside the caller's company-scoped (tenant) transaction: RLS lets a
- * tenant read its own company row and its own rates, never write them. Pass
- * `switchKnownOn` when the caller already holds a fresh company row with the
- * switch on (ingest does), to skip re-reading it. A company with the switch OFF
- * never touches company_network_fees at all.
+ * tenant read its own company row and its own rates, never write them.
+ *
+ * ONE read answers both questions — "is the switch on?" and "what is the
+ * rate?" — so they always come from the same snapshot as the booking. Never
+ * split them: a switch read at one moment and a rate read at another can
+ * combine into a price that was never configured (a rate changed in the same
+ * save that turned the switch off).
  */
 export async function readNetworkFeeRate(
   tx: PrismaClient,
   companyId: string,
   operationType: FeeOperationType,
-  opts?: { switchKnownOn?: boolean },
 ): Promise<NetworkFeeRate | null> {
-  if (!opts?.switchKnownOn) {
-    const company = await tx.company.findUnique({
-      where: { id: companyId },
-      select: { networkFeeEnabled: true },
-    });
-    if (!company?.networkFeeEnabled) return null;
-  }
-  const row = await tx.companyNetworkFee.findUnique({
-    where: { companyId_operationType: { companyId, operationType } },
+  const row = await tx.companyNetworkFee.findFirst({
+    where: { companyId, operationType, company: { networkFeeEnabled: true } },
     select: { feeType: true, feeValue: true },
   });
   return row ? { feeType: row.feeType, feeValue: row.feeValue.toString() } : null;
 }
 
 /**
- * The network fee on `amount` — the same base the commission is computed on.
- * Mirrors computeCommission (commission-resolver.service.ts) exactly: a FIXED
- * fee is its dollar value, a PERCENTAGE fee is amount × rate%, each quantized
- * ONCE to the money scale (half-even). No rate → 0.
+ * The network fee on `amount` — the same base the commission is computed on,
+ * and the same formula (see feeOnAmount): a FIXED fee is its dollar value, a
+ * PERCENTAGE fee is amount × rate%, quantized ONCE to the money scale
+ * (half-even). No rate → 0.
  */
 export function computeNetworkFee(amount: Money, rate: NetworkFeeRate | null): Money {
   if (!rate) return Money.zero();
-  if (rate.feeType === 'FIXED') {
-    return Money.of(rate.feeValue).round();
-  }
-  // PERCENTAGE
-  return amount.percent(rate.feeValue).round();
+  return feeOnAmount(amount, rate.feeType, rate.feeValue);
 }
 
 /**

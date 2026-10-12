@@ -23,11 +23,12 @@ export class ActivityController {
     @Query(new ZodPipe(listActivityQuerySchema)) query: ListActivityQuery,
     @CurrentUser() user: AuthPrincipal,
   ) {
-    const page = await this.activity.list({ query });
-    if (!isBackoffice(user)) return page;
-    // No running wallet balance for back office (it would reveal each net).
-    const view = backofficeList(page, backofficeActivityItem);
-    return { ...view, meta: { ...view.meta, balanceMode: false } };
+    if (!isBackoffice(user)) return this.activity.list({ query });
+    // Back office: one money figure per row, no running wallet balance.
+    return backofficeList(
+      await this.activity.list({ query, backoffice: true }),
+      backofficeActivityItem,
+    );
   }
 
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)

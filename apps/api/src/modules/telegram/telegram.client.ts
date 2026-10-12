@@ -19,6 +19,11 @@ const FLOW_HEADING: Record<AlertFlow, string> = {
   // heading says so up front.
   WITHDRAWAL: '🟠 New WITHDRAWAL request — needs manual approval',
 };
+const FLOW_AMOUNT_LABEL: Record<AlertFlow, string> = {
+  PAYOUT: 'To pay',
+  LOAD: 'To collect',
+  WITHDRAWAL: 'To pay',
+};
 const FLOW_ADMIN_PATH: Record<AlertFlow, string> = {
   PAYOUT: 'payouts',
   LOAD: 'loads',
@@ -64,6 +69,11 @@ export class TelegramClient {
   async notifyRequest(p: {
     flow: AlertFlow;
     companyName: string | null;
+    /**
+     * The operator's figure — what to PAY the recipient (withdrawal/payout) or
+     * to COLLECT from the company (load) — and it is labelled as such, so it is
+     * never mistaken for the amount the company typed.
+     */
     amount: string;
     currency: string;
     entityId: string;
@@ -79,7 +89,7 @@ export class TelegramClient {
     const text =
       `${FLOW_HEADING[p.flow]}\n` +
       `Company: <b>${company}</b>\n` +
-      `Amount: <b>${escapeHtml(p.amount)} ${escapeHtml(p.currency)}</b>\n` +
+      `${FLOW_AMOUNT_LABEL[p.flow]}: <b>${escapeHtml(p.amount)} ${escapeHtml(p.currency)}</b>\n` +
       (reason ? `Reason: ${escapeHtml(reason)}\n` : '') +
       `\n<a href="${escapeHtml(link)}">Open in dashboard →</a>`;
 

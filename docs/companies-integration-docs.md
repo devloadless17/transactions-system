@@ -145,6 +145,42 @@ Every money operation can carry **two platform fees**, and every company-facing 
 | **Commission**  | The platform fee, priced by the commission rules configured for your company and operation type. | `commissionAmount`                                       | `feeAmount`                                             | `fee`         |
 | **Network fee** | An **optional** second platform fee, charged alongside the commission.                           | `networkFeeAmount`                                       | `networkFeeAmount`                                      | `networkFee`  |
 
+**Which fee model is your company on?**
+
+Rival runs two fee models side by side. Which one applies to you is set **per company, by Rival** — no API call changes it.
+
+|                                    | **Single fee** — the default                            | **Dual fee** — switched on by Rival on request                             |
+| ---------------------------------- | ------------------------------------------------------- | -------------------------------------------------------------------------- |
+| What you are charged               | The commission only                                     | The commission **and** a network fee                                       |
+| `networkFeeAmount`                 | Always `"0"`                                            | The network fee charged on that operation                                  |
+| What to change in your integration | **Nothing.** Everything works exactly as it always has. | Read `networkFeeAmount` wherever you read the commission — checklist below |
+
+**On the single-fee model you can stop reading here.** `networkFeeAmount` and the `network_fee_amount` CSV column are present but always zero, every existing field keeps its meaning and value, and every rule you rely on still holds (`netAmount = amount − commissionAmount` on a deposit, because the network fee is `0`). An integration written before the network fee existed keeps working without a single change.
+
+**Why a company asks for the dual-fee model.** It splits what you pay Rival into two parts so you can **pass one of them on to your own customer**: the network fee is the part you charge your customer, the commission is the part you absorb. A customer deposits **$100**:
+
+|                                       | Single fee — 2.5% commission | Dual fee — 1.5% commission + 1% network fee |
+| ------------------------------------- | ---------------------------- | ------------------------------------------- |
+| `amount`                              | `"100"`                      | `"100"`                                     |
+| `commissionAmount`                    | `"2.5"`                      | `"1.5"`                                     |
+| `networkFeeAmount`                    | `"0"`                        | `"1"`                                       |
+| `netAmount` — credited to your wallet | `"97.5"`                     | `"97.5"`                                    |
+| You credit your customer              | $100                         | **$99** (`amount − networkFeeAmount`)       |
+| Paid by your customer                 | $0                           | $1                                          |
+| Absorbed by you                       | $2.50                        | **$1.50**                                   |
+
+Rival credits your wallet the same $97.50 either way; what changes is who bears the cost. **Rival never charges your customer anything** — passing the network fee on happens in **your** system, using the `networkFeeAmount` reported on each record. (The rates above are an illustration; yours are agreed with Rival.) The same applies to money out: the `networkFeeAmount` on a withdrawal or payout is the part you may charge your customer.
+
+**Moving to the dual-fee model — what to change in your code.** Ask your account manager; Rival then sets a network-fee rate for each flow you want it on (deposits, withdrawals, payouts, loads — a flow without a rate is not charged) and switches it on for your company. It applies to every **new** operation from that moment, so agree the switch-on time with Rival and ship these changes before it:
+
+1. **Read `networkFeeAmount`** on deposits (`TransactionResponse`, `transaction.*` webhooks) and on withdrawals, payouts and loads (and `withdrawal.*` webhooks). In a webhook, treat a missing or `null` value as `"0"`.
+2. **Charge your customer the figure on the record, not a rate you hard-code.** For a deposit you pass on, credit your customer `amount − networkFeeAmount`. Never recompute the fee: the figure on the record is what was actually charged — it is rounded to the cent, and on a very small deposit it can be lower than the rate suggests.
+3. **Stop deriving the net.** `netAmount` is `amount − commissionAmount − networkFeeAmount` on a (`DEDUCTED`) deposit — no longer `amount − commissionAmount`. Use the `netAmount` we send for what reached your wallet.
+4. **Check balances against `totalAmount` on money out.** It is `netAmount + feeAmount + networkFeeAmount`; with `ON_TOP` fees a withdrawal of 100 debits `100 + feeAmount + networkFeeAmount`.
+5. **Let reconciliation see the new figures.** Your ledger gains a `NETWORK_FEE` account, and every CSV export carries the fee in its **last** column, `network_fee_amount`. A parser that reads columns by position is unaffected; one that rejects unknown account types or extra columns must be relaxed.
+
+**Going back.** If Rival switches the network fee off, new operations return to `networkFeeAmount: "0"` at once; records already booked — and requests still pending — keep the fees frozen on them. Code written for the dual-fee model is also correct on the single-fee model, so there is nothing to undo.
+
 **What the network fee is**
 
 - **Configured by Rival, per company and per flow.** Rival sets it for your company separately for deposits, withdrawals, payouts and loads — each either a **percentage** of the amount or a **fixed** amount. You cannot set, change or remove it through the API; ask your account manager about your configuration.
@@ -154,7 +190,7 @@ Every money operation can carry **two platform fees**, and every company-facing 
 - **Applied the same way as the commission** — the record's `feeApplication`:
   - `DEDUCTED` — both fees come out of the amount.
   - `ON_TOP` — both fees are charged on top of the amount.
-  - A flow that carries a network fee but has no commission rule uses its conventional application: `ON_TOP` for withdrawals (the recipient still receives the full amount), `DEDUCTED` for payouts and loads. The record's `feeApplication` always tells you which one applied.
+  - An amount that none of your commission tiers covers carries no commission, but its network fee is still applied the way that flow's other amounts are. A flow with **no** commission rule at all uses its conventional application: `ON_TOP` for withdrawals (the recipient still receives the full amount), `DEDUCTED` for payouts and loads. The record's `feeApplication` always tells you which one applied.
 - **Frozen on each record.** Withdrawals, payouts and loads freeze both fees when you request them; deposits freeze them when they are booked. A later configuration change never changes an existing record — a pending request is approved with the fees it was requested at, and an idempotent replay returns the original figures.
 
 **Invariants** — these hold on every record:
@@ -202,7 +238,7 @@ A **withdrawal of 100** with an **`ON_TOP` $2 fee** and a **$1 network fee** deb
 **Edge cases**
 
 - **A deposit always books.** On a `DEDUCTED` deposit the network fee never takes more than what the commission leaves, so `netAmount` never goes below `0`. For example, a $0.50 deposit with a $0.10 commission and a $1 fixed network fee books `networkFeeAmount: "0.4"` and `netAmount: "0"`. A deposit booked with its whole amount withheld as commission carries no network fee.
-- **Withdrawals, payouts and loads refuse fees that consume the whole amount.** If `DEDUCTED` fees would leave the recipient nothing (withdrawals, payouts) or credit nothing (loads), the request is rejected with `400 VALIDATION_ERROR` before anything is reserved. When a network fee applies, the message names both fees and `details` carries both:
+- **Withdrawals, payouts and loads refuse fees that consume the whole amount.** If `DEDUCTED` fees would leave the recipient nothing (withdrawals, payouts) or credit nothing (loads), the request is rejected with `400 VALIDATION_ERROR` before anything is reserved. When a network fee applies, `details` carries both figures and the message names each fee that is above zero — both, as below, or only the network fee when the flow has no commission:
 
   ```json
   {
@@ -216,7 +252,7 @@ A **withdrawal of 100** with an **`ON_TOP` $2 fee** and a **$1 network fee** deb
   }
   ```
 
-  A load says `nothing would be credited` instead. Without a network fee the message is `The <fee> USD fee consumes the entire amount — … Increase the amount or fix the fee rule.` with `details: { amount, fee }`. A commission that on its own exceeds the amount is refused with `422 COMMISSION_EXCEEDS_AMOUNT`, as before.
+  With no commission on the flow, the same error reads `The 1 USD network fee consumes the entire amount — …` and `details` is `{ amount, fee: "0", networkFee }`. A load says `nothing would be credited` instead. Without a network fee the message is `The <fee> USD fee consumes the entire amount — … Increase the amount or fix the fee rule.` with `details: { amount, fee }`. Handle this error by its `code` and `details`, never by matching the message text. A commission that on its own exceeds the amount is refused with `422 COMMISSION_EXCEEDS_AMOUNT`, as before.
 
 - **Rejected or cancelled requests cost nothing.** A rejected or cancelled withdrawal or payout releases its whole reserved total back to `available`, both fees included; a load moves no money until it is approved.
 - **A reversed deposit refunds both fees.** Its compensating ledger entries debit `FEE` and `NETWORK_FEE`.
@@ -262,7 +298,7 @@ There is **no global `Idempotency-Key` header**. Idempotency is per-flow and exp
 
 There are two independent limiters:
 
-**1. Global per-IP throttler** (`ThrottlerGuard`, Redis-backed, shared across instances) — applies to every route, including `/v1/integrations/whish/*`. The only exemptions are `/v1/company/analytics/*` and the source ingest endpoint.
+**1. Global per-IP throttler** (`ThrottlerGuard`, Redis-backed, shared across instances) — applies to every route a company can call, including `/v1/integrations/whish/*`. The only company-facing exemption is `/v1/company/analytics/*`. (Two surfaces a company key cannot reach are not IP-throttled either: the source ingest endpoints and the operator-only analytics routes.)
 
 - Default **`RATE_LIMIT_MAX` = 100 requests / `RATE_LIMIT_TTL` = 60s** per IP, **counted separately for each endpoint** (100 calls to `GET /company/wallets` do not use up the budget for `POST /company/withdrawals`).
 - Auth routes are stricter via per-route overrides: **login = 10/60s**, **token refresh = 30/60s**.
@@ -274,7 +310,7 @@ There are two independent limiters:
 - Because limiter 1 still applies, a single server IP is capped at 100 calls / 60s to any one of these endpoints (for example, 100 link creations a minute).
 - Fails **open** if Redis is unavailable.
 
-> **Which limiter applies to you.** Every `/v1/company/*` route — including `/company/whish/payments`, `/company/withdrawals` and `/company/transactions` — is governed by limiter 1 **only**, even when you call it with an API key. `/v1/integrations/whish/*` is governed by **both** limiters, and is the only surface that carries the `RateLimit-*` headers below. (The source ingest endpoint is a separate surface, not reachable with a company key, and is unlimited by default.) If you drive `company/*` at volume, pace against the per-IP budget (default 100/60s).
+> **Which limiter applies to you.** Every `/v1/company/*` route — including `/company/whish/payments`, `/company/withdrawals` and `/company/transactions` — is governed by limiter 1 **only**, even when you call it with an API key. `/v1/integrations/whish/*` is governed by **both** limiters, and is the only surface that carries the per-key `RateLimit-*` headers below. (The source ingest endpoint is a separate surface, not reachable with a company key, and is unlimited by default.) If you drive `company/*` at volume, pace against the per-IP budget (default 100/60s).
 
 Both emit HTTP **429** with `error.code = "RATE_LIMITED"`. The per-key limiter returns the standard flat envelope, with the limit in `error.details`:
 
@@ -290,7 +326,14 @@ Both emit HTTP **429** with `error.code = "RATE_LIMITED"`. The per-key limiter r
 }
 ```
 
-The per-key limiter also sets standard headers on **every** response so you can self-pace: `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset` (seconds until the window resets), plus `Retry-After` (seconds) on a 429. The **global per-IP** throttler's 429 is the default NestJS `ThrottlerException` and does not carry these details/headers — back off using the documented 60s window.
+Both limiters send headers so you can self-pace. **Every value is in seconds.**
+
+| Limiter                               | On every response                                                 | Added on a 429 |
+| ------------------------------------- | ----------------------------------------------------------------- | -------------- |
+| Per-key (`/v1/integrations/whish/*`)  | `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset`       | `Retry-After`  |
+| Global per-IP (every throttled route) | `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset` | `Retry-After`  |
+
+`…-Reset` and `Retry-After` are the seconds left until the current window ends. The **global per-IP** throttler's 429 is the default NestJS `ThrottlerException`: same envelope and `code`, but **no `error.details`**. On any 429, wait `Retry-After` seconds before retrying.
 
 ### Authentication & API keys
 
@@ -2253,7 +2296,8 @@ function verify(rawBody, header, crmKey) {
 - We treat **any `2xx`** as an ack (`res.ok`). Return `200` once you've persisted (or queued) the event.
 - Respond within **5 seconds** — that's our hard per-attempt timeout (`AbortSignal.timeout`). A slow response is treated as a failed attempt.
 - We follow redirects **manually** (`redirect: 'manual'`), i.e. a `3xx` is **not** followed and counts as a non-2xx response. Return `200` directly; don't redirect.
-- Deliveries are **at-least-once**. Network blips, retries, or a duplicate immediate+sweep attempt can re-send the same `reference`/`event`. **Make your handler idempotent** (upsert by `reference`, ignore an event whose `status` you've already applied).
+- Deliveries are **at-least-once, and not ordered**. A retry re-sends the same body (same `reference`, same `sentAt`), so one event can reach you more than once. And because each event is retried on its own schedule — up to about 7 hours — an **older event can arrive after a newer one** for the same `reference`: a `withdrawal.pending` whose first attempt timed out is re-sent after `withdrawal.completed` has already landed.
+- **Make your handler idempotent, and never let an older event overwrite a newer one.** Upsert by `reference`, store the `sentAt` of the last event you applied to that record, and **ignore any event whose `sentAt` is not later than it**. (`sentAt` is fixed when the event is created and does not change on a retry, so it orders the events of one `reference` exactly.) Upserting by `reference` alone is not enough — a late `pending` would turn a paid-out withdrawal back to `PENDING`, and on a deposit would blank the fee and net figures a `completed` event had filled in.
 
 **Retry / backoff policy (verified in `crm-delivery.service.ts`):**
 

@@ -37,7 +37,7 @@ import { NetworkFeeLine } from '@/components/network-fee-line';
 import { apiFetch } from '@/lib/api.client';
 import { granularityWord } from '@/lib/date-presets';
 import { ApiClientError } from '@/lib/api';
-import { formatNumber as fmt, isPositiveAmount, trimAmount } from '@/lib/format';
+import { formatNumber as fmt, isPositiveAmount, trimAmount, isNonZeroAmount } from '@/lib/format';
 import { KpiCard } from '@/features/analytics/kpi-card';
 import { VolumeChart } from '@/features/analytics/volume-chart.lazy';
 import {
@@ -287,7 +287,14 @@ export function CompanyDetailView({
       header: 'Fees',
       align: 'right',
       className: 'font-mono text-muted-foreground',
-      cell: (s) => fmt(s.fees),
+      // Commission, with the network fee on those same deposits underneath —
+      // the Volume beside it already includes both.
+      cell: (s) => (
+        <>
+          {fmt(s.fees)}
+          <NetworkFeeLine amount={s.networkFees} />
+        </>
+      ),
     },
   ];
 
@@ -615,9 +622,11 @@ export function CompanyDetailView({
           hint={`Commission earned · ${rangeLabel(range)}`}
         />
         {/* Network fees — admin-only like the card above. Shown while the
-            company is charged one, or once it has earned some in the range. */}
+            company is charged one, or whenever the range holds any network-fee
+            revenue. That is a signed ledger sum (a reversal inside the range
+            makes it negative), so the test is non-zero, not positive. */}
         {(companyQ.data?.networkFee?.enabled ||
-          isPositiveAmount(overviewQ.data?.kpi.totalNetworkFees)) && (
+          isNonZeroAmount(overviewQ.data?.kpi.totalNetworkFees)) && (
           <KpiCard
             label="Network fees"
             value={

@@ -20,10 +20,11 @@ import { PrismaService } from '../../database/prisma.service';
 import { LedgerService } from '../ledger/ledger.service';
 import {
   feesConsumeAmountError,
+  grossOf,
   moneyInEntries,
   netOfFee,
   reservedTotal,
-  type FeeParts,
+  storedFees,
 } from '../ledger/flow-ledger';
 import { WalletsService } from '../wallets/wallets.service';
 import { AnalyticsService } from '../analytics/analytics.service';
@@ -132,6 +133,7 @@ export class LoadsService {
 
     await this.invalidateAnalytics();
     this.notify(row.companyId);
+    const response = mapLoad(row);
     // Admin-initiated loads pass silent: the admin is doing it directly, so
     // there's no incoming request for admins to action.
     if (!opts?.silent) {
@@ -139,16 +141,14 @@ export class LoadsService {
         flow: 'LOAD',
         companyId: row.companyId,
         entityId: row.id,
-        // What the operator collects (net + both fees) — the one figure admins
-        // (incl. back office) act on; never a figure a fee could be derived from.
-        amount: Money.fromDb(row.netAmount)
-          .add(Money.fromDb(row.feeAmount))
-          .add(Money.fromDb(row.networkFeeAmount))
-          .toString(),
+        // What the operator collects (net + both fees — the load's totalAmount):
+        // the one figure admins (incl. back office) act on; never a figure a
+        // fee could be derived from.
+        amount: response.totalAmount,
         currency: row.currency,
       });
     }
-    return mapLoad(row);
+    return response;
   }
 
   /**
@@ -198,10 +198,7 @@ export class LoadsService {
       // fromDb: quantize the stored inputs once; the remaining legs derive from
       // them. Both fees were frozen on the row at request time.
       const amount = Money.fromDb(l.amount);
-      const fees: FeeParts = {
-        commission: Money.fromDb(l.feeAmount),
-        network: Money.fromDb(l.networkFeeAmount),
-      };
+      const fees = storedFees(l.feeAmount, l.networkFeeAmount);
       const externalDebit = reservedTotal(amount, fees, l.feeApplication);
       const availableCredit = netOfFee(amount, fees, l.feeApplication);
 
@@ -498,10 +495,10 @@ function mapLoad(row: {
     networkFeeAmount: Money.fromDb(row.networkFeeAmount).toString(),
     feeApplication: row.feeApplication,
     netAmount: Money.fromDb(row.netAmount).toString(),
-    totalAmount: Money.fromDb(row.netAmount)
-      .add(Money.fromDb(row.feeAmount))
-      .add(Money.fromDb(row.networkFeeAmount))
-      .toString(),
+    totalAmount: grossOf(
+      Money.fromDb(row.netAmount),
+      storedFees(row.feeAmount, row.networkFeeAmount),
+    ).toString(),
     status: row.status,
     payoutMethod: row.payoutMethod,
     payoutDetails: (row.payoutDetails as PayoutDetails | null) ?? null,

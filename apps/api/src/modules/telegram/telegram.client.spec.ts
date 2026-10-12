@@ -152,6 +152,21 @@ describe('TelegramClient', () => {
     expect(body.text).not.toContain('<b>CASH</b>');
   });
 
+  it('labels the amount as the operator figure: To pay / To collect', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okResponse());
+    vi.stubGlobal('fetch', fetchMock);
+    const text = async (flow: 'PAYOUT' | 'LOAD' | 'WITHDRAWAL') => {
+      fetchMock.mockClear();
+      await makeClient().notifyRequest({ ...REQ, flow, amount: '97' });
+      return JSON.parse(fetchMock.mock.calls[0][1].body).text as string;
+    };
+    expect(await text('PAYOUT')).toContain('To pay: <b>97 USD</b>');
+    expect(await text('WITHDRAWAL')).toContain('To pay: <b>97 USD</b>');
+    expect(await text('LOAD')).toContain('To collect: <b>97 USD</b>');
+    // Never a bare "Amount:", which reads as the amount the company typed.
+    expect(await text('LOAD')).not.toContain('Amount:');
+  });
+
   it('omits the Reason line entirely when no reason is given (load/payout)', async () => {
     const fetchMock = vi.fn().mockResolvedValue(okResponse());
     vi.stubGlobal('fetch', fetchMock);

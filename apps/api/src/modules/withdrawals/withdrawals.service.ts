@@ -39,13 +39,15 @@ import {
 } from './auto-approval-rules';
 import {
   assertSufficient,
+  type FeeParts,
   feesConsumeAmountError,
+  grossOf,
   netOfFee,
   releaseEntries,
-  reserveEntries,
   reservedTotal,
+  reserveEntries,
   settleEntries,
-  type FeeParts,
+  storedFees,
 } from '../ledger/flow-ledger';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain.error';
 import { assertListOffset } from '../../common/pagination';
@@ -297,7 +299,10 @@ export class WithdrawalsService {
     // skipReceivableBlock: settle even if the company now owes a RECEIVABLE — used
     // ONLY when the W2W transfer already SUCCEEDED (money physically left, so the
     // ledger MUST record it; the debt stays outstanding and still blocks NEW money-out).
-    opts?: { floorWhole?: boolean; skipReceivableBlock?: boolean },
+    // requireProcessing: refuse anything but a PROCESSING row — for the operator's
+    // "the transfer did go through" confirmation, which must never settle a PENDING
+    // row (no transfer was ever attempted for it) with the two options above.
+    opts?: { floorWhole?: boolean; skipReceivableBlock?: boolean; requireProcessing?: boolean },
   ): Promise<WithdrawalResponse> {
     const pre = await this.prisma.runAsAdmin((tx) =>
       tx.withdrawal.findUnique({ where: { id }, select: { companyId: true } }),
@@ -310,6 +315,11 @@ export class WithdrawalsService {
       if (!w) throw new NotFoundError('Withdrawal', id);
       if (w.status !== 'PENDING' && w.status !== 'PROCESSING') {
         throw new ConflictError(`Withdrawal is in status ${w.status} and cannot be approved`);
+      }
+      // Checked HERE, inside the serializable transaction, so a concurrent revert
+      // of the same row can't slip between the check and the settlement.
+      if (opts?.requireProcessing && w.status !== 'PROCESSING') {
+        throw new ConflictError(`Withdrawal is in status ${w.status}, not PROCESSING`);
       }
 
       // A reversal may have booked a RECEIVABLE for this company AFTER this
@@ -337,10 +347,7 @@ export class WithdrawalsService {
       // the INPUTS once here and derive reserved/net/fees by exact subtraction.
       // Both fees were frozen on the row at request time.
       const amount = Money.fromDb(w.amount);
-      const fees: FeeParts = {
-        commission: Money.fromDb(w.feeAmount),
-        network: Money.fromDb(w.networkFeeAmount),
-      };
+      const fees = storedFees(w.feeAmount, w.networkFeeAmount);
       const reserved = reservedTotal(amount, fees, w.feeApplication);
       const net = netOfFee(amount, fees, w.feeApplication);
       // The money that actually leaves. floorWhole sends whole dollars and keeps
@@ -478,7 +485,7 @@ export class WithdrawalsService {
 
       const reserved = reservedTotal(
         Money.fromDb(w.amount),
-        { commission: Money.fromDb(w.feeAmount), network: Money.fromDb(w.networkFeeAmount) },
+        storedFees(w.feeAmount, w.networkFeeAmount),
         w.feeApplication,
       );
 
@@ -620,11 +627,14 @@ export class WithdrawalsService {
       }
       // Operator confirms the money moved → settle whole-dollar, and past any
       // receivable that appeared after the transfer (the cash already left).
+      // Only a PROCESSING row has a transfer to confirm: a PENDING one settled
+      // this way would pay out past a debt and book a whole-dollar remainder for
+      // a transfer that never happened.
       return this.approve(
         id,
         actorId,
         { externalReference: input.externalReference, notes: input.notes },
-        { floorWhole: true, skipReceivableBlock: true },
+        { floorWhole: true, skipReceivableBlock: true, requireProcessing: true },
       );
     }
     const pre = await this.prisma.runAsAdmin((tx) =>
@@ -865,10 +875,10 @@ function mapWithdrawal(row: {
     feeApplication: row.feeApplication,
     netAmount: Money.fromDb(row.netAmount).toString(),
     roundingRemainder: Money.fromDb(row.roundingRemainder).toString(),
-    totalAmount: Money.fromDb(row.netAmount)
-      .add(Money.fromDb(row.feeAmount))
-      .add(Money.fromDb(row.networkFeeAmount))
-      .toString(),
+    totalAmount: grossOf(
+      Money.fromDb(row.netAmount),
+      storedFees(row.feeAmount, row.networkFeeAmount),
+    ).toString(),
     status: row.status,
     payoutMethod: row.payoutMethod,
     payoutDetails: (row.payoutDetails as PayoutDetails | null) ?? null,

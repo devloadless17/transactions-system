@@ -23,6 +23,7 @@ import {
   resolveWindow,
   type OriginDeps,
 } from './range';
+import { revenueByBucket, revenueByCurrency } from './ledger-revenue';
 import { sourceFeesByCurrency, sourceFeesBreakdown } from './source-fees';
 
 const PENDING_OPS_LIMIT = 20;
@@ -60,193 +61,173 @@ export class PlatformAnalyticsService {
     const cacheKey = `analytics:platform:v3:${from.toISOString()}:${to.toISOString()}`;
 
     return this.cache.wrap(cacheKey, 60, async () => {
-      return this.prisma.runAsAdmin(async (tx) => {
-        if (isAllTime) {
-          await tx.$executeRawUnsafe(
-            `SET LOCAL statement_timeout = '${ALL_TIME_STATEMENT_TIMEOUT}'`,
-          );
-        }
-        // Money IN = transaction ingestion + load approvals. Money OUT =
-        // withdrawal + payout approvals. Every figure is net + fee + network fee
-        // (the money that actually moved): the raw `amount` column equals that
-        // only for DEDUCTED fees — for ON_TOP it equals net, undercounting by the
-        // fees. Transactions carry the fee in commissionAmount; the flows in
-        // feeAmount; all four carry networkFeeAmount.
-        // Settlement time: transactions settle at ingest (createdAt); loads /
-        // withdrawals / payouts settle on approval (processedAt).
-        const txAgg = await tx.transaction.groupBy({
-          by: ['currency'],
-          where: { status: 'COMPLETED', createdAt: { gte: from, lte: to } },
-          _sum: { netAmount: true, commissionAmount: true, networkFeeAmount: true },
-          _count: { _all: true },
-        });
-        const loadAgg = await tx.load.groupBy({
-          by: ['currency'],
-          where: { status: 'COMPLETED', processedAt: { gte: from, lte: to } },
-          _sum: { netAmount: true, feeAmount: true, networkFeeAmount: true },
-        });
-
-        // Out-flows in range (withdrawals + payouts), settled on approval.
-        const wdAgg = await tx.withdrawal.groupBy({
-          by: ['currency'],
-          where: { status: 'COMPLETED', processedAt: { gte: from, lte: to } },
-          _sum: { netAmount: true, feeAmount: true, networkFeeAmount: true },
-          _count: { _all: true },
-        });
-        const poAgg = await tx.payout.groupBy({
-          by: ['currency'],
-          where: { status: 'COMPLETED', processedAt: { gte: from, lte: to } },
-          _sum: { netAmount: true, feeAmount: true, networkFeeAmount: true },
-        });
-
-        // Platform revenue = realized fees across EVERY flow, not just
-        // transactions. Each flow books its fee to the FEE ledger account on
-        // settlement (ingest for transactions; approval for withdrawals /
-        // payouts / loads), and a reversal debits it back. So the net FEE
-        // credit per currency is the true earned revenue and stays correct as
-        // new flow types are added. (Filtered by ledger created_at = the moment
-        // the fee was actually realized.)
-        const feeRows = await tx.$queryRawUnsafe<Array<{ currency: string; fees: string }>>(
-          `
-          SELECT currency,
-            SUM(CASE WHEN direction = 'CREDIT' THEN amount ELSE -amount END)::text AS fees
-          FROM ledger_entries
-          WHERE account_type = 'FEE'
-            AND created_at >= $1 AND created_at <= $2
-          GROUP BY currency
-          `,
-          from,
-          to,
-        );
-        // Network-fee revenue, the same way from its own ledger account — kept
-        // apart from FEE so feesEarned keeps its meaning.
-        const networkFeeRows = await tx.$queryRawUnsafe<Array<{ currency: string; fees: string }>>(
-          `
-          SELECT currency,
-            SUM(CASE WHEN direction = 'CREDIT' THEN amount ELSE -amount END)::text AS fees
-          FROM ledger_entries
-          WHERE account_type = 'NETWORK_FEE'
-            AND created_at >= $1 AND created_at <= $2
-          GROUP BY currency
-          `,
-          from,
-          to,
-        );
-
-        // Wallets are a point-in-time view — sum what's currently parked
-        // across all companies, per currency.
-        const wallets = await tx.wallet.groupBy({
-          by: ['currency'],
-          _sum: {
-            availableBalance: true,
-            pendingBalance: true,
-            reservedBalance: true,
-          },
-        });
-
-        // Merge into a single per-currency map.
-        const byCurrency = new Map<string, CurrencyRollup>();
-        const ensure = (c: string): CurrencyRollup => {
-          const key = c.trim();
-          if (!byCurrency.has(key)) {
-            byCurrency.set(key, {
-              currency: key,
-              volumeIn: '0',
-              feesEarned: '0',
-              networkFeesEarned: '0',
-              sourceFees: '0',
-              netRevenue: '0',
-              volumeOut: '0',
-              netHeld: '0',
-              ingestCount: 0,
-              withdrawalCount: 0,
-            });
+      return this.prisma.runAsAdmin(
+        async (tx) => {
+          if (isAllTime) {
+            await tx.$executeRawUnsafe(
+              `SET LOCAL statement_timeout = '${ALL_TIME_STATEMENT_TIMEOUT}'`,
+            );
           }
-          return byCurrency.get(key)!;
-        };
+          // Money IN = transaction ingestion + load approvals. Money OUT =
+          // withdrawal + payout approvals. Every figure is net + fee + network fee
+          // (the money that actually moved): the raw `amount` column equals that
+          // only for DEDUCTED fees — for ON_TOP it equals net, undercounting by the
+          // fees. Transactions carry the fee in commissionAmount; the flows in
+          // feeAmount; all four carry networkFeeAmount.
+          // Settlement time: transactions settle at ingest (createdAt); loads /
+          // withdrawals / payouts settle on approval (processedAt).
+          const txAgg = await tx.transaction.groupBy({
+            by: ['currency'],
+            where: { status: 'COMPLETED', createdAt: { gte: from, lte: to } },
+            _sum: { netAmount: true, commissionAmount: true, networkFeeAmount: true },
+            _count: { _all: true },
+          });
+          const loadAgg = await tx.load.groupBy({
+            by: ['currency'],
+            where: { status: 'COMPLETED', processedAt: { gte: from, lte: to } },
+            _sum: { netAmount: true, feeAmount: true, networkFeeAmount: true },
+          });
 
-        // Source fees = what upstream sources (e.g. Whish) charge THE PLATFORM on
-        // their deposits, evaluated per-deposit from each source's fee schedule.
-        // Net revenue = platform revenue (FEE + NETWORK_FEE ledgers) − source
-        // fees. All system/admin-only and never leak to a company response.
-        const feesBySource = await sourceFeesByCurrency(tx, from, to);
-        const sourceBreakdown = await sourceFeesBreakdown(tx, from, to);
+          // Out-flows in range (withdrawals + payouts), settled on approval.
+          const wdAgg = await tx.withdrawal.groupBy({
+            by: ['currency'],
+            where: { status: 'COMPLETED', processedAt: { gte: from, lte: to } },
+            _sum: { netAmount: true, feeAmount: true, networkFeeAmount: true },
+            _count: { _all: true },
+          });
+          const poAgg = await tx.payout.groupBy({
+            by: ['currency'],
+            where: { status: 'COMPLETED', processedAt: { gte: from, lte: to } },
+            _sum: { netAmount: true, feeAmount: true, networkFeeAmount: true },
+          });
 
-        // net + fee + network fee for a flow aggregate (feeAmount column).
-        const sumOf = (v: unknown) =>
-          Money.of(((v as { toString(): string } | null) ?? 0).toString());
-        const netPlusFees = (m: {
-          _sum: { netAmount?: unknown; feeAmount?: unknown; networkFeeAmount?: unknown };
-        }) =>
-          sumOf(m._sum.netAmount).add(sumOf(m._sum.feeAmount)).add(sumOf(m._sum.networkFeeAmount));
-        for (const r of txAgg) {
-          const s = ensure(r.currency);
-          // Transactions carry the fee in commissionAmount, not feeAmount.
-          s.volumeIn = Money.of(s.volumeIn)
-            .add(Money.of((r._sum.netAmount ?? 0).toString()))
-            .add(Money.of((r._sum.commissionAmount ?? 0).toString()))
-            .add(Money.of((r._sum.networkFeeAmount ?? 0).toString()))
-            .toString();
-          s.ingestCount = r._count._all;
-        }
-        for (const r of loadAgg) {
-          const s = ensure(r.currency);
-          s.volumeIn = Money.of(s.volumeIn).add(netPlusFees(r)).toString();
-        }
-        // feesEarned comes from the FEE ledger (all flows), not just transaction
-        // commission — a currency may earn fees with no ingestion (e.g. a
-        // withdrawal-fee-only currency), so this loop drives `ensure` too.
-        for (const r of feeRows) {
-          const s = ensure(r.currency);
-          s.feesEarned = Money.of(r.fees ?? '0').toString();
-        }
-        for (const r of networkFeeRows) {
-          const s = ensure(r.currency);
-          s.networkFeesEarned = Money.of(r.fees ?? '0').toString();
-        }
-        for (const r of wdAgg) {
-          const s = ensure(r.currency);
-          s.volumeOut = Money.of(s.volumeOut).add(netPlusFees(r)).toString();
-          s.withdrawalCount = r._count._all;
-        }
-        for (const r of poAgg) {
-          const s = ensure(r.currency);
-          s.volumeOut = Money.of(s.volumeOut).add(netPlusFees(r)).toString();
-        }
-        for (const w of wallets) {
-          const s = ensure(w.currency);
-          const total = Money.of((w._sum.availableBalance ?? 0).toString())
-            .add(Money.of((w._sum.pendingBalance ?? 0).toString()))
-            .add(Money.of((w._sum.reservedBalance ?? 0).toString()));
-          s.netHeld = total.toString();
-        }
+          // Platform revenue = realized fees across EVERY flow, not just
+          // transactions. Each flow books its fee to the FEE ledger account on
+          // settlement (ingest for transactions; approval for withdrawals /
+          // payouts / loads), and a reversal debits it back. So the net FEE
+          // credit per currency is the true earned revenue and stays correct as
+          // new flow types are added. (Filtered by ledger created_at = the moment
+          // the fee was actually realized.)
+          //
+          // The network fee is realized the same way on its own account
+          // (NETWORK_FEE) — kept apart from FEE so feesEarned keeps its meaning.
+          // Both are read by ONE statement (see ledger-revenue.ts), so a
+          // settlement can never be counted in one and missed in the other.
+          const revenueRows = await revenueByCurrency(tx, from, to);
 
-        // Apply per-currency source fees, then derive net revenue.
-        for (const [ccy, fees] of feesBySource) {
-          ensure(ccy).sourceFees = Money.of(fees || '0').toString();
-        }
-        for (const s of byCurrency.values()) {
-          s.netRevenue = Money.of(s.feesEarned)
-            .add(Money.of(s.networkFeesEarned))
-            .sub(Money.of(s.sourceFees))
-            .toString();
-        }
+          // Wallets are a point-in-time view — sum what's currently parked
+          // across all companies, per currency.
+          const wallets = await tx.wallet.groupBy({
+            by: ['currency'],
+            _sum: {
+              availableBalance: true,
+              pendingBalance: true,
+              reservedBalance: true,
+            },
+          });
 
-        const sorted = [...byCurrency.values()].sort((a, b) =>
-          a.currency.localeCompare(b.currency),
-        );
-        return {
-          range: { from: from.toISOString(), to: to.toISOString() },
-          byCurrency: sorted,
-          sourceFeeBreakdown: sourceBreakdown.map((b) => ({
-            sourceId: b.sourceId,
-            sourceCode: b.sourceCode,
-            sourceName: b.sourceName,
-            currency: b.currency,
-            fees: Money.of(b.fees || '0').toString(),
-          })),
-        };
-      });
+          // Merge into a single per-currency map.
+          const byCurrency = new Map<string, CurrencyRollup>();
+          const ensure = (c: string): CurrencyRollup => {
+            const key = c.trim();
+            if (!byCurrency.has(key)) {
+              byCurrency.set(key, {
+                currency: key,
+                volumeIn: '0',
+                feesEarned: '0',
+                networkFeesEarned: '0',
+                sourceFees: '0',
+                netRevenue: '0',
+                volumeOut: '0',
+                netHeld: '0',
+                ingestCount: 0,
+                withdrawalCount: 0,
+              });
+            }
+            return byCurrency.get(key)!;
+          };
+
+          // Source fees = what upstream sources (e.g. Whish) charge THE PLATFORM on
+          // their deposits, evaluated per-deposit from each source's fee schedule.
+          // Net revenue = platform revenue (FEE + NETWORK_FEE ledgers) − source
+          // fees. All system/admin-only and never leak to a company response.
+          const feesBySource = await sourceFeesByCurrency(tx, from, to);
+          const sourceBreakdown = await sourceFeesBreakdown(tx, from, to);
+
+          // net + fee + network fee for a flow aggregate (feeAmount column). Every
+          // key is REQUIRED on purpose: an aggregate that forgets to select one
+          // fails to compile instead of silently counting that part as 0.
+          const netPlusFees = (m: {
+            _sum: { netAmount: Summed; feeAmount: Summed; networkFeeAmount: Summed };
+          }) => grossOf(m._sum.netAmount, m._sum.feeAmount, m._sum.networkFeeAmount);
+          for (const r of txAgg) {
+            const s = ensure(r.currency);
+            // Transactions carry the fee in commissionAmount, not feeAmount.
+            s.volumeIn = Money.of(s.volumeIn)
+              .add(grossOf(r._sum.netAmount, r._sum.commissionAmount, r._sum.networkFeeAmount))
+              .toString();
+            s.ingestCount = r._count._all;
+          }
+          for (const r of loadAgg) {
+            const s = ensure(r.currency);
+            s.volumeIn = Money.of(s.volumeIn).add(netPlusFees(r)).toString();
+          }
+          // feesEarned comes from the FEE ledger (all flows), not just transaction
+          // commission — a currency may earn fees with no ingestion (e.g. a
+          // withdrawal-fee-only currency), so this loop drives `ensure` too.
+          for (const r of revenueRows) {
+            const s = ensure(r.currency);
+            const earned = Money.of(r.total ?? '0').toString();
+            if (r.account === 'FEE') s.feesEarned = earned;
+            else s.networkFeesEarned = earned;
+          }
+          for (const r of wdAgg) {
+            const s = ensure(r.currency);
+            s.volumeOut = Money.of(s.volumeOut).add(netPlusFees(r)).toString();
+            s.withdrawalCount = r._count._all;
+          }
+          for (const r of poAgg) {
+            const s = ensure(r.currency);
+            s.volumeOut = Money.of(s.volumeOut).add(netPlusFees(r)).toString();
+          }
+          for (const w of wallets) {
+            const s = ensure(w.currency);
+            const total = Money.of((w._sum.availableBalance ?? 0).toString())
+              .add(Money.of((w._sum.pendingBalance ?? 0).toString()))
+              .add(Money.of((w._sum.reservedBalance ?? 0).toString()));
+            s.netHeld = total.toString();
+          }
+
+          // Apply per-currency source fees, then derive net revenue.
+          for (const [ccy, fees] of feesBySource) {
+            ensure(ccy).sourceFees = Money.of(fees || '0').toString();
+          }
+          for (const s of byCurrency.values()) {
+            s.netRevenue = Money.of(s.feesEarned)
+              .add(Money.of(s.networkFeesEarned))
+              .sub(Money.of(s.sourceFees))
+              .toString();
+          }
+
+          const sorted = [...byCurrency.values()].sort((a, b) =>
+            a.currency.localeCompare(b.currency),
+          );
+          return {
+            range: { from: from.toISOString(), to: to.toISOString() },
+            byCurrency: sorted,
+            sourceFeeBreakdown: sourceBreakdown.map((b) => ({
+              sourceId: b.sourceId,
+              sourceCode: b.sourceCode,
+              sourceName: b.sourceName,
+              currency: b.currency,
+              fees: Money.of(b.fees || '0').toString(),
+            })),
+          };
+        },
+        // The all-time view reads every flow's whole history; give its
+        // transaction the same headroom flows() and the overview get.
+        isAllTime ? { timeout: ALL_TIME_TX_TIMEOUT_MS } : undefined,
+      );
     });
   }
 
@@ -257,8 +238,8 @@ export class PlatformAnalyticsService {
     const origin = range.preset === 'all' ? await originForPlatform(this.originDeps) : null;
     const { from, to, granularity, isAllTime } = resolveWindow(range, origin);
     const currency = range.currency;
-    // v3: buckets gained networkFees.
-    const cacheKey = `analytics:flows:v3:${currency}:${from.toISOString()}:${to.toISOString()}:${granularity}`;
+    // v4: topSources gained networkFees (v3: buckets gained networkFees).
+    const cacheKey = `analytics:flows:v4:${currency}:${from.toISOString()}:${to.toISOString()}:${granularity}`;
 
     return this.cache.wrap(cacheKey, 60, async () => {
       return this.prisma.runAsAdmin(
@@ -345,39 +326,12 @@ export class PlatformAnalyticsService {
             truncUnit,
           );
 
-          const feeRows = await tx.$queryRawUnsafe<Array<{ day: Date; f: string }>>(
-            `
-          SELECT
-            date_trunc($4::text, created_at AT TIME ZONE 'UTC')::date AS day,
-            SUM(CASE WHEN direction = 'CREDIT' THEN amount ELSE -amount END)::text AS f
-          FROM ledger_entries
-          WHERE account_type = 'FEE'
-            AND currency = $1
-            AND created_at >= $2 AND created_at <= $3
-          GROUP BY 1 ORDER BY 1 ASC
-          `,
-            currency,
-            from,
-            to,
-            truncUnit,
-          );
-
-          const networkFeeRows = await tx.$queryRawUnsafe<Array<{ day: Date; f: string }>>(
-            `
-          SELECT
-            date_trunc($4::text, created_at AT TIME ZONE 'UTC')::date AS day,
-            SUM(CASE WHEN direction = 'CREDIT' THEN amount ELSE -amount END)::text AS f
-          FROM ledger_entries
-          WHERE account_type = 'NETWORK_FEE'
-            AND currency = $1
-            AND created_at >= $2 AND created_at <= $3
-          GROUP BY 1 ORDER BY 1 ASC
-          `,
-            currency,
-            from,
-            to,
-            truncUnit,
-          );
+          // FEE and NETWORK_FEE per bucket, in one statement (ledger-revenue.ts).
+          const revenueRows = await revenueByBucket(tx, { currency, from, to, truncUnit });
+          const revenueOf = (account: 'FEE' | 'NETWORK_FEE') =>
+            revenueRows
+              .filter((r) => r.account === account)
+              .map((r) => ({ day: r.day, f: r.total }));
 
           // Top sources by volume for this currency+window — for the admin overview
           // "By source" tile. One indexed GROUP BY source_id (backed by the partial
@@ -386,12 +340,19 @@ export class PlatformAnalyticsService {
           // pays for the full overview() compute (~11 queries incl. a cross-tenant
           // GROUP BY) just to render this 5-row table.
           const topSrcRows = await tx.$queryRawUnsafe<
-            Array<{ sourceId: string; volume: string; fees: string; count: bigint }>
+            Array<{
+              sourceId: string;
+              volume: string;
+              fees: string;
+              networkFees: string;
+              count: bigint;
+            }>
           >(
             `
           SELECT source_id                                 AS "sourceId",
                  SUM(net_amount + commission_amount + network_fee_amount)::text AS volume,
                  SUM(commission_amount)::text              AS fees,
+                 SUM(network_fee_amount)::text             AS "networkFees",
                  COUNT(*)::bigint                          AS count
           FROM transactions
           WHERE status = 'COMPLETED' AND currency = $1
@@ -417,6 +378,9 @@ export class PlatformAnalyticsService {
             sourceCode: srcCode.get(r.sourceId) ?? '',
             volume: r.volume,
             fees: r.fees,
+            // The second platform fee on those same deposits — `volume` already
+            // includes it, so revenue per source is fees + networkFees.
+            networkFees: r.networkFees,
             count: Number(r.count),
           }));
 
@@ -426,8 +390,8 @@ export class PlatformAnalyticsService {
             granularity,
             [txRows, loadRows],
             [wdRows, poRows],
-            feeRows,
-            networkFeeRows,
+            revenueOf('FEE'),
+            revenueOf('NETWORK_FEE'),
           );
           return {
             currency,
@@ -500,10 +464,7 @@ export class PlatformAnalyticsService {
 
         for (const w of pendingWithdrawals) {
           // The total that will leave on approval = net + fee + network fee (= reserved).
-          const total = Money.of(w.netAmount.toString())
-            .add(Money.of(w.feeAmount.toString()))
-            .add(Money.of(w.networkFeeAmount.toString()))
-            .toString();
+          const total = grossOf(w.netAmount, w.feeAmount, w.networkFeeAmount).toString();
           items.push({
             kind: 'withdrawal_pending',
             id: w.id,
@@ -516,10 +477,7 @@ export class PlatformAnalyticsService {
           });
         }
         for (const p of pendingPayouts) {
-          const total = Money.of(p.netAmount.toString())
-            .add(Money.of(p.feeAmount.toString()))
-            .add(Money.of(p.networkFeeAmount.toString()))
-            .toString();
+          const total = grossOf(p.netAmount, p.feeAmount, p.networkFeeAmount).toString();
           items.push({
             kind: 'payout_pending',
             id: p.id,
@@ -532,13 +490,17 @@ export class PlatformAnalyticsService {
           });
         }
         for (const l of pendingLoads) {
+          // The total to collect on approval = net + fee + network fee — the
+          // same figure the Loads page and the "new request" notification show.
+          // Not the requested `amount`, which for an ON_TOP load is only the net.
+          const total = grossOf(l.netAmount, l.feeAmount, l.networkFeeAmount).toString();
           items.push({
             kind: 'load_pending',
             id: l.id,
             companyId: l.companyId,
             companyName: l.company?.name ?? l.companyId.slice(0, 8),
-            summary: `Load of ${l.amount.toString()} ${l.currency.trim()} awaiting approval`,
-            amount: l.amount.toString(),
+            summary: `Load of ${total} ${l.currency.trim()} awaiting approval`,
+            amount: total,
             currency: l.currency.trim(),
             createdAt: l.createdAt.toISOString(),
           });
@@ -562,10 +524,11 @@ export class PlatformAnalyticsService {
         const pendingWithdrawalsValue: Record<string, string> = {};
         let pendingWithdrawalsCount = 0;
         for (const p of pendingByCcy) {
-          pendingWithdrawalsValue[p.currency.trim()] = Money.of((p._sum.netAmount ?? 0).toString())
-            .add(Money.of((p._sum.feeAmount ?? 0).toString()))
-            .add(Money.of((p._sum.networkFeeAmount ?? 0).toString()))
-            .toString();
+          pendingWithdrawalsValue[p.currency.trim()] = grossOf(
+            p._sum.netAmount,
+            p._sum.feeAmount,
+            p._sum.networkFeeAmount,
+          ).toString();
           pendingWithdrawalsCount += p._count._all;
         }
 
@@ -580,6 +543,19 @@ export class PlatformAnalyticsService {
       });
     });
   }
+}
+
+// A summed (or stored) Decimal as Prisma hands it back; null when nothing matched.
+type Summed = { toString(): string } | null;
+
+/**
+ * The money that actually moved: net + fee + network fee. The identity holds
+ * under both fee applications, unlike the requested `amount` (which is the
+ * gross for DEDUCTED fees but only the net for ON_TOP).
+ */
+function grossOf(net: Summed, fee: Summed, networkFee: Summed): Money {
+  const part = (v: Summed) => Money.of((v ?? 0).toString());
+  return part(net).add(part(fee)).add(part(networkFee));
 }
 
 /**

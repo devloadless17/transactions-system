@@ -47,6 +47,10 @@ export function TransactionDetailDrawer({
     queryKey: [scope, 'transaction', transaction?.id, 'detail'],
     queryFn: () => apiFetch<TransactionDetailResponse>(path),
     enabled: !!transaction,
+    // Opt out of the app-wide `keepPreviousData` (query-client.tsx): for a
+    // detail it would show the PREVIOUS deposit's record — id, amounts,
+    // idempotency key, ledger — under the one just opened until its fetch lands.
+    placeholderData: undefined,
   });
 
   const tx = detailQ.data?.transaction ?? transaction;
@@ -109,22 +113,26 @@ export function TransactionDetailDrawer({
               </section>
             )}
 
+            {/* For everyone, back office included: the key reveals no fee, and it is
+                what a duplicate source submission is traced by. */}
+            {detailQ.data && (
+              <section className="space-y-2">
+                <h3 className="text-xs font-medium uppercase text-muted-foreground">Idempotency</h3>
+                <DetailRow
+                  label="Key"
+                  value={
+                    detailQ.data.transaction.idempotencyKey ??
+                    '(natural dedup via source+external id)'
+                  }
+                  mono
+                />
+              </section>
+            )}
+
+            {/* Not for back office: the API sends it no provider payload (null) and
+                no ledger legs. */}
             {detailQ.data && ledgerEntries && (
               <>
-                <section className="space-y-2">
-                  <h3 className="text-xs font-medium uppercase text-muted-foreground">
-                    Idempotency
-                  </h3>
-                  <DetailRow
-                    label="Key"
-                    value={
-                      detailQ.data.transaction.idempotencyKey ??
-                      '(natural dedup via source+external id)'
-                    }
-                    mono
-                  />
-                </section>
-
                 <section className="space-y-2">
                   <h3 className="text-xs font-medium uppercase text-muted-foreground">
                     Provider payload

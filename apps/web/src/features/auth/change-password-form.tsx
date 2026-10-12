@@ -1,6 +1,7 @@
 'use client';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -32,6 +33,7 @@ type FormValues = z.infer<typeof formSchema>;
 
 export function ChangePasswordForm({ forced = false }: { forced?: boolean }) {
   const router = useRouter();
+  const qc = useQueryClient();
   const [submitting, setSubmitting] = useState(false);
   const {
     register,
@@ -50,7 +52,9 @@ export function ChangePasswordForm({ forced = false }: { forced?: boolean }) {
         body: { currentPassword, newPassword },
       });
       toast.success('Password changed — please sign in again');
-      // Backend clears the access cookie; route to login.
+      // Backend clears the access cookie; route to login. That is a sign-out by
+      // soft navigation, so this user's cached data goes too (see QueryProvider).
+      qc.clear();
       router.push('/login');
       router.refresh();
     } catch (err) {

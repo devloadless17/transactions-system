@@ -1,46 +1,75 @@
-import { describe, expect, it } from 'vitest';
-import { BlockList, isIPv4 } from 'node:net';
-import { CLOUDFLARE_CIDRS, trustedProxies } from './trusted-proxies';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createRequire } from 'node:module';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
+import type { Express, Request, Response } from 'express';
+import { trustedProxies } from './trusted-proxies';
 
-/** The same membership test Express/proxy-addr performs, via Node's own BlockList. */
-function edgeMatcher(): BlockList {
-  const list = new BlockList();
-  for (const cidr of CLOUDFLARE_CIDRS) {
-    const [addr, bits] = cidr.split('/');
-    list.addSubnet(addr!, Number(bits), isIPv4(addr!) ? 'ipv4' : 'ipv6');
+// The very Express the API runs on (it ships inside @nestjs/platform-express).
+const requireFromNest = createRequire(
+  createRequire(__filename).resolve('@nestjs/platform-express'),
+);
+const express = requireFromNest('express') as () => Express;
+
+/**
+ * What `req.ip` resolves to for a request arriving from the reverse proxy (the
+ * test client connects over loopback, which stands in for Caddy on the container
+ * network) carrying the given X-Forwarded-For.
+ */
+describe('trustedProxies → req.ip', () => {
+  let server: http.Server;
+  let port: number;
+
+  beforeAll(async () => {
+    const app = express();
+    app.set('trust proxy', trustedProxies({}));
+    app.get('/ip', (req: Request, res: Response) => {
+      res.json({ ip: req.ip });
+    });
+    server = http.createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    port = (server.address() as AddressInfo).port;
+  });
+  afterAll(() => new Promise<void>((resolve) => void server.close(() => resolve())));
+
+  async function ipFor(xff?: string): Promise<string> {
+    const res = await fetch(`http://127.0.0.1:${port}/ip`, {
+      headers: xff === undefined ? {} : { 'x-forwarded-for': xff },
+    });
+    return ((await res.json()) as { ip: string }).ip;
   }
-  return list;
-}
+
+  it('takes the ONE address the proxy hands over', async () => {
+    expect(await ipFor('203.0.113.7')).toBe('203.0.113.7');
+    expect(await ipFor('2001:db8::1234')).toBe('2001:db8::1234');
+  });
+
+  it('a visitor whose address is inside Cloudflare’s space is still just that address', async () => {
+    // e.g. a Cloudflare Worker: the proxy reports Cloudflare's shared Worker
+    // address, and every Worker therefore lands in the same rate-limit bucket.
+    expect(await ipFor('2a06:98c0:3600::103')).toBe('2a06:98c0:3600::103');
+    expect(await ipFor('172.69.22.87')).toBe('172.69.22.87');
+  });
+
+  it('never believes a caller-seeded chain: only the right-most hop counts', async () => {
+    // If the proxy ever passed a chain through, the address we would resolve is
+    // the one the proxy itself appended — not the forged entries to its left,
+    // even when the hops in between are Cloudflare edges.
+    expect(await ipFor('6.6.6.6, 203.0.113.7, 104.22.40.137')).toBe('104.22.40.137');
+    expect(await ipFor('6.6.6.6, 2a06:98c0:3600::103')).toBe('2a06:98c0:3600::103');
+  });
+
+  it('with no header at all (the container health probe) it is the socket peer', async () => {
+    expect(await ipFor()).toMatch(/127\.0\.0\.1$/);
+  });
+});
 
 describe('trustedProxies', () => {
-  it('trusts the container network so Caddy can report the caller', () => {
+  it('trusts only the hop the API is attached to — the container network', () => {
     // Caddy reaches the API over the docker bridge (172.16/12 = uniquelocal);
     // the health probe comes from loopback. Without these the API would treat
     // its own reverse proxy as the client on every request.
-    expect(trustedProxies({})).toEqual(
-      expect.arrayContaining(['loopback', 'linklocal', 'uniquelocal']),
-    );
-  });
-
-  it('covers the Cloudflare edge IPs actually seen in prod logs', () => {
-    const cf = edgeMatcher();
-    // Sampled from prod access logs on 2026-09-09 — these are the addresses the
-    // old `trust proxy: 1` was mistaking for real clients.
-    for (const ip of ['104.22.20.98', '172.71.154.237', '172.69.22.87', '104.22.40.134']) {
-      expect(cf.check(ip), `${ip} must be recognised as a Cloudflare hop`).toBe(true);
-    }
-    expect(cf.check('2606:4700::1', 'ipv6')).toBe(true);
-  });
-
-  it('does not trust ordinary client addresses', () => {
-    const cf = edgeMatcher();
-    // If a real client address were ever inside the trusted set we would walk
-    // straight past it and report whatever the caller put to its left.
-    for (const ip of ['203.0.113.7', '8.8.8.8', '9.9.9.9', '187.77.177.127']) {
-      expect(cf.check(ip), `${ip} must NOT be trusted`).toBe(false);
-    }
-    // 172.16/12 (docker) and 172.64/13 (Cloudflare) are adjacent but disjoint.
-    expect(cf.check('172.18.0.5')).toBe(false);
+    expect(trustedProxies({})).toEqual(['loopback', 'linklocal', 'uniquelocal']);
   });
 
   it('honours a TRUSTED_PROXIES override, ignoring blank entries', () => {
@@ -55,7 +84,6 @@ describe('trustedProxies', () => {
     // that would make Caddy itself the "client" for every request.
     for (const env of [{}, { TRUSTED_PROXIES: '' }, { TRUSTED_PROXIES: '   ' }]) {
       expect(trustedProxies(env)).toContain('uniquelocal');
-      expect(trustedProxies(env)).toContain('104.16.0.0/13');
     }
   });
 });

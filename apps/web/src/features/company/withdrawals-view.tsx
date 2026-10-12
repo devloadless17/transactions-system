@@ -255,6 +255,10 @@ export function WithdrawalsView({ config }: { config: ProcessConfig }) {
     queryKey: [...config.queryKey, 'detail', selectedId],
     queryFn: () => apiFetch<WithdrawalResponse>(`${config.endpoint}/${selectedId}`),
     enabled: !!selectedId,
+    // Opt out of the app-wide `keepPreviousData` (query-client.tsx). With it,
+    // following a second ?selected= link handed the effect below the PREVIOUS
+    // record as placeholder data — which it then opened, and never corrected.
+    placeholderData: undefined,
   });
   const openedRef = useRef<string | null>(null);
   useEffect(() => {

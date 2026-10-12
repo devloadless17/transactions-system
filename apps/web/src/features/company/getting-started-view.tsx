@@ -192,14 +192,16 @@ export function GettingStartedView() {
             <code className="font-mono">/v1/integrations/whish</code>:{' '}
             <strong>100 requests per 60 seconds, per IP</strong>, counted separately for each
             endpoint. Only <code className="font-mono">/v1/company/analytics</code> is exempt. Its
-            429 carries no <code className="font-mono">error.details</code> — back off until the
-            60-second window has passed. On top of that,{' '}
+            429 carries no <code className="font-mono">error.details</code>; wait the number of
+            seconds in its <code className="font-mono">Retry-After</code> header (every response
+            also carries <code className="font-mono">X-RateLimit-*</code> headers). On top of that,{' '}
             <code className="font-mono">/v1/integrations/whish</code> allows{' '}
             <strong>300 requests per 60 seconds, per key</strong>, counted across its endpoints
             together; go over and you get the limit echoed in{' '}
             <code className="font-mono">error.details</code>, plus{' '}
-            <code className="font-mono">RateLimit-*</code> headers to pace against. In practice,
-            from a single server IP you can make up to 100 calls a minute to any one endpoint.
+            <code className="font-mono">RateLimit-*</code> headers to pace against. All of these
+            header values are in seconds. In practice, from a single server IP you can make up to
+            100 calls a minute to any one endpoint.
           </CardDescription>
         </CardHeader>
       </Card>

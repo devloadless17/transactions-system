@@ -656,7 +656,7 @@ describe('docs contract — network fee', () => {
       () =>
         csvHeaderAfter(
           read('apps/api/src/modules/transactions/transactions.service.ts'),
-          'const header = [',
+          'TRANSACTIONS_CSV_HEADER = [',
         ),
     ],
     ['withdrawals / payouts / loads', (): string[] => [...FLOW_CSV_HEADER]],
@@ -753,5 +753,112 @@ describe('docs contract — network fee', () => {
 
   it('the partner doc never mentions a network fee (sources never see pricing)', () => {
     expect(read('docs/rival-ingest-api-integration.md')).not.toMatch(/network ?fee/i);
+  });
+});
+
+/**
+ * Review regressions (2026-10-12). Each pins a statement the docs got wrong, or
+ * a thing integrators must be told — in the markdown guides AND the in-app
+ * pages, which are a hand-written mirror and drift silently.
+ */
+describe('docs contract — fee models, CRM ordering, rate-limit headers', () => {
+  const WEB_COMPANY_API = read('apps/web/src/features/company/company-api-view.tsx');
+  const WEB_CRM = read('apps/web/src/features/company/crm-view.tsx');
+  const WEB_GETTING_STARTED = read('apps/web/src/features/company/getting-started-view.tsx');
+  // JSX wraps text across lines; compare on single-spaced text.
+  const flat = (s: string) => s.replace(/\s+/g, ' ');
+
+  it('explains both fee models everywhere: single-fee companies change nothing', () => {
+    for (const [name, doc] of [
+      ['companies guide', GUIDE],
+      ['developer guide', DEV_GUIDE],
+      ['company-api-view.tsx', WEB_COMPANY_API],
+    ] as const) {
+      const text = flat(doc);
+      expect(text, `${name}: the single-fee model`).toMatch(/Single fee/);
+      expect(text, `${name}: the dual-fee model`).toMatch(/Dual fee/);
+      // The promise a single-fee company relies on.
+      expect(text, `${name}: single-fee integrations need no change`).toMatch(
+        /needs no change|Nothing\.\*\* Everything works exactly as it always has|keeps working without a single change/,
+      );
+      // How a dual-fee company passes the network fee on to its own customer.
+      expect(text, `${name}: credit the customer amount − networkFeeAmount`).toMatch(
+        /amount − networkFeeAmount/,
+      );
+      expect(text, `${name}: Rival never charges the company's customer`).toMatch(
+        /Rival never charges your customer/,
+      );
+    }
+  });
+
+  it('the dual-fee example is the arithmetic the engine actually performs', () => {
+    // $100 deposit, 1.5% commission + 1% network fee, DEDUCTED → 97.50 credited.
+    const amount = Money.of('100');
+    const commission = amount.percent('1.5').round();
+    const network = computeNetworkFee(amount, { feeType: 'PERCENTAGE', feeValue: '1' });
+    const net = netOfFee(amount, { commission, network }, 'DEDUCTED');
+    expect([commission.toString(), network.toString(), net.toString()]).toEqual([
+      '1.5',
+      '1',
+      '97.5',
+    ]);
+    // …and the single-fee twin: 2.5% commission, no network fee → the same 97.50.
+    const single = netOfFee(
+      amount,
+      { commission: amount.percent('2.5').round(), network: Money.zero() },
+      'DEDUCTED',
+    );
+    expect(single.toString()).toBe('97.5');
+    for (const doc of [GUIDE, DEV_GUIDE]) {
+      expect(doc).toContain('`"1.5"`');
+      expect(doc).toContain('`"97.5"`');
+      expect(doc).toMatch(/\*\*\$99\*\* \(`amount − networkFeeAmount`\)/);
+    }
+    expect(WEB_COMPANY_API).toContain('$99 (amount − networkFeeAmount)');
+  });
+
+  it('does not claim the fees-consume-amount error always names both fees', () => {
+    expect(GUIDE).not.toMatch(/the message names both fees and/);
+    expect(DEV_GUIDE).not.toMatch(/\(the message names both fees\)/);
+    // With no commission on the flow, only the network fee is named.
+    const networkOnly = feesConsumeAmountError(
+      Money.of('1'),
+      { commission: Money.zero(), network: Money.of('1') },
+      'USD',
+      'the recipient would receive 0',
+    );
+    expect(networkOnly.details).toEqual({ amount: '1', fee: '0', networkFee: '1' });
+    expect(networkOnly.message.startsWith('The 1 USD network fee consumes the entire amount')).toBe(
+      true,
+    );
+    expect(GUIDE).toContain('The 1 USD network fee consumes the entire amount');
+  });
+
+  it('tells CRMs that deliveries are unordered and how to stay correct', () => {
+    for (const [name, doc] of [
+      ['companies guide', GUIDE],
+      ['developer guide', DEV_GUIDE],
+      ['crm-view.tsx', WEB_CRM],
+    ] as const) {
+      const text = flat(doc);
+      expect(text, `${name}: never say a bare upsert is safe`).not.toMatch(
+        /upserting by (<code[^>]*>)?`?reference`?(<\/code>)? makes that harmless/,
+      );
+      expect(text, `${name}: deliveries are not ordered`).toMatch(/not ordered/);
+      expect(text, `${name}: order by sentAt`).toMatch(
+        /never let an older event overwrite a newer one/i,
+      );
+      expect(text, `${name}: names the field to order by`).toContain('sentAt');
+    }
+  });
+
+  it('documents rate-limit headers in seconds, on both limiters', () => {
+    expect(GUIDE).toContain('**Every value is in seconds.**');
+    expect(GUIDE).toContain('`X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`');
+    expect(GUIDE).not.toMatch(/does not carry these details\/headers/);
+    expect(DEV_GUIDE).toMatch(/`Retry-After`[^.]*seconds/);
+    expect(flat(WEB_GETTING_STARTED)).toMatch(/Retry-After/);
+    // Not "the only exemptions are …" — other (non-company) surfaces are exempt too.
+    expect(GUIDE).not.toMatch(/The only exemptions are/);
   });
 });

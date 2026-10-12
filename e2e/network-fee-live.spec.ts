@@ -1,6 +1,7 @@
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test';
 import {
   adminApiContext,
+  cashRequest,
   createCommissionRule,
   createSourceKey,
   enableSourceForCompany,
@@ -8,6 +9,9 @@ import {
   getCsrf,
   ingestTransaction,
   loginOwnerApiContext,
+  mutate,
+  near,
+  num,
   provisionCompanyOwner,
   unwrap,
 } from './helpers';
@@ -28,34 +32,8 @@ import {
  */
 
 const NEW_PASSWORD = 'newpass-123';
-const num = (s: string | number | undefined | null) => Number(s ?? 0);
-const near = (actual: string | number | undefined | null, expected: number, what = '') =>
-  expect(num(actual), what).toBeCloseTo(expected, 6);
-
-function cash(amount: string) {
-  return {
-    amount,
-    currency: 'USD',
-    payout: {
-      method: 'CASH',
-      recipientName: 'Live Payee',
-      recipientPhone: '+9610000000',
-      pickupLocation: 'Live Branch',
-    },
-  };
-}
-
-async function call(
-  api: APIRequestContext,
-  csrf: string,
-  method: 'post' | 'put',
-  path: string,
-  body: Record<string, unknown> = {},
-) {
-  const res = await api[method](path, { headers: { 'x-csrf-token': csrf }, data: body });
-  const text = await res.text();
-  return { status: res.status(), body: text ? unwrap(JSON.parse(text)) : null };
-}
+const cash = (amount: string) => cashRequest(amount, 'Live Payee');
+const call = mutate;
 
 interface Party {
   companyId: string;
@@ -403,7 +381,12 @@ test.describe.serial('network fee — live scenarios (ON → OFF → ON, with an
     await page.goto(`/admin/deposits?companyId=${A.companyId}`, { waitUntil: 'domcontentloaded' });
     await expect(page.getByText(/\+\s*[\d.]+\s*network/).first()).toBeVisible({ timeout: 30_000 });
     await page.goto(`/admin/deposits?companyId=${B.companyId}`, { waitUntil: 'domcontentloaded' });
-    await expect(page.locator('table tbody tr').first()).toBeVisible({ timeout: 30_000 });
+    // Wait for B's OWN rows (its deposits' external ids carry its slug) — the
+    // table's loading skeleton also renders rows, so "a row is visible" would
+    // pass before B's data arrived and the assertion below would prove nothing.
+    await expect(page.getByText(new RegExp(`live-${B.slug}-`)).first()).toBeVisible({
+      timeout: 30_000,
+    });
     await expect(page.getByText(/\+\s*[\d.]+\s*network/)).toHaveCount(0);
   });
 });
@@ -430,8 +413,11 @@ async function configureInUi(page: Page, companyId: string) {
   await setRate('WITHDRAWAL', 'Withdrawals', 'Fixed amount ($)', '1');
   await setRate('PAYOUT', 'Payouts', 'Percentage (%)', '0.5');
   await setRate('LOAD', 'Loads', 'Fixed amount ($)', '0.50');
-  // Live example under the deposits rate: 1% of $100.
-  await expect(page.locator('#network-fee-TRANSACTION-example')).toContainText('1');
+  // Live example under each rate, worked exactly as the API computes it. (The
+  // exact text: "On $100:" itself contains a "1".)
+  await expect(page.locator('#network-fee-TRANSACTION-example')).toHaveText('On $100: $1.00');
+  await expect(page.locator('#network-fee-PAYOUT-example')).toHaveText('On $100: $0.50');
+  await expect(page.locator('#network-fee-LOAD-example')).toHaveText('On $100: $0.50');
   page.once('dialog', (d) => void d.accept());
   await page.getByRole('button', { name: 'Save network fee' }).click();
   await expect(page.getByText('Network fee saved')).toBeVisible({ timeout: 15_000 });

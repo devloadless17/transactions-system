@@ -96,6 +96,11 @@ const ALLOWLIST = new Set<string>([
   // file carries the CONCURRENTLY out-of-band command for large deployments
   // (build it first and the in-migration IF NOT EXISTS no-ops).
   '20260826130000_pricing_issue_and_slug_history:transactions_pricing_issue_idx',
+  // Partial index over the NETWORK_FEE ledger account (network-fee revenue
+  // sums, the twin of 0023's FEE index): EMPTY when it ships — no company is
+  // charged a network fee yet — and the migration file carries the
+  // CONCURRENTLY out-of-band command for an already-large ledger.
+  '20261008120700_network_fee_ledger_index:ledger_entries_network_fee_currency_created_idx',
 ]);
 
 function migrationsDir(): string {
@@ -148,5 +153,145 @@ describe('migration lock-safety: no NEW plain CREATE INDEX on a hot table', () =
       stale,
       `ALLOWLIST entries no longer present in any migration: ${stale.join(', ')}`,
     ).toEqual([]);
+  });
+});
+
+/**
+ * One live table per migration (deadlock guard).
+ *
+ * Prisma applies a migration file as ONE transaction, and a lock taken by a DDL
+ * statement is held until that transaction commits. While the previous API
+ * version is still serving, a file that locks two live tables can deadlock
+ * against a money write that touches the same two in the opposite order — e.g.
+ * an ingest holds `transactions`/`companies` and then, through the ledger's
+ * foreign keys, needs `withdrawals`/`payouts`/`loads`. Postgres aborts one side;
+ * when that is the migration, the deploy fails and every later deploy is blocked
+ * until the failed migration is resolved by hand.
+ *
+ * A file that locks a single pre-existing table can only ever WAIT for it — it
+ * can never be half of a cycle. So: a new migration may lock at most one table
+ * that existed before it (tables it creates itself are not live yet). Split the
+ * rest into one file per table, as 20261008120100…120700 (network fee) does.
+ *
+ * FROZEN lists the already-shipped files that predate this guard. They have run
+ * everywhere and never run again, so they are harmless now; the forward rule is
+ * what matters. Never add a new migration to it.
+ */
+const FROZEN_MULTI_TABLE = new Set<string>([
+  '0002_rls_and_constraints',
+  '0006_source_api_keys',
+  '0009_split_withdrawals',
+  '0010_whish_payments',
+  '0011_whish_idempotency_webhooks',
+  '0012_fees_and_cancel',
+  '0015_company_sources',
+  '0016_invariants_and_audit_fks',
+  '0017_force_rls',
+  '0018_status_transition_guards',
+  '0019_perf_indexes',
+  '0023_perf_indexes_and_commission_bound',
+  '0024_ops_and_search_indexes',
+  '0027_money_out_nonneg_checks',
+  '20260609153054_nullable_requested_by',
+  '20260610120000_restore_perf_indexes',
+  '20260611170000_admin_list_created_at_indexes',
+  '20260622180000_activity_completed_created_indexes',
+  '20260624120000_admin_notes',
+  '20260703120000_analytics_settled_and_processed_indexes',
+  '20260708120908_',
+  '20260812220000_money_scale_narrow_safe_columns',
+  '20260826130000_pricing_issue_and_slug_history',
+]);
+
+/**
+ * The pre-existing tables a migration takes a write-blocking lock on:
+ * ALTER TABLE, a plain CREATE INDEX, CREATE TRIGGER, DROP TABLE, and the target
+ * of a foreign key. Tables the file creates itself are left out.
+ */
+export function lockedLiveTables(sql: string): string[] {
+  const body = sql.replace(/^\s*--.*$/gm, '');
+  const created = new Set<string>();
+  const locked = new Set<string>();
+  const name = '"?([a-z0-9_]+)"?';
+  for (const stmt of body.split(';')) {
+    const createdTable = stmt.match(
+      new RegExp(`create\\s+table\\s+(?:if\\s+not\\s+exists\\s+)?${name}`, 'i'),
+    )?.[1];
+    if (createdTable) created.add(createdTable);
+    for (const m of stmt.matchAll(
+      new RegExp(`alter\\s+table\\s+(?:only\\s+)?(?:if\\s+exists\\s+)?${name}`, 'gi'),
+    )) {
+      locked.add(m[1]!);
+    }
+    if (/create\s+(?:unique\s+)?index/i.test(stmt) && !/concurrently/i.test(stmt)) {
+      const table = stmt.match(new RegExp(`\\bon\\s+(?:only\\s+)?${name}`, 'i'))?.[1];
+      if (table) locked.add(table);
+    }
+    if (/create\s+(?:constraint\s+)?trigger/i.test(stmt)) {
+      const table = stmt.match(new RegExp(`\\bon\\s+${name}`, 'i'))?.[1];
+      if (table) locked.add(table);
+    }
+    for (const m of stmt.matchAll(new RegExp(`references\\s+${name}`, 'gi'))) locked.add(m[1]!);
+    for (const m of stmt.matchAll(
+      new RegExp(`drop\\s+table\\s+(?:if\\s+exists\\s+)?${name}`, 'gi'),
+    )) {
+      locked.add(m[1]!);
+    }
+  }
+  return [...locked].filter((t) => !created.has(t)).sort();
+}
+
+describe('migration lock-safety: a migration locks at most ONE live table', () => {
+  const root = migrationsDir();
+  const multi = new Map<string, string[]>();
+  for (const d of fs.readdirSync(root)) {
+    const file = path.join(root, d, 'migration.sql');
+    if (!fs.existsSync(file)) continue;
+    const tables = lockedLiveTables(fs.readFileSync(file, 'utf8'));
+    if (tables.length > 1) multi.set(d, tables);
+  }
+
+  it('recognises the lock-taking statements (and ignores tables the file creates)', () => {
+    expect(
+      lockedLiveTables(`
+        -- ALTER TABLE "commented_out" ADD COLUMN x INT;
+        ALTER TABLE "withdrawals" ADD COLUMN IF NOT EXISTS "x" INT;
+        CREATE TABLE "fresh" ("id" UUID REFERENCES "companies" ("id"));
+        ALTER TABLE "fresh" ENABLE ROW LEVEL SECURITY;
+        CREATE INDEX IF NOT EXISTS "i" ON "ledger_entries" ("currency");
+        CREATE INDEX CONCURRENTLY "j" ON "transactions" ("currency");
+        CREATE TRIGGER "t" BEFORE UPDATE ON "loads" FOR EACH ROW EXECUTE FUNCTION f();
+      `),
+    ).toEqual(['companies', 'ledger_entries', 'loads', 'withdrawals']);
+  });
+
+  it('no new migration locks more than one pre-existing table (split it: one table per file)', () => {
+    const offenders = [...multi.keys()].filter((d) => !FROZEN_MULTI_TABLE.has(d)).sort();
+    expect(
+      offenders,
+      offenders.map((d) => `${d} locks ${multi.get(d)!.join(', ')}`).join('; ') +
+        `.\nA migration file is one transaction and holds every lock until it commits; ` +
+        `locking two live tables can deadlock against a money write while the previous API ` +
+        `still serves, failing the deploy. Put each table in its own migration file.`,
+    ).toEqual([]);
+  });
+
+  it('the frozen list has no stale entries', () => {
+    const stale = [...FROZEN_MULTI_TABLE].filter((d) => !multi.has(d)).sort();
+    expect(stale, `FROZEN_MULTI_TABLE entries that no longer apply: ${stale.join(', ')}`).toEqual(
+      [],
+    );
+  });
+
+  it('the network-fee migrations each lock a single table', () => {
+    const networkFee = fs
+      .readdirSync(root)
+      .filter((d) => d.startsWith('20261008'))
+      .sort();
+    expect(networkFee).toHaveLength(8);
+    for (const d of networkFee) {
+      const tables = lockedLiveTables(fs.readFileSync(path.join(root, d, 'migration.sql'), 'utf8'));
+      expect(tables.length, `${d} locks ${tables.join(', ')}`).toBeLessThanOrEqual(1);
+    }
   });
 });

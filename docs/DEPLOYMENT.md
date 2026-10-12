@@ -160,20 +160,71 @@ release ran a destructive migration, restore the DB from a backup.
 
 Read the entry for every release you are about to roll back across. Newest first.
 
-#### Network fee — `20261008120000_network_fee_ledger_account`, `20261008120100_network_fees`
+#### Network fee — `20261008120000_network_fee_ledger_account` … `20261008120700_network_fee_ledger_index`
 
-- **Two additive migrations.** The first adds the `NETWORK_FEE` value to the
-  `LedgerAccountType` enum (its own file: Postgres cannot use an enum value inside
-  the transaction that added it). The second adds a
-  `network_fee_amount DECIMAL(20,2) NOT NULL DEFAULT 0` column (with a
-  `NOT VALID` non-negative `CHECK`) to `transactions`, `withdrawals`, `payouts`
-  and `loads`, creates the `company_network_fees` table (RLS: a tenant may read
-  its own rows, only admin/bypass may write), and adds
-  `companies.network_fee_enabled BOOLEAN NOT NULL DEFAULT false`.
+- **Eight small additive migrations**, applied in this order:
+
+  | Migration                                   | What it does                                                                                             |
+  | ------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+  | `20261008120000_network_fee_ledger_account` | Adds the `NETWORK_FEE` value to the `LedgerAccountType` enum.                                            |
+  | `20261008120100_network_fees`               | Creates `company_network_fees` (RLS: a tenant may read its own rows, only admin/bypass may write).       |
+  | `20261008120200_network_fee_withdrawals`    | `withdrawals.network_fee_amount`                                                                         |
+  | `20261008120300_network_fee_payouts`        | `payouts.network_fee_amount`                                                                             |
+  | `20261008120400_network_fee_loads`          | `loads.network_fee_amount`                                                                               |
+  | `20261008120500_network_fee_company_switch` | `companies.network_fee_enabled BOOLEAN NOT NULL DEFAULT false`                                           |
+  | `20261008120600_network_fee_transactions`   | `transactions.network_fee_amount` (the ingest hot path, last)                                            |
+  | `20261008120700_network_fee_ledger_index`   | Partial index for the network-fee revenue sums (`WHERE account_type = 'NETWORK_FEE'`; empty at release). |
+
+  Each `network_fee_amount` is `DECIMAL(20,2) NOT NULL DEFAULT 0` with a
+  `NOT VALID` non-negative `CHECK`.
+
+- **One live table per file — on purpose.** Prisma applies a migration file as a
+  single transaction, and an `ALTER TABLE` holds its `ACCESS EXCLUSIVE` lock until
+  that transaction commits, while the previous API image is still serving. A file
+  that alters several live tables can **deadlock** against a money write that
+  touches them in the opposite order (an ingest holds `transactions`/`companies`
+  and then, through the ledger's foreign keys, needs `withdrawals`/`payouts`/
+  `loads`); Postgres would abort the migration and the deploy would fail. A file
+  that locks one table can only wait, never deadlock. The rule is enforced for
+  every future migration by `migration-lock-safety.spec.ts`. (The enum value has
+  its own file for a different reason: Postgres cannot use an enum value inside
+  the transaction that added it.)
 - **Catalog-only, no backfill.** Every new column has a constant default
-  (metadata-only, no table rewrite), the `CHECK`s skip the scan, and no index is
-  built on a hot table. Existing rows read as `0` / `false` — exactly the old
-  behaviour — so the previous API image keeps serving while it runs.
+  (metadata-only, no table rewrite) and the `CHECK`s skip the scan. Existing rows
+  read as `0` / `false` — exactly the old behaviour — so the previous API image
+  keeps serving while they run. The one index is partial on the `NETWORK_FEE`
+  account, which has no rows yet; on an already-large ledger build it
+  `CONCURRENTLY` out-of-band first (the command is in the migration file), and
+  the in-migration `IF NOT EXISTS` then no-ops.
+- **If one of them fails** (most likely `lock_timeout`: it could not get its lock
+  within 5 s behind a long-running statement), nothing is half-applied — the file
+  is one transaction — and the files before it stay applied. Prisma records the
+  failure, and the next deploy stops with `P3009` until it is cleared:
+
+  ```bash
+  cd /home/deploy/transactions-system
+  docker compose -f docker-compose.prod.yml run --rm -T migrate \
+    sh -c 'cd /repo/packages/db && DATABASE_URL="$DATABASE_MIGRATIONS_URL" pnpm exec prisma migrate resolve --rolled-back <migration_name>' </dev/null
+  ```
+
+  then re-run the deploy; it continues from that file. The API is untouched
+  meanwhile: the deploy stops before swapping containers, and the old image is
+  compatible with any prefix of these migrations.
+
+- **Staging and development databases** applied an earlier revision in which
+  `20261008120100_network_fees` held every statement. There the follow-up files
+  are written to change nothing (`IF NOT EXISTS`), and `migrate deploy` /
+  `migrate status` are unaffected (verified). Only `prisma migrate dev` on such a
+  development database notices the edited file; align its checksum instead of
+  resetting:
+
+  ```bash
+  # development databases only — never needed on production, which runs the files as they are
+  psql "$DATABASE_MIGRATIONS_URL" -c "UPDATE _prisma_migrations SET checksum = '$(sha256sum \
+    packages/db/prisma/migrations/20261008120100_network_fees/migration.sql | cut -d' ' -f1)' \
+    WHERE migration_name = '20261008120100_network_fees'"
+  ```
+
 - **Ships OFF.** No company is charged a network fee until a `SUPER_ADMIN` turns
   it on for that company (`PUT /v1/admin/companies/:id/network-fee`). With the
   switch off, every flow books exactly as before.

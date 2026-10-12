@@ -47,10 +47,14 @@ export class RedisThrottlerStorage implements ThrottlerStorage {
     blockDuration: number,
     throttlerName: string,
   ): Promise<ThrottlerStorageRecord> {
-    // ttl / blockDuration are MILLISECONDS in throttler v6.
+    // ttl / blockDuration come IN as MILLISECONDS in throttler v6, but the record
+    // goes OUT in SECONDS: the guard writes `timeToBlockExpire` straight into the
+    // `Retry-After` header and `timeToExpire` into `X-RateLimit-Reset`, both of
+    // which are seconds (the built-in storage ceils ms → s the same way). Handing
+    // back milliseconds told a throttled client to wait 60000 "seconds".
     const failOpen: ThrottlerStorageRecord = {
       totalHits: 1,
-      timeToExpire: ttl,
+      timeToExpire: toSeconds(ttl),
       isBlocked: false,
       timeToBlockExpire: 0,
     };
@@ -59,22 +63,28 @@ export class RedisThrottlerStorage implements ThrottlerStorage {
     const redisKey = `throttle:${throttlerName}:${key}`;
     try {
       const totalHits = await this.redis.incr(redisKey);
-      let timeToExpire = await this.redis.pttl(redisKey);
+      let expiresInMs = await this.redis.pttl(redisKey);
       // First hit in this window (or a key that somehow lost its TTL): set it.
-      if (timeToExpire < 0) {
+      if (expiresInMs < 0) {
         await this.redis.pexpire(redisKey, ttl);
-        timeToExpire = ttl;
+        expiresInMs = ttl;
       }
       const isBlocked = totalHits > limit;
+      const blockedForMs = isBlocked ? (blockDuration > 0 ? blockDuration : expiresInMs) : 0;
       return {
         totalHits,
-        timeToExpire,
+        timeToExpire: toSeconds(expiresInMs),
         isBlocked,
-        timeToBlockExpire: isBlocked ? (blockDuration > 0 ? blockDuration : timeToExpire) : 0,
+        timeToBlockExpire: toSeconds(blockedForMs),
       };
     } catch (e) {
       this.logger.warn(`throttler redis error, allowing request: ${(e as Error).message}`);
       return failOpen;
     }
   }
+}
+
+/** Milliseconds → whole seconds, rounded UP so a client never retries early. */
+function toSeconds(ms: number): number {
+  return Math.ceil(ms / 1000);
 }

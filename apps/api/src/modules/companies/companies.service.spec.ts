@@ -447,35 +447,38 @@ describe('CompaniesService.setNetworkFee', () => {
     enabled?: boolean;
     rates?: Array<{ operationType: string; feeType: string; feeValue: string }>;
   }) {
-    let stored = (opts.rates ?? []).map((r) => ({ ...r, feeValue: dec(r.feeValue) }));
+    const stored = (opts.rates ?? []).map((r) => ({ ...r, feeValue: dec(r.feeValue) }));
     const calls: string[] = [];
-    const queryRaw = vi.fn(() => {
+    const lockSql: string[] = [];
+    const queryRaw = vi.fn((strings: TemplateStringsArray) => {
       calls.push('lock');
-      return Promise.resolve(opts.locked === false ? [] : [{ id: 'c1' }]);
+      lockSql.push(strings.join('?'));
+      return Promise.resolve(
+        opts.locked === false ? [] : [{ network_fee_enabled: opts.enabled ?? false }],
+      );
     });
-    const findUniqueOrThrow = vi.fn(() =>
-      Promise.resolve({ networkFeeEnabled: opts.enabled ?? false, networkFees: stored }),
-    );
     const update = vi.fn(() => {
       calls.push('switch');
       return Promise.resolve({});
     });
     const deleteMany = vi.fn(() => {
       calls.push('delete');
-      stored = [];
       return Promise.resolve({ count: 0 });
     });
     const createMany = vi.fn(
       (args: { data: Array<{ operationType: string; feeType: string; feeValue: string }> }) => {
         calls.push('insert');
-        stored = args.data.map((r) => ({ ...r, feeValue: dec(r.feeValue) }));
         return Promise.resolve({ count: args.data.length });
       },
     );
-    const findMany = vi.fn(() => Promise.resolve(stored));
+    // Read ONCE, before the write, for the audit diff.
+    const findMany = vi.fn(() => {
+      calls.push('read');
+      return Promise.resolve(stored);
+    });
     const tx = {
       $queryRaw: queryRaw,
-      company: { findUniqueOrThrow, update },
+      company: { update },
       companyNetworkFee: { deleteMany, createMany, findMany },
     };
     const prisma = {
@@ -487,19 +490,23 @@ describe('CompaniesService.setNetworkFee', () => {
       prisma,
       realtime,
       calls,
+      lockSql,
       update,
       createMany,
     };
   }
 
   it('locks the row, flips the switch and replaces the rates — in ONE transaction, in that order', async () => {
-    const { svc, prisma, calls, update } = makeNetworkFeeService({});
+    const { svc, prisma, calls, lockSql, update } = makeNetworkFeeService({});
     const res = await svc.setNetworkFee('c1', {
       enabled: true,
       rates: [{ operationType: 'TRANSACTION', feeType: 'PERCENTAGE', feeValue: '1' }],
     });
     expect(prisma.runAsAdmin).toHaveBeenCalledTimes(1);
-    expect(calls).toEqual(['lock', 'switch', 'delete', 'insert']);
+    expect(calls).toEqual(['lock', 'read', 'switch', 'delete', 'insert']);
+    // A NO KEY lock: a plain FOR UPDATE would block the foreign-key check of
+    // every deposit/withdrawal for this company until the save commits.
+    expect(lockSql[0]).toMatch(/FOR NO KEY UPDATE\s*$/);
     expect(update).toHaveBeenCalledWith({ where: { id: 'c1' }, data: { networkFeeEnabled: true } });
     expect(res).toEqual({
       enabled: true,
@@ -514,7 +521,7 @@ describe('CompaniesService.setNetworkFee', () => {
     });
     const res = await svc.setNetworkFee('c1', { enabled: false, rates: [] });
     expect(createMany).not.toHaveBeenCalled();
-    expect(calls).toEqual(['lock', 'switch', 'delete']);
+    expect(calls).toEqual(['lock', 'read', 'switch', 'delete']);
     expect(res).toEqual({ enabled: false, rates: [] });
   });
 
@@ -544,6 +551,24 @@ describe('CompaniesService.setNetworkFee', () => {
       'networkFee.WITHDRAWAL': { from: 'FIXED 2', to: 'FIXED 3' },
     });
     expect(realtime.admin).toHaveBeenCalledWith(['companies'], 'c1');
+  });
+
+  it('returns the saved config in canonical form, flows in order', async () => {
+    const { svc } = makeNetworkFeeService({});
+    const res = await svc.setNetworkFee('c1', {
+      enabled: true,
+      rates: [
+        { operationType: 'LOAD', feeType: 'FIXED', feeValue: '2.50' },
+        { operationType: 'TRANSACTION', feeType: 'PERCENTAGE', feeValue: '0.12500000' },
+      ],
+    });
+    expect(res).toEqual({
+      enabled: true,
+      rates: [
+        { operationType: 'TRANSACTION', feeType: 'PERCENTAGE', feeValue: '0.125' },
+        { operationType: 'LOAD', feeType: 'FIXED', feeValue: '2.5' },
+      ],
+    });
   });
 
   it('an identical save publishes no diff', async () => {

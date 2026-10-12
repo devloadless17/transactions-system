@@ -31,6 +31,7 @@ import {
 } from '../../common/errors/domain.error';
 import { assertListOffset } from '../../common/pagination';
 import { streamCsvKeyset } from '../../common/csv';
+import { BACKOFFICE_SETTLEMENT_ERROR } from '../../common/backoffice-view';
 import { TransactionsService } from '../transactions/transactions.service';
 import { CommissionResolverService } from '../commissions/commission-resolver.service';
 import { CommissionsRepository } from '../commissions/commissions.repository';
@@ -1200,7 +1201,12 @@ export class WhishPaymentsService {
    * so the export matches exactly what the user sees. A company scope (companyId)
    * runs each chunk under RLS; the admin export (no companyId) runs cross-company.
    */
-  streamCsv(args: { companyId?: string; query: ListWhishPaymentsQuery }): StreamableFile {
+  streamCsv(args: {
+    companyId?: string;
+    query: ListWhishPaymentsQuery;
+    /** Back office never reads a settlement failure reason — see common/backoffice-view.ts. */
+    backoffice?: boolean;
+  }): StreamableFile {
     const where = this.listWhere(args.query, { companyId: args.companyId });
     const scope = args.companyId ?? null;
     const prisma = this.prisma;
@@ -1232,7 +1238,7 @@ export class WhishPaymentsService {
         );
       },
       cursorOf: (r) => ({ createdAt: r.createdAt, id: r.id }),
-      toCells: whishCsvCells,
+      toCells: args.backoffice ? (row) => whishCsvCells(row, { backoffice: true }) : whishCsvCells,
     });
   }
 
@@ -1300,9 +1306,13 @@ const WHISH_CSV_HEADER = [
   'collect_url',
 ] as const;
 
-function whishCsvCells(row: WhishPayment): Array<string | null> {
+function whishCsvCells(
+  row: WhishPayment,
+  viewer: { backoffice: boolean } = { backoffice: false },
+): Array<string | null> {
   const meta =
     (row.metadata as { needsAttention?: unknown; settlementError?: unknown } | null) ?? null;
+  const settlementError = typeof meta?.settlementError === 'string' ? meta.settlementError : '';
   return [
     row.id,
     row.createdAt.toISOString(),
@@ -1316,7 +1326,8 @@ function whishCsvCells(row: WhishPayment): Array<string | null> {
     row.payerPhoneNumber ?? '',
     row.transactionId ?? '',
     meta?.needsAttention === true ? 'true' : 'false',
-    typeof meta?.settlementError === 'string' ? meta.settlementError : '',
+    // The reason can spell out a price; back office only learns that one exists.
+    viewer.backoffice && settlementError !== '' ? BACKOFFICE_SETTLEMENT_ERROR : settlementError,
     row.collectUrl ?? '',
   ];
 }

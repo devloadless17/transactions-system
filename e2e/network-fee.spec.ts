@@ -1,6 +1,7 @@
-import { test, expect, type APIRequestContext } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 import {
   adminApiContext,
+  cashRequest,
   createCommissionRule,
   createSourceKey,
   enableSourceForCompany,
@@ -8,6 +9,8 @@ import {
   getCsrf,
   ingestTransaction,
   loginOwnerApiContext,
+  mutate,
+  num,
   provisionCompanyOwner,
   unwrap,
 } from './helpers';
@@ -26,32 +29,9 @@ import {
  */
 
 const NEW_PASSWORD = 'newpass-123';
-const money = (s: string | number | undefined) => Number(s ?? 0);
-
-function cashBody(amount: string) {
-  return {
-    amount,
-    currency: 'USD',
-    payout: {
-      method: 'CASH',
-      recipientName: 'E2E Payee',
-      recipientPhone: '+9610000000',
-      pickupLocation: 'E2E Branch',
-    },
-  };
-}
-
-async function send(
-  api: APIRequestContext,
-  csrf: string,
-  method: 'post' | 'put',
-  path: string,
-  body: Record<string, unknown>,
-) {
-  const res = await api[method](path, { headers: { 'x-csrf-token': csrf }, data: body });
-  const text = await res.text();
-  return { status: res.status(), body: text ? unwrap(JSON.parse(text)) : null };
-}
+const money = num;
+const cashBody = cashRequest;
+const send = mutate;
 
 test.describe('network fee', () => {
   test('configure → deposit → withdrawal, with the off-company control', async () => {

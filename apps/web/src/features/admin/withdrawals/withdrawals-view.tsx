@@ -42,11 +42,16 @@ import { useCompanyNames } from '@/features/admin/company-filter';
 import { ExportCsvButton } from '@/components/export-csv-button';
 import { AutoApprovalPanel } from '@/features/admin/withdrawals/auto-approval-panel';
 import { ResolveProcessingDialog } from '@/features/admin/withdrawals/resolve-processing-dialog';
+import {
+  reviewDescription,
+  reviewDoneMessage,
+  type ReviewAction,
+} from '@/features/admin/withdrawals/review-copy';
 import { EntityDetailDrawer } from '@/features/activity/activity-detail-drawer';
 
 interface ReviewState {
   withdrawal: WithdrawalResponse;
-  action: 'approve' | 'reject';
+  action: ReviewAction;
 }
 
 // Per-process admin config. The three admin pages share this view; only
@@ -421,17 +426,19 @@ function ReviewDialog({
   }, [lastId]);
 
   const mu = useMutation({
-    mutationFn: () => {
-      if (!review) throw new Error('no review');
-      const path = `${config.listEndpoint}/${review.withdrawal.id}/${review.action}`;
+    // The row + action being confirmed travel as the mutation's variables, so the
+    // request and its toast name what was actually submitted — `review` itself is
+    // null by the time a request settles if the dialog was closed meanwhile.
+    mutationFn: ({ withdrawal, action }: ReviewState) => {
+      const path = `${config.listEndpoint}/${withdrawal.id}/${action}`;
       const body =
-        review.action === 'approve'
+        action === 'approve'
           ? { externalReference, notes: notes || undefined }
           : { notes: notes || undefined };
       return apiFetch<WithdrawalResponse>(path, { method: 'POST', body });
     },
-    onSuccess: () => {
-      toast.success(`${capitalize(config.noun)} ${review?.action}d`);
+    onSuccess: (_data, { action }) => {
+      toast.success(reviewDoneMessage(config.noun, action));
       setNotes('');
       setExternalReference('');
       onDone();
@@ -447,7 +454,7 @@ function ReviewDialog({
   // and payouts are OUTbound (pay net to the recipient, fee already taken).
   const isLoad = config.noun === 'load';
   // A network fee charged on this request — full admins only. Back office never
-  // sees a fee, so its copy and amounts stay exactly as they were.
+  // sees a fee, so for it this is always false.
   const hasNetworkFee = !backoffice && isPositiveAmount(review?.withdrawal.networkFeeAmount);
 
   return (
@@ -458,16 +465,16 @@ function ReviewDialog({
             {review?.action === 'approve' ? 'Approve' : 'Reject'} {config.noun}
           </DialogTitle>
           <DialogDescription>
+            {/* Role-aware: back office is told only the one figure it is sent and
+                nothing about a fee (see reviewDescription). */}
             {review &&
-              (review.action === 'approve'
-                ? isLoad
-                  ? // INbound: the operator collects the gross (incl. fee) from the
-                    // company, then approves to credit the wallet with the net.
-                    `Confirm you received ${trimAmount(review.withdrawal.totalAmount)} ${review.withdrawal.currency} (${hasNetworkFee ? 'fees' : 'fee'} included) from the company, then approve to credit their wallet with ${trimAmount(review.withdrawal.netAmount)} ${review.withdrawal.currency}.`
-                  : // OUTbound: the operator pays the recipient the net; the system
-                    // already deducted the fee from the wallet.
-                    `Pay the recipient ${trimAmount(review.withdrawal.netAmount)} ${review.withdrawal.currency} out-of-band (${hasNetworkFee ? 'the fees are' : 'the fee is'} already deducted), then record the reference here.`
-                : `Reserved ${trimAmount(review.withdrawal.totalAmount)} ${review.withdrawal.currency} returns to available.`)}
+              reviewDescription({
+                action: review.action,
+                isLoad,
+                backoffice,
+                hasNetworkFee,
+                withdrawal: review.withdrawal,
+              })}
           </DialogDescription>
         </DialogHeader>
 
@@ -590,7 +597,7 @@ function ReviewDialog({
           <Button
             variant={review?.action === 'reject' ? 'destructive' : 'default'}
             disabled={mu.isPending || !canSubmit}
-            onClick={() => mu.mutate()}
+            onClick={() => review && mu.mutate(review)}
             key={lastId}
           >
             {mu.isPending ? 'Submitting…' : `Confirm ${review?.action}`}
@@ -615,10 +622,6 @@ function statusVariant(s: WithdrawalStatus): 'success' | 'warning' | 'destructiv
     default:
       return 'secondary';
   }
-}
-
-function capitalize(s: string): string {
-  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 // One-line "who to pay" for the list row. For cash/Whish that's name + phone

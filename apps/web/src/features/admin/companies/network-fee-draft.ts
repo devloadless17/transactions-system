@@ -5,6 +5,7 @@ import {
   MONEY_INPUT_DP,
   Money,
   RATE_INPUT_DP,
+  feeOnAmount,
   isDecimalString,
   setNetworkFeeConfigSchema,
   type FeeOperationType,
@@ -133,17 +134,17 @@ export function formatNetworkFeeRate(feeType: CommissionType, feeValue: string):
 }
 
 /**
- * The live example beside a flow: "On $100: $1.00". Worked exactly as the API
- * computes it — a % of the amount, or the fixed value, each rounded once to
- * cents. Null while the flow is blank or its value can't be saved.
+ * The live example beside a flow: "On $100: $1.00". Worked by the same shared
+ * formula the API charges with (feeOnAmount) — a % of the amount, or the fixed
+ * value, rounded once to cents. Null while the flow is blank or its value can't
+ * be saved.
  */
 export function exampleOn100(rate: NetworkFeeRateDraft): string | null {
   const v = rate.feeValue.trim();
   if (v === '' || rateError(rate)) return null;
-  const fee =
-    rate.feeType === CommissionType.PERCENTAGE
-      ? EXAMPLE_AMOUNT.percent(v).round()
-      : Money.of(v).round();
+  // The API's own formula (shared), so the preview can never disagree with
+  // what is actually charged.
+  const fee = feeOnAmount(EXAMPLE_AMOUNT, rate.feeType, v);
   return `On $100: $${formatAmount(fee.toString())}`;
 }
 

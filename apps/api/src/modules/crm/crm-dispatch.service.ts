@@ -152,7 +152,13 @@ export class CrmDispatchService {
     reference: string,
     body: Pick<CrmEventPayload, 'transaction' | 'withdrawal'>,
   ): void {
-    void this.run(companyId, event, reference, body).catch((err) =>
+    // Stamped HERE, synchronously, at the moment the event is emitted — not
+    // later inside the async run(). `sentAt` is what a CRM orders one
+    // reference's events by (deliveries are at-least-once and unordered), so it
+    // must follow the order the events actually happened in, whatever order
+    // their database round trips below happen to finish in.
+    const sentAt = new Date().toISOString();
+    void this.run(companyId, event, reference, body, sentAt).catch((err) =>
       this.logger.warn(`CRM dispatch for ${reference} failed: ${(err as Error).message}`),
     );
   }
@@ -162,6 +168,7 @@ export class CrmDispatchService {
     event: CrmEventPayload['event'],
     reference: string,
     body: Pick<CrmEventPayload, 'transaction' | 'withdrawal'>,
+    sentAt: string,
   ): Promise<void> {
     const company = await this.prisma.runAsAdmin((tx) =>
       tx.company.findUnique({
@@ -171,12 +178,7 @@ export class CrmDispatchService {
     );
     if (!company?.crmEnabled || !company.crmApiUrl) return;
 
-    const payload: CrmEventPayload = {
-      event,
-      reference,
-      sentAt: new Date().toISOString(),
-      ...body,
-    };
+    const payload: CrmEventPayload = { event, reference, sentAt, ...body };
     const row = await this.prisma.runAsAdmin((tx) =>
       tx.webhookDelivery.create({
         data: {

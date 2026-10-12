@@ -21,11 +21,12 @@ import { CommissionResolverService } from '../commissions/commission-resolver.se
 import { CommissionsRepository } from '../commissions/commissions.repository';
 import { LedgerService } from '../ledger/ledger.service';
 import {
+  type FeeParts,
   moneyInEntries,
   netOfFee,
   reservedTotal,
   reversalEntries,
-  type FeeParts,
+  storedFees,
 } from '../ledger/flow-ledger';
 import {
   boundDepositNetworkFee,
@@ -44,7 +45,7 @@ import {
   ValidationError,
 } from '../../common/errors/domain.error';
 import { csvCell } from '../../common/csv';
-import { backofficeCsvCells } from '../../common/backoffice-view';
+import { BACKOFFICE_CSV_COLUMNS, backofficeCsvCells } from '../../common/backoffice-view';
 
 // The per-tenant list COUNT is cached briefly so paging reuses it and a whale
 // tenant's COUNT(*) doesn't re-run on every page load. The total can lag by up
@@ -217,9 +218,12 @@ export class TransactionsService {
     // company was hidden still settles here. The single hard "this company can do
     // nothing" switch is deactivation (status !== ACTIVE), enforced just above.
     const companyId = company.id;
-    // The network-fee master switch, read from the same fresh (uncached) company
-    // row as the status check — so a company with it OFF adds no query at all.
-    const networkFeeEnabled = company.networkFeeEnabled;
+    // The network-fee master switch as of the fresh (uncached) company row the
+    // status check just read. It is used ONLY to skip the rate read for a
+    // company with the switch off, so such a company adds no query at all. It
+    // is never trusted to charge: the booking transaction below re-reads the
+    // switch together with the rate, from its own snapshot.
+    const networkFeeMaybeOn = company.networkFeeEnabled;
     const source: { id: string; code: string; status: string } = foundSource;
 
     // Source fee = what this source charges THE PLATFORM on this deposit (cost of
@@ -350,10 +354,10 @@ export class TransactionsService {
         // switching it on never makes a deposit that books today fail or park.
         let network = Money.zero();
         let networkCapped = false;
-        if (networkFeeEnabled && resolution && !resolution.capped) {
+        if (networkFeeMaybeOn && resolution && !resolution.capped) {
           const computed = computeNetworkFee(
             amount,
-            await readNetworkFeeRate(cTx, companyId, 'TRANSACTION', { switchKnownOn: true }),
+            await readNetworkFeeRate(cTx, companyId, 'TRANSACTION'),
           );
           ({ network, capped: networkCapped } = boundDepositNetworkFee({
             amount,
@@ -432,7 +436,9 @@ export class TransactionsService {
         );
 
         return {
-          result: await this.mapTransaction(cTx, txRow),
+          // The source row is already in hand — no second read inside the
+          // serializable transaction, after the wallet row has been locked.
+          result: mapTxRow(txRow, source.code),
           replayed: false,
           pricingIssue,
           networkCapped,
@@ -582,79 +588,95 @@ export class TransactionsService {
       tx.transaction.findUnique({ where: { id: txId }, select: { companyId: true } }),
     );
     if (!pre) throw new NotFoundError('Transaction', txId);
-    const reversed = await this.prisma.runSerializableAsTenant(pre.companyId, async (tx) => {
-      const cTx = tx as unknown as PrismaClient;
+    const { reversed, replayed } = await this.prisma.runSerializableAsTenant(
+      pre.companyId,
+      async (tx) => {
+        const cTx = tx as unknown as PrismaClient;
 
-      const orig = await cTx.transaction.findUnique({
-        where: { id: txId },
-        include: { source: { select: { code: true } } },
-      });
-      if (!orig) throw new NotFoundError('Transaction', txId);
-      if (orig.status === 'REVERSED') {
-        return orig;
-      }
-      if (orig.status !== 'COMPLETED') {
-        throw new ConflictError(`Transaction is in status ${orig.status} and cannot be reversed`);
-      }
-
-      // fromDb: quantize the stored amounts ONCE here, so every leg derived below
-      // is at scale and the reversal set balances by construction.
-      const fees: FeeParts = {
-        commission: Money.fromDb(orig.commissionAmount),
-        network: Money.fromDb(orig.networkFeeAmount),
-      };
-      const net = Money.fromDb(orig.netAmount);
-      // The original EXTERNAL debit was net + commission + network for BOTH fee
-      // applications (DEDUCTED: amount = net + fees; ON_TOP: amount + fees =
-      // net + fees), so reversalEntries reconstructs it from the stored net/fees
-      // without a feeApplication column and the reversal balances either way.
-
-      // Claw `net` back from available; whatever available can't cover becomes a
-      // RECEIVABLE (a debt the company owes). This keeps available >= 0 and the
-      // ledger balanced whether or not the funds were already withdrawn.
-      const walletRow = await cTx.wallet.findUnique({
-        where: { companyId_currency: { companyId: orig.companyId, currency: orig.currency } },
-      });
-      const available = Money.of(walletRow?.availableBalance.toString() ?? '0');
-      const { fromAvailable, receivable } = splitClawback(net, available);
-
-      // Compensating ledger entries: mirror the original signs.
-      // original was: DEBIT EXTERNAL, CREDIT AVAILABLE, CREDIT FEE, CREDIT NETWORK_FEE
-      // reversal is:  CREDIT EXTERNAL, DEBIT AVAILABLE (+ DEBIT RECEIVABLE for the
-      // uncovered remainder), DEBIT FEE, DEBIT NETWORK_FEE. debits (fromAvailable +
-      // receivable + fees) == credit (net + fees), so the set stays balanced.
-      await this.ledger.writeEntries(
-        cTx,
-        reversalEntries({ transactionId: orig.id }, orig.companyId, orig.currency, {
-          net,
-          fees,
-          fromAvailable,
-          receivable,
-          reason: args.reason,
-        }),
-      );
-
-      // Wallet: subtract only what available could cover (stays >= 0).
-      if (fromAvailable.isPositive()) {
-        await this.wallets.applyDelta(cTx, {
-          companyId: orig.companyId,
-          currency: orig.currency,
-          delta: { available: fromAvailable.mul(-1) },
+        const orig = await cTx.transaction.findUnique({
+          where: { id: txId },
+          include: { source: { select: { code: true } } },
         });
-      }
-      if (receivable.isPositive()) {
-        this.logger.warn(
-          `reversal of tx=${orig.id} co=${orig.companyId} created RECEIVABLE=${receivable.toString()} ${orig.currency.trim()} (available could not cover full clawback of ${net.toString()})`,
-        );
-      }
+        if (!orig) throw new NotFoundError('Transaction', txId);
+        if (orig.status === 'REVERSED') {
+          // Already reversed (a stale dialog, a retried request, or the loser of
+          // two concurrent reversals): nothing is booked, and — see below —
+          // nothing is announced a second time either.
+          return { reversed: orig, replayed: true };
+        }
+        if (orig.status !== 'COMPLETED') {
+          throw new ConflictError(`Transaction is in status ${orig.status} and cannot be reversed`);
+        }
 
-      const updated = await cTx.transaction.update({
-        where: { id: orig.id },
-        data: { status: 'REVERSED' },
-        include: { source: { select: { code: true } } },
-      });
-      return updated;
-    });
+        // fromDb: quantize the stored amounts ONCE here, so every leg derived below
+        // is at scale and the reversal set balances by construction.
+        const fees = storedFees(orig.commissionAmount, orig.networkFeeAmount);
+        const net = Money.fromDb(orig.netAmount);
+        // The original EXTERNAL debit was net + commission + network for BOTH fee
+        // applications (DEDUCTED: amount = net + fees; ON_TOP: amount + fees =
+        // net + fees), so reversalEntries reconstructs it from the stored net/fees
+        // without a feeApplication column and the reversal balances either way.
+
+        // Claw `net` back from available; whatever available can't cover becomes a
+        // RECEIVABLE (a debt the company owes). This keeps available >= 0 and the
+        // ledger balanced whether or not the funds were already withdrawn.
+        const walletRow = await cTx.wallet.findUnique({
+          where: { companyId_currency: { companyId: orig.companyId, currency: orig.currency } },
+        });
+        const available = Money.of(walletRow?.availableBalance.toString() ?? '0');
+        const { fromAvailable, receivable } = splitClawback(net, available);
+
+        // Compensating ledger entries: mirror the original signs.
+        // original was: DEBIT EXTERNAL, CREDIT AVAILABLE, CREDIT FEE, CREDIT NETWORK_FEE
+        // reversal is:  CREDIT EXTERNAL, DEBIT AVAILABLE (+ DEBIT RECEIVABLE for the
+        // uncovered remainder), DEBIT FEE, DEBIT NETWORK_FEE. debits (fromAvailable +
+        // receivable + fees) == credit (net + fees), so the set stays balanced.
+        await this.ledger.writeEntries(
+          cTx,
+          reversalEntries({ transactionId: orig.id }, orig.companyId, orig.currency, {
+            net,
+            fees,
+            fromAvailable,
+            receivable,
+            reason: args.reason,
+          }),
+        );
+
+        // Wallet: subtract only what available could cover (stays >= 0).
+        if (fromAvailable.isPositive()) {
+          await this.wallets.applyDelta(cTx, {
+            companyId: orig.companyId,
+            currency: orig.currency,
+            delta: { available: fromAvailable.mul(-1) },
+          });
+        }
+        if (receivable.isPositive()) {
+          this.logger.warn(
+            `reversal of tx=${orig.id} co=${orig.companyId} created RECEIVABLE=${receivable.toString()} ${orig.currency.trim()} (available could not cover full clawback of ${net.toString()})`,
+          );
+        }
+
+        const updated = await cTx.transaction.update({
+          where: { id: orig.id },
+          data: { status: 'REVERSED' },
+          include: { source: { select: { code: true } } },
+        });
+        return { reversed: updated, replayed: false };
+      },
+    );
+
+    const response = mapTxRow(
+      reversed,
+      (reversed as { source?: { code: string } }).source?.code ?? '',
+    );
+
+    // An idempotent replay moved no money, so it must not look like a second
+    // reversal: no cache churn, no realtime refresh, and above all no second
+    // `transaction.reversed` webhook to the company's CRM. Mirrors ingest().
+    if (replayed) {
+      this.logger.log(`reverse replay ignored tx=${reversed.id} (already REVERSED)`);
+      return response;
+    }
 
     this.logger.log(
       `reversed tx=${reversed.id} co=${reversed.companyId} amount=${reversed.amount.toString()} reason=${args.reason}`,
@@ -667,10 +689,6 @@ export class TransactionsService {
 
     this.realtime.company(reversed.companyId, ['transactions', 'wallets', 'ledger', 'analytics']);
 
-    const response = mapTxRow(
-      reversed,
-      (reversed as { source?: { code: string } }).source?.code ?? '',
-    );
     // Tell the company's CRM the record was reversed (same reference as the
     // original completed event, so the CRM flips that record to REVERSED).
     this.crm.emitFromTransaction(response, 'transaction.reversed');
@@ -689,29 +707,7 @@ export class TransactionsService {
     /** Back office gets only what the customer paid — see common/backoffice-view.ts. */
     backoffice?: boolean;
   }): StreamableFile {
-    const header = [
-      'id',
-      'created_at',
-      'company_id',
-      'source_code',
-      'external_transaction_id',
-      'amount',
-      'currency',
-      'commission_amount',
-      'net_amount',
-      'status',
-      'customer',
-      'target',
-      'phone',
-      'note',
-      // Appended last (positions above stay stable for existing parsers):
-      // when the transaction settled — mirrors the flow exports' processed_at.
-      'processed_at',
-      // The optional per-company network fee (0.00 when not charged). Appended
-      // after processed_at for the same reason.
-      'network_fee_amount',
-    ];
-
+    const header = TRANSACTIONS_CSV_HEADER;
     const where: Prisma.TransactionWhereInput = {};
     if (args.companyId) where.companyId = args.companyId;
     else if (args.query.companyId) where.companyId = args.query.companyId;
@@ -785,11 +781,8 @@ export class TransactionsService {
           ];
           buf +=
             (backoffice
-              ? // Only what the customer paid; the split columns stay, blank.
-                backofficeCsvCells(header, cells, {
-                  hide: ['commission_amount', 'net_amount', 'network_fee_amount'],
-                  overrides: { amount: net.add(commission).add(networkFee).toFixed(2) },
-                })
+              ? // Only what the customer paid (`amount`); the split columns stay, blank.
+                backofficeCsvCells(header, cells, BACKOFFICE_CSV_COLUMNS.deposits)
               : cells
             ).join(',') + '\n';
         }
@@ -940,6 +933,33 @@ export class TransactionsService {
     return mapTxRow(row, source?.code ?? '');
   }
 }
+
+/**
+ * The deposits (transactions) CSV header. Exported-position contract: columns
+ * are only ever appended.
+ */
+export const TRANSACTIONS_CSV_HEADER = [
+  'id',
+  'created_at',
+  'company_id',
+  'source_code',
+  'external_transaction_id',
+  'amount',
+  'currency',
+  'commission_amount',
+  'net_amount',
+  'status',
+  'customer',
+  'target',
+  'phone',
+  'note',
+  // Appended last (positions above stay stable for existing parsers):
+  // when the transaction settled — mirrors the flow exports' processed_at.
+  'processed_at',
+  // The optional per-company network fee (0.00 when not charged). Appended
+  // after processed_at for the same reason.
+  'network_fee_amount',
+] as const;
 
 /**
  * Split an ingest amount into the EXTERNAL debit and the AVAILABLE credit

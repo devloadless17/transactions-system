@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PrismaService } from '../../database/prisma.service';
 import type { RealtimeService } from '../realtime/realtime.service';
 import type { TelegramClient } from '../telegram/telegram.client';
-import { NotificationsService } from './notifications.service';
+import type { AuthPrincipal } from '../../common/types/request.types';
+import { NotificationsService, adminRequestBody } from './notifications.service';
 
 /**
  * Guards the Telegram fan-out in `requestSubmitted()`:
@@ -156,5 +157,108 @@ describe('NotificationsService.requestSubmitted — the bell is never held hosta
 
     await expect(svc.requestSubmitted({ ...base, flow: 'PAYOUT' })).resolves.toBeUndefined();
     expect(notifyRequest).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * BACKOFFICE never learns what the platform charges. An admin "new request"
+ * notification is shown to back office too, so its text must only ever name the
+ * operator's figure (what to pay / collect) — and a notification written before
+ * that figure was recorded must name no amount at all.
+ */
+describe('admin "new request" notifications and back office', () => {
+  it('stores the operator figure as DATA next to the text', async () => {
+    const { svc, notificationCreate } = makeService({ configured: false });
+    await svc.requestSubmitted({ ...base, amount: '97', flow: 'PAYOUT' });
+    const data = notificationCreate.mock.calls[0][0].data;
+    expect(data.body).toBe('Acme Trading requested a payout: 97 USD to pay.');
+    expect(data.metadata).toMatchObject({
+      companyName: 'Acme Trading',
+      operatorAmount: '97',
+      currency: 'USD',
+    });
+  });
+
+  it('a load says what to COLLECT', () => {
+    expect(adminRequestBody('LOAD', 'Acme', { amount: '103', currency: 'USD' })).toBe(
+      'Acme requested a load: 103 USD to collect.',
+    );
+    expect(adminRequestBody('WITHDRAWAL', null, null)).toBe('A company requested a withdrawal.');
+  });
+
+  function listAs(role: string, rows: unknown[]) {
+    const tx = {
+      notification: {
+        findMany: vi.fn().mockResolvedValue(rows),
+        count: vi.fn().mockResolvedValue(rows.length),
+      },
+    };
+    const prisma = {
+      runAsScoped: vi.fn((_scope: unknown, cb: (t: typeof tx) => unknown) => cb(tx)),
+    } as unknown as PrismaService;
+    const svc = new NotificationsService(
+      prisma,
+      { admin: vi.fn(), company: vi.fn() } as unknown as RealtimeService,
+      { isConfigured: () => false } as unknown as TelegramClient,
+    );
+    return svc.list(
+      { role, userId: 'u-1', companyId: null } as unknown as AuthPrincipal,
+      {
+        page: 1,
+        pageSize: 20,
+        filter: 'active',
+      } as never,
+    );
+  }
+
+  const row = (over: Record<string, unknown>) => ({
+    id: 'n-1',
+    scope: 'ADMIN',
+    flow: 'PAYOUT',
+    event: 'REQUESTED',
+    title: 'New payout request',
+    link: '/admin/payouts',
+    entityId: 'p-1',
+    createdAt: new Date('2026-10-01T00:00:00.000Z'),
+    reads: [],
+    ...over,
+  });
+  // Written before the operator figure was recorded: it names the REQUESTED
+  // amount (100), while the payout row shows back office the net (97).
+  const legacy = row({
+    body: 'Acme requested a payout of 100 USD.',
+    metadata: { companyId: 'c-1', companyName: 'Acme' },
+  });
+  const current = row({
+    body: 'Acme requested a payout: 97 USD to pay.',
+    metadata: { companyId: 'c-1', companyName: 'Acme', operatorAmount: '97', currency: 'USD' },
+  });
+
+  it("back office never gets a legacy notification's requested amount", async () => {
+    const res = await listAs('BACKOFFICE', [legacy]);
+    expect(res.data[0]!.body).toBe('Acme requested a payout.');
+    expect(res.data[0]!.body).not.toContain('100');
+  });
+
+  it('back office gets the operator figure when it was recorded', async () => {
+    const res = await listAs('BACKOFFICE', [current]);
+    expect(res.data[0]!.body).toBe('Acme requested a payout: 97 USD to pay.');
+  });
+
+  it('back office text is rebuilt from data, never the stored sentence', async () => {
+    const tampered = row({
+      body: 'Acme requested a payout of 100 USD (fee 3).',
+      metadata: { companyName: 'Acme', operatorAmount: '97', currency: 'USD' },
+    });
+    const res = await listAs('BACKOFFICE', [tampered]);
+    expect(res.data[0]!.body).toBe('Acme requested a payout: 97 USD to pay.');
+  });
+
+  it.each(['SUPER_ADMIN', 'ADMIN_OPERATOR'])('%s keeps the stored text', async (role) => {
+    const res = await listAs(role, [legacy, current]);
+    expect(res.data.map((n) => n.body)).toEqual([
+      'Acme requested a payout of 100 USD.',
+      'Acme requested a payout: 97 USD to pay.',
+    ]);
   });
 });

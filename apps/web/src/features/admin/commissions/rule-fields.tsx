@@ -9,6 +9,7 @@ import {
   FEE_OPERATION_LABEL,
   Money,
   companyScopedCommissionRuleSchema,
+  defaultFeeApplicationFor,
   type CommissionRuleGroupResponse,
   type CompanyScopedCommissionRuleInput,
 } from '@app/shared';
@@ -65,18 +66,17 @@ const DEFAULT_TIERS: TierForm[] = [
   { minAmount: '0', commissionType: CommissionType.FIXED, commissionValue: '1' },
 ];
 
-// Default fee application when an operation is first added. Withdrawals default to
-// ON_TOP (the company pays the fee on top, so the withdrawal pays out in full);
-// everything else defaults to DEDUCTED. Always editable per operation.
-export function defaultApplicationFor(op: FeeOperationType): FeeApplication {
-  return op === FeeOperationType.WITHDRAWAL ? FeeApplication.ON_TOP : FeeApplication.DEDUCTED;
-}
-
 // New rules price Deposits + Withdrawals by default; Payouts/Loads are opt-in.
+// An operation is first added with its flow's conventional fee application — the
+// shared defaultFeeApplicationFor (withdrawals ON_TOP, everything else DEDUCTED),
+// the same default the network fee falls back to. Always editable per operation.
 const DEFAULT_OPERATIONS: OperationDraft[] = [
   FeeOperationType.TRANSACTION,
   FeeOperationType.WITHDRAWAL,
-].map((operationType) => ({ operationType, feeApplication: defaultApplicationFor(operationType) }));
+].map((operationType) => ({
+  operationType,
+  feeApplication: defaultFeeApplicationFor(operationType),
+}));
 
 export function defaultRuleDraft(): RuleDraft {
   return {
@@ -262,7 +262,7 @@ export function CommissionRuleFields({
       ...draft,
       operations: [
         ...draft.operations,
-        { operationType: op, feeApplication: defaultApplicationFor(op) },
+        { operationType: op, feeApplication: defaultFeeApplicationFor(op) },
       ],
       // In per-type mode a newly enabled operation starts from the shared
       // ladder (kept if it had one from a previous toggle).

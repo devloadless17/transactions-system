@@ -1,6 +1,7 @@
 'use client';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { toast } from '@/lib/toast';
@@ -21,6 +22,7 @@ import { adminLandingPath } from '@/features/admin/access';
 
 export function LoginForm() {
   const router = useRouter();
+  const qc = useQueryClient();
   const [submitting, setSubmitting] = useState(false);
   const {
     register,
@@ -35,6 +37,14 @@ export function LoginForm() {
     setSubmitting(true);
     try {
       const me = await apiFetch<MeResponse>('/auth/login', { method: 'POST', body: values });
+      // Start this session from an empty query cache. Whatever is in it belongs
+      // to whoever used this tab before (sign-out, a password change and the
+      // server's redirect of a lapsed session all arrive here by soft
+      // navigation), and query keys carry no user or role — so it would render
+      // for this user: a full admin's unredacted rows for back office, one
+      // company's data for another's. Cleared BEFORE navigating, so the landing
+      // page hydrates its server-prefetched data into an empty cache.
+      qc.clear();
       toast.success('Signed in');
       // Pick landing page based on role.
       if (ADMIN_ROLES.includes(me.role)) router.push(adminLandingPath(me.role));

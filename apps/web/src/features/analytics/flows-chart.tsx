@@ -12,7 +12,7 @@ import {
 } from 'recharts';
 import type { BucketGranularity, FlowsBucket } from '@app/shared';
 import { formatBucketTick, formatBucketTooltip } from '@/lib/date-presets';
-import { isPositiveAmount } from '@/lib/format';
+import { isNonZeroAmount } from '@/lib/format';
 
 // The optional network-fee line. Blue: clear of the green/red areas and of the
 // primary-ink fees line in both themes (≥ 3:1 on either surface), and dashed so
@@ -43,7 +43,9 @@ export function FlowsChart({
     fees: Number(b.fees),
     networkFees: Number(b.networkFees),
   }));
-  const showNetworkFees = buckets.some((b) => isPositiveAmount(b.networkFees));
+  // Non-zero, not positive: a bucket's network-fee revenue is negative on a day
+  // an earlier deposit is reversed, and the line must still be drawn then.
+  const showNetworkFees = buckets.some((b) => isNonZeroAmount(b.networkFees));
 
   return (
     <div className="h-80 w-full">

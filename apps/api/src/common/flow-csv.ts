@@ -1,7 +1,8 @@
 import type { StreamableFile } from '@nestjs/common';
 import { Money } from '@app/shared';
 import { streamCsvKeyset } from './csv';
-import { backofficeCsvCells } from './backoffice-view';
+import { grossOf, storedFees } from '../modules/ledger/flow-ledger';
+import { BACKOFFICE_CSV_COLUMNS, backofficeCsvCells } from './backoffice-view';
 
 // Shared CSV projection for the three sibling money-movement flows
 // (withdrawal / payout / load) — they have an identical row shape, so one
@@ -82,10 +83,10 @@ export function flowCsvCells(r: FlowCsvRow): Array<string | null> {
   // part and then summing is safe here precisely because a sum of at-scale values
   // is at scale — unlike rounding a total and its parts independently, which
   // would not tie out.
-  const fee = Money.fromDb(r.feeAmount);
-  const networkFee = Money.fromDb(r.networkFeeAmount);
+  const fees = storedFees(r.feeAmount, r.networkFeeAmount);
+  const { commission: fee, network: networkFee } = fees;
   const net = Money.fromDb(r.netAmount);
-  const gross = net.add(fee).add(networkFee).toFixed(2);
+  const gross = grossOf(net, fees).toFixed(2);
   return [
     r.id,
     r.createdAt.toISOString(),
@@ -125,7 +126,6 @@ export function streamFlowCsv(opts: {
    */
   backoffice?: 'pay' | 'collect';
 }): StreamableFile {
-  const hidden = ['fee_amount', 'network_fee_amount', 'fee_application'];
   const backoffice = opts.backoffice;
   return streamCsvKeyset<FlowCsvRow>({
     filename: `${opts.noun}-${opts.now}.csv`,
@@ -145,9 +145,11 @@ export function streamFlowCsv(opts: {
     cursorOf: (r) => ({ createdAt: r.createdAt, id: r.id }),
     toCells: backoffice
       ? (r) =>
-          backofficeCsvCells(FLOW_CSV_HEADER, flowCsvCells(r), {
-            hide: [backoffice === 'pay' ? 'gross_amount' : 'net_amount', ...hidden],
-          })
+          backofficeCsvCells(
+            FLOW_CSV_HEADER,
+            flowCsvCells(r),
+            BACKOFFICE_CSV_COLUMNS.flow[backoffice],
+          )
       : flowCsvCells,
   });
 }

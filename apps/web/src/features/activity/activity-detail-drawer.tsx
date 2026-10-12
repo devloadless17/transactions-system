@@ -26,7 +26,11 @@ import {
   PayoutInstructions,
   prettyMethod,
 } from '@/features/company/withdrawals-view';
-import { activityHeadlineAmount, backofficeActivityAmount } from './headline-amount';
+import {
+  activityHeadlineAmount,
+  backofficeActivityAmount,
+  backofficeFlowAmount,
+} from './headline-amount';
 
 const KIND_LABEL: Record<ActivityKind, string> = {
   DEPOSIT: 'Deposit',
@@ -64,6 +68,12 @@ export function useEntityDetailQuery(
   return useQuery<TransactionDetailResponse | FlowRecord>({
     queryKey: [scope, 'entity-detail', kind, id],
     enabled: enabled && !!kind && !!id,
+    // Opt out of the app-wide `keepPreviousData` (query-client.tsx). That default
+    // suits lists, where the last page is a fine stand-in while the next loads;
+    // here it would show the PREVIOUS operation's record — amounts, recipient,
+    // payout instructions — under the one just opened until its fetch landed.
+    // Without it a newly opened operation shows the skeleton, then its own record.
+    placeholderData: undefined,
     queryFn: () => {
       if (!kind || !id) throw new Error('no entity');
       if (kind === 'DEPOSIT') {
@@ -77,8 +87,8 @@ export function useEntityDetailQuery(
 // `backoffice`: BACKOFFICE never sees a platform fee. Each summary collapses to
 // the single "Amount" its lists show (see backofficeActivityAmount), and the
 // fee-revenue ledger legs are left out. `kind` only picks that figure for a
-// flow (a load is collected gross; everything else is net) — it never picks the
-// renderer, for the reason below.
+// flow (a load is collected gross; everything else is net — see
+// backofficeFlowAmount) — it never picks the renderer, for the reason below.
 function EntityDetailBody({
   q,
   kind,
@@ -90,11 +100,13 @@ function EntityDetailBody({
 }) {
   // Route off the SHAPE of the loaded data, never the requested `kind`. When the
   // selected item switches between a deposit and a flow (withdrawal/payout/load),
-  // the `kind` prop updates synchronously while react-query's `data` can still
-  // hold the previous item's record for a render — picking the renderer by `kind`
-  // then feeds a FlowRecord into DepositDetail (no `.transaction` → reads
-  // undefined.status) or a deposit into FlowDetail (no `totalAmount` →
-  // trimAmount(undefined)), crashing the whole page into the error boundary.
+  // the `kind` prop updates synchronously; if `data` ever still held the previous
+  // item's record for a render, picking the renderer by `kind` would feed a
+  // FlowRecord into DepositDetail (no `.transaction` → reads undefined.status) or
+  // a deposit into FlowDetail (no `totalAmount` → trimAmount(undefined)),
+  // crashing the whole page into the error boundary. The detail query keeps no
+  // placeholder data (see useEntityDetailQuery), so `data` is the requested
+  // item's own record — routing off the shape is the second line of defence.
   // Deposit detail is the only shape carrying a `transaction` field.
   const data = q.data;
   return (
@@ -324,7 +336,7 @@ function FlowDetail({
         {backoffice ? (
           <Row
             label="Amount"
-            value={`${trimAmount(isLoad ? r.totalAmount : r.netAmount)} ${r.currency}`}
+            value={`${trimAmount(backofficeFlowAmount(r, isLoad))} ${r.currency}`}
             mono
           />
         ) : (

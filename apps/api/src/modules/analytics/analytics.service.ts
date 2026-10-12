@@ -23,6 +23,7 @@ import {
   type OriginDeps,
   type AnalyticsWindow,
 } from './range';
+import { REVENUE_ACCOUNTS, revenueTotals, type RevenueAccount } from './ledger-revenue';
 import { sourceFeeForSource } from './source-fees';
 
 const DEFAULT_CURRENCY = 'USD';
@@ -84,11 +85,12 @@ export class AnalyticsService {
         : `co:${args.scope.companyId}`;
     // Versioned because the payload shape changes between releases: `v2` added
     // `daily.granularity`, `v3` the network-fee figures (completedNetworkFees,
-    // kpi.totalNetworkFees). Without a bump a post-deploy read could serve a
+    // kpi.totalNetworkFees), `v4` networkFees on the daily buckets and the
+    // by-source rows. Without a bump a post-deploy read could serve a
     // pre-deploy entry missing them for a whole TTL.
     // The granularity is in the key too — it is derivable from the window today,
     // but that stops being true the moment the thresholds are ever retuned.
-    const cacheKey = `analytics:overview:v3:${scopeKey}:${currency}:${window.from.toISOString()}:${window.to.toISOString()}:${window.granularity}`;
+    const cacheKey = `analytics:overview:v4:${scopeKey}:${currency}:${window.from.toISOString()}:${window.to.toISOString()}:${window.granularity}`;
 
     return this.cache.wrap(cacheKey, 60, () => this.compute({ args, currency, window }));
   }
@@ -192,8 +194,9 @@ export class AnalyticsService {
       args.range.preset === 'all' ? await originForSource(this.originDeps, args.sourceId) : null;
     const window = resolveWindow(args.range, origin);
 
-    // v3: the KPI gained totalNetworkFees.
-    const cacheKey = `analytics:source-overview:v3:${args.sourceId}:${currency}:${window.from.toISOString()}:${window.to.toISOString()}:${window.granularity}`;
+    // v4: daily buckets and by-company rows gained networkFees (v3: the KPI
+    // gained totalNetworkFees).
+    const cacheKey = `analytics:source-overview:v4:${args.sourceId}:${currency}:${window.from.toISOString()}:${window.to.toISOString()}:${window.granularity}`;
     return this.cache.wrap(cacheKey, 60, () =>
       this.computeSource({ sourceId: args.sourceId, currency, window }),
     );
@@ -228,13 +231,14 @@ export class AnalyticsService {
         });
 
         const dailyRows = await tx.$queryRawUnsafe<
-          Array<{ day: Date; volume: string; fees: string; count: bigint }>
+          Array<{ day: Date; volume: string; fees: string; networkFees: string; count: bigint }>
         >(
           `
         SELECT
           date_trunc($5::text, created_at AT TIME ZONE 'UTC')::date AS day,
           SUM(net_amount + commission_amount + network_fee_amount)::text AS volume,
           SUM(commission_amount)::text                 AS fees,
+          SUM(network_fee_amount)::text                AS "networkFees",
           COUNT(*)::bigint                             AS count
         FROM transactions
         WHERE status = 'COMPLETED'
@@ -281,6 +285,7 @@ export class AnalyticsService {
             .add(Money.of((r._sum.networkFeeAmount ?? 0).toString()))
             .toString(),
           fees: Money.of((r._sum.commissionAmount ?? 0).toString()).toString(),
+          networkFees: Money.of((r._sum.networkFeeAmount ?? 0).toString()).toString(),
           count: r._count._all,
         }));
 
@@ -367,42 +372,21 @@ export class AnalyticsService {
         // just transaction commission. Scoped to the same company/currency/
         // window as the KPI aggregate. (Per-source fees below stay
         // transaction-based, since sources only ever carry transactions.)
-        const feeRow = await tx.$queryRawUnsafe<Array<{ fees: string }>>(
-          `
-          SELECT COALESCE(SUM(CASE WHEN direction = 'CREDIT' THEN amount ELSE -amount END), 0)::text AS fees
-          FROM ledger_entries
-          WHERE account_type = 'FEE'
-            AND currency = $1
-            AND created_at >= $2 AND created_at <= $3
-            ${companyFilter ? 'AND company_id = $4::uuid' : ''}
-          `,
-          p.currency,
+        //
+        // Network-fee revenue comes from its own ledger account (NETWORK_FEE), so
+        // the FEE figure keeps its meaning. It is admin-only like totalFees, so a
+        // company-scoped caller's query does not read that account at all. One
+        // statement for both accounts — see ledger-revenue.ts.
+        const isAdminScope = p.args.scope === 'admin';
+        const revenue = await revenueTotals<RevenueAccount>(tx, {
+          currency: p.currency,
           from,
           to,
-          ...(companyFilter ? [companyFilter] : []),
-        );
-        const totalFees = Money.of(feeRow[0]?.fees ?? '0').toString();
-        // Network-fee revenue, from its own ledger account (NETWORK_FEE) so the
-        // FEE figure above keeps its meaning. Admin-only like totalFees, so the
-        // query is skipped for company-scoped callers.
-        let totalNetworkFees: string | undefined;
-        if (p.args.scope === 'admin') {
-          const networkFeeRow = await tx.$queryRawUnsafe<Array<{ fees: string }>>(
-            `
-            SELECT COALESCE(SUM(CASE WHEN direction = 'CREDIT' THEN amount ELSE -amount END), 0)::text AS fees
-            FROM ledger_entries
-            WHERE account_type = 'NETWORK_FEE'
-              AND currency = $1
-              AND created_at >= $2 AND created_at <= $3
-              ${companyFilter ? 'AND company_id = $4::uuid' : ''}
-            `,
-            p.currency,
-            from,
-            to,
-            ...(companyFilter ? [companyFilter] : []),
-          );
-          totalNetworkFees = Money.of(networkFeeRow[0]?.fees ?? '0').toString();
-        }
+          companyId: companyFilter,
+          accounts: isAdminScope ? REVENUE_ACCOUNTS : ['FEE'],
+        });
+        const totalFees = revenue.FEE;
+        const totalNetworkFees: string | undefined = isAdminScope ? revenue.NETWORK_FEE : undefined;
         const transactionCount = agg._count._all;
         // Average ties to the volume on the same card (volume ÷ count), not
         // avg(amount): for an ON_TOP fee `amount` is the net, so avg(amount)
@@ -481,16 +465,18 @@ export class AnalyticsService {
         // in/out flows = feeAmount; every group carries networkFeeAmount.
         const sumOf = (v: { toString(): string } | null | undefined) =>
           Money.of((v ?? 0).toString()).toString();
+        // Every summed key is REQUIRED on purpose: an aggregate that forgets to
+        // select one fails to compile instead of silently counting it as 0.
         const flowFees = (m: {
           _sum: {
-            feeAmount?: { toString(): string } | null;
-            networkFeeAmount?: { toString(): string } | null;
+            feeAmount: { toString(): string } | null;
+            networkFeeAmount: { toString(): string } | null;
           };
         }) => ({ fee: sumOf(m._sum.feeAmount), network: sumOf(m._sum.networkFeeAmount) });
         const txFees = (m: {
           _sum: {
-            commissionAmount?: { toString(): string } | null;
-            networkFeeAmount?: { toString(): string } | null;
+            commissionAmount: { toString(): string } | null;
+            networkFeeAmount: { toString(): string } | null;
           };
         }) => ({ fee: sumOf(m._sum.commissionAmount), network: sumOf(m._sum.networkFeeAmount) });
         const volume = {
@@ -521,13 +507,14 @@ export class AnalyticsService {
         // optional company filter, so the index is computed rather than fixed.
         const truncParam = companyFilter ? 5 : 4;
         const dailyRows = await tx.$queryRawUnsafe<
-          Array<{ day: Date; volume: string; fees: string; count: bigint }>
+          Array<{ day: Date; volume: string; fees: string; networkFees: string; count: bigint }>
         >(
           `
         SELECT
           date_trunc($${truncParam}::text, created_at AT TIME ZONE 'UTC')::date AS day,
           SUM(net_amount + commission_amount + network_fee_amount)::text AS volume,
           SUM(commission_amount)::text                 AS fees,
+          SUM(network_fee_amount)::text                AS "networkFees",
           COUNT(*)::bigint                             AS count
         FROM transactions
         WHERE status = 'COMPLETED'
@@ -558,13 +545,20 @@ export class AnalyticsService {
         // its sources, so no LIMIT there. Bounding the LIMIT also keeps the
         // source.findMany IN-list small on the platform path.
         const topSrcRows = await tx.$queryRawUnsafe<
-          Array<{ sourceId: string; volume: string; fees: string; count: bigint }>
+          Array<{
+            sourceId: string;
+            volume: string;
+            fees: string;
+            networkFees: string;
+            count: bigint;
+          }>
         >(
           `
           SELECT
             source_id                                    AS "sourceId",
             SUM(net_amount + commission_amount + network_fee_amount)::text AS volume,
             SUM(commission_amount)::text                 AS fees,
+            SUM(network_fee_amount)::text                AS "networkFees",
             COUNT(*)::bigint                             AS count
           FROM transactions
           WHERE status = 'COMPLETED'
@@ -593,6 +587,8 @@ export class AnalyticsService {
           // deposit card.
           volume: Money.of(r.volume ?? '0').toString(),
           fees: Money.of(r.fees ?? '0').toString(),
+          // The network fee on those same deposits — `volume` already includes it.
+          networkFees: Money.of(r.networkFees ?? '0').toString(),
           count: Number(r.count),
         }));
 
@@ -668,9 +664,9 @@ export class AnalyticsService {
 // Shape a (completed, pending) pair of Prisma aggregate results into the
 // VolumeMetric the dashboard consumes. Amounts become Decimal strings.
 function toVolumeMetric(
-  completed: { _sum: { netAmount?: { toString(): string } | null }; _count: { _all: number } },
+  completed: { _sum: { netAmount: { toString(): string } | null }; _count: { _all: number } },
   completedFees: { fee: string; network: string },
-  pending: { _sum: { netAmount?: { toString(): string } | null }; _count: { _all: number } },
+  pending: { _sum: { netAmount: { toString(): string } | null }; _count: { _all: number } },
   pendingFees: { fee: string; network: string },
 ): VolumeMetric {
   // Total = net + fee + network fee (the money that actually moved). Equals
@@ -708,13 +704,17 @@ function fillBucketGaps(
   from: Date,
   to: Date,
   granularity: BucketGranularity,
-  rows: Array<{ day: Date; volume: string; fees: string; count: bigint }>,
-): Array<{ date: string; volume: string; fees: string; count: number }> {
-  const byBucket = new Map<string, { volume: string; fees: string; count: number }>();
+  rows: Array<{ day: Date; volume: string; fees: string; networkFees: string; count: bigint }>,
+): Array<{ date: string; volume: string; fees: string; networkFees: string; count: number }> {
+  const byBucket = new Map<
+    string,
+    { volume: string; fees: string; networkFees: string; count: number }
+  >();
   for (const r of rows) {
     byBucket.set(bucketKey(r.day), {
       volume: r.volume ?? '0',
       fees: r.fees ?? '0',
+      networkFees: r.networkFees ?? '0',
       count: Number(r.count),
     });
   }
@@ -724,6 +724,7 @@ function fillBucketGaps(
       date: key,
       volume: byBucket.get(key)?.volume ?? '0',
       fees: byBucket.get(key)?.fees ?? '0',
+      networkFees: byBucket.get(key)?.networkFees ?? '0',
       count: byBucket.get(key)?.count ?? 0,
     };
   });

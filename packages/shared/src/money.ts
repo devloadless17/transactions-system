@@ -152,3 +152,13 @@ export class Money {
     return this.value.toDecimalPlaces(dp, Decimal.ROUND_HALF_EVEN).toFixed(dp);
   }
 }
+
+/**
+ * A fee priced on an amount: a FIXED fee is its own dollar value, a PERCENTAGE
+ * fee is `amount × value %`. Quantized ONCE, here, to the money scale
+ * (half-even) — so the API that charges a fee and the dashboard that previews
+ * it can never disagree by a cent.
+ */
+export function feeOnAmount(amount: Money, type: 'FIXED' | 'PERCENTAGE', value: MoneyInput): Money {
+  return type === 'FIXED' ? Money.of(value).round() : amount.percent(value).round();
+}

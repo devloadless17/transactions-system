@@ -285,4 +285,96 @@ export async function loginOwnerApiContext(
   return fresh;
 }
 
+// ---------------------------------------------------------------------------
+// Shared by the money specs (kept here so a request-shape change is one edit)
+// ---------------------------------------------------------------------------
+
+/** Number of a decimal-string money field ("97.5" → 97.5; missing → 0). */
+export const num = (s: string | number | undefined | null): number => Number(s ?? 0);
+
+/** Money equality to the cent-and-beyond (floats: 6 decimal places). */
+export function near(
+  actual: string | number | undefined | null,
+  expected: number,
+  what = '',
+): void {
+  expect(num(actual), what).toBeCloseTo(expected, 6);
+}
+
+/** A CASH request body — withdrawals, payouts and loads share the shape. */
+export function cashRequest(amount: string, recipientName = 'E2E Payee') {
+  return {
+    amount,
+    currency: 'USD',
+    payout: {
+      method: 'CASH',
+      recipientName,
+      recipientPhone: '+9610000000',
+      pickupLocation: 'E2E Branch',
+    },
+  };
+}
+
+/**
+ * A CSRF-protected mutation. Returns the status and the body — unwrapped from
+ * the success envelope, or the error body untouched — so a spec can assert on
+ * both a 2xx payload and a 4xx `error`.
+ */
+export async function mutate(
+  api: APIRequestContext,
+  csrf: string,
+  method: 'post' | 'put' | 'patch' | 'delete',
+  path: string,
+  body: Record<string, unknown> = {},
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+): Promise<{ status: number; body: any }> {
+  const res = await api[method](path, { headers: { 'x-csrf-token': csrf }, data: body });
+  const text = await res.text();
+  return { status: res.status(), body: text ? unwrap(JSON.parse(text)) : null };
+}
+
+/** GET a JSON resource and unwrap the envelope. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function getJson<T = any>(api: APIRequestContext, path: string): Promise<T> {
+  const res = await api.get(path);
+  expect(res.ok(), `GET ${path}: ${res.status()}`).toBeTruthy();
+  return unwrap<T>(await res.json());
+}
+
+/** A CSV export as rows of cells, plus a `cell(row, columnName)` lookup. */
+export async function getCsv(api: APIRequestContext, path: string) {
+  const res = await api.get(path);
+  expect(res.ok(), `GET ${path}: ${res.status()}`).toBeTruthy();
+  const rows = (await res.text())
+    .replace(/^\uFEFF/, '')
+    .trim()
+    .split('\n')
+    .map((l) => l.split(','));
+  const header = rows[0]!;
+  return {
+    header,
+    rows: rows.slice(1),
+    cell: (row: string[], column: string) => row[header.indexOf(column)],
+  };
+}
+
+/**
+ * Create a platform user of the given role and take it through the forced
+ * password change. Returns its credentials (for a browser sign-in) and a
+ * signed-in API context (caller disposes).
+ */
+export async function provisionPlatformUser(
+  admin: { api: APIRequestContext; csrf: string },
+  role: 'BACKOFFICE' | 'ADMIN_OPERATOR',
+  password: string,
+): Promise<{ email: string; password: string; api: APIRequestContext }> {
+  const email = `e2e-${role.toLowerCase()}-${Date.now().toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2, 6)}@example.com`;
+  const created = await mutate(admin.api, admin.csrf, 'post', '/v1/admin/users', { email, role });
+  expect(created.status, JSON.stringify(created.body)).toBe(201);
+  const api = await loginOwnerApiContext(email, created.body.temporaryPassword, password);
+  return { email, password, api };
+}
+
 export { expect };

@@ -14,6 +14,7 @@ import { RealtimeService } from '../realtime/realtime.service';
 import { TelegramClient } from '../telegram/telegram.client';
 import type { AuthPrincipal } from '../../common/types/request.types';
 import { NotFoundError, ValidationError } from '../../common/errors/domain.error';
+import { isBackoffice } from '../../common/backoffice-view';
 
 // Reject offsets beyond this — deep paging should narrow with filters instead of
 // scanning, mirroring the transactions/activity lists.
@@ -48,6 +49,34 @@ interface CreateInput {
   link: string;
   entityId?: string | null;
   companyName?: string | null;
+  /** ADMIN request notifications: the operator's figure, kept as data. */
+  operatorAmount?: { amount: string; currency: string };
+}
+
+// What an ADMIN notification's metadata may carry.
+interface AdminNotificationMeta {
+  companyName?: string | null;
+  // The figure an operator acts on — what to PAY (withdrawal/payout net) or to
+  // COLLECT (load total). Never the requested amount, and never a fee. Absent
+  // on notifications created before it was recorded.
+  operatorAmount?: string;
+  currency?: string;
+}
+
+/**
+ * The body of an ADMIN "new request" notification, built from its DATA.
+ * With the operator's figure it says what to pay or collect; without one (a
+ * notification created before the figure was recorded) it names no amount.
+ */
+export function adminRequestBody(
+  flow: NotificationFlow,
+  companyName: string | null | undefined,
+  operator?: { amount: string; currency: string } | null,
+): string {
+  const who = companyName ?? 'A company';
+  if (!operator) return `${who} requested a ${FLOW_LABEL[flow]}.`;
+  const verb = flow === 'LOAD' ? 'collect' : 'pay';
+  return `${who} requested a ${FLOW_LABEL[flow]}: ${operator.amount} ${operator.currency} to ${verb}.`;
 }
 
 /**
@@ -104,8 +133,9 @@ export class NotificationsService {
         event: 'REQUESTED',
         entityId: p.entityId,
         title: `New ${FLOW_LABEL[p.flow]} request`,
-        body: `${name ?? 'A company'} requested a ${FLOW_LABEL[p.flow]}: ${p.amount} ${p.currency} to ${p.flow === 'LOAD' ? 'collect' : 'pay'}.`,
+        body: adminRequestBody(p.flow, name, { amount: p.amount, currency: p.currency }),
         link: `/admin/${FLOW_PATH[p.flow]}`,
+        operatorAmount: { amount: p.amount, currency: p.currency },
       });
     } catch (e) {
       this.logger.warn(`notify requestSubmitted failed: ${(e as Error).message}`);
@@ -242,6 +272,12 @@ export class NotificationsService {
               ? ({
                   companyId: input.companyId,
                   companyName: input.companyName ?? null,
+                  ...(input.operatorAmount
+                    ? {
+                        operatorAmount: input.operatorAmount.amount,
+                        currency: input.operatorAmount.currency,
+                      }
+                    : {}),
                 } as Prisma.InputJsonValue)
               : undefined,
         },
@@ -290,7 +326,7 @@ export class NotificationsService {
         tx.notification.count({ where: { ...base, reads: { none: { userId: uid } } } }),
       ]);
       return {
-        data: rows.map((r) => this.map(r)),
+        data: rows.map((r) => this.map(r, { backoffice: isBackoffice(user) })),
         meta: {
           page: query.page,
           pageSize: query.pageSize,
@@ -401,27 +437,48 @@ export class NotificationsService {
     else if (user.companyId) this.realtime.company(user.companyId, ['notifications']);
   }
 
-  private map(r: {
-    id: string;
-    scope: string;
-    flow: string;
-    event: string;
-    title: string;
-    body: string;
-    link: string;
-    entityId: string | null;
-    metadata: Prisma.JsonValue;
-    createdAt: Date;
-    reads: Array<{ id: string }>;
-  }): NotificationResponse {
-    const meta = (r.metadata ?? {}) as { companyName?: string | null };
+  private map(
+    r: {
+      id: string;
+      scope: string;
+      flow: string;
+      event: string;
+      title: string;
+      body: string;
+      link: string;
+      entityId: string | null;
+      metadata: Prisma.JsonValue;
+      createdAt: Date;
+      reads: Array<{ id: string }>;
+    },
+    viewer: { backoffice: boolean } = { backoffice: false },
+  ): NotificationResponse {
+    const meta = (r.metadata ?? {}) as AdminNotificationMeta;
+    const flow = r.flow as NotificationFlow;
+    const event = r.event as NotificationEvent;
+    // BACKOFFICE never learns what the platform charges (common/
+    // backoffice-view.ts), so its "new request" text is never the stored
+    // sentence: notifications written before this figure was recorded named the
+    // REQUESTED amount, which next to the row's pay/collect figure gives the fee
+    // away. Back office gets the body rebuilt from the notification's data —
+    // the operator's figure when it was recorded, no amount at all when not.
+    const body =
+      viewer.backoffice && r.scope === 'ADMIN' && event === 'REQUESTED'
+        ? adminRequestBody(
+            flow,
+            meta.companyName,
+            typeof meta.operatorAmount === 'string' && typeof meta.currency === 'string'
+              ? { amount: meta.operatorAmount, currency: meta.currency }
+              : null,
+          )
+        : r.body;
     return {
       id: r.id,
       scope: r.scope as NotificationScope,
-      flow: r.flow as NotificationFlow,
-      event: r.event as NotificationEvent,
+      flow,
+      event,
       title: r.title,
-      body: r.body,
+      body,
       link: r.link,
       entityId: r.entityId,
       companyName: meta.companyName ?? null,

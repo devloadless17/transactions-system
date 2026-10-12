@@ -119,10 +119,15 @@ describe('network fee — deposits', () => {
     expect(eq(s.feeLedger, '2')).toBe(true);
     expect(eq(s.networkFeeLedger, '1')).toBe(true);
 
-    // The CRM gets the same fee breakdown as the API.
+    // A completed event is pushed to the CRM dispatcher with the fee breakdown
+    // (literal values: the fake records the very object ingest returns, so
+    // comparing the two would compare a value with itself). The BODY the real
+    // dispatcher builds from it is pinned by crm-dispatch.service.spec.ts.
     const crm = h.crm.events.filter((e) => e.kind === 'transaction').pop()!;
     expect(crm.event).toBe('transaction.completed');
-    expect(crm.payload.networkFeeAmount).toBe(txn.networkFeeAmount);
+    expect(eq(String(crm.payload.commissionAmount), '2')).toBe(true);
+    expect(eq(String(crm.payload.networkFeeAmount), '1')).toBe(true);
+    expect(eq(String(crm.payload.netAmount), '97')).toBe(true);
   });
 
   it('ON_TOP: both fees on top of the deposit, the company is credited the full amount', async () => {

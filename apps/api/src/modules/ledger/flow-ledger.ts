@@ -38,6 +38,29 @@ export function totalFee(fees: FeeParts): Money {
 }
 
 /**
+ * The fees frozen on a stored row, quantized ONCE on the way in (Money.fromDb)
+ * so everything derived from them is at scale. `commission` is the row's
+ * commission column — `commission_amount` on a deposit, `fee_amount` on a
+ * withdrawal, payout or load.
+ */
+export function storedFees(
+  commission: { toString(): string } | null | undefined,
+  network: { toString(): string } | null | undefined,
+): FeeParts {
+  return { commission: Money.fromDb(commission), network: Money.fromDb(network) };
+}
+
+/**
+ * The gross that actually moved for a row: net + both fees. True under BOTH fee
+ * applications (DEDUCTED: amount = net + fees; ON_TOP: amount + fees = net +
+ * fees), which the requested `amount` alone is not. This is the API's
+ * `totalAmount`, the exports' `gross_amount` and the operator's "to collect".
+ */
+export function grossOf(net: Money, fees: FeeParts): Money {
+  return net.add(totalFee(fees));
+}
+
+/**
  * Gross amount that moves for a row = amount, or amount + both fees when the
  * fees are ON_TOP.
  *
@@ -125,6 +148,39 @@ export async function assertSufficient(
   }
 }
 
+/**
+ * The two revenue legs of a ledger set — FEE for the commission, NETWORK_FEE
+ * for the network fee — built in ONE place, in that order, for every builder
+ * below. A zero fee books no line (the ledger rejects non-positive amounts), so
+ * a row without a network fee books exactly the single FEE leg it always did.
+ * CREDIT realizes the fees; DEBIT gives them back (a deposit reversal).
+ */
+function feeLegs(
+  ref: Pick<LedgerEntryInput, 'transactionId' | 'withdrawalId' | 'payoutId' | 'loadId'>,
+  companyId: string,
+  currency: string,
+  fees: FeeParts,
+  direction: 'CREDIT' | 'DEBIT',
+  metadata?: LedgerEntryInput['metadata'],
+): LedgerEntryInput[] {
+  const legs: LedgerEntryInput[] = [];
+  const leg = (accountType: 'FEE' | 'NETWORK_FEE', amount: Money) => {
+    if (!amount.isPositive()) return;
+    legs.push({
+      ...ref,
+      companyId,
+      accountType,
+      direction,
+      amount,
+      currency,
+      ...(metadata ? { metadata } : {}),
+    });
+  };
+  leg('FEE', fees.commission);
+  leg('NETWORK_FEE', fees.network);
+  return legs;
+}
+
 /** Ties the ledger entries back to the originating withdrawal or payout row. */
 export type FlowRef = Pick<LedgerEntryInput, 'withdrawalId' | 'payoutId'>;
 
@@ -189,26 +245,7 @@ export function settleEntries(
       currency,
     });
   }
-  if (realized.commission.isPositive()) {
-    entries.push({
-      ...ref,
-      companyId,
-      accountType: 'FEE',
-      direction: 'CREDIT',
-      amount: realized.commission,
-      currency,
-    });
-  }
-  if (realized.network.isPositive()) {
-    entries.push({
-      ...ref,
-      companyId,
-      accountType: 'NETWORK_FEE',
-      direction: 'CREDIT',
-      amount: realized.network,
-      currency,
-    });
-  }
+  entries.push(...feeLegs(ref, companyId, currency, realized, 'CREDIT'));
   return entries;
 }
 
@@ -264,26 +301,7 @@ export function moneyInEntries(
       currency,
     });
   }
-  if (legs.fees.commission.isPositive()) {
-    entries.push({
-      ...ref,
-      companyId,
-      accountType: 'FEE',
-      direction: 'CREDIT',
-      amount: legs.fees.commission,
-      currency,
-    });
-  }
-  if (legs.fees.network.isPositive()) {
-    entries.push({
-      ...ref,
-      companyId,
-      accountType: 'NETWORK_FEE',
-      direction: 'CREDIT',
-      amount: legs.fees.network,
-      currency,
-    });
-  }
+  entries.push(...feeLegs(ref, companyId, currency, legs.fees, 'CREDIT'));
   return entries;
 }
 
@@ -312,7 +330,7 @@ export function reversalEntries(
       companyId,
       accountType: 'EXTERNAL',
       direction: 'CREDIT',
-      amount: legs.net.add(totalFee(legs.fees)),
+      amount: grossOf(legs.net, legs.fees),
       currency,
       metadata: { kind: 'reversal', reason: legs.reason },
     },
@@ -339,27 +357,6 @@ export function reversalEntries(
       metadata: { kind: 'reversal', shortfall: true },
     });
   }
-  if (legs.fees.commission.isPositive()) {
-    entries.push({
-      ...ref,
-      companyId,
-      accountType: 'FEE',
-      direction: 'DEBIT',
-      amount: legs.fees.commission,
-      currency,
-      metadata: { kind: 'reversal' },
-    });
-  }
-  if (legs.fees.network.isPositive()) {
-    entries.push({
-      ...ref,
-      companyId,
-      accountType: 'NETWORK_FEE',
-      direction: 'DEBIT',
-      amount: legs.fees.network,
-      currency,
-      metadata: { kind: 'reversal' },
-    });
-  }
+  entries.push(...feeLegs(ref, companyId, currency, legs.fees, 'DEBIT', { kind: 'reversal' }));
   return entries;
 }

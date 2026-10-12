@@ -140,9 +140,9 @@ async function bootstrap() {
       .finally(() => process.exit(1));
   });
 
-  // Trust the hops we actually operate (container network + Cloudflare), never a
-  // hop COUNT — staging has one hop and prod has two, and a count that exceeds
-  // the real chain is spoofable. See ./common/http/trusted-proxies.
+  // Trust only the hop we are attached to (the container network the edge proxy
+  // reaches us over). The proxy alone decides who the visitor is and hands over
+  // ONE address — see ./common/http/trusted-proxies and the Caddyfile.
   app.set('trust proxy', trustedProxies());
   // Every response here is authenticated and tenant-scoped — nothing may be
   // cached by a browser, proxy or CDN. Registered before the routes so it

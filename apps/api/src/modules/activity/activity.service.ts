@@ -12,7 +12,7 @@ import type { PrismaClient } from '@app/db';
 import { PrismaService } from '../../database/prisma.service';
 import { CacheService } from '../cache/cache.service';
 import { ValidationError } from '../../common/errors/domain.error';
-import { backofficeCsvCells } from '../../common/backoffice-view';
+import { BACKOFFICE_CSV_COLUMNS, backofficeCsvCells } from '../../common/backoffice-view';
 import { streamCsvKeyset } from '../../common/csv';
 
 // Cache the list COUNT briefly so paging reuses it (same tradeoff as the
@@ -28,8 +28,9 @@ const MAX_LIST_OFFSET = 50_000;
 const BALANCE_MODE_MAX_ROWS = 25_000;
 
 // One DB row of the unified feed (snake_case straight from the raw query).
-// `amount` is always the GROSS money that actually moved (net + fee + network
-// fee) — never the bare requested figure, whose meaning flips with fee_application.
+// `amount` is the GROSS money that actually moved (net + fee + network fee) —
+// never the bare requested figure, whose meaning flips with fee_application.
+// The one exception is a deposit built for back office (see FeedAudience).
 interface ActivityRow {
   id: string;
   kind: ActivityKind;
@@ -121,6 +122,46 @@ const DEPOSIT_RECIPIENT_SQL = `
              o.payload->>'customer' AS recipient_name, o.payload->>'phone' AS recipient_contact,
              o.payload->>'target' AS target`.trim();
 
+// The fee column of each feed table: a deposit's commission lives in
+// commission_amount, the three flows keep theirs in fee_amount.
+type FeeColumn = 'commission_amount' | 'fee_amount';
+
+// The GROSS that actually moved. Every table's bare `amount` is the requested
+// figure (gross for DEDUCTED fees but net for ON_TOP), so the gross is always
+// recomputed as net + fee + network fee — an identity that holds under both fee
+// applications and needs no fee_application column (deposits don't have one).
+// network_fee_amount is DECIMAL(20,2), so adding it never widens the sum's
+// scale: the amount text is byte-identical to before for an unchanged row.
+const grossSql = (fee: FeeColumn): string => `(o.net_amount + o.${fee} + o.network_fee_amount)`;
+
+// The money columns of one feed row — ONE fragment for every branch of every
+// union builder (list, balance mode, export), so the three can never drift
+// apart on what `amount` means. Always aliased, so any branch can lead a UNION.
+const moneyColsSql = (fee: FeeColumn, amountSql: string = grossSql(fee)): string =>
+  `${amountSql}::text AS amount, o.currency,
+             o.${fee}::text AS fee, o.network_fee_amount::text AS network_fee,
+             o.net_amount::text AS net`;
+
+// What a row shows for a flow's "details" (who it went to / came from).
+const PAYOUT_DETAILS_SQL = `COALESCE(o.payout_details->>'recipientName', o.payout_details->>'accountHolder', o.payout_details->>'walletAddress', o.payout_details->>'description', o.external_reference)`;
+const DEPOSIT_DETAILS_SQL = `COALESCE(o.payload->>'customer', o.payload->>'target', o.payload->>'phone')`;
+
+/**
+ * Who the feed is being built for. Back office gets ONE figure per operation
+ * and nothing a fee could be derived from (common/backoffice-view.ts):
+ *   - a deposit's `amount` is what the customer PAID — the stored amount, the
+ *     same figure the source reported and the Whish pages show — instead of
+ *     the gross (which for an ON_TOP deposit is the paid amount PLUS the fees);
+ *   - no running wallet balance (consecutive balances reveal each row's net).
+ */
+interface FeedAudience {
+  backoffice: boolean;
+}
+
+// A deposit's `amount`: the gross for everyone, the paid amount for back office.
+const depositAmountSql = (audience: FeedAudience): string =>
+  audience.backoffice ? 'o.amount' : grossSql('commission_amount');
+
 @Injectable()
 export class ActivityService {
   constructor(
@@ -131,8 +172,11 @@ export class ActivityService {
   async list(args: {
     companyId?: string;
     query: ListActivityQuery;
+    /** Back office gets one money figure per row — see FeedAudience. */
+    backoffice?: boolean;
   }): Promise<ActivityListResponse> {
     const { query } = args;
+    const audience: FeedAudience = { backoffice: args.backoffice === true };
     const skip = (query.page - 1) * query.pageSize;
     if (skip > MAX_LIST_OFFSET) {
       throw new ValidationError(
@@ -141,17 +185,25 @@ export class ActivityService {
     }
 
     // Resolve the company the feed is scoped to: the caller's own (company
-    // scope) or the admin's optional companyId filter.
-    const scopedCompanyId = args.companyId ?? query.companyId ?? null;
+    // scope) or the admin's optional companyId filter. A company caller's
+    // `companyId` query parameter is ignored — it is an admin-only filter.
     const isCompanyScope = Boolean(args.companyId);
+    const adminCompanyId = isCompanyScope ? null : (query.companyId ?? null);
+    const scopedCompanyId = args.companyId ?? adminCompanyId;
+    // Whose rows the queries can see (RLS). Part of every cached count's key:
+    // a count computed for one tenant must never be served to another, or to
+    // the platform-wide admin view.
+    const countScope = args.companyId ? `co:${args.companyId}` : 'admin';
 
     // Running balance ("balance mode") is only well-defined for a single
     // company + single currency, with no kind/direction/search filter that
     // would punch holes in the chronological sum. A date filter is still fine —
     // it's applied AFTER the cumulative window so balances stay absolute.
+    // Back office never gets it, so its (heavier) queries are skipped too.
     const onlyCurrency = SUPPORTED_CURRENCIES.length === 1 ? SUPPORTED_CURRENCIES[0] : null;
     const effectiveCurrency = query.currency ?? onlyCurrency ?? null;
     const balanceMode =
+      !audience.backoffice &&
       Boolean(scopedCompanyId) &&
       Boolean(effectiveCurrency) &&
       !query.kind &&
@@ -174,8 +226,9 @@ export class ActivityService {
             companyId: scopedCompanyId!,
             currency: effectiveCurrency!,
             skip,
+            countScope,
           })
-        : await this.queryNormal(tx, { query, adminCompanyId: query.companyId ?? null, skip });
+        : await this.queryNormal(tx, { query, adminCompanyId, skip, countScope, audience });
 
       return {
         data: rows.map((r) => this.mapRow(r, isCompanyScope, useBalance)),
@@ -207,9 +260,9 @@ export class ActivityService {
     const adminCompanyId = args.companyId ? null : (args.query.companyId ?? null);
     const q = args.query;
     const prisma = this.prisma;
-    const unionSql = this.unionSql();
-    const kindsFor = this.kindsFor.bind(this);
     const backoffice = args.backoffice === true;
+    const unionSql = this.unionSql({ backoffice });
+    const kindsFor = this.kindsFor.bind(this);
 
     return streamCsvKeyset<ActivityRow>({
       filename: `transactions-${Date.now()}.csv`,
@@ -271,17 +324,14 @@ export class ActivityService {
           r.network_fee,
         ];
         if (!backoffice) return cells;
-        // Back office: gross for money in (deposits, loads), net for money paid
-        // out (withdrawals, payouts) — never both, never a fee.
-        const paidOut = r.kind === 'WITHDRAWAL' || r.kind === 'PAYOUT';
-        return backofficeCsvCells(ACTIVITY_CSV_HEADER, cells, {
-          hide: [
-            paidOut ? 'gross_amount' : 'net_amount',
-            'fee_amount',
-            'network_fee_amount',
-            'fee_application',
-          ],
-        });
+        // Back office: one figure per row, never a fee. Money in → gross_amount
+        // (what the customer paid for a deposit, what is collected for a load);
+        // money paid out (withdrawals, payouts) → net_amount.
+        return backofficeCsvCells(
+          ACTIVITY_CSV_HEADER,
+          cells,
+          BACKOFFICE_CSV_COLUMNS.activity[ACTIVITY_DIRECTION[r.kind] === 'OUT' ? 'out' : 'in'],
+        );
       },
     });
   }
@@ -310,20 +360,26 @@ export class ActivityService {
   // The four COMPLETED operations projected to one shape (no running balance).
   // Used by the COUNT queries and the CSV export — the list row queries use the
   // bounded (normalRowsSql) or balance (balanceUnionSql) variants.
-  // `amount` is the GROSS that actually moved. Every table's bare `amount` is the
-  // requested figure (gross for DEDUCTED fees but net for ON_TOP), so it is always
-  // recomputed as net + fee + network fee — an identity that holds under both fee
-  // applications and needs no fee_application column (deposits don't have one).
-  // network_fee_amount is DECIMAL(20,2), so adding it never widens the sum's
-  // scale: the amount text is byte-identical to before for an unchanged row.
-  private unionSql(): string {
+  // `amount` is the GROSS that actually moved (see grossSql) — except a deposit
+  // shown to back office, which is the amount the customer paid (FeedAudience).
+  private unionSql(audience: FeedAudience = { backoffice: false }): string {
+    const flowBranch = (kind: ActivityKind, table: string): string => `
+      SELECT o.id, '${kind}'::text AS kind, ${moneyColsSql('fee_amount')},
+             o.fee_application::text AS fee_application,
+             o.payout_method::text AS description,
+             ${PAYOUT_DETAILS_SQL} AS details,
+             o.external_reference AS reference,
+             o.created_at, o.processed_at, o.company_id, c.name AS company_name,
+             o.notes, o.admin_notes,
+             ${FLOW_RECIPIENT_SQL}
+      FROM ${table} o
+      LEFT JOIN companies c ON c.id = o.company_id
+      WHERE o.status = 'COMPLETED'`;
     return `
-      SELECT o.id, 'DEPOSIT'::text AS kind, (o.net_amount + o.commission_amount + o.network_fee_amount)::text AS amount, o.currency,
-             o.commission_amount::text AS fee, o.network_fee_amount::text AS network_fee,
-             o.net_amount::text AS net,
+      SELECT o.id, 'DEPOSIT'::text AS kind, ${moneyColsSql('commission_amount', depositAmountSql(audience))},
              NULL::text AS fee_application,
              s.code AS description,
-             COALESCE(o.payload->>'customer', o.payload->>'target', o.payload->>'phone') AS details,
+             ${DEPOSIT_DETAILS_SQL} AS details,
              o.external_transaction_id AS reference,
              o.created_at, o.processed_at, o.company_id, c.name AS company_name,
              ${DEPOSIT_RECIPIENT_SQL}
@@ -331,48 +387,9 @@ export class ActivityService {
       LEFT JOIN sources s ON s.id = o.source_id
       LEFT JOIN companies c ON c.id = o.company_id
       WHERE o.status = 'COMPLETED'
-      UNION ALL
-      SELECT o.id, 'LOAD'::text, (o.net_amount + o.fee_amount + o.network_fee_amount)::text, o.currency,
-             o.fee_amount::text, o.network_fee_amount::text, o.net_amount::text,
-             o.fee_application::text,
-             o.payout_method::text,
-             COALESCE(o.payout_details->>'recipientName', o.payout_details->>'accountHolder',
-                      o.payout_details->>'walletAddress', o.payout_details->>'description',
-                      o.external_reference),
-             o.external_reference,
-             o.created_at, o.processed_at, o.company_id, c.name, o.notes, o.admin_notes,
-             ${FLOW_RECIPIENT_SQL}
-      FROM loads o
-      LEFT JOIN companies c ON c.id = o.company_id
-      WHERE o.status = 'COMPLETED'
-      UNION ALL
-      SELECT o.id, 'WITHDRAWAL'::text, (o.net_amount + o.fee_amount + o.network_fee_amount)::text, o.currency,
-             o.fee_amount::text, o.network_fee_amount::text, o.net_amount::text,
-             o.fee_application::text,
-             o.payout_method::text,
-             COALESCE(o.payout_details->>'recipientName', o.payout_details->>'accountHolder',
-                      o.payout_details->>'walletAddress', o.payout_details->>'description',
-                      o.external_reference),
-             o.external_reference,
-             o.created_at, o.processed_at, o.company_id, c.name, o.notes, o.admin_notes,
-             ${FLOW_RECIPIENT_SQL}
-      FROM withdrawals o
-      LEFT JOIN companies c ON c.id = o.company_id
-      WHERE o.status = 'COMPLETED'
-      UNION ALL
-      SELECT o.id, 'PAYOUT'::text, (o.net_amount + o.fee_amount + o.network_fee_amount)::text, o.currency,
-             o.fee_amount::text, o.network_fee_amount::text, o.net_amount::text,
-             o.fee_application::text,
-             o.payout_method::text,
-             COALESCE(o.payout_details->>'recipientName', o.payout_details->>'accountHolder',
-                      o.payout_details->>'walletAddress', o.payout_details->>'description',
-                      o.external_reference),
-             o.external_reference,
-             o.created_at, o.processed_at, o.company_id, c.name, o.notes, o.admin_notes,
-             ${FLOW_RECIPIENT_SQL}
-      FROM payouts o
-      LEFT JOIN companies c ON c.id = o.company_id
-      WHERE o.status = 'COMPLETED'
+      UNION ALL${flowBranch('LOAD', 'loads')}
+      UNION ALL${flowBranch('WITHDRAWAL', 'withdrawals')}
+      UNION ALL${flowBranch('PAYOUT', 'payouts')}
     `;
   }
 
@@ -400,13 +417,10 @@ export class ActivityService {
         WHERE account_type = 'AVAILABLE' AND ${fk} IS NOT NULL AND company_id = ${companyPh}::uuid
         GROUP BY ${fk}
       ) la ON la.oid = o.id`;
-    const PAYOUT_DETAILS = `COALESCE(o.payout_details->>'recipientName', o.payout_details->>'accountHolder', o.payout_details->>'walletAddress', o.payout_details->>'description', o.external_reference)`;
     const flowBranch = (kind: ActivityKind, table: string, fk: string) => `
-      SELECT o.id, '${kind}'::text AS kind, (o.net_amount + o.fee_amount + o.network_fee_amount)::text AS amount, o.currency,
-             o.fee_amount::text AS fee, o.network_fee_amount::text AS network_fee,
-             o.net_amount::text AS net,
+      SELECT o.id, '${kind}'::text AS kind, ${moneyColsSql('fee_amount')},
              o.payout_method::text AS description,
-             ${PAYOUT_DETAILS} AS details,
+             ${PAYOUT_DETAILS_SQL} AS details,
              o.external_reference AS reference,
              o.created_at, o.processed_at, o.company_id, c.name AS company_name,
              COALESCE(la.net, 0) AS net_avail
@@ -415,11 +429,9 @@ export class ActivityService {
       ${netJoin(fk)}
       WHERE o.status = 'COMPLETED'`;
     return `
-      SELECT o.id, 'DEPOSIT'::text AS kind, (o.net_amount + o.commission_amount + o.network_fee_amount)::text AS amount, o.currency,
-             o.commission_amount::text AS fee, o.network_fee_amount::text AS network_fee,
-             o.net_amount::text AS net,
+      SELECT o.id, 'DEPOSIT'::text AS kind, ${moneyColsSql('commission_amount')},
              s.code AS description,
-             COALESCE(o.payload->>'customer', o.payload->>'target', o.payload->>'phone') AS details,
+             ${DEPOSIT_DETAILS_SQL} AS details,
              o.external_transaction_id AS reference,
              o.created_at, o.processed_at, o.company_id, c.name AS company_name,
              COALESCE(la.net, 0) AS net_avail
@@ -447,7 +459,12 @@ export class ActivityService {
   // (UNION-naming) branch when kind/direction selects a subset.
   private normalRowsSql(
     dp: (v: unknown) => string,
-    a: { query: ListActivityQuery; adminCompanyId: string | null; skip: number },
+    a: {
+      query: ListActivityQuery;
+      adminCompanyId: string | null;
+      skip: number;
+      audience: FeedAudience;
+    },
   ): string {
     const q = a.query;
     // Filter placeholders — bound ONCE, reused (by $n) across every branch.
@@ -474,40 +491,34 @@ export class ActivityService {
       return cl.join(' AND ');
     };
 
-    const PAYOUT_DETAILS = `COALESCE(o.payout_details->>'recipientName', o.payout_details->>'accountHolder', o.payout_details->>'walletAddress', o.payout_details->>'description', o.external_reference)`;
     // The three money-out/-in tables share an identical projection shape.
-    // Gross (net + fee + network fee), not the bare requested amount — see unionSql().
     const flowBranch = (kind: ActivityKind, table: string): string => `(
-      SELECT o.id, '${kind}'::text AS kind, (o.net_amount + o.fee_amount + o.network_fee_amount)::text AS amount, o.currency,
-             o.fee_amount::text AS fee, o.network_fee_amount::text AS network_fee,
-             o.net_amount::text AS net,
+      SELECT o.id, '${kind}'::text AS kind, ${moneyColsSql('fee_amount')},
              o.payout_method::text AS description,
-             ${PAYOUT_DETAILS} AS details,
+             ${PAYOUT_DETAILS_SQL} AS details,
              o.external_reference AS reference,
              o.created_at, o.processed_at, o.company_id, c.name AS company_name,
              o.notes, o.admin_notes,
              ${FLOW_RECIPIENT_SQL}
       FROM ${table} o
       LEFT JOIN companies c ON c.id = o.company_id
-      WHERE ${branchWhere('o.external_reference', 'o.payout_method::text', PAYOUT_DETAILS)}
+      WHERE ${branchWhere('o.external_reference', 'o.payout_method::text', PAYOUT_DETAILS_SQL)}
       ORDER BY o.created_at DESC, o.id DESC
       LIMIT ${limPh}
     )`;
 
     const branches: Record<ActivityKind, string> = {
       DEPOSIT: `(
-      SELECT o.id, 'DEPOSIT'::text AS kind, (o.net_amount + o.commission_amount + o.network_fee_amount)::text AS amount, o.currency,
-             o.commission_amount::text AS fee, o.network_fee_amount::text AS network_fee,
-             o.net_amount::text AS net,
+      SELECT o.id, 'DEPOSIT'::text AS kind, ${moneyColsSql('commission_amount', depositAmountSql(a.audience))},
              s.code AS description,
-             COALESCE(o.payload->>'customer', o.payload->>'target', o.payload->>'phone') AS details,
+             ${DEPOSIT_DETAILS_SQL} AS details,
              o.external_transaction_id AS reference,
              o.created_at, o.processed_at, o.company_id, c.name AS company_name,
              ${DEPOSIT_RECIPIENT_SQL}
       FROM transactions o
       LEFT JOIN sources s ON s.id = o.source_id
       LEFT JOIN companies c ON c.id = o.company_id
-      WHERE ${branchWhere(`o.external_transaction_id`, `s.code`, `COALESCE(o.payload->>'customer', o.payload->>'target', o.payload->>'phone')`)}
+      WHERE ${branchWhere(`o.external_transaction_id`, `s.code`, DEPOSIT_DETAILS_SQL)}
       ORDER BY o.created_at DESC, o.id DESC
       LIMIT ${limPh}
     )`,
@@ -532,7 +543,13 @@ export class ActivityService {
   // RLS; an admin may narrow to one company. Filters bind as params only.
   private async queryNormal(
     tx: PrismaClient,
-    a: { query: ListActivityQuery; adminCompanyId: string | null; skip: number },
+    a: {
+      query: ListActivityQuery;
+      adminCompanyId: string | null;
+      skip: number;
+      countScope: string;
+      audience: FeedAudience;
+    },
   ): Promise<{ rows: ActivityRow[]; total: number }> {
     // COUNT filters — applied to the full union's projected columns. Unchanged:
     // the COUNT runs over the whole union (it can't early-stop) and is 30s-cached,
@@ -566,7 +583,7 @@ export class ActivityService {
       ...dataParams,
     );
 
-    const total = await this.cachedCount(a.query, a.adminCompanyId, null, () => {
+    const total = await this.cachedCount(a.countScope, a.query, a.adminCompanyId, null, () => {
       const cp: unknown[] = [];
       const p = (v: unknown) => (cp.push(v), `$${cp.length}`);
       const whereCount = where(p);
@@ -590,7 +607,13 @@ export class ActivityService {
   // as new completed ops arrive.
   private async queryBalanceMode(
     tx: PrismaClient,
-    a: { query: ListActivityQuery; companyId: string; currency: string; skip: number },
+    a: {
+      query: ListActivityQuery;
+      companyId: string;
+      currency: string;
+      skip: number;
+      countScope: string;
+    },
   ): Promise<{ rows: ActivityRow[]; total: number }> {
     const dataParams: unknown[] = [];
     const dp = (v: unknown) => (dataParams.push(v), `$${dataParams.length}`);
@@ -618,7 +641,7 @@ export class ActivityService {
       ...dataParams,
     );
 
-    const total = await this.cachedCount(a.query, a.companyId, a.currency, () => {
+    const total = await this.cachedCount(a.countScope, a.query, a.companyId, a.currency, () => {
       const cp: unknown[] = [];
       const p = (v: unknown) => (cp.push(v), `$${cp.length}`);
       const cl = [`u.company_id = ${p(a.companyId)}::uuid`, `u.currency = ${p(a.currency)}`];
@@ -659,14 +682,20 @@ export class ActivityService {
     );
   }
 
+  // `scope` is whose rows the count query can SEE (one tenant under RLS, or
+  // everything for an admin). It leads the key so a count is only ever reused
+  // by callers with the same visibility: without it, two tenants asking the
+  // same filtered question — or a tenant and the platform-wide admin view —
+  // would share one cached total.
   private cachedCount(
+    scope: string,
     query: ListActivityQuery,
     companyId: string | null,
     currency: string | null,
     run: () => Promise<number>,
   ): Promise<number> {
     const key =
-      `list-count:activity:${companyId ?? 'all'}:${currency ?? query.currency ?? ''}` +
+      `list-count:activity:${scope}:${companyId ?? 'all'}:${currency ?? query.currency ?? ''}` +
       `:${query.direction ?? ''}:${query.kind ?? ''}:${query.from ?? ''}:${query.to ?? ''}:${query.search ?? ''}`;
     // singleFlight:false — runs inside the caller's tx; compute-on-miss.
     return this.cache.wrap(key, LIST_COUNT_CACHE_TTL_SEC, run, { singleFlight: false });

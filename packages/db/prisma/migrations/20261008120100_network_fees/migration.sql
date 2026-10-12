@@ -5,35 +5,31 @@
 -- commission, priced per flow. OFF for every company by default — until a
 -- SUPER_ADMIN switches it on for a company, nothing anywhere changes.
 --
--- Additive and catalog-only, safe while the previous API version serves:
---   * ADD COLUMN ... NOT NULL DEFAULT <constant> is a metadata-only change
---     (no table rewrite); every existing row reads as 0 / false, which is
---     exactly the old behaviour.
---   * CHECKs on the hot tables are added NOT VALID (no scan). They are still
---     enforced on every new or updated row, and every existing row is 0.
---   * No index on any hot table (migration-lock-safety.spec.ts).
--- Each ALTER holds its ACCESS EXCLUSIVE lock until this file commits, so the
--- ingest hot path (companies read, transactions insert) is altered LAST to
--- keep its lock hold as short as possible.
+-- This file creates the rate table only. The rest of the feature's schema is
+-- in the files that follow, ONE LIVE TABLE PER FILE:
+--   20261008120200_network_fee_withdrawals     withdrawals.network_fee_amount
+--   20261008120300_network_fee_payouts         payouts.network_fee_amount
+--   20261008120400_network_fee_loads           loads.network_fee_amount
+--   20261008120500_network_fee_company_switch  companies.network_fee_enabled
+--   20261008120600_network_fee_transactions    transactions.network_fee_amount
+--   20261008120700_network_fee_ledger_index    NETWORK_FEE revenue index
 --
--- network_fee_amount is DECIMAL(20,2): a new column has no pre-cent history,
--- so the database itself enforces whole cents (docs/MONEY_SCALE.md). It also
--- never widens the scale of `net + fee + network_fee` sums beyond the table's
--- existing money columns.
+-- Why split: Prisma applies a file as a single transaction, and an ALTER TABLE
+-- holds its ACCESS EXCLUSIVE lock until that transaction commits — while the
+-- PREVIOUS API version is still serving. One file altering several live tables
+-- can deadlock against a money write that touches them in the opposite order;
+-- Postgres would abort the migration, and a failed migration blocks every later
+-- deploy until it is resolved by hand. A file that locks one table can only
+-- wait, never deadlock. (An earlier revision of this file held every statement;
+-- it only ever reached staging and development databases, where the follow-up
+-- files are no-ops.)
+--
+-- Safe while the previous API version serves: a brand-new table nobody reads
+-- yet. Its foreign key takes a SHARE ROW EXCLUSIVE lock on `companies`, which
+-- does not block reads or the foreign-key checks of money writes.
 -- =================================================================
 
--- 1) Frozen per-row network fee on the money-movement flows (low traffic first).
-ALTER TABLE "withdrawals"
-  ADD COLUMN "network_fee_amount" DECIMAL(20, 2) NOT NULL DEFAULT 0,
-  ADD CONSTRAINT "withdrawals_network_fee_nonneg_chk" CHECK ("network_fee_amount" >= 0) NOT VALID;
-ALTER TABLE "payouts"
-  ADD COLUMN "network_fee_amount" DECIMAL(20, 2) NOT NULL DEFAULT 0,
-  ADD CONSTRAINT "payouts_network_fee_nonneg_chk" CHECK ("network_fee_amount" >= 0) NOT VALID;
-ALTER TABLE "loads"
-  ADD COLUMN "network_fee_amount" DECIMAL(20, 2) NOT NULL DEFAULT 0,
-  ADD CONSTRAINT "loads_network_fee_nonneg_chk" CHECK ("network_fee_amount" >= 0) NOT VALID;
-
--- 2) Per-company, per-flow rate. Row absent = no network fee on that flow.
+-- Per-company, per-flow rate. Row absent = no network fee on that flow.
 CREATE TABLE "company_network_fees" (
   "company_id"     UUID               NOT NULL,
   "operation_type" "FeeOperationType" NOT NULL,
@@ -68,11 +64,3 @@ CREATE POLICY "company_network_fees_admin_write" ON "company_network_fees"
   USING      (app_bypass_rls())
   WITH CHECK (app_bypass_rls());
 GRANT SELECT, INSERT, UPDATE, DELETE ON "company_network_fees" TO txn_app_rls;
-
--- 3) Master switch, default OFF.
-ALTER TABLE "companies" ADD COLUMN "network_fee_enabled" BOOLEAN NOT NULL DEFAULT false;
-
--- 4) Deposits LAST: shortest hold of the ingest hot-path lock.
-ALTER TABLE "transactions"
-  ADD COLUMN "network_fee_amount" DECIMAL(20, 2) NOT NULL DEFAULT 0,
-  ADD CONSTRAINT "transactions_network_fee_nonneg_chk" CHECK ("network_fee_amount" >= 0) NOT VALID;

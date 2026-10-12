@@ -64,6 +64,24 @@ export function isPositiveAmount(s: string | null | undefined): boolean {
 }
 
 /**
+ * True for a money STRING that parses to anything other than zero — a negative
+ * included. The guard for a SIGNED AGGREGATE that renders only when there is
+ * something to show: network-fee revenue summed over a window goes negative
+ * when a deposit charged earlier is reversed inside it, and the totals shown
+ * beside it still count that, so hiding it would leave figures that do not add
+ * up. A missing value, "", "0" and "0.00" stay false, exactly as with
+ * `isPositiveAmount` — which remains the guard for a single record's fee (never
+ * negative).
+ */
+export function isNonZeroAmount(s: string | null | undefined): boolean {
+  if (typeof s !== 'string') return false;
+  const t = s.trim();
+  if (t === '') return false;
+  const n = Number(t);
+  return !Number.isNaN(n) && n !== 0;
+}
+
+/**
  * Display a money string EXACTLY, grouped but never rounded or padded.
  * For the append-only ledger, whose historical legs keep their original scale:
  * truncating them would make a displayed set stop tying out, the same reason the

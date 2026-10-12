@@ -12,6 +12,9 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CsrfGuard } from '../auth/guards/csrf.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { backofficeList, backofficeWhishPayment, isBackoffice } from '../../common/backoffice-view';
+import type { AuthPrincipal } from '../../common/types/request.types';
 import { Audited } from '../audit/audit.decorator';
 import { SkipResponseEnvelope } from '../../common/decorators/skip-response-envelope.decorator';
 import { ValidationError } from '../../common/errors/domain.error';
@@ -34,8 +37,12 @@ export class WhishAdminController {
   }
 
   @Get('payments')
-  async list(@Query(new ZodPipe(listWhishPaymentsQuerySchema)) query: ListWhishPaymentsQuery) {
-    return this.payments.listAll(query);
+  async list(
+    @Query(new ZodPipe(listWhishPaymentsQuerySchema)) query: ListWhishPaymentsQuery,
+    @CurrentUser() user: AuthPrincipal,
+  ) {
+    const page = await this.payments.listAll(query);
+    return isBackoffice(user) ? backofficeList(page, backofficeWhishPayment) : page;
   }
 
   // Declared BEFORE `payments/:id` so the literal `export.csv` isn't captured by
@@ -44,14 +51,16 @@ export class WhishAdminController {
   @SkipResponseEnvelope()
   exportPayments(
     @Query(new ZodPipe(listWhishPaymentsQuerySchema)) query: ListWhishPaymentsQuery,
+    @CurrentUser() user: AuthPrincipal,
   ): StreamableFile {
-    return this.payments.streamCsv({ query });
+    return this.payments.streamCsv({ query, backoffice: isBackoffice(user) });
   }
 
   /** One payment by id (across companies) — e.g. an audit-log deep link. */
   @Get('payments/:id')
-  async getOne(@Param('id', new ParseUUIDPipe()) id: string) {
-    return this.payments.adminGetById(id);
+  async getOne(@Param('id', new ParseUUIDPipe()) id: string, @CurrentUser() user: AuthPrincipal) {
+    const payment = await this.payments.adminGetById(id);
+    return isBackoffice(user) ? backofficeWhishPayment(payment) : payment;
   }
 
   /**

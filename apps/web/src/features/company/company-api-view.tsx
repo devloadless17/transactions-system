@@ -249,7 +249,8 @@ export function CompanyApiView() {
                 platform fee — not a blockchain fee, and unrelated to{' '}
                 <code className="font-mono">payoutDetails.network</code>. If{' '}
                 <code className="font-mono">DEDUCTED</code> fees would consume the whole amount, the
-                request is refused with <code className="font-mono">400 VALIDATION_ERROR</code>.
+                request is refused with <code className="font-mono">400 VALIDATION_ERROR</code>;{' '}
+                <code className="font-mono">error.details</code> carries the amount and both fees.
               </li>
               <li>
                 <strong className="text-foreground">
@@ -397,6 +398,112 @@ export function CompanyApiView() {
 
       <Card>
         <CardHeader>
+          <CardTitle>5. Fees: single fee or dual fee</CardTitle>
+          <CardDescription>
+            Rival runs two fee models side by side. Which one applies to your company is set by
+            Rival — no API call changes it.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+            <ul className="ml-4 list-disc space-y-1">
+              <li>
+                <strong className="text-foreground">Single fee — the default.</strong> You are
+                charged the commission only. <code className="font-mono">networkFeeAmount</code> is
+                always <code className="font-mono">&quot;0&quot;</code>, every existing field keeps
+                its meaning, and{' '}
+                <strong className="text-foreground">your integration needs no change</strong>.
+              </li>
+              <li>
+                <strong className="text-foreground">
+                  Dual fee — switched on by Rival on request.
+                </strong>{' '}
+                What you pay Rival is split into the commission and a{' '}
+                <strong className="text-foreground">network fee</strong>, so that you can pass the
+                network fee on to your own customer and absorb only the commission. Rival never
+                charges your customer: you do, in your own system, using the{' '}
+                <code className="font-mono">networkFeeAmount</code> on each record.
+              </li>
+            </ul>
+          </div>
+
+          <div>
+            <p className="mb-1 text-xs font-medium uppercase text-muted-foreground">
+              Example — a customer deposits $100
+            </p>
+            <div className="rounded-md border px-3 text-xs">
+              <FeeModelRow
+                label=""
+                single="Single fee — 2.5% commission"
+                dual="Dual fee — 1.5% commission + 1% network fee"
+                head
+              />
+              <FeeModelRow label="commissionAmount" single='"2.5"' dual='"1.5"' mono />
+              <FeeModelRow label="networkFeeAmount" single='"0"' dual='"1"' mono />
+              <FeeModelRow
+                label="netAmount (credited to your wallet)"
+                single='"97.5"'
+                dual='"97.5"'
+                mono
+              />
+              <FeeModelRow
+                label="You credit your customer"
+                single="$100"
+                dual="$99 (amount − networkFeeAmount)"
+              />
+              <FeeModelRow label="Absorbed by you" single="$2.50" dual="$1.50" />
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              The rates are an illustration; yours are agreed with Rival. Your wallet is credited
+              the same either way — what changes is who bears the cost.
+            </p>
+          </div>
+
+          <div className="rounded-md border-l-4 border-primary bg-primary/5 p-3 text-xs text-muted-foreground">
+            <p className="mb-1 font-medium text-foreground">
+              Moving to the dual-fee model — what to change in your code
+            </p>
+            <p className="mb-1">
+              Ask your account manager and agree the switch-on time: it applies to every new
+              operation from that moment. Ship these first:
+            </p>
+            <ol className="ml-4 list-decimal space-y-1">
+              <li>
+                Read <code className="font-mono">networkFeeAmount</code> on every record and webhook
+                (a missing or <code className="font-mono">null</code> value in a webhook means{' '}
+                <code className="font-mono">&quot;0&quot;</code>).
+              </li>
+              <li>
+                Charge your customer the figure on the record — credit{' '}
+                <code className="font-mono">amount − networkFeeAmount</code> on a deposit you pass
+                on. Never recompute it from a rate.
+              </li>
+              <li>
+                Stop deriving the net: on a deposit <code className="font-mono">netAmount</code> is
+                now <code className="font-mono">amount − commissionAmount − networkFeeAmount</code>.
+                Use the <code className="font-mono">netAmount</code> we send.
+              </li>
+              <li>
+                On money out, check balances against <code className="font-mono">totalAmount</code>{' '}
+                (<code className="font-mono">netAmount + feeAmount + networkFeeAmount</code>).
+              </li>
+              <li>
+                Let reconciliation accept the <code className="font-mono">NETWORK_FEE</code> ledger
+                account and the last CSV column,{' '}
+                <code className="font-mono">network_fee_amount</code>.
+              </li>
+            </ol>
+            <p className="mt-1">
+              If it is switched off again, new operations go back to{' '}
+              <code className="font-mono">&quot;0&quot;</code>; records already booked or pending
+              keep their fees. Dual-fee code is also correct on the single-fee model.
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
           <CardTitle>All endpoints at a glance</CardTitle>
           <CardDescription>
             These <code className="font-mono font-semibold text-foreground">company/*</code> routes
@@ -476,6 +583,30 @@ export function CompanyApiView() {
           <CodeBlock code={`curl ${API_BASE}/health`} />
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+// One line of the single-fee vs dual-fee comparison.
+function FeeModelRow({
+  label,
+  single,
+  dual,
+  head = false,
+  mono = false,
+}: {
+  label: string;
+  single: string;
+  dual: string;
+  head?: boolean;
+  mono?: boolean;
+}) {
+  const value = head ? 'font-medium text-foreground' : mono ? 'font-mono' : '';
+  return (
+    <div className="grid grid-cols-12 gap-2 border-b py-1.5 last:border-0">
+      <span className={`col-span-4 ${mono ? 'font-mono' : ''} text-muted-foreground`}>{label}</span>
+      <span className={`col-span-4 ${value}`}>{single}</span>
+      <span className={`col-span-4 ${value}`}>{dual}</span>
     </div>
   );
 }

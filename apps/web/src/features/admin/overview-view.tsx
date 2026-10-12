@@ -10,7 +10,8 @@ import { Badge } from '@/components/ui/badge';
 import { DataTable, type Column } from '@/components/ui/data-table';
 import { apiFetch } from '@/lib/api.client';
 import { granularityWord } from '@/lib/date-presets';
-import { formatNumber as fmt, isPositiveAmount } from '@/lib/format';
+import { formatNumber as fmt, isNonZeroAmount, isPositiveAmount } from '@/lib/format';
+import { NetworkFeeLine } from '@/components/network-fee-line';
 import { KpiCard } from '@/features/analytics/kpi-card';
 import { FlowsChart } from '@/features/analytics/flows-chart.lazy';
 import {
@@ -73,10 +74,13 @@ export function AdminOverview() {
       (c) => Number(c.feesEarned) > 0 || isPositiveAmount(c.networkFeesEarned),
     ) ?? platformQ.data?.byCurrency[0];
   // Network-fee revenue only exists once some company is charged the optional
-  // network fee; until then its card and column don't render at all.
-  const primaryNetworkFees = isPositiveAmount(primary?.networkFeesEarned);
+  // network fee; until then its card and column don't render at all. The test
+  // is NON-ZERO, not positive: this is a signed sum over the window, so an
+  // earlier network-fee deposit reversed inside it makes it negative — and net
+  // revenue counts it either way, so it has to be shown for the cards to add up.
+  const primaryNetworkFees = isNonZeroAmount(primary?.networkFeesEarned);
   const anyNetworkFees =
-    platformQ.data?.byCurrency.some((c) => isPositiveAmount(c.networkFeesEarned)) ?? false;
+    platformQ.data?.byCurrency.some((c) => isNonZeroAmount(c.networkFeesEarned)) ?? false;
 
   // Per-source cost (what each source charged the platform) in the By-source
   // currency, joined onto topSources by id — keeps the company-shared topSource
@@ -182,7 +186,14 @@ export function AdminOverview() {
       header: 'Revenue',
       align: 'right',
       className: 'font-mono text-muted-foreground',
-      cell: (s) => fmt(s.fees),
+      // Commission, with the network fee on those same deposits underneath —
+      // the Volume beside it already includes both.
+      cell: (s) => (
+        <>
+          {fmt(s.fees)}
+          <NetworkFeeLine amount={s.networkFees} />
+        </>
+      ),
     },
     {
       key: 'sourceFee',
@@ -205,8 +216,9 @@ export function AdminOverview() {
         <DateRangeControls value={range} onChange={setRange} className="self-start sm:self-auto" />
       </div>
 
-      {/* Revenue trio: platform revenue − source fees = net revenue. Once a
-          network fee is earned it joins as a fourth card (+ network fees). */}
+      {/* Revenue trio: platform revenue − source fees = net revenue. Once there
+          is network-fee revenue in the range (negative included — a reversal)
+          it joins as a fourth card (+ network fees). */}
       <div
         className={`grid grid-cols-1 gap-4 sm:grid-cols-2 ${primaryNetworkFees ? 'lg:grid-cols-4' : 'lg:grid-cols-3'}`}
       >

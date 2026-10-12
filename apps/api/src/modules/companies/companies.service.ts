@@ -269,11 +269,16 @@ export class CompaniesService {
    * config fresh, uncached); rows already booked or pending keep the fees that
    * were frozen onto them, so nothing existing is ever repriced.
    *
-   * Runs under runAsAdmin (READ COMMITTED) — never a serializable transaction.
-   * The money flows read this config inside their own SERIALIZABLE
-   * transactions; keeping every writer of `companies` at READ COMMITTED is what
-   * guarantees a save here can never cause a serialization failure in a
-   * deposit or withdrawal.
+   * Two things keep a save from ever disturbing a deposit or withdrawal in
+   * flight (the money flows read this config inside their own SERIALIZABLE
+   * transactions, and every money row carries a foreign key to the company):
+   *   - it runs under runAsAdmin (READ COMMITTED) — never a serializable
+   *     transaction, so it is not part of any serialization conflict;
+   *   - it locks the company row FOR NO KEY UPDATE, never FOR UPDATE. The
+   *     switch is not a key column, and a no-key lock does not conflict with
+   *     the FOR KEY SHARE lock a foreign-key check takes — whereas FOR UPDATE
+   *     would make every concurrent money write wait for the save and then fail
+   *     its snapshot check.
    */
   async setNetworkFee(
     id: string,
@@ -282,16 +287,15 @@ export class CompaniesService {
   ): Promise<NetworkFeeConfigResponse> {
     const { config, changes } = await this.prisma.runAsAdmin(async (tx) => {
       // Lock the company row so two concurrent saves run one after the other
-      // instead of interleaving their delete/insert of the rates.
-      const locked = await tx.$queryRaw<Array<{ id: string }>>`
-        SELECT id FROM companies WHERE id = ${id}::uuid FOR UPDATE`;
-      if (locked.length === 0) throw new NotFoundError('Company', id);
-      const existing = await tx.company.findUniqueOrThrow({
-        where: { id },
-        select: { networkFeeEnabled: true, networkFees: true },
-      });
+      // instead of interleaving their delete/insert of the rates. The same read
+      // returns the switch as it was, for the audit diff.
+      const locked = await tx.$queryRaw<Array<{ network_fee_enabled: boolean }>>`
+        SELECT network_fee_enabled FROM companies WHERE id = ${id}::uuid FOR NO KEY UPDATE`;
+      const before = locked[0];
+      if (!before) throw new NotFoundError('Company', id);
+      const beforeRates = await tx.companyNetworkFee.findMany({ where: { companyId: id } });
       const changes = diffNetworkFeeConfig(
-        toNetworkFeeConfig(existing.networkFeeEnabled, existing.networkFees),
+        toNetworkFeeConfig(before.network_fee_enabled, beforeRates),
         input,
       );
       await tx.company.update({ where: { id }, data: { networkFeeEnabled: input.enabled } });
@@ -306,8 +310,10 @@ export class CompaniesService {
           })),
         });
       }
-      const rows = await tx.companyNetworkFee.findMany({ where: { companyId: id } });
-      return { config: toNetworkFeeConfig(input.enabled, rows), changes };
+      // What was just written, in the API's canonical form — the same value a
+      // read-back would return (rates are stored at a wider scale than the
+      // schema accepts, so nothing is rounded on the way in).
+      return { config: toNetworkFeeConfig(input.enabled, input.rates), changes };
     });
     // Publish AFTER the transaction commits — see update().
     if (Object.keys(changes).length > 0) opts?.onChanges?.(changes);

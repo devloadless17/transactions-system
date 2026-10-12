@@ -100,9 +100,9 @@ These are the codes you will meet most often; the Whish Pay endpoints add a few 
 
 Two limits exist, and both answer with `429 RATE_LIMITED`.
 
-**Global safety throttle — every endpoint.** **100 requests per 60 seconds, per IP, counted separately for each endpoint** (so 100 calls to `GET /company/wallets` do not use up your budget for `POST /company/withdrawals`). It covers everything under `/v1/company/*` (wallets, transactions, withdrawals, payouts, loads, and `/company/whish/payments`) **and** `/v1/integrations/whish/*`. The only exception is `/v1/company/analytics/*`, which is not throttled. Its `429` carries no `error.details` — back off until the 60-second window has passed.
+**Global safety throttle — every endpoint.** **100 requests per 60 seconds, per IP, counted separately for each endpoint** (so 100 calls to `GET /company/wallets` do not use up your budget for `POST /company/withdrawals`). It covers everything under `/v1/company/*` (wallets, transactions, withdrawals, payouts, loads, and `/company/whish/payments`) **and** `/v1/integrations/whish/*`. The only exception is `/v1/company/analytics/*`, which is not throttled. Every response carries `X-RateLimit-Limit` / `X-RateLimit-Remaining` / `X-RateLimit-Reset`, and its `429` adds `Retry-After` — the seconds to wait before retrying — but no `error.details`.
 
-**Per-key limit — `/v1/integrations/whish/*` only.** On top of the throttle above, these endpoints allow **300 requests per 60 seconds, per key**, counted across all three of them together. Go over and you get a `429 RATE_LIMITED` with the limit echoed in `error.details`, plus `RateLimit-Limit` / `RateLimit-Remaining` / `RateLimit-Reset` headers on every response so you can self-pace.
+**Per-key limit — `/v1/integrations/whish/*` only.** On top of the throttle above, these endpoints allow **300 requests per 60 seconds, per key**, counted across all three of them together. Go over and you get a `429 RATE_LIMITED` with the limit echoed in `error.details`, plus `RateLimit-Limit` / `RateLimit-Remaining` / `RateLimit-Reset` headers on every response (and `Retry-After` on the `429`) so you can self-pace. All of these header values are in **seconds**.
 
 In practice, from a single server IP you can make up to 100 calls a minute to any one endpoint. Note that `/v1/company/whish/payments` is the dashboard-side twin of the Whish Pay endpoints and is throttled per IP only, not per key.
 
@@ -366,12 +366,35 @@ The money fields on these records are decimal strings with trailing zeros droppe
 
 Every record shows both platform fees: the **commission** (`commissionAmount` on deposits, `feeAmount` on withdrawals, payouts and loads, `fee` in the activity feed) and the optional **network fee** (`networkFeeAmount`; `networkFee` in the activity feed).
 
+**Single fee or dual fee — which model are you on?** Rival sets this per company; no API call changes it.
+
+- **Single fee (the default).** You are charged the commission only. `networkFeeAmount` is always `"0"`, every existing field keeps its meaning, and **your integration needs no change** — you can skip the rest of this section.
+- **Dual fee (switched on by Rival on request).** What you pay Rival is split into the commission and a **network fee**, so that you can pass the network fee on to your own customer and absorb only the commission. Rival never charges your customer: you do, in your own system, using the `networkFeeAmount` on each record.
+
+| A customer deposits $100              | Single fee — 2.5% commission | Dual fee — 1.5% commission + 1% network fee |
+| ------------------------------------- | ---------------------------- | ------------------------------------------- |
+| `commissionAmount`                    | `"2.5"`                      | `"1.5"`                                     |
+| `networkFeeAmount`                    | `"0"`                        | `"1"`                                       |
+| `netAmount` — credited to your wallet | `"97.5"`                     | `"97.5"`                                    |
+| You credit your customer              | $100                         | **$99** (`amount − networkFeeAmount`)       |
+| Absorbed by you                       | $2.50                        | **$1.50**                                   |
+
+**Moving to the dual-fee model** — ask your account manager, agree the switch-on time (it applies to every new operation from that moment), and ship these changes first:
+
+1. Read `networkFeeAmount` on every record and webhook (a missing or `null` value in a webhook means `"0"`).
+2. Charge your customer the figure on the record — credit `amount − networkFeeAmount` on a deposit you pass on. Never recompute it from a rate.
+3. Stop deriving the net: on a deposit `netAmount` is now `amount − commissionAmount − networkFeeAmount`. Use the `netAmount` we send.
+4. On money out, check balances against `totalAmount` (`netAmount + feeAmount + networkFeeAmount`).
+5. Let reconciliation accept the `NETWORK_FEE` ledger account and the last CSV column, `network_fee_amount`.
+
+If it is switched off again, new operations go back to `"0"`; records already booked or pending keep their fees. Dual-fee code is also correct on the single-fee model.
+
 - **The network fee is set by Rival**, per company and per flow (deposits, withdrawals, payouts, loads), as a percentage of the amount or a fixed amount. You can't set it through the API; if you're not charged one it is `"0"`.
 - **It is a platform fee, not a blockchain fee** — not a crypto network/gas fee, and unrelated to `payoutDetails.network` on `CRYPTO` payouts.
 - **It is applied the same way as the commission** (`feeApplication`) and **frozen on each record** when you request it (deposits: when booked), so a later configuration change never alters an existing record.
 - **Invariants:** `totalAmount = netAmount + feeAmount + networkFeeAmount` on withdrawals, payouts and loads; `netAmount = amount − commissionAmount − networkFeeAmount` on (`DEDUCTED`) deposits.
 - **Examples:** a $100 deposit with a $2 commission and a 1% network fee → `commissionAmount "2"`, `networkFeeAmount "1"`, `netAmount "97"`. A withdrawal of 100 with an `ON_TOP` $2 fee and a $1 network fee → `totalAmount "103"` debited, `netAmount "100"` to the recipient.
-- **Edge cases:** if `DEDUCTED` fees would consume the whole amount, a withdrawal, payout or load is refused with `400 VALIDATION_ERROR` (the message names both fees). A deposit always books — its network fee never takes more than the commission leaves, so `netAmount` never goes below `0`.
+- **Edge cases:** if `DEDUCTED` fees would consume the whole amount, a withdrawal, payout or load is refused with `400 VALIDATION_ERROR`; `error.details` carries `amount`, `fee` and `networkFee`, and the message names each fee that is above zero. A deposit always books — its network fee never takes more than the commission leaves, so `netAmount` never goes below `0`.
 
 > **You can't choose `feeApplication` per request.** It comes from the commission rule your platform admin configures for your company and operation type (the network fee follows the same application); sending it in the body has no effect. If you'd rather recipients received the full requested amount and the fees were billed to your wallet, ask your account manager to set that rule to `ON_TOP`.
 
@@ -650,7 +673,9 @@ The withdrawal body mirrors the `GET /company/withdrawals/:id` resource field-fo
 
 Respond **2xx** to acknowledge, **within 5 seconds** — a slower answer counts as a timeout. We attempt delivery up to **6 times** — one immediate, then 5 retries with backoff (after roughly 1 minute, 5 minutes, 15 minutes, 1 hour and 6 hours). Only transient failures (timeouts, `429`, and `5xx`) are retried; a `4xx` is treated as permanent and stops further attempts. Redirects are not followed, so a `3xx` also stops delivery — answer `200` directly.
 
-A retry re-sends the same body (same `reference`, same `sentAt`) with a fresh `x-crm-timestamp` and signature, so the same event can reach you more than once — upserting by `reference` makes that harmless.
+A retry re-sends the same body (same `reference`, same `sentAt`) with a fresh `x-crm-timestamp` and signature, so the same event can reach you more than once. Deliveries are also **not ordered**: each event retries on its own schedule, so an older event can arrive after a newer one for the same `reference` — a `withdrawal.pending` that timed out, re-sent after `withdrawal.completed` has landed.
+
+**Upsert by `reference`, and never let an older event overwrite a newer one:** keep the `sentAt` of the last event you applied to a record and ignore any event whose `sentAt` is not later. Upserting by `reference` alone would turn a paid-out withdrawal back to `PENDING`.
 
 ---
 

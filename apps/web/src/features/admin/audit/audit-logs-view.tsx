@@ -65,6 +65,9 @@ export function AuditLogsView() {
     queryKey: ['admin', 'whish', 'payment', whishId],
     queryFn: () => apiFetch<WhishPaymentResponse>(`/admin/whish/payments/${whishId}`),
     enabled: !!whishId,
+    // A detail, not a list: never show the previous payment while this one loads
+    // (opts out of the app-wide `keepPreviousData` in query-client.tsx).
+    placeholderData: undefined,
   });
 
   // Single writer: update state AND push it to the URL together (replace, so we
