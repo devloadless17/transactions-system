@@ -17,8 +17,8 @@ const ENVELOPE_ERROR = `{
   "statusCode": 400,
   "error": {
     "code": "VALIDATION_ERROR",
-    "message": "amount must be a positive decimal",
-    "details": { /* optional, field-level */ }
+    "message": "Request validation failed",
+    "details": [{ "path": ["amount"], "message": "must be a positive decimal" }]
   }
 }`;
 
@@ -35,8 +35,18 @@ const ERRORS: [string, number, string][] = [
   ['FORBIDDEN', 403, 'The key is valid but not allowed to do this.'],
   ['NOT_FOUND', 404, 'No such resource for your company.'],
   ['CONFLICT', 409, 'Duplicate or conflicting request (e.g. reused id).'],
+  [
+    'INSUFFICIENT_BALANCE',
+    409,
+    "Your available balance can't cover the request. error.details gives required, available and shortfall.",
+  ],
   ['NO_COMMISSION_RULE', 422, 'No active commission rule covers this amount.'],
   ['RATE_LIMITED', 429, 'Too many requests — slow down and retry.'],
+  [
+    'INTERNAL_ERROR',
+    500,
+    'Something failed on our side — safe to retry a read; for a create, check whether it went through first.',
+  ],
 ];
 
 export function GettingStartedView() {
@@ -175,16 +185,21 @@ export function GettingStartedView() {
         <CardHeader>
           <CardTitle>Rate limits</CardTitle>
           <CardDescription>
-            The per-key integration endpoint —{' '}
-            <code className="font-mono">/v1/integrations/whish</code> — allows{' '}
-            <strong>300 requests per 60 seconds, per key</strong>. Go over and you get a{' '}
-            <code className="font-mono">429 RATE_LIMITED</code> with the limit echoed in{' '}
+            Two limits exist, and both answer with{' '}
+            <code className="font-mono">429 RATE_LIMITED</code>. The global safety throttle covers
+            every endpoint — everything under <code className="font-mono">/v1/company/*</code>{' '}
+            (including <code className="font-mono">/company/whish/payments</code>) and{' '}
+            <code className="font-mono">/v1/integrations/whish</code>:{' '}
+            <strong>100 requests per 60 seconds, per IP</strong>, counted separately for each
+            endpoint. Only <code className="font-mono">/v1/company/analytics</code> is exempt. Its
+            429 carries no <code className="font-mono">error.details</code> — back off until the
+            60-second window has passed. On top of that,{' '}
+            <code className="font-mono">/v1/integrations/whish</code> allows{' '}
+            <strong>300 requests per 60 seconds, per key</strong>, counted across its endpoints
+            together; go over and you get the limit echoed in{' '}
             <code className="font-mono">error.details</code>, plus{' '}
-            <code className="font-mono">RateLimit-*</code> headers to pace against. Everything under{' '}
-            <code className="font-mono">/v1/company/*</code> — including{' '}
-            <code className="font-mono">/company/whish/payments</code> — uses the global throttle
-            instead: <strong>100 requests per 60 seconds, per IP</strong>, with no{' '}
-            <code className="font-mono">RateLimit-*</code> headers.
+            <code className="font-mono">RateLimit-*</code> headers to pace against. In practice,
+            from a single server IP you can make up to 100 calls a minute to any one endpoint.
           </CardDescription>
         </CardHeader>
       </Card>

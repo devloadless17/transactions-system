@@ -513,9 +513,13 @@ x-crm-signature: t=1781018591,sha256=<hex>
         </div>
         <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
           <p className="mb-1 font-medium text-foreground">Delivery &amp; retries</p>
-          Respond <strong>2xx</strong> to acknowledge. We attempt delivery up to 6 times — one
-          immediate, then 5 retries with backoff. Only transient failures (timeouts, 429, and 5xx)
-          are retried; a 4xx is treated as permanent and stops further attempts.
+          Respond <strong>2xx</strong> to acknowledge, <strong>within 5 seconds</strong> — a slower
+          answer counts as a timeout. We attempt delivery up to 6 times — one immediate, then 5
+          retries with backoff (after roughly 1 minute, 5 minutes, 15 minutes, 1 hour and 6 hours).
+          Only transient failures (timeouts, 429, and 5xx) are retried; a 4xx is treated as
+          permanent and stops further attempts. Redirects are not followed, so a 3xx also stops
+          delivery. A retry re-sends the same body, so the same event can reach you more than once —
+          upserting by <code className="font-mono">reference</code> makes that harmless.
         </div>
       </CardContent>
     </Card>

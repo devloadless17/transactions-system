@@ -262,18 +262,19 @@ There is **no global `Idempotency-Key` header**. Idempotency is per-flow and exp
 
 There are two independent limiters:
 
-**1. Global per-IP throttler** (`ThrottlerGuard`, Redis-backed, shared across instances) — applies to session/most routes.
+**1. Global per-IP throttler** (`ThrottlerGuard`, Redis-backed, shared across instances) — applies to every route, including `/v1/integrations/whish/*`. The only exemptions are `/v1/company/analytics/*` and the source ingest endpoint.
 
-- Default **`RATE_LIMIT_MAX` = 100 requests / `RATE_LIMIT_TTL` = 60s** per IP.
+- Default **`RATE_LIMIT_MAX` = 100 requests / `RATE_LIMIT_TTL` = 60s** per IP, **counted separately for each endpoint** (100 calls to `GET /company/wallets` do not use up the budget for `POST /company/withdrawals`).
 - Auth routes are stricter via per-route overrides: **login = 10/60s**, **token refresh = 30/60s**.
 - Fails **open** if Redis is down (no limit rather than locking everyone out).
 
-**2. Per-API-key limiter** (`ApiKeyRateLimitGuard`) — applies to the source **ingest** endpoint and the `integrations/whish` endpoints **only**, keyed on the API key (not IP), so one high-volume integration behind a single IP isn't capped by the per-IP limiter.
+**2. Per-API-key limiter** (`ApiKeyRateLimitGuard`) — applies to the `integrations/whish` endpoints **only**, keyed on the API key (not IP). It is enforced **in addition to** limiter 1, not instead of it.
 
-- **300 requests / 60s** per key (`INTEGRATION_RATE_LIMIT_MAX`, default 300), fixed-window. Applies to `/v1/integrations/whish/*` only.
+- **300 requests / 60s** per key (`INTEGRATION_RATE_LIMIT_MAX`, default 300), fixed-window, counted across all `/v1/integrations/whish/*` endpoints together.
+- Because limiter 1 still applies, a single server IP is capped at 100 calls / 60s to any one of these endpoints (for example, 100 link creations a minute).
 - Fails **open** if Redis is unavailable.
 
-> **Which limiter applies to you.** Every `/v1/company/*` route — including `/company/whish/payments`, `/company/withdrawals` and `/company/transactions` — is governed by limiter 1 **only**, even when you call it with an API key. Only `/v1/integrations/whish/*` gets the per-key 300/60s allowance and the `RateLimit-*` headers below. (The source ingest endpoint is a separate surface, not reachable with a company key, and is unlimited by default.) If you drive `company/*` at volume, pace against the per-IP budget (default 100/60s).
+> **Which limiter applies to you.** Every `/v1/company/*` route — including `/company/whish/payments`, `/company/withdrawals` and `/company/transactions` — is governed by limiter 1 **only**, even when you call it with an API key. `/v1/integrations/whish/*` is governed by **both** limiters, and is the only surface that carries the `RateLimit-*` headers below. (The source ingest endpoint is a separate surface, not reachable with a company key, and is unlimited by default.) If you drive `company/*` at volume, pace against the per-IP budget (default 100/60s).
 
 Both emit HTTP **429** with `error.code = "RATE_LIMITED"`. The per-key limiter returns the standard flat envelope, with the limit in `error.details`:
 
@@ -1288,17 +1289,19 @@ curl -s https://portal.rivalpayments.com/v1/company/wallets \
 {
   "success": true,
   "statusCode": 200,
-  "data": [
-    {
-      "id": "0b3f7c9e-1d2a-4b6c-8e10-aa1122334455",
-      "companyId": "9f1c2d3e-4a5b-6c7d-8e9f-0a1b2c3d4e5f",
-      "currency": "USD",
-      "availableBalance": "1250.00000000",
-      "pendingBalance": "0.00000000",
-      "reservedBalance": "300.00000000",
-      "updatedAt": "2026-06-22T10:15:30.000Z"
-    }
-  ]
+  "data": {
+    "data": [
+      {
+        "id": "0b3f7c9e-1d2a-4b6c-8e10-aa1122334455",
+        "companyId": "9f1c2d3e-4a5b-6c7d-8e9f-0a1b2c3d4e5f",
+        "currency": "USD",
+        "availableBalance": "1250",
+        "pendingBalance": "0",
+        "reservedBalance": "300",
+        "updatedAt": "2026-06-22T10:15:30.000Z"
+      }
+    ]
+  }
 }
 ```
 

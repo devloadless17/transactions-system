@@ -22,7 +22,7 @@ const CREATE_RESPONSE = `{
     "companyId": "b3f1c2d4-...-e9",
     "externalId": "1781018591",
     "status": "PENDING",
-    "amount": "25.00",
+    "amount": "25",
     "currency": "USD",
     "invoice": "Order #4821",
     "collectUrl": "https://whish.money/collect/7kEo2a7",
@@ -186,7 +186,7 @@ function ApiSection() {
     ],
     [
       '502 WHISH_PENDING',
-      'We could not confirm the outcome with Whish — do NOT treat this as a failure, and do NOT create a second payment under a new key. error.details carries externalId and paymentId. Retry the create with the SAME idempotencyKey and we re-attempt the same payment (returning it with its collectUrl once Whish answers), or look it up by paymentId.',
+      'We could not confirm the outcome with Whish — do NOT treat this as a failure, and do NOT create a second payment under a new key. error.details carries externalId and paymentId. Retry the create with the SAME idempotencyKey and we re-attempt the same payment (returning it with its collectUrl once Whish answers), or look it up with GET /integrations/whish/payments/{externalId} (or GET /company/whish/payments/{paymentId}).',
     ],
     [
       'needsAttention: true',

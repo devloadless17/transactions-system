@@ -39,7 +39,7 @@ Authorization: Bearer tsk_<prefix>_<secret>
 
 > Secrets are shown **once**, at creation. Mint, rotate, or revoke a company key under **Settings → API keys** in the dashboard.
 
-**Send the header exactly as shown — it is case-sensitive.** `bearer tsk_...`, `BEARER tsk_...`, `Bearer TSK_...`, a bare `tsk_...` with no scheme, or a quoted value are not recognised as keys and come back as `401 UNAUTHORIZED` ("Malformed API key credential…"). If one call 401s while others with the same key succeed, compare that request's header byte-for-byte — and make sure your client actually substituted the key variable — before rotating anything. Keys never expire unless you set an expiry when creating them.
+**Send the header exactly as shown — it is case-sensitive.** `bearer tsk_...`, `BEARER tsk_...`, `Bearer TSK_...`, a bare `tsk_...` with no scheme, or a quoted value are not recognised as keys and come back as `401 UNAUTHORIZED` (usually with the message "Malformed API key credential…"; a wrong-case `TSK_` prefix on the Whish Pay endpoints reads "Invalid or revoked API key" instead). If one call 401s while others with the same key succeed, compare that request's header byte-for-byte — and make sure your client actually substituted the key variable — before rotating anything. Keys never expire unless you set an expiry when creating them.
 
 **No IP allowlisting.** There is no allowlist to register and no IP check anywhere, so you can call us from any server and move or scale freely. Your credential is the key (keep it server-side); our webhooks prove themselves with an HMAC signature you verify, not with a source IP.
 
@@ -67,36 +67,44 @@ Success or failure, responses come back wrapped in an envelope. Read your payloa
   "statusCode": 400,
   "error": {
     "code": "VALIDATION_ERROR",
-    "message": "amount must be a positive decimal",
-    "details": {
-      /* optional, field-level */
-    }
+    "message": "Request validation failed",
+    "details": [{ "path": ["amount"], "message": "must be a positive decimal" }]
   }
 }
 ```
 
-- **Lists** nest one level deeper — the array is at `data.data` alongside a total count / paging info in `meta`.
+`details` is optional and its shape depends on the error: a failed body or query validation lists one entry per offending field (as above), while other errors carry an object or nothing at all.
+
+- **Lists** nest one level deeper — the array is at `data.data` alongside paging info (`page`, `pageSize`, `total`, `totalPages`) at `data.meta`.
 - **A few endpoints** return raw bodies (no envelope): CSV exports (`/export.csv`), the health check, and inbound webhook/callback acknowledgements.
 
 ### Error codes
 
 Branch on the stable `error.code`, never on the message.
 
-| Code                 | HTTP | Meaning                                            |
-| -------------------- | ---- | -------------------------------------------------- |
-| `VALIDATION_ERROR`   | 400  | The request body or query failed validation.       |
-| `UNAUTHORIZED`       | 401  | Missing, invalid, or revoked API key.              |
-| `FORBIDDEN`          | 403  | The key is valid but not allowed to do this.       |
-| `NOT_FOUND`          | 404  | No such resource for your company.                 |
-| `CONFLICT`           | 409  | Duplicate or conflicting request (e.g. reused id). |
-| `NO_COMMISSION_RULE` | 422  | No active commission rule covers this amount.      |
-| `RATE_LIMITED`       | 429  | Too many requests — slow down and retry.           |
+| Code                   | HTTP | Meaning                                                                                                        |
+| ---------------------- | ---- | -------------------------------------------------------------------------------------------------------------- |
+| `VALIDATION_ERROR`     | 400  | The request body or query failed validation.                                                                   |
+| `UNAUTHORIZED`         | 401  | Missing, invalid, or revoked API key.                                                                          |
+| `FORBIDDEN`            | 403  | The key is valid but not allowed to do this.                                                                   |
+| `NOT_FOUND`            | 404  | No such resource for your company.                                                                             |
+| `CONFLICT`             | 409  | Duplicate or conflicting request (e.g. reused id).                                                             |
+| `INSUFFICIENT_BALANCE` | 409  | Your available balance can't cover the request. `error.details` gives `required`, `available` and `shortfall`. |
+| `NO_COMMISSION_RULE`   | 422  | No active commission rule covers this amount.                                                                  |
+| `RATE_LIMITED`         | 429  | Too many requests — slow down and retry.                                                                       |
+| `INTERNAL_ERROR`       | 500  | Something failed on our side — safe to retry a read; for a create, check whether it went through first.        |
+
+These are the codes you will meet most often; the Whish Pay endpoints add a few of their own (see [Common errors](#2-whish-pay)). Treat any code you don't recognise by its HTTP status.
 
 ### Rate limits
 
-The per-key integration endpoint — `/v1/integrations/whish/*` — allows **300 requests per 60 seconds, per key**. Go over and you get a `429 RATE_LIMITED` with the limit echoed in `error.details`, plus `RateLimit-*` headers on every response so you can self-pace.
+Two limits exist, and both answer with `429 RATE_LIMITED`.
 
-Everything under `/v1/company/*` (wallets, transactions, withdrawals, payouts, loads, and `/company/whish/payments`) sits behind the global safety throttle instead — **100 requests per 60 seconds, per IP** by default, with no `RateLimit-*` headers. Note that `/v1/company/whish/payments` is the dashboard-side twin of the Whish Pay endpoints and is throttled per IP, not per key.
+**Global safety throttle — every endpoint.** **100 requests per 60 seconds, per IP, counted separately for each endpoint** (so 100 calls to `GET /company/wallets` do not use up your budget for `POST /company/withdrawals`). It covers everything under `/v1/company/*` (wallets, transactions, withdrawals, payouts, loads, and `/company/whish/payments`) **and** `/v1/integrations/whish/*`. The only exception is `/v1/company/analytics/*`, which is not throttled. Its `429` carries no `error.details` — back off until the 60-second window has passed.
+
+**Per-key limit — `/v1/integrations/whish/*` only.** On top of the throttle above, these endpoints allow **300 requests per 60 seconds, per key**, counted across all three of them together. Go over and you get a `429 RATE_LIMITED` with the limit echoed in `error.details`, plus `RateLimit-Limit` / `RateLimit-Remaining` / `RateLimit-Reset` headers on every response so you can self-pace.
+
+In practice, from a single server IP you can make up to 100 calls a minute to any one endpoint. Note that `/v1/company/whish/payments` is the dashboard-side twin of the Whish Pay endpoints and is throttled per IP only, not per key.
 
 ### Your first call
 
@@ -163,7 +171,7 @@ curl -X POST https://<your-dashboard-domain>/v1/integrations/whish/payments \
     "companyId": "b3f1c2d4-...-e9",
     "externalId": "1781018591",
     "status": "PENDING",
-    "amount": "25.00",
+    "amount": "25",
     "currency": "USD",
     "invoice": "Order #4821",
     "collectUrl": "https://whish.money/collect/7kEo2a7",
@@ -210,15 +218,15 @@ POST /integrations/whish/payments/{externalId}/refresh
 
 **Common errors**
 
-| Error                           | Meaning                                                                                                                                                                                                                                                                                                                                                                    |
-| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `400 VALIDATION_ERROR`          | A field is malformed — most often `amount` sent as a number instead of a `"string"`, a currency other than `"USD"`, or a missing `invoice`. The error body names the offending field.                                                                                                                                                                                      |
-| `422 NO_COMMISSION_RULE`        | No commission rule covers this amount for your company, so the link is refused before any customer pays. Ask your platform admin to add a rule covering your amounts.                                                                                                                                                                                                      |
-| `422 COMMISSION_EXCEEDS_AMOUNT` | The configured fee for this amount is larger than the amount itself, so the link is refused before any customer pays. Ask your platform admin to review the rule for small amounts.                                                                                                                                                                                        |
-| `401 / 403`                     | Auth failed. Send your company key as `Authorization: Bearer tsk_…` — these are server-to-server (no cookies/session).                                                                                                                                                                                                                                                     |
-| `502 WHISH_ERROR`               | Whish itself errored or was unreachable. Safe to retry (reuse your `idempotencyKey`); if it persists, contact support.                                                                                                                                                                                                                                                     |
-| `502 WHISH_PENDING`             | We could not confirm the outcome with Whish — **this is not a failure.** The payment may exist upstream. Do **not** create a second payment under a new key. `error.details` carries `externalId` and `paymentId`; retry the create with the **same** `idempotencyKey` (we re-attempt the same payment and return it with its `collectUrl`), or look it up by `paymentId`. |
-| `needsAttention: true`          | Created and paid, but settlement into your wallet failed — read `settlementError` for the reason. Once the cause is fixed, refresh the payment and it settles.                                                                                                                                                                                                             |
+| Error                           | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `400 VALIDATION_ERROR`          | A field is malformed — most often `amount` sent as a number instead of a `"string"`, a currency other than `"USD"`, or a missing `invoice`. The error body names the offending field.                                                                                                                                                                                                                                                                           |
+| `422 NO_COMMISSION_RULE`        | No commission rule covers this amount for your company, so the link is refused before any customer pays. Ask your platform admin to add a rule covering your amounts.                                                                                                                                                                                                                                                                                           |
+| `422 COMMISSION_EXCEEDS_AMOUNT` | The configured fee for this amount is larger than the amount itself, so the link is refused before any customer pays. Ask your platform admin to review the rule for small amounts.                                                                                                                                                                                                                                                                             |
+| `401 / 403`                     | Auth failed. Send your company key as `Authorization: Bearer tsk_…` — these are server-to-server (no cookies/session).                                                                                                                                                                                                                                                                                                                                          |
+| `502 WHISH_ERROR`               | Whish itself errored or was unreachable. Safe to retry (reuse your `idempotencyKey`); if it persists, contact support.                                                                                                                                                                                                                                                                                                                                          |
+| `502 WHISH_PENDING`             | We could not confirm the outcome with Whish — **this is not a failure.** The payment may exist upstream. Do **not** create a second payment under a new key. `error.details` carries `externalId` and `paymentId`; retry the create with the **same** `idempotencyKey` (we re-attempt the same payment and return it with its `collectUrl`), or look it up with `GET /integrations/whish/payments/{externalId}` (or `GET /company/whish/payments/{paymentId}`). |
+| `needsAttention: true`          | Created and paid, but settlement into your wallet failed — read `settlementError` for the reason. Once the cause is fixed, refresh the payment and it settles.                                                                                                                                                                                                                                                                                                  |
 
 > **No need to poll:** every payment is pushed to your CRM automatically — `transaction.pending` when the link is created, then `transaction.completed` once it settles (or `transaction.failed` if it is declined or lapses), all under the same `whish:<externalId>` reference (see the [CRM](#4-crm-integration) section). The status endpoint above is just for reconciliation or if you do not use a CRM.
 
@@ -245,9 +253,9 @@ curl https://<your-dashboard-domain>/v1/company/wallets \
     "data": [
       {
         "currency": "USD",
-        "availableBalance": "1250.00",
+        "availableBalance": "1250",
         "pendingBalance": "0",
-        "reservedBalance": "200.00"
+        "reservedBalance": "200"
       }
     ]
   }
@@ -445,7 +453,7 @@ curl "https://<your-dashboard-domain>/v1/company/transactions?page=1&pageSize=20
   -H "Authorization: Bearer tsk_<company-key>"
 ```
 
-The list array is at `data.data`, with paging info at `meta`. Page with `?page=N&pageSize=M` (`pageSize` max 100).
+The list array is at `data.data`, with paging info at `data.meta`. Page with `?page=N&pageSize=M` (`pageSize` max 100).
 
 > **Fees are transparent.** Every transaction returns `amount` (gross), `commissionAmount` (the platform fee we took), `networkFeeAmount` (the optional network fee — `"0"` if you're not charged one), and `netAmount` (what you were credited). Withdrawals, payouts and loads return the same breakdown as `totalAmount` / `feeAmount` / `networkFeeAmount` / `netAmount` — so after any completed transaction you always know exactly what we charged.
 
@@ -486,7 +494,7 @@ These `company/*` routes accept your company key.
 | Transactions | `GET /company/transactions` · `/:id` · `/:id/detail` · `/export.csv`                  |
 | Ledger       | `GET /company/ledger` · `/export.csv`                                                 |
 | Analytics    | `GET /company/analytics/overview` · `/wallet-summary`                                 |
-| Activity     | `GET /company/activity` · `/export.csv` · `/operations/counts`                        |
+| Activity     | `GET /company/activity` · `/export.csv` · `GET /company/operations/counts`            |
 | Withdrawals  | `GET /company/withdrawals` · `GET /:id` · `/export.csv` · `POST` · `POST /:id/cancel` |
 | Payouts      | `GET /company/payouts` · `GET /:id` · `/export.csv` · `POST` · `POST /:id/cancel`     |
 | Loads        | `GET /company/loads` · `GET /:id` · `/export.csv` · `POST` · `POST /:id/cancel`       |
@@ -640,7 +648,9 @@ The withdrawal body mirrors the `GET /company/withdrawals/:id` resource field-fo
 
 ### 4.4 Delivery & retries
 
-Respond **2xx** to acknowledge. We attempt delivery up to **6 times** — one immediate, then 5 retries with backoff. Only transient failures (timeouts, `429`, and `5xx`) are retried; a `4xx` is treated as permanent and stops further attempts.
+Respond **2xx** to acknowledge, **within 5 seconds** — a slower answer counts as a timeout. We attempt delivery up to **6 times** — one immediate, then 5 retries with backoff (after roughly 1 minute, 5 minutes, 15 minutes, 1 hour and 6 hours). Only transient failures (timeouts, `429`, and `5xx`) are retried; a `4xx` is treated as permanent and stops further attempts. Redirects are not followed, so a `3xx` also stops delivery — answer `200` directly.
+
+A retry re-sends the same body (same `reference`, same `sentAt`) with a fresh `x-crm-timestamp` and signature, so the same event can reach you more than once — upserting by `reference` makes that harmless.
 
 ---
 
