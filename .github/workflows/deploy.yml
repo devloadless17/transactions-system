@@ -319,7 +319,17 @@ jobs:
           # database or the edge in the middle of a release); updating them is a
           # deliberate step of its own (docs/server-operations.md).
           echo "==> Pulling images"
-          docker compose -f docker-compose.prod.yml pull api-blue web migrate </dev/null
+          # Docker Hub answers 502/429 now and then (it failed a staging deploy on
+          # 2026-10-13). Nothing has changed yet at this point, so just try again.
+          for attempt in 1 2 3 4; do
+            docker compose -f docker-compose.prod.yml pull api-blue web migrate </dev/null && break
+            if [ "$attempt" = 4 ]; then
+              echo "::error::Could not pull the images after 4 attempts. Nothing was changed."
+              exit 1
+            fi
+            echo "  pull failed (attempt $attempt/4) — retrying in 15s"
+            sleep 15
+          done
           docker compose -f docker-compose.prod.yml up -d --no-deps --no-recreate postgres redis caddy </dev/null
 
           # `</dev/null` is load-bearing. This whole script is piped into `bash -s`

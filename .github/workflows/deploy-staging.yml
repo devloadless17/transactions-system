@@ -196,7 +196,17 @@ jobs:
           # Only the images this release ships; Postgres and Redis are never pulled
           # or recreated by a deploy.
           echo "==> Pulling staging images"
-          $SC pull api-staging-blue web-staging migrate-staging </dev/null
+          # Docker Hub answers 502/429 now and then (it failed this deploy on
+          # 2026-10-13). Nothing has changed yet at this point, so just try again.
+          for attempt in 1 2 3 4; do
+            $SC pull api-staging-blue web-staging migrate-staging </dev/null && break
+            if [ "$attempt" = 4 ]; then
+              echo "::error::Could not pull the staging images after 4 attempts. Nothing was changed."
+              exit 1
+            fi
+            echo "  pull failed (attempt $attempt/4) — retrying in 15s"
+            sleep 15
+          done
           $SC up -d --no-deps --no-recreate postgres-staging redis-staging </dev/null
 
           echo "==> Migrations / RLS rotation (staging DB)"
