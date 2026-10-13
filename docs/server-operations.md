@@ -224,6 +224,30 @@ $C pull postgres && $C up -d --no-deps postgres    # same for redis / caddy
 Pinning the patch (`postgres:16.15-alpine`) makes the version reproducible; bump it
 deliberately.
 
+### OS and Docker updates (a reboot)
+
+`scripts/server-maintenance.sh`, run as root on the server. Done first on 2026-10-13
+(the server had not rebooted in 4.5 months; kernel 6.8.0-111 → 6.8.0-147, Docker 29.5.3 →
+29.9.0, 69 packages, log rotation added): **the whole outage was 17 seconds** (Cloudflare
+522 from 21:38:36 to 21:38:53 UTC), every container came back on its own, ledger net 0.
+
+1. Ahead: switch withdrawal auto-approval OFF (the reboot stops every container at once,
+   so the database can go down mid-transfer; withdrawals requested while it is off wait
+   for manual approval — they are never auto-approved later), take a backup
+   (`systemctl start txn-db-backup.service`) and copy it off the server.
+2. `bash server-maintenance.sh check` — read-only: kernel, pending packages, reboot flag.
+3. `setsid nohup bash server-maintenance.sh prepare > /root/maint-prepare.log 2>&1 &`
+   — every update except Docker, with the site up (detached, so a dropped SSH session
+   can't interrupt the package manager), plus Docker log rotation.
+4. `setsid nohup bash server-maintenance.sh window > /root/maint-window.log 2>&1 &` —
+   Docker's update installed WITHOUT restarting it, then the reboot: one outage.
+5. After: every container healthy, `./release.sh prod status`, the ledger nets to 0,
+   the watchdog, then auto-approval back ON.
+
+Never stop containers by hand before a reboot: `restart: unless-stopped` keeps a
+container someone stopped stopped after the reboot. Docker log rotation
+(`/etc/docker/daemon.json`, 20 MB × 5) applies to containers created after it was set.
+
 A deploy with no migrations is code-only and invisible: the new API runs beside the old
 one until Caddy has seen it healthy, and a release that never gets healthy never takes
 traffic — the deploy fails red and nothing changed (`./release.sh prod status`). A
