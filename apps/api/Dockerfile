@@ -47,4 +47,9 @@ WORKDIR /repo/apps/api
 USER node
 EXPOSE 3001
 WORKDIR /repo/apps/api
+# Read by the deploy before it stops this container: a release carrying this
+# label drains on SIGTERM (finishes everything in flight, then exits on its own
+# — src/common/http/graceful-drain.ts), so it is given up to 60s; an older one
+# keeps the old 10s.
+LABEL com.rivalpayments.graceful-drain="1"
 CMD ["node", "dist/main.js"]

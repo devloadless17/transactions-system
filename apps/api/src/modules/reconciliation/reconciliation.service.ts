@@ -5,6 +5,7 @@ import type { Gauge } from 'prom-client';
 import { Money } from '@app/shared';
 import { PrismaService } from '../../database/prisma.service';
 import { AuditService } from '../audit/audit.service';
+import { registerBackgroundJob } from '../../common/lifecycle/background-jobs';
 
 // How often the detective control runs. The ledger is the source of truth; the
 // wallet is a derived projection, so this job proves they still agree.
@@ -224,6 +225,12 @@ export class ReconciliationService implements OnApplicationBootstrap, OnModuleDe
 
   onApplicationBootstrap(): void {
     this.timer = setInterval(() => void this.tick(), RECONCILE_INTERVAL_MS);
+    // A shutdown stops new runs and waits for one in progress (main.ts).
+    registerBackgroundJob({
+      name: 'ledger-reconciliation',
+      stop: () => this.onModuleDestroy(),
+      isRunning: () => this.running,
+    });
     // Don't keep the event loop alive just for this ticker.
     this.timer.unref?.();
     // Establish a baseline + gauge immediately rather than 15 minutes later, so a

@@ -195,8 +195,16 @@ jobs:
           echo "==> Migrations / RLS rotation (staging DB)"
           $SC run --rm -T migrate-staging </dev/null
 
-          echo "==> Starting staging stack"
-          $SC up -d --remove-orphans
+          # Zero-loss swap, the API first and alone (see the Caddyfile and
+          # apps/api/src/common/http/graceful-drain.ts). The running API leaves Caddy's
+          # rotation and finishes everything in flight; requests arriving meanwhile are
+          # HELD by Caddy until the new API is healthy. A release labelled
+          # graceful-drain exits on its own in seconds, so it gets up to 60s; an older
+          # one never finishes under traffic, so it keeps the old 10s.
+          echo "==> Swapping the staging API"
+          if [ "$(docker inspect -f '{{index .Config.Labels "com.rivalpayments.graceful-drain"}}' txn_api_staging 2>/dev/null)" = "1" ]; then STOP_TIMEOUT=60; else STOP_TIMEOUT=10; fi
+          $SC stop -t "$STOP_TIMEOUT" api-staging </dev/null
+          $SC up -d --no-deps api-staging </dev/null
 
           echo "==> Waiting for staging API health"
           RETRIES=0; MAX=45
@@ -211,6 +219,11 @@ jobs:
             echo "::error::Staging release is unhealthy."
             exit 1
           fi
+
+          # Only once the new API is healthy is the web swapped, so the web server's
+          # own calls to the API never wait on a stopped one.
+          echo "==> Starting the rest of the staging stack (web)"
+          $SC up -d --remove-orphans </dev/null
 
           $SC ps
           REMOTE

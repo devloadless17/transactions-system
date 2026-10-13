@@ -121,6 +121,28 @@ git push origin main:production
   password; production refuses to boot with that), then seeds if requested. The
   API then connects as that non-superuser role so Postgres RLS is enforced.
 - **TLS:** Caddy (`Caddyfile`) terminates HTTPS and reverse-proxies by path.
+- **Zero-loss deploys — no request is dropped.** The deploy swaps the API
+  first and alone, then the web:
+
+  1. `docker compose stop api` sends SIGTERM. The API
+     (`apps/api/src/main.ts`, `common/http/graceful-drain.ts`) answers 503 on
+     `/v1/health`, so Caddy, which health-checks it every second, stops routing
+     to it and **holds** new requests (`lb_try_duration 60s`). Everything
+     already in flight finishes, the background jobs finish their current run,
+     and only then are Postgres and Redis closed. That normally takes ~3s.
+  2. The new API starts. Once `/v1/health` answers 200, Caddy releases the held
+     requests to it. Requests that arrive during a swap wait a few seconds;
+     none fails.
+  3. The web is swapped only after the new API is healthy;
+     `apps/web/drain-server.cjs` drains it the same way.
+
+  The stop timeout comes from the running image: one labelled
+  `com.rivalpayments.graceful-drain=1` gets 60s, and an older image, which never
+  finishes draining under traffic, keeps the old 10s. Measured locally behind
+  Caddy with three deploys under continuous deposit load: 0 failures, and every
+  deposit was booked exactly once. Before this change the same test lost 21
+  deposits.
+
 - **Config:** `.env.prod.example` is the template; the workflow renders it to
   `/home/deploy/transactions-system/.env` on the server from the secrets above
   (`DEPLOY_DIR` in the deploy workflow).
@@ -159,6 +181,18 @@ release ran a destructive migration, restore the DB from a backup.
 ### Release notes — migrations that limit a rollback
 
 Read the entry for every release you are about to roll back across. Newest first.
+
+#### Zero-loss deploys (no migration)
+
+- **No database change**, so a rollback needs nothing special. An image without
+  the `graceful-drain` label is stopped with the old 10s timeout.
+- **The first production deploy that ships this** replaces an API that does not
+  drain yet. That API is stopped the old way (10s), so a request in flight on it
+  at that moment can still fail, as on every deploy until now. Deploy that one at
+  a quiet time: every deploy after it is zero-loss.
+- The new Caddy settings (health checks on `/v1/health` every second, a 60s
+  hold) are loaded by the production deploy's Caddy reload, before the API is
+  swapped.
 
 #### Whish refunds — `20261013140000_whish_refund`
 

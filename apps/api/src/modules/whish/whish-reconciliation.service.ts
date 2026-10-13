@@ -1,6 +1,7 @@
 import type { OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
 import { Injectable, Logger } from '@nestjs/common';
 import { WhishPaymentsService } from './whish-payments.service';
+import { registerBackgroundJob } from '../../common/lifecycle/background-jobs';
 
 const INTERVAL_MS = 60_000;
 
@@ -21,6 +22,12 @@ export class WhishReconciliationService implements OnApplicationBootstrap, OnMod
   onApplicationBootstrap(): void {
     this.logger.log(`Whish reconciliation poller STARTED (every ${INTERVAL_MS / 1000}s)`);
     this.timer = setInterval(() => void this.tick(), INTERVAL_MS);
+    // A shutdown stops new runs and waits for one in progress (main.ts).
+    registerBackgroundJob({
+      name: 'whish-reconciliation',
+      stop: () => this.onModuleDestroy(),
+      isRunning: () => this.running,
+    });
     // Don't keep the event loop alive just for this ticker.
     this.timer.unref?.();
     // Run once promptly at boot so a just-deployed instance doesn't wait a full

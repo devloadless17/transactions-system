@@ -15,6 +15,8 @@ import IORedis from 'ioredis';
 import type { Server, ServerOptions } from 'socket.io';
 import type { INestApplicationContext } from '@nestjs/common';
 import { noStore } from './common/http/no-store';
+import { drainHttpServer, drainMiddleware } from './common/http/graceful-drain';
+import { stopBackgroundJobs } from './common/lifecycle/background-jobs';
 import { trustedProxies } from './common/http/trusted-proxies';
 import { corsOriginCheck } from './common/http/cors-origin';
 import { AppModule } from './app.module';
@@ -105,6 +107,9 @@ class CorsIoAdapter extends IoAdapter {
   }
 }
 
+// A background run in progress gets this long to finish during a shutdown.
+const JOB_DRAIN_MS = 40_000;
+
 async function bootstrap() {
   // bodyParser stays enabled (Nest's express parses JSON by default).
   // The body-size cap is enforced by overriding NestExpressApplication settings below.
@@ -145,6 +150,9 @@ async function bootstrap() {
   // reaches us over). The proxy alone decides who the visitor is and hands over
   // ONE address — see ./common/http/trusted-proxies and the Caddyfile.
   app.set('trust proxy', trustedProxies());
+  // First middleware: once a shutdown starts, every response closes its
+  // connection — part of the zero-loss shutdown below (./common/http/graceful-drain).
+  app.use(drainMiddleware);
   // Every response here is authenticated and tenant-scoped — nothing may be
   // cached by a browser, proxy or CDN. Registered before the routes so it
   // covers streamed CSV exports and error responses too. See ./common/http/no-store.
@@ -241,13 +249,44 @@ async function bootstrap() {
     });
   }
 
-  // Graceful shutdown. Every deploy / rolling restart sends SIGTERM; without
-  // this, Nest tears the process down immediately and drops in-flight requests —
-  // including a withdrawal/ingest mid serializable transaction. enableShutdownHooks
-  // registers signal handlers that stop accepting new connections, let in-flight
-  // requests finish, then run OnModuleDestroy (Prisma $disconnect, Redis quit,
-  // reconciliation/maintenance timer clears) before exit.
-  app.enableShutdownHooks();
+  // Zero-loss shutdown. Every deploy sends SIGTERM, and this is a money system:
+  // nothing in flight may be dropped. Nest's own enableShutdownHooks() is NOT used —
+  // it runs the module destroy hooks (Prisma $disconnect, Redis quit) BEFORE it
+  // stops the HTTP server, so a request arriving in between could fail, and its
+  // close waited forever on Caddy's keep-alive connections. Instead, in order:
+  //   1. the HTTP side drains: /v1/health turns 503 so Caddy stops routing here
+  //      (it holds new requests for the next container), and every request
+  //      already here runs to completion (./common/http/graceful-drain);
+  //   2. at the same time the background jobs stop starting new runs and the
+  //      one in progress finishes (./common/lifecycle/background-jobs);
+  //   3. only then does Nest close the database, Redis and the rest — nothing
+  //      is using them any more.
+  // docker-compose gives this 60s (stop_grace_period); it normally takes ~3s.
+  let stopping = false;
+  const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
+    if (stopping) return;
+    stopping = true;
+    // Steady clock: a wall clock can be stepped (NTP, VM time sync) mid-shutdown.
+    const t0 = performance.now();
+    const since = () => `${Math.round(performance.now() - t0)}ms`;
+    logger.log(`${signal}: draining — health now 503, finishing everything in flight`);
+    const [, unfinished] = await Promise.all([
+      drainHttpServer(app.getHttpServer()).then(() => logger.log(`HTTP drained (${since()})`)),
+      stopBackgroundJobs(JOB_DRAIN_MS).then((left) => {
+        logger.log(`Background jobs stopped (${since()})`);
+        return left;
+      }),
+    ]);
+    if (unfinished.length) {
+      logger.warn(`Background jobs still running at shutdown: ${unfinished.join(', ')}`);
+    }
+    await app.close();
+    logger.log(`Shutdown complete (${since()})`);
+    process.exit(0);
+  };
+  for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+    process.once(signal, (s: NodeJS.Signals) => void shutdown(s));
+  }
 
   const port = config.get('API_PORT', { infer: true });
   const host = config.get('API_HOST', { infer: true });

@@ -340,8 +340,16 @@ jobs:
           # IMAGE_TAG is pinned to this commit's SHA, so only api/web (whose image ref
           # changed) get recreated. postgres/redis/caddy keep running untouched — the
           # data volumes are never recreated, so nothing in the DB is lost.
-          echo "==> Starting stack"
-          docker compose -f docker-compose.prod.yml up -d --remove-orphans
+          # Zero-loss swap, the API first and alone (see the Caddyfile and
+          # apps/api/src/common/http/graceful-drain.ts). The running API leaves Caddy's
+          # rotation and finishes everything in flight; requests arriving meanwhile are
+          # HELD by Caddy until the new API is healthy. A release labelled
+          # graceful-drain exits on its own in seconds, so it gets up to 60s; an older
+          # one never finishes under traffic, so it keeps the old 10s.
+          echo "==> Swapping the API"
+          if [ "$(docker inspect -f '{{index .Config.Labels "com.rivalpayments.graceful-drain"}}' txn_api 2>/dev/null)" = "1" ]; then STOP_TIMEOUT=60; else STOP_TIMEOUT=10; fi
+          docker compose -f docker-compose.prod.yml stop -t "$STOP_TIMEOUT" api </dev/null
+          docker compose -f docker-compose.prod.yml up -d --no-deps api </dev/null
 
           echo "==> Waiting for API health"
           RETRIES=0; MAX=45
@@ -356,6 +364,11 @@ jobs:
             echo "::error::New release is unhealthy. Old image kept — run ./rollback.sh on the server to revert."
             exit 1
           fi
+
+          # Only once the new API is healthy is the web swapped, so the web server's
+          # own calls to the API never wait on a stopped one.
+          echo "==> Starting the rest of the stack (web)"
+          docker compose -f docker-compose.prod.yml up -d --remove-orphans </dev/null
 
           # The dashboard must come up too — a runtime-broken web (bad standalone
           # start, missing asset) previously deployed green because only the API was

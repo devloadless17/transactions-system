@@ -8,6 +8,7 @@ import type { Env } from '../../config/env.schema';
 import { assertSafeWebhookUrl, safeFetch } from '../../common/net/ssrf';
 import { CacheService } from '../cache/cache.service';
 import { CrmDemoInboxService } from './crm-demo-inbox.service';
+import { registerBackgroundJob } from '../../common/lifecycle/background-jobs';
 
 // Hard cap per attempt so a slow/hostile CRM can't tie up the worker.
 const DELIVERY_TIMEOUT_MS = 5000;
@@ -50,6 +51,12 @@ export class CrmDeliveryService implements OnApplicationBootstrap, OnModuleDestr
 
   onApplicationBootstrap(): void {
     this.timer = setInterval(() => void this.sweep(), JOB_INTERVAL_MS);
+    // A shutdown stops new runs and waits for one in progress (main.ts).
+    registerBackgroundJob({
+      name: 'crm-delivery',
+      stop: () => this.onModuleDestroy(),
+      isRunning: () => this.running,
+    });
     this.timer.unref?.();
   }
 

@@ -9,6 +9,7 @@ import { WhishTransfersService } from '../whish/whish-transfers.service';
 import { WhishSessionExpiredError } from '../whish/whish-w2w.client';
 import { AuditService } from '../audit/audit.service';
 import { ValidationError } from '../../common/errors/domain.error';
+import { registerBackgroundJob } from '../../common/lifecycle/background-jobs';
 
 const INTERVAL_MS = 15_000;
 // Cap rows touched per tick so a backlog can't make one tick run unbounded.
@@ -55,6 +56,12 @@ export class WithdrawalAutoApprovalService implements OnApplicationBootstrap, On
         (this.simulate ? ' — SIMULATION MODE (no real transfers)' : ''),
     );
     this.timer = setInterval(() => void this.tick(), INTERVAL_MS);
+    // A shutdown stops new runs and waits for one in progress (main.ts).
+    registerBackgroundJob({
+      name: 'withdrawal-auto-approval',
+      stop: () => this.onModuleDestroy(),
+      isRunning: () => this.running,
+    });
     this.timer.unref?.();
     void this.tick();
   }

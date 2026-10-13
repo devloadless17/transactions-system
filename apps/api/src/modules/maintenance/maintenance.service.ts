@@ -1,6 +1,7 @@
 import type { OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
+import { registerBackgroundJob } from '../../common/lifecycle/background-jobs';
 
 // Hourly sweep. The refresh_tokens table has an expiresAt index but no
 // retention, so it would otherwise grow unbounded.
@@ -22,6 +23,12 @@ export class MaintenanceService implements OnApplicationBootstrap, OnModuleDestr
 
   onApplicationBootstrap(): void {
     this.timer = setInterval(() => void this.tick(), CLEANUP_INTERVAL_MS);
+    // A shutdown stops new runs and waits for one in progress (main.ts).
+    registerBackgroundJob({
+      name: 'maintenance',
+      stop: () => this.onModuleDestroy(),
+      isRunning: () => this.running,
+    });
     this.timer.unref?.();
   }
 

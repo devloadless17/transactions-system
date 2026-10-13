@@ -67,6 +67,12 @@ services:
     image: ${DOCKER_USERNAME}/transactions-api:${IMAGE_TAG:-latest}
     container_name: txn_api
     restart: unless-stopped
+    # Zero-loss shutdown (apps/api/src/common/http/graceful-drain.ts): on SIGTERM
+    # the API leaves Caddy's rotation, finishes every request and background run
+    # in flight, then exits — normally in ~3s. `init` delivers the signal to Node
+    # properly; the grace period only bounds a request that never finishes.
+    init: true
+    stop_grace_period: 60s
     depends_on:
       postgres:
         condition: service_healthy
@@ -136,6 +142,9 @@ services:
     image: ${DOCKER_USERNAME}/transactions-web:${IMAGE_TAG:-latest}
     container_name: txn_web
     restart: unless-stopped
+    # Drains on SIGTERM and exits in seconds (apps/web/drain-server.cjs).
+    init: true
+    stop_grace_period: 30s
     depends_on:
       api:
         condition: service_started

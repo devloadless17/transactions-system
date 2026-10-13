@@ -36,7 +36,9 @@ ENV PORT=3000
 COPY --from=builder /repo/apps/web/.next/standalone ./
 COPY --from=builder /repo/apps/web/.next/static ./apps/web/.next/static
 COPY --from=builder /repo/apps/web/public ./apps/web/public
+# Starts server.js so a deploy's SIGTERM finishes in seconds (see the file).
+COPY --from=builder /repo/apps/web/drain-server.cjs ./apps/web/drain-server.cjs
 
 USER node
 EXPOSE 3000
-CMD ["node", "apps/web/server.js"]
+CMD ["node", "apps/web/drain-server.cjs"]

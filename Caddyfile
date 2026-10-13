@@ -63,12 +63,21 @@
 	}
 }
 #
-# Zero-downtime deploys: each upstream has a short connection-retry window
-# (lb_try_duration/lb_try_interval). When a deploy recreates the api/web
-# container, requests arriving during the few-second swap WAIT for the new
-# container to accept connections instead of returning a 502. Caddy only retries
-# when no connection could be established (the request never reached a backend),
-# so this is idempotent and has no effect on normal traffic.
+# Zero-loss deploys — this is a money system: a deploy must not drop a single
+# request. Measured before this (2026-10-13): three deploys under deposit load
+# lost 21 deposits (Caddy's 15s hold ran out, and the old API was killed with
+# requests in flight). Now:
+#   - The API is health-checked every second (health_uri). On SIGTERM it answers
+#     503 (apps/api/src/common/http/graceful-drain.ts), so Caddy stops routing
+#     to it BEFORE it closes any connection, while it finishes everything in
+#     flight — no request can be written onto a connection being closed.
+#   - With no healthy upstream, Caddy HOLDS each request (lb_try_duration) and
+#     retries every lb_try_interval until the new container is healthy. A
+#     request held this way never reached a backend, so retrying it runs nothing
+#     twice. 60s covers a normal swap (~5s) with a wide margin and stays inside
+#     Cloudflare's 100s limit.
+# Proven locally behind this Caddy: three deploys under continuous deposit load,
+# 0 failures, every deposit booked exactly once (requests waited ≤ ~6s).
 #
 # `header_up X-Forwarded-For {client_ip}` in every reverse_proxy: the upstream is
 # told ONE visitor address — the one resolved by the global options above — and
@@ -93,8 +102,11 @@
 	handle @api {
 		reverse_proxy api:3001 {
 			header_up X-Forwarded-For {client_ip}
-			lb_try_duration 15s
+			lb_try_duration 60s
 			lb_try_interval 250ms
+			health_uri /v1/health
+			health_interval 1s
+			health_timeout 3s
 		}
 	}
 
@@ -102,7 +114,7 @@
 	handle {
 		reverse_proxy web:3000 {
 			header_up X-Forwarded-For {client_ip}
-			lb_try_duration 15s
+			lb_try_duration 60s
 			lb_try_interval 250ms
 		}
 	}
@@ -134,15 +146,18 @@ staging-portal.rivalpayments.com {
 	handle @api {
 		reverse_proxy api-staging:3001 {
 			header_up X-Forwarded-For {client_ip}
-			lb_try_duration 15s
+			lb_try_duration 60s
 			lb_try_interval 250ms
+			health_uri /v1/health
+			health_interval 1s
+			health_timeout 3s
 		}
 	}
 
 	handle {
 		reverse_proxy web-staging:3000 {
 			header_up X-Forwarded-For {client_ip}
-			lb_try_duration 15s
+			lb_try_duration 60s
 			lb_try_interval 250ms
 		}
 	}
