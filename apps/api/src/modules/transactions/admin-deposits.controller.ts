@@ -1,3 +1,9 @@
+/* eslint-disable @typescript-eslint/consistent-type-imports --
+ * NestJS DI: the classes below are constructor-injected, so they must be VALUE
+ * imports. `import type` elides them and `emitDecoratorMetadata` then writes
+ * `Object` into design:paramtypes, which makes Nest fail to resolve the
+ * provider at runtime. The lint rule cannot see that distinction.
+ */
 import { Body, Controller, Post, UseGuards } from '@nestjs/common';
 import {
   createManualDepositSchema,
