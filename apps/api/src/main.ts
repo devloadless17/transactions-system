@@ -16,6 +16,7 @@ import type { Server, ServerOptions } from 'socket.io';
 import type { INestApplicationContext } from '@nestjs/common';
 import { noStore } from './common/http/no-store';
 import { trustedProxies } from './common/http/trusted-proxies';
+import { corsOriginCheck } from './common/http/cors-origin';
 import { AppModule } from './app.module';
 import type { Env } from './config/env.schema';
 import { CSRF_HEADER_NAME } from './modules/auth/auth.constants';
@@ -198,10 +199,7 @@ async function bootstrap() {
     .filter(Boolean);
 
   app.enableCors({
-    origin: (origin: string | undefined, cb: (err: Error | null, allow?: boolean) => void) => {
-      if (!origin || allowed.includes(origin)) cb(null, true);
-      else cb(new Error(`Origin ${origin} not allowed`));
-    },
+    origin: corsOriginCheck(allowed),
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', CSRF_HEADER_NAME],
