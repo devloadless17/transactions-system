@@ -182,6 +182,7 @@ curl -X POST https://<your-dashboard-domain>/v1/integrations/whish/payments \
     "needsAttention": false,
     "settlementError": null,
     "paidAt": null,
+    "refundedAt": null,
     "createdAt": "2026-06-04T12:00:00.000Z"
   }
 }
@@ -210,13 +211,14 @@ POST /integrations/whish/payments/{externalId}/refresh
 
 **Statuses**
 
-| Status    | Meaning                                                                                                                                                                                                                                                                                                  |
-| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PENDING` | Link created, waiting for the customer to pay.                                                                                                                                                                                                                                                           |
-| `PAID`    | Customer paid — settled into your wallet (net of fees); `transactionId` is set.                                                                                                                                                                                                                          |
-| `FAILED`  | The payment will not be collected — the link lapsed unpaid, or a completed payment was refunded. (Whish reports no separate "expired", so a lapsed link also arrives as FAILED.) A single failed _attempt_ does NOT close the link: the customer can retry on the same link while it is still `PENDING`. |
+| Status     | Meaning                                                                                                                                                                                                                                                                                                                  |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `PENDING`  | Link created, waiting for the customer to pay.                                                                                                                                                                                                                                                                           |
+| `PAID`     | Customer paid — settled into your wallet (net of fees); `transactionId` is set.                                                                                                                                                                                                                                          |
+| `FAILED`   | The payment will not be collected — the link lapsed unpaid, or Whish refunded the payment before it was settled. (Whish reports no separate "expired", so a lapsed link also arrives as FAILED.) A single failed _attempt_ does NOT close the link: the customer can retry on the same link while it is still `PENDING`. |
+| `REFUNDED` | Was `PAID`; the platform then refunded the full amount to your customer's Whish account and reversed the deposit (the net you were credited comes back out of your wallet; both fees are returned). You receive `transaction.reversed`; `refundedAt` is set.                                                             |
 
-> **These are payment-link statuses.** The same deposit also exists as a ledger **transaction**, with its own names: link `PAID` = transaction `COMPLETED` (event `transaction.completed`), link `FAILED` = event `transaction.failed`, link `PENDING` = event `transaction.pending` (no transaction row yet). There is no `EXPIRED` status in practice — nothing ever writes it. **Withdrawals are a third set again** — `PENDING` → `COMPLETED` / `REJECTED` / `CANCELLED`, plus a transient `PROCESSING` — so a withdrawal is never `PAID` and a link is never `CANCELLED`. Validate statuses against the object you actually queried.
+> **These are payment-link statuses.** The same deposit also exists as a ledger **transaction**, with its own names: link `PAID` = transaction `COMPLETED` (event `transaction.completed`), link `FAILED` = event `transaction.failed`, link `PENDING` = event `transaction.pending` (no transaction row yet), link `REFUNDED` = transaction `REVERSED` (event `transaction.reversed`). There is no `EXPIRED` status in practice — nothing ever writes it. **Withdrawals are a third set again** — `PENDING` → `COMPLETED` / `REJECTED` / `CANCELLED`, plus a transient `PROCESSING` — so a withdrawal is never `PAID` and a link is never `CANCELLED`. Validate statuses against the object you actually queried.
 
 **Common errors**
 
@@ -656,7 +658,7 @@ The withdrawal body mirrors the `GET /company/withdrawals/:id` resource field-fo
 | `transaction.pending`   | A deposit was created and is awaiting settlement.                                                                                                 |
 | `transaction.completed` | It settled — funds credited.                                                                                                                      |
 | `transaction.failed`    | The collection did not go through — declined, or the payment link lapsed unpaid. (Whish reports no separate "expired", so both arrive as failed.) |
-| `transaction.reversed`  | A settled deposit was reversed.                                                                                                                   |
+| `transaction.reversed`  | A settled deposit was reversed (also when the platform refunds a Whish payment).                                                                  |
 
 **Withdrawal events** (`withdrawal.*`)
 

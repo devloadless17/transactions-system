@@ -1,0 +1,233 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Whish Pay",
+    "version": "1.4.4",
+    "description": "Collect payments via Whish balance, track status, and issue refunds."
+  },
+  "servers": [
+    {
+      "url": "https://partner.api.sbx.whish.money/itel-service/api",
+      "description": "Sandbox"
+    },
+    {
+      "url": "https://api.whish.money/itel-service/api",
+      "description": "Production"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "channelAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "channel"
+      },
+      "secretAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "secret"
+      },
+      "websiteUrlAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "websiteUrl"
+      }
+    }
+  },
+  "security": [
+    {
+      "channelAuth": [],
+      "secretAuth": [],
+      "websiteUrlAuth": []
+    }
+  ],
+  "paths": {
+    "/payment/account/balance": {
+      "get": {
+        "summary": "Get account balance",
+        "responses": {
+          "200": {
+            "description": "Standard response envelope.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": true,
+                  "code": null,
+                  "dialog": null,
+                  "actions": null,
+                  "extra": null,
+                  "data": {
+                    "balance": 10439.0
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "User-Agent",
+            "in": "header",
+            "required": true,
+            "description": "Identifies your application. Format: `AppName/version (website; contact-email)`.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "currency",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/payment/whish": {
+      "post": {
+        "summary": "Create a payment",
+        "description": "The `externalId` must be UNIQUE for every new transaction. It is a String, and it is the idempotency key: re-sending a value that was already used does NOT create a second transaction, it replays the original result. Only reuse the same `externalId` when you are deliberately retrying the very same transaction (for example after a timeout), and mint a new one for every genuinely new transaction.",
+        "responses": {
+          "200": {
+            "description": "Standard response envelope.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": true,
+                  "code": null,
+                  "dialog": null,
+                  "extra": null,
+                  "data": {
+                    "collectUrl": "https://whish.money/pay/8nQS2mL"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "User-Agent",
+            "in": "header",
+            "required": true,
+            "description": "Identifies your application. Format: `AppName/version (website; contact-email)`.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "example": {
+                "amount": "1",
+                "currency": "USD",
+                "invoice": "Order #1",
+                "externalId": "b7e2c9f4-5d1a-4c3e-9a86-2f0d7e41b3a5",
+                "successCallbackUrl": "https://merchant.example/api/payment/success",
+                "failureCallbackUrl": "https://merchant.example/api/payment/failure",
+                "successRedirectUrl": "https://merchant.example/thank-you",
+                "failureRedirectUrl": "https://merchant.example/payment-error"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/payment/collect/status": {
+      "post": {
+        "summary": "Get payment status",
+        "responses": {
+          "200": {
+            "description": "Standard response envelope.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": true,
+                  "code": null,
+                  "dialog": null,
+                  "extra": null,
+                  "data": {
+                    "collectStatus": "success",
+                    "payerPhoneNumber": "96170123456"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "User-Agent",
+            "in": "header",
+            "required": true,
+            "description": "Identifies your application. Format: `AppName/version (website; contact-email)`.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "example": {
+                "currency": "USD",
+                "externalId": "b7e2c9f4-5d1a-4c3e-9a86-2f0d7e41b3a5"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/payment/whish/refund": {
+      "post": {
+        "summary": "Refund a payment",
+        "responses": {
+          "200": {
+            "description": "Standard response envelope.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": true,
+                  "code": null,
+                  "dialog": null,
+                  "actions": null,
+                  "extra": null,
+                  "retrieved": false,
+                  "data": null
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "User-Agent",
+            "in": "header",
+            "required": true,
+            "description": "Identifies your application. Format: `AppName/version (website; contact-email)`.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "example": {
+                "currency": "USD",
+                "externalId": "b7e2c9f4-5d1a-4c3e-9a86-2f0d7e41b3a5",
+                "refundReason": "Customer canceled order"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

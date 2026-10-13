@@ -31,6 +31,7 @@ const CREATE_RESPONSE = `{
     "needsAttention": false,
     "settlementError": null,
     "paidAt": null,
+    "refundedAt": null,
     "createdAt": "2026-06-04T12:00:00.000Z"
   }
 }
@@ -160,7 +161,11 @@ function ApiSection() {
     ['PAID', 'Customer paid — settled into your wallet (net of fees); transactionId is set.'],
     [
       'FAILED',
-      'The payment will not be collected — the link lapsed unpaid, or a completed payment was refunded. (Whish reports no separate “expired”, so a lapsed link also arrives as FAILED.)',
+      'The payment will not be collected — the link lapsed unpaid, or Whish refunded the payment before it was settled. (Whish reports no separate “expired”, so a lapsed link also arrives as FAILED.)',
+    ],
+    [
+      'REFUNDED',
+      'Paid, then refunded to the customer by the platform: Whish sent the full amount back to the customer’s Whish account, and the deposit was reversed out of your wallet (the net you were credited; both fees are returned). You receive transaction.reversed; refundedAt is set.',
     ],
   ];
   const errors: [string, string][] = [

@@ -204,5 +204,15 @@ export const whishPaymentResponseSchema = z.object({
   settlementError: z.string().nullable(),
   createdAt: z.string(),
   paidAt: z.string().nullable(),
+  // When the payment was refunded to the payer (status REFUNDED); null otherwise.
+  refundedAt: z.string().nullable(),
 });
 export type WhishPaymentResponse = z.infer<typeof whishPaymentResponseSchema>;
+
+// Admin: refund a PAID payment to the payer through Whish. Always the full
+// amount — Whish's refund call takes no amount. The reason is sent to Whish as
+// `refundReason` and recorded on the reversal.
+export const refundWhishPaymentSchema = z.object({
+  reason: z.string().trim().min(3).max(255),
+});
+export type RefundWhishPaymentInput = z.infer<typeof refundWhishPaymentSchema>;

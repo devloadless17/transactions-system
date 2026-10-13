@@ -241,6 +241,7 @@ describe('docs ↔ API schema contract (anti-drift)', () => {
         'needsAttention',
         'createdAt',
         'paidAt',
+        'refundedAt',
       ]);
       const undocumented = Object.keys(whishPaymentResponseSchema.shape).filter(
         (k) => !documented.has(k) && !WHISH_RESPONSE_UNDOCUMENTED_OK.has(k),

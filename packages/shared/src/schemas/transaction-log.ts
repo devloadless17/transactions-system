@@ -8,9 +8,15 @@ import { z } from 'zod';
 //   WHISH_LINK — a Whish payment-link generation (request we sent + Whish reply)
 //   INGEST     — a source ingest call (request body + the response we returned,
 //                including rejected/4xx attempts)
+//   WHISH_REFUND — a refund sent to Whish (request we sent + Whish reply)
 // =================================================================
 
-export const TRANSACTION_LOG_KINDS = ['WHISH_LINK', 'INGEST', 'WHISH_TRANSFER'] as const;
+export const TRANSACTION_LOG_KINDS = [
+  'WHISH_LINK',
+  'INGEST',
+  'WHISH_TRANSFER',
+  'WHISH_REFUND',
+] as const;
 export const transactionLogKindSchema = z.enum(TRANSACTION_LOG_KINDS);
 export type TransactionLogKind = z.infer<typeof transactionLogKindSchema>;
 

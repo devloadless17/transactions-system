@@ -2,6 +2,7 @@ import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { WhishPaymentStatus } from '@app/shared';
 import { WhishError, WhishIndeterminateError } from '../../src/modules/whish/whish.client';
 import {
+  ADMIN_ACTOR,
   addTransactionFee,
   buildHarness,
   createCompany,
@@ -215,7 +216,7 @@ describe('Whish v1.4.4 — collectStatus refunded / unknown', () => {
     // Refreshing a PAID row used to be a guaranteed no-op; an upstream outage
     // must not turn it into a 502 for the operator.
     h.whishClient.failGetStatusWith = new WhishError('Could not reach Whish');
-    const res = await h.whish.adminRefreshStatus(p.id);
+    const res = await h.whish.adminRefreshStatus(p.id, ADMIN_ACTOR);
 
     expect(res.status).toBe('PAID');
     expect(res.needsAttention).toBe(false);
@@ -267,7 +268,7 @@ describe('Whish v1.4.4 — collectStatus refunded / unknown', () => {
     await h.whish.refreshStatus(companyId, p.id); // settles, credits 50
 
     h.whishClient.status = 'refunded';
-    const res = await h.whish.adminRefreshStatus(p.id);
+    const res = await h.whish.adminRefreshStatus(p.id, ADMIN_ACTOR);
 
     // The row stays PAID and keeps its transaction — reversing the ledger is a
     // deliberate operator action, never an automatic side effect of a refresh.

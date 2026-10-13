@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { WhishPaymentStatus } from '@app/shared';
 import {
+  ADMIN_ACTOR,
   addTransactionFee,
   buildHarness,
   createCompany,
@@ -17,7 +18,7 @@ import {
  *
  * The race runs across the two real entry points that funnel into `reconcile`: the
  * Whish success callback (`handleCallback(externalId, token)`) and the admin manual
- * refresh (`adminRefreshStatus(id)`). Both see Whish `success`, so each tries to
+ * refresh (`adminRefreshStatus(id, actor)`). Both see Whish `success`, so each tries to
  * ingest + settle the same link.
  *
  * What enforces exactly-once here (empirically verified): the loser's `ingest` runs
@@ -88,7 +89,7 @@ describe('concurrent Whish settle race (exactly-once)', () => {
     // transaction (natural idempotency), not blow up.
     const results = await Promise.allSettled([
       h.whish.handleCallback(p.externalId, p.callbackToken),
-      h.whish.adminRefreshStatus(p.id),
+      h.whish.adminRefreshStatus(p.id, ADMIN_ACTOR),
     ]);
     expect(results.filter((r) => r.status === 'rejected')).toHaveLength(0);
 
@@ -129,8 +130,8 @@ describe('concurrent Whish settle race (exactly-once)', () => {
     // Same race via two identical entry points — both return the mapped row, and
     // both must resolve (the loser replays the winner's booking, no double credit).
     const results = await Promise.allSettled([
-      h.whish.adminRefreshStatus(p.id),
-      h.whish.adminRefreshStatus(p.id),
+      h.whish.adminRefreshStatus(p.id, ADMIN_ACTOR),
+      h.whish.adminRefreshStatus(p.id, ADMIN_ACTOR),
     ]);
     expect(results.filter((r) => r.status === 'rejected')).toHaveLength(0);
     for (const r of results) {

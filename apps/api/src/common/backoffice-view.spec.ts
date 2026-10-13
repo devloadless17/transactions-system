@@ -316,6 +316,7 @@ describe('back-office views', () => {
       settlementError: null,
       createdAt: '2026-10-08T00:00:00.000Z',
       paidAt: null,
+      refundedAt: null,
     };
 
     it('a healthy payment passes through with the amount the payer pays', () => {

@@ -55,6 +55,7 @@ const KIND_LABEL: Record<TransactionLogKind, string> = {
   WHISH_LINK: 'Whish link',
   INGEST: 'Ingest',
   WHISH_TRANSFER: 'Whish transfer',
+  WHISH_REFUND: 'Whish refund',
 };
 
 export function TransactionLogsView() {
@@ -168,6 +169,7 @@ export function TransactionLogsView() {
                 <option value="WHISH_LINK">Whish link</option>
                 <option value="INGEST">Ingest</option>
                 <option value="WHISH_TRANSFER">Whish transfer</option>
+                <option value="WHISH_REFUND">Whish refund</option>
               </select>
             </div>
             <div className="space-y-1">

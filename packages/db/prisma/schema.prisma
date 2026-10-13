@@ -131,6 +131,9 @@ enum WhishPaymentStatus {
   PAID
   FAILED
   EXPIRED
+  // Paid, then refunded to the payer through Whish (admin action); the settled
+  // deposit was reversed in the ledger. Terminal — guarded in the DB.
+  REFUNDED
 }
 
 enum WebhookDeliveryStatus {
@@ -714,30 +717,36 @@ model AuditLog {
 // idempotent settlement for free. Tenant-scoped (RLS by company_id).
 
 model WhishPayment {
-  id               String             @id @default(uuid()) @db.Uuid
-  companyId        String             @map("company_id") @db.Uuid
-  company          Company            @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  externalId       BigInt             @unique @default(autoincrement()) @map("external_id")
-  callbackToken    String             @unique @map("callback_token")
-  amount           Decimal            @db.Decimal(20, 2)
-  currency         String             @db.Char(3)
-  invoice          String
-  status           WhishPaymentStatus @default(PENDING)
-  collectUrl       String?            @map("collect_url")
-  payerPhoneNumber String?            @map("payer_phone_number")
-  transactionId    String?            @unique @map("transaction_id") @db.Uuid
-  transaction      Transaction?       @relation(fields: [transactionId], references: [id], onDelete: SetNull)
-  idempotencyKey   String?            @map("idempotency_key")
-  metadata         Json?              @db.JsonB
-  paidAt           DateTime?          @map("paid_at") @db.Timestamptz(6)
+  id                String             @id @default(uuid()) @db.Uuid
+  companyId         String             @map("company_id") @db.Uuid
+  company           Company            @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  externalId        BigInt             @unique @default(autoincrement()) @map("external_id")
+  callbackToken     String             @unique @map("callback_token")
+  amount            Decimal            @db.Decimal(20, 2)
+  currency          String             @db.Char(3)
+  invoice           String
+  status            WhishPaymentStatus @default(PENDING)
+  collectUrl        String?            @map("collect_url")
+  payerPhoneNumber  String?            @map("payer_phone_number")
+  transactionId     String?            @unique @map("transaction_id") @db.Uuid
+  transaction       Transaction?       @relation(fields: [transactionId], references: [id], onDelete: SetNull)
+  idempotencyKey    String?            @map("idempotency_key")
+  metadata          Json?              @db.JsonB
+  paidAt            DateTime?          @map("paid_at") @db.Timestamptz(6)
+  // Set when a refund is sent to Whish, BEFORE the call: the lock against a
+  // second refund, and the marker that a later `refunded` reading is ours to
+  // book. Cleared only when Whish confirms the payment was NOT refunded.
+  refundRequestedAt DateTime?          @map("refund_requested_at") @db.Timestamptz(6)
+  // When the refund was booked (status REFUNDED).
+  refundedAt        DateTime?          @map("refunded_at") @db.Timestamptz(6)
   // When the reconciliation poller should next ask Whish about this PENDING
   // link. NULL = never polled (due once a minute old). Set after each poll by
   // the link's age. Partial expression index on COALESCE(next_poll_at,
   // created_at) WHERE status = 'PENDING' — SQL-only, see migration
   // 20261013120000_whish_payment_poll_schedule.
-  nextPollAt       DateTime?          @map("next_poll_at") @db.Timestamptz(6)
-  createdAt        DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt        DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  nextPollAt        DateTime?          @map("next_poll_at") @db.Timestamptz(6)
+  createdAt         DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@unique([companyId, idempotencyKey])
   @@index([companyId, status])
@@ -914,6 +923,7 @@ enum TransactionLogKind {
   WHISH_LINK
   INGEST
   WHISH_TRANSFER
+  WHISH_REFUND
 }
 
 model TransactionLog {

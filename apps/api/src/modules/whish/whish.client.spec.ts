@@ -33,11 +33,16 @@ const config = {
 
 /** Last request body seen by the stubbed fetch, parsed. */
 let lastBody: Record<string, unknown> | undefined;
+/** Last request URL and method seen by the stubbed fetch. */
+let lastUrl: string | undefined;
+let lastMethod: string | undefined;
 
 function mockWhish(status: number, body: unknown, contentIsJson = true) {
   vi.stubGlobal(
     'fetch',
-    vi.fn(async (_url: string, init?: { body?: string }) => {
+    vi.fn(async (url: string, init?: { body?: string; method?: string }) => {
+      lastUrl = url;
+      lastMethod = init?.method;
       lastBody = init?.body ? (JSON.parse(init.body) as Record<string, unknown>) : undefined;
       return {
         status,
@@ -220,6 +225,57 @@ describe('WhishClient envelope handling', () => {
       await expect(client.getStatus({ currency: 'USD', externalId: id })).rejects.toBeInstanceOf(
         ValidationError,
       );
+    });
+  });
+
+  // POST /payment/whish/refund (v1.4.3+). A refund moves real money back to the
+  // payer, so the classification matters even more than on create: booking a
+  // refund Whish refused would claw money from a company for nothing, and
+  // treating an unknown outcome as a refusal invites a SECOND refund.
+  describe('refund', () => {
+    const refund = { currency: 'USD', externalId: '900001', refundReason: 'Customer cancelled' };
+
+    it('sends the documented body to the refund endpoint', async () => {
+      // The documented success reply: data is null, plus the additive fields.
+      mockWhish(200, ok(null));
+      await expect(client.refund(refund)).resolves.toBeUndefined();
+      expect(lastUrl).toBe(`${BASE}/payment/whish/refund`);
+      expect(lastMethod).toBe('POST');
+      expect(lastBody).toEqual({
+        currency: 'USD',
+        externalId: '900001',
+        refundReason: 'Customer cancelled',
+      });
+      expect(typeof lastBody?.externalId).toBe('string');
+    });
+
+    it('is a definite failure when Whish refuses it', async () => {
+      mockWhish(200, fail('payment.not_refundable', 'This payment cannot be refunded'));
+      const err = await client.refund(refund).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(WhishError);
+      expect(err).not.toBeInstanceOf(WhishIndeterminateError);
+      expect((err as WhishError).message).toBe('This payment cannot be refunded');
+    });
+
+    it('is INDETERMINATE on code "500" — the refund may have gone through', async () => {
+      mockWhish(200, fail('500', 'service unavailable'));
+      const err = await client.refund(refund).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(WhishIndeterminateError);
+    });
+
+    it('is INDETERMINATE on an HTTP 5xx', async () => {
+      mockWhish(502, '<html>bad gateway</html>', false);
+      const err = await client.refund(refund).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(WhishIndeterminateError);
+    });
+
+    it('rejects a non-digit externalId before calling Whish', async () => {
+      const fetchSpy = vi.fn();
+      vi.stubGlobal('fetch', fetchSpy);
+      await expect(client.refund({ ...refund, externalId: 'abc' })).rejects.toBeInstanceOf(
+        ValidationError,
+      );
+      expect(fetchSpy).not.toHaveBeenCalled();
     });
   });
 

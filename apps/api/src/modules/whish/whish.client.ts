@@ -90,7 +90,7 @@ const whishCollectStatusSchema = z.enum(['success', 'failed', 'pending', 'refund
 const EXTERNAL_ID_RE = /^\d{1,19}$/;
 
 /**
- * Thin client over the three Whish Pay endpoints. Injects the four required
+ * Thin client over the four Whish Pay endpoints. Injects the four required
  * headers (channel, secret, websiteUrl, User-Agent) on every call and unwraps
  * the `{ status, code, dialog, data }` envelope, throwing WhishError when Whish
  * reports failure. One platform-wide account (creds from env).
@@ -158,6 +158,32 @@ export class WhishClient {
     // reads as "we have a payer" everywhere downstream (UI, CSV, search).
     const phone = data.payerPhoneNumber != null ? String(data.payerPhoneNumber).trim() : '';
     return { collectStatus: parsed.data, payerPhoneNumber: phone === '' ? null : phone };
+  }
+
+  /**
+   * Refund a paid payment to its payer (Whish Pay v1.4.3+). Always the FULL
+   * amount — the call takes no amount. Success is the envelope's `status:true`
+   * alone: Whish replies `data: null`, returns no refund id and sends no
+   * callback. Afterwards getStatus reports the payment as `refunded`.
+   *
+   * Throws WhishError on a definite refusal, and WhishIndeterminateError when
+   * Whish could not report an outcome (code "500", a timeout, a 5xx) — the
+   * refund MAY have gone through, so a caller must confirm it via getStatus
+   * before booking it or sending another.
+   */
+  async refund(input: {
+    currency: string;
+    externalId: string;
+    refundReason: string;
+  }): Promise<void> {
+    if (!EXTERNAL_ID_RE.test(input.externalId)) {
+      throw new ValidationError(`externalId must be a digit string: got '${input.externalId}'`);
+    }
+    await this.call<null>('POST', '/payment/whish/refund', {
+      currency: input.currency,
+      externalId: input.externalId,
+      refundReason: input.refundReason,
+    });
   }
 
   /**

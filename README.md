@@ -130,8 +130,9 @@ We are the _outbound_ caller (the inverse of source-key ingest).
   localhost `WEB_ORIGIN` is still refused. So the real sandbox cannot complete a
   round trip from a dev machine: run `node scripts/fake-whish.cjs` and point
   `WHISH_BASE_URL` at `http://localhost:4100/itel-service/api` instead. It can be
-  driven through every `collectStatus` (`/__set-status?s=…`) and the indeterminate
-  envelope (`/__set-envelope?mode=indeterminate`).
+  driven through every `collectStatus` (`/__set-status?s=…`), the indeterminate
+  envelope (`/__set-envelope?mode=indeterminate`), and the refund outcomes
+  (`/__set-refund?mode=ok|refuse|lost`).
 - **Amount rules** — Whish _documents_ per-currency limits (USD: at most 2 decimals,
   minimum 1.00) in `WHISH_AMOUNT_RULES`, but does **not** enforce them: the live
   sandbox mints a real link for `0.50` and `10.005`, and carries a `0.50` link to the
@@ -157,6 +158,20 @@ We are the _outbound_ caller (the inverse of source-key ingest).
   (token-guarded, **verified** via `POST /payment/collect/status` before crediting).
   Missed callbacks self-heal via a 60s reconciliation interval (and manual
   `POST .../:id/refresh-status`).
+- **Refunds** — an admin (SUPER_ADMIN / ADMIN_OPERATOR) refunds a `PAID` payment
+  from the Whish Pay page: `POST /v1/admin/whish/payments/:id/refund` with a
+  reason → Whish `POST /payment/whish/refund` (v1.4.3+; always the **full**
+  amount, the call takes none). Real money leaves the platform account, so: the
+  row is locked (`refund_requested_at`) before Whish is called, so it is asked at
+  most once; Whish's status is checked first, so a payment already refunded in its
+  portal is booked without paying again; and the ledger only moves once Whish
+  confirms (`status:true`, or `collectStatus: refunded` when its reply was lost).
+  Booking is the admin reversal — the company's CRM gets `transaction.reversed`
+  and the payment becomes `REFUNDED`. An outcome nobody could confirm stays
+  locked and flagged; the admin Refresh books it once Whish confirms, or releases
+  it (after 2 minutes) if Whish still reports it paid. Every refund call is in the
+  super-admin transaction log (`WHISH_REFUND`). Contract:
+  `Whish/whish-pay.openapi.json`.
 - **CRM integration** — server-to-server via a **company API key**
   (`Authorization: Bearer tsk_…`, minted under Settings → API keys):
   `POST/GET /v1/integrations/whish/payments[/:ref]`. Optional signed webhook

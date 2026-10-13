@@ -41,14 +41,9 @@ import {
   EMPTY_WHISH_FILTERS,
   type WhishFilters,
 } from '@/features/admin/whish/whish-filter-bar';
+import { whishStatusVariant } from '@/features/admin/whish/whish-status';
 
 const PAGE_SIZE = 20;
-
-function statusVariant(s: WhishPaymentResponse['status']) {
-  if (s === 'PAID') return 'success' as const;
-  if (s === 'FAILED' || s === 'EXPIRED') return 'destructive' as const;
-  return 'secondary' as const;
-}
 
 export function WhishView() {
   const qc = useQueryClient();
@@ -114,7 +109,7 @@ export function WhishView() {
     {
       key: 'status',
       header: 'Status',
-      cell: (p) => <Badge variant={statusVariant(p.status)}>{p.status}</Badge>,
+      cell: (p) => <Badge variant={whishStatusVariant(p.status)}>{p.status}</Badge>,
     },
     {
       key: 'link',

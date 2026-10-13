@@ -109,6 +109,23 @@ export class FakeWhishClient {
     }
     return Promise.resolve({ collectStatus: this.status, payerPhoneNumber: this.payerPhoneNumber });
   }
+
+  /** Every refund call, so a test can assert Whish was asked exactly once. */
+  refundCalls: Array<{ currency: string; externalId: string; refundReason: string }> = [];
+  /** When set, refund rejects with it. */
+  failRefundWith: Error | null = null;
+  /** With failRefundWith: the refund still went through at Whish (its reply was lost). */
+  refundTookEffect = false;
+
+  /** Like Whish: a refund that goes through makes getStatus report `refunded`. */
+  refund(input: { currency: string; externalId: string; refundReason: string }): Promise<void> {
+    this.refundCalls.push(input);
+    if (!this.failRefundWith || this.refundTookEffect) {
+      this.statusFor.set(input.externalId, 'refunded');
+    }
+    if (this.failRefundWith) return Promise.reject(this.failRefundWith);
+    return Promise.resolve();
+  }
 }
 
 /** One CRM dispatch observed during a test. */
@@ -312,6 +329,9 @@ let seq = 0;
 const uniq = () => `${Date.now().toString(36)}-${(seq++).toString(36)}`;
 
 export const USD = 'USD';
+
+/** The operator behind an admin action in tests (recorded, never looked up). */
+export const ADMIN_ACTOR = 'it-admin';
 
 export interface CompanyFixture {
   companyId: string;

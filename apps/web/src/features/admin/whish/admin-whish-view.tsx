@@ -14,6 +14,8 @@ import { useDebouncedValue } from '@/lib/use-debounced-value';
 import { ExportCsvButton } from '@/components/export-csv-button';
 import { useCompanyNames } from '@/features/admin/company-filter';
 import { WhishPaymentDetailDrawer } from './whish-payment-detail-drawer';
+import { RefundPaymentDialog } from './refund-payment-dialog';
+import { whishStatusVariant } from './whish-status';
 import {
   WhishFilterBar,
   whishFilterParams,
@@ -24,15 +26,13 @@ import {
 
 const PAGE_SIZE = 20;
 
-function statusVariant(s: WhishPaymentResponse['status']) {
-  if (s === 'PAID') return 'success' as const;
-  if (s === 'FAILED' || s === 'EXPIRED') return 'destructive' as const;
-  return 'secondary' as const;
-}
-
-export function AdminWhishView() {
+// `canManage` gates the operator actions (Refresh, Refund) — the API allows
+// them to SUPER_ADMIN/ADMIN_OPERATOR only. Back office views the payments but
+// would get a 403, so it doesn't see the buttons. Defaults to false.
+export function AdminWhishView({ canManage = false }: { canManage?: boolean }) {
   const [page, setPage] = useState(1);
   const [detail, setDetail] = useState<WhishPaymentResponse | null>(null);
+  const [refundTarget, setRefundTarget] = useState<WhishPaymentResponse | null>(null);
   const [filters, setFilters] = useState<WhishFilters>(EMPTY_WHISH_FILTERS);
   const [search, setSearch] = useState('');
   const debouncedSearch = useDebouncedValue(search, 300);
@@ -62,9 +62,14 @@ export function AdminWhishView() {
         method: 'POST',
       }),
     onSuccess: (p) => {
-      if (p.status === 'PAID') toast.success(`#${p.externalId} settled — booked to the ledger`);
-      else if (p.needsAttention)
-        toast.error(`#${p.externalId} still unsettled: ${p.settlementError ?? 'needs attention'}`);
+      // Flag first: a PAID row can still need attention (e.g. a refund Whish
+      // has not confirmed), and "settled" would hide that.
+      if (p.needsAttention)
+        toast.error(`#${p.externalId} needs attention: ${p.settlementError ?? 'see details'}`);
+      else if (p.status === 'REFUNDED')
+        toast.success(`#${p.externalId} refunded — booked to the ledger`);
+      else if (p.status === 'PAID')
+        toast.success(`#${p.externalId} settled — booked to the ledger`);
       else toast.success(`#${p.externalId} refreshed — ${p.status}`);
     },
     onError: (err) => toast.error(err instanceof ApiClientError ? err.message : 'Refresh failed'),
@@ -109,14 +114,12 @@ export function AdminWhishView() {
       header: 'Status',
       cell: (p) => (
         <div className="flex items-center gap-2">
-          <Badge variant={statusVariant(p.status)}>{p.status}</Badge>
+          <Badge variant={whishStatusVariant(p.status)}>{p.status}</Badge>
           {p.needsAttention && (
             <Badge
               variant="destructive"
               title={
-                p.settlementError
-                  ? `Paid at Whish but not settled: ${p.settlementError}`
-                  : 'Paid at Whish but not settled — needs operator attention'
+                p.settlementError ?? 'Paid at Whish but not settled — needs operator attention'
               }
             >
               Needs attention
@@ -131,25 +134,45 @@ export function AdminWhishView() {
       className: 'text-xs text-muted-foreground',
       cell: (p) => new Date(p.createdAt).toLocaleString(),
     },
-    {
-      key: 'actions',
-      header: '',
-      align: 'right',
-      cell: (p) => (
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={refreshMu.isPending && refreshMu.variables === p.id}
-          onClick={(e) => {
-            e.stopPropagation(); // don't also open the row's detail drawer
-            refreshMu.mutate(p.id);
-          }}
-          title="Ask Whish for the latest status and settle if collected"
-        >
-          {refreshMu.isPending && refreshMu.variables === p.id ? 'Refreshing…' : 'Refresh'}
-        </Button>
-      ),
-    },
+    ...(canManage
+      ? [
+          {
+            key: 'actions',
+            header: '',
+            align: 'right' as const,
+            cell: (p: WhishPaymentResponse) => (
+              <div className="flex justify-end gap-1">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={refreshMu.isPending && refreshMu.variables === p.id}
+                  onClick={(e) => {
+                    e.stopPropagation(); // don't also open the row's detail drawer
+                    refreshMu.mutate(p.id);
+                  }}
+                  title="Ask Whish for the latest status: settles a paid link, books a confirmed refund"
+                >
+                  {refreshMu.isPending && refreshMu.variables === p.id ? 'Refreshing…' : 'Refresh'}
+                </Button>
+                {p.status === 'PAID' && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-destructive hover:text-destructive"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setRefundTarget(p);
+                    }}
+                    title="Send the full amount back to the payer through Whish"
+                  >
+                    Refund
+                  </Button>
+                )}
+              </div>
+            ),
+          },
+        ]
+      : []),
   ];
 
   return (
@@ -206,7 +229,16 @@ export function AdminWhishView() {
               </div>
             }
           />
-          <WhishPaymentDetailDrawer payment={detail} onClose={() => setDetail(null)} />
+          <WhishPaymentDetailDrawer
+            payment={detail}
+            onClose={() => setDetail(null)}
+            operator={canManage}
+          />
+          <RefundPaymentDialog
+            target={refundTarget}
+            companyName={refundTarget ? companyName(refundTarget.companyId) : ''}
+            onClose={() => setRefundTarget(null)}
+          />
         </CardContent>
       </Card>
 

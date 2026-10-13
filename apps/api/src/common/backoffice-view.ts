@@ -256,6 +256,7 @@ const WHISH_PAYMENT_SHOWN = [
   'needsAttention',
   'createdAt',
   'paidAt',
+  'refundedAt',
 ] as const satisfies ReadonlyArray<keyof WhishPaymentResponse>;
 // Shown, but never verbatim — see BACKOFFICE_SETTLEMENT_ERROR.
 type WhishPaymentDerived = Extract<keyof WhishPaymentResponse, 'settlementError'>;

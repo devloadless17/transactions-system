@@ -23,6 +23,7 @@ import type { WhishPayment } from '@app/db';
 import { PrismaService } from '../../database/prisma.service';
 import type { Env } from '../../config/env.schema';
 import {
+  ConflictError,
   DomainError,
   DuplicateTransactionError,
   ForbiddenError,
@@ -68,6 +69,18 @@ const RECONCILE_CONCURRENCY = 4;
 // Scheduled checks are set this much early, so a link due "in a minute" is
 // always taken by the NEXT tick rather than missing it by a timer's jitter.
 const POLL_SCHEDULE_SLACK_MS = 5_000;
+// A refund call answers within the client's 10s timeout. A refund request older
+// than this is no longer in flight, so if Whish still reports the payment as
+// paid, Whish did not refund it and the request can be released for a retry.
+const REFUND_IN_FLIGHT_MS = 2 * 60_000;
+const REFUND_ALREADY_SENT =
+  'A refund for this payment was already sent to Whish. Press Refresh to confirm its outcome.';
+// Both are shown to the company too (needsAttention reads settlementError), so
+// they say what happened, not which admin button resolves it.
+const REFUND_UNCONFIRMED =
+  'A refund was sent to Whish but is not confirmed yet; nothing has been booked.';
+const REFUNDED_NOT_BOOKED =
+  'Whish refunded this payment, but booking the refund failed; nothing has been booked yet.';
 
 /**
  * When to ask Whish again about a link that is still PENDING, by its age.
@@ -605,52 +618,77 @@ export class WhishPaymentsService {
    * operator's recovery for a paid-but-unsettled link: the 60s poller skips
    * needsAttention rows, so once the underlying cause is fixed (e.g. the company
    * made visible again) a manual refresh is what re-books it.
+   *
+   * On a PAID payment it settles the refund state instead, which nothing else
+   * re-checks (the poller only takes PENDING links) — see refreshPaidPayment.
    */
-  async adminRefreshStatus(id: string): Promise<WhishPaymentResponse> {
+  async adminRefreshStatus(id: string, actorId: string): Promise<WhishPaymentResponse> {
     const payment = await this.prisma.runAsAdmin((tx) =>
       tx.whishPayment.findUnique({ where: { id } }),
     );
     if (!payment) throw new NotFoundError('WhishPayment', id);
-    // A PAID row is normally never re-polled (reconcile returns early), so a
-    // refund of an ALREADY-SETTLED payment would be invisible. On this
-    // admin-only path, check for it explicitly: flag it loudly and book NOTHING.
-    // Reversing the ledger must stay a deliberate operator action — never an
-    // automatic side effect of refreshing a status.
-    if (payment.status === WhishPaymentStatus.PAID) {
-      try {
-        const flagged = await this.detectRefundAfterSettlement(payment);
-        if (flagged) return flagged;
-      } catch (err) {
-        // This probe is a bonus, not the job. Refreshing an already-settled
-        // payment used to be a guaranteed no-op, so an upstream outage must not
-        // turn it into a 502 for the operator.
-        this.logger.warn(
-          `Whish refund probe failed for ${payment.externalId} (${err instanceof Error ? err.message : 'unknown'}) — ` +
-            `returning the settled row unchanged.`,
-        );
-      }
-      return mapWhishPayment(payment);
-    }
+    if (payment.status === WhishPaymentStatus.PAID)
+      return this.refreshPaidPayment(payment, actorId);
     return this.reconcile(payment);
   }
 
   /**
-   * Admin-only probe: is this SETTLED payment now `refunded` upstream? Returns
-   * the flagged row when so, otherwise null (caller continues normally). Kept
-   * off the poller and the company refresh so we don't add an upstream call per
-   * PAID row.
+   * Admin Refresh of a SETTLED payment — what does Whish say about it now?
+   *  - `refunded` after a refund WE sent: book it. This is how a refund whose
+   *    outcome Whish could not report at the time gets booked.
+   *  - `refunded` with no refund from us: it was refunded outside the platform.
+   *    Flag it and book NOTHING — reversing the ledger stays a deliberate
+   *    operator action (the Refund button records it without paying again).
+   *  - `success` with a refund request that is no longer in flight: Whish did
+   *    not refund it, so release the request and let the operator try again.
    */
-  private async detectRefundAfterSettlement(
+  private async refreshPaidPayment(
     payment: WhishPayment,
-  ): Promise<WhishPaymentResponse | null> {
-    const { collectStatus } = await this.whish.getStatus({
-      currency: payment.currency.trim(),
-      externalId: payment.externalId.toString(),
-    });
-    if (collectStatus !== 'refunded') return null;
+    actorId: string,
+  ): Promise<WhishPaymentResponse> {
+    let collectStatus: WhishCollectStatus;
+    try {
+      ({ collectStatus } = await this.whish.getStatus({
+        currency: payment.currency.trim(),
+        externalId: payment.externalId.toString(),
+      }));
+    } catch (err) {
+      // Refreshing an already-settled payment used to be a guaranteed no-op, so
+      // an upstream outage must not turn it into a 502 for the operator.
+      this.logger.warn(
+        `Whish status check failed for settled payment ${payment.externalId} (${err instanceof Error ? err.message : 'unknown'}) — ` +
+          `returning the row unchanged.`,
+      );
+      return mapWhishPayment(payment);
+    }
+
+    if (collectStatus === 'refunded') {
+      if (payment.refundRequestedAt) return this.bookRefund(payment.id, actorId);
+      return this.flagRefundedOutside(payment);
+    }
+    if (
+      collectStatus === 'success' &&
+      payment.refundRequestedAt &&
+      Date.now() - payment.refundRequestedAt.getTime() > REFUND_IN_FLIGHT_MS
+    ) {
+      this.logger.warn(
+        `Whish payment ${payment.externalId}: the refund requested at ${payment.refundRequestedAt.toISOString()} ` +
+          `was not made (Whish still reports it paid) — releasing it for a retry.`,
+      );
+      return this.releaseRefund(payment.id);
+    }
+    return mapWhishPayment(payment);
+  }
+
+  /**
+   * Flag a settled payment Whish reports as refunded although we never asked it
+   * to (refunded in Whish's own portal). The wallet is still credited, so it
+   * needs an operator; nothing is booked here.
+   */
+  private async flagRefundedOutside(payment: WhishPayment): Promise<WhishPaymentResponse> {
     this.logger.error(
       `Whish payment ${payment.externalId} was REFUNDED after settling (company ${payment.companyId}, ` +
-        `transaction ${payment.transactionId ?? 'none'}) — wallet still credited; needs an operator reversal.`,
+        `transaction ${payment.transactionId ?? 'none'}) — wallet still credited; needs an operator to record the refund.`,
     );
     const flagged = await this.prisma.runAsAdmin((tx) =>
       tx.whishPayment.update({
@@ -665,13 +703,299 @@ export class WhishPaymentsService {
             // attention — read settlementError", so it must never be flagged
             // with a null reason.
             settlementError:
-              'Whish reports this payment as refunded after it settled — the wallet credit needs an operator reversal.',
+              'Whish reports this payment as refunded after it settled — the wallet credit has not been reversed yet; an operator needs to record the refund.',
           }),
         },
       }),
     );
     this.realtime.company(payment.companyId, ['whish']);
     return mapWhishPayment(flagged);
+  }
+
+  /**
+   * Admin: refund a PAID payment to its payer through Whish, and reverse its
+   * settled deposit. Always the full amount — Whish's refund call takes none.
+   *
+   * Real money leaves the platform's Whish account, so the order is strict:
+   *   1. LOCK  — set refund_requested_at on a PAID row that has none. A double
+   *              click or a second operator is refused, so Whish is asked to
+   *              refund a payment at most once per request.
+   *   2. CHECK — ask Whish for the payment's status. Already `refunded` (e.g. in
+   *              Whish's portal) → book it, never pay the payer twice.
+   *   3. REFUND — the Whish call.
+   *   4. BOOK  — only once Whish confirms: its `status:true`, or, when it refused
+   *              or could not answer, a status check reading `refunded`.
+   * A refusal the status check confirms (`success`) releases the lock so the
+   * operator can retry. An outcome nobody can confirm keeps the lock and flags
+   * the payment; Refresh books it once Whish confirms (refreshPaidPayment).
+   *
+   * Booking is the admin Reverse: the net comes back out of the company's
+   * wallet (a shortfall becomes a RECEIVABLE), both fees are returned, and the
+   * company's CRM gets `transaction.reversed`.
+   */
+  async refundPayment(
+    id: string,
+    args: { actorId: string; reason: string },
+  ): Promise<WhishPaymentResponse> {
+    const payment = await this.prisma.runAsAdmin((tx) =>
+      tx.whishPayment.findUnique({ where: { id } }),
+    );
+    if (!payment) throw new NotFoundError('WhishPayment', id);
+    // Already refunded (a stale dialog, a retried request): nothing to send.
+    if (payment.status === WhishPaymentStatus.REFUNDED) return mapWhishPayment(payment);
+    if (payment.status !== WhishPaymentStatus.PAID || !payment.transactionId) {
+      throw new ConflictError(
+        `Only a paid payment can be refunded — this one is ${payment.status}.`,
+      );
+    }
+    if (payment.refundRequestedAt) throw new ConflictError(REFUND_ALREADY_SENT);
+
+    // 1. LOCK. Guarded on PAID + no request: of two concurrent clicks exactly
+    //    one passes, and the other is refused without calling Whish.
+    const locked = await this.prisma.runAsAdmin((tx) =>
+      tx.whishPayment.updateMany({
+        where: { id, status: WhishPaymentStatus.PAID, refundRequestedAt: null },
+        data: {
+          refundRequestedAt: new Date(),
+          metadata: mergeMetadata(payment.metadata, {
+            refundReason: args.reason,
+            refundRequestedBy: args.actorId,
+          }),
+        },
+      }),
+    );
+    if (locked.count !== 1) throw new ConflictError(REFUND_ALREADY_SENT);
+
+    const currency = payment.currency.trim();
+    const externalId = payment.externalId.toString();
+
+    // 2. CHECK. Nothing has been sent yet, so any way out of here releases.
+    let collectStatus: WhishCollectStatus;
+    try {
+      ({ collectStatus } = await this.whish.getStatus({ currency, externalId }));
+    } catch (err) {
+      await this.releaseRefund(payment.id);
+      throw err;
+    }
+    if (collectStatus === 'refunded') {
+      this.logger.warn(
+        `Whish payment ${externalId} was already refunded at Whish — booking it without asking Whish again.`,
+      );
+      return this.bookConfirmedRefund(payment, args.actorId);
+    }
+    if (collectStatus !== 'success') {
+      await this.releaseRefund(payment.id);
+      throw new ConflictError(
+        `Whish reports this payment as '${collectStatus}', not paid, so it cannot be refunded.`,
+      );
+    }
+
+    // 3. REFUND.
+    const request = { currency, externalId, refundReason: args.reason };
+    try {
+      await this.whish.refund(request);
+    } catch (err) {
+      this.logRefund(payment, request, err);
+      return this.resolveUnconfirmedRefund(payment, args.actorId, err);
+    }
+    this.logRefund(payment, request, null);
+    this.logger.log(
+      `Whish refunded payment ${externalId} (${payment.amount.toString()} ${currency}, company ${payment.companyId}) — booking it.`,
+    );
+
+    // 4. BOOK.
+    return this.bookConfirmedRefund(payment, args.actorId);
+  }
+
+  /**
+   * The refund call failed. Whish either refused it or could not report an
+   * outcome — and a lost reply can hide a refund that went through, so Whish's
+   * status check decides. Throws unless the refund turns out to have happened.
+   */
+  private async resolveUnconfirmedRefund(
+    payment: WhishPayment,
+    actorId: string,
+    err: unknown,
+  ): Promise<WhishPaymentResponse> {
+    // Not a Whish error: thrown before any request left (e.g. Whish is not
+    // configured), so nothing was sent.
+    if (!(err instanceof WhishError)) {
+      await this.releaseRefund(payment.id);
+      throw err;
+    }
+    let collectStatus: WhishCollectStatus | null = null;
+    try {
+      ({ collectStatus } = await this.whish.getStatus({
+        currency: payment.currency.trim(),
+        externalId: payment.externalId.toString(),
+      }));
+    } catch (statusErr) {
+      this.logger.warn(
+        `Whish status check after a failed refund of ${payment.externalId} also failed: ` +
+          `${statusErr instanceof Error ? statusErr.message : 'unknown'}`,
+      );
+    }
+    if (collectStatus === 'refunded') return this.bookConfirmedRefund(payment, actorId);
+
+    const indeterminate = err instanceof WhishIndeterminateError;
+    if (collectStatus === 'success' && !indeterminate) {
+      // A refusal Whish's own status confirms: nothing left the account.
+      await this.releaseRefund(payment.id);
+      throw err;
+    }
+
+    // Unknown: Whish could not answer (it may still refund), or it refused and
+    // we could not double-check. Keep the lock — a second refund must not be
+    // sent on a guess — and flag it; Refresh settles it either way.
+    await this.flagRefund(payment.id, REFUND_UNCONFIRMED);
+    this.logger.error(
+      `Whish refund of ${payment.externalId} is UNCONFIRMED (company ${payment.companyId}): ${err.message}. ` +
+        `Nothing booked; the refund request is kept and flagged — Refresh books or releases it.`,
+    );
+    throw new WhishIndeterminateError(
+      indeterminate
+        ? 'Whish could not confirm the refund — it may still go through. Nothing was booked yet. Press Refresh to check with Whish; the refund is booked as soon as Whish confirms it.'
+        : `Whish refused the refund (${err.message}), but its status could not be double-checked. Nothing was booked. Press Refresh to check with Whish.`,
+      { externalId: payment.externalId.toString(), paymentId: payment.id },
+      err.upstreamResponse,
+    );
+  }
+
+  /**
+   * Book a refund Whish has confirmed. Whish has ALREADY paid the payer, so a
+   * failure here must not lose that: the lock stays (nothing can send a second
+   * refund) and the payment is flagged — Refresh sees `refunded` plus our
+   * request and books it.
+   */
+  private async bookConfirmedRefund(
+    payment: WhishPayment,
+    actorId: string,
+  ): Promise<WhishPaymentResponse> {
+    try {
+      return await this.bookRefund(payment.id, actorId);
+    } catch (err) {
+      this.logger.error(
+        `Whish refunded payment ${payment.externalId} but booking it FAILED (company ${payment.companyId}): ` +
+          `${err instanceof Error ? err.message : 'unknown'} — flagged; Refresh books it.`,
+      );
+      await this.flagRefund(payment.id, REFUNDED_NOT_BOOKED).catch((flagErr) =>
+        this.logger.warn(
+          `Could not flag the unbooked refund of ${payment.externalId}: ${(flagErr as Error).message}`,
+        ),
+      );
+      throw err;
+    }
+  }
+
+  /**
+   * Reverse the settled deposit and mark the payment REFUNDED. Idempotent on
+   * both steps: reverse() replays a deposit that is already REVERSED (by an
+   * operator, or by an earlier attempt that stopped before the second step), so
+   * the company is never clawed back twice; the status flip is guarded on PAID.
+   */
+  private async bookRefund(id: string, actorId: string): Promise<WhishPaymentResponse> {
+    const payment = await this.prisma.runAsAdmin((tx) =>
+      tx.whishPayment.findUniqueOrThrow({ where: { id } }),
+    );
+    if (payment.status === WhishPaymentStatus.REFUNDED) return mapWhishPayment(payment);
+    if (payment.status !== WhishPaymentStatus.PAID || !payment.transactionId) {
+      throw new ConflictError(`Cannot book a refund for a payment that is ${payment.status}.`);
+    }
+    const reason =
+      (payment.metadata as { refundReason?: unknown } | null)?.refundReason ?? 'no reason recorded';
+    await this.transactions.reverse(payment.transactionId, {
+      actorId,
+      reason: `Refunded to the payer through Whish: ${String(reason)}`,
+    });
+    const res = await this.prisma.runAsAdmin((tx) =>
+      tx.whishPayment.updateMany({
+        where: { id, status: WhishPaymentStatus.PAID },
+        data: {
+          status: WhishPaymentStatus.REFUNDED,
+          refundedAt: new Date(),
+          metadata: withoutRefundFlags(payment.metadata),
+        },
+      }),
+    );
+    const updated = await this.prisma.runAsAdmin((tx) =>
+      tx.whishPayment.findUniqueOrThrow({ where: { id } }),
+    );
+    if (res.count === 1) {
+      this.logger.log(
+        `Whish payment ${payment.externalId} REFUNDED — transaction ${payment.transactionId} reversed (company ${payment.companyId})`,
+      );
+      // reverse() already refreshed transactions/wallets/ledger and told the CRM.
+      this.realtime.company(payment.companyId, ['whish']);
+    }
+    return mapWhishPayment(updated);
+  }
+
+  /** Mark a refund request as needing an operator (the lock is kept). */
+  private async flagRefund(id: string, message: string): Promise<void> {
+    const row = await this.prisma.runAsAdmin((tx) =>
+      tx.whishPayment.findUniqueOrThrow({ where: { id } }),
+    );
+    await this.prisma.runAsAdmin((tx) =>
+      tx.whishPayment.updateMany({
+        where: { id, status: WhishPaymentStatus.PAID },
+        data: {
+          metadata: mergeMetadata(row.metadata, {
+            needsAttention: true,
+            refundUnconfirmed: true,
+            settlementError: message,
+          }),
+        },
+      }),
+    );
+    this.realtime.company(row.companyId, ['whish']);
+  }
+
+  /** Drop a refund request that did not (and will not) happen, so it can be retried. */
+  private async releaseRefund(id: string): Promise<WhishPaymentResponse> {
+    const row = await this.prisma.runAsAdmin((tx) =>
+      tx.whishPayment.findUniqueOrThrow({ where: { id } }),
+    );
+    const res = await this.prisma.runAsAdmin((tx) =>
+      tx.whishPayment.updateMany({
+        where: { id, status: WhishPaymentStatus.PAID, refundRequestedAt: { not: null } },
+        data: { refundRequestedAt: null, metadata: withoutRefundRequest(row.metadata) },
+      }),
+    );
+    if (res.count === 1) this.realtime.company(row.companyId, ['whish']);
+    const current = await this.prisma.runAsAdmin((tx) =>
+      tx.whishPayment.findUniqueOrThrow({ where: { id } }),
+    );
+    return mapWhishPayment(current);
+  }
+
+  /** Super-admin log: the refund we asked Whish for, and what Whish returned. */
+  private logRefund(
+    payment: WhishPayment,
+    request: { currency: string; externalId: string; refundReason: string },
+    err: unknown,
+  ): void {
+    const details = err instanceof WhishError ? err.details : undefined;
+    this.txLogs.record({
+      kind: 'WHISH_REFUND',
+      companyId: payment.companyId,
+      sourceCode: WHISH_SOURCE_CODE,
+      reference: request.externalId,
+      transactionId: payment.transactionId,
+      statusCode: err ? (typeof details?.httpStatus === 'number' ? details.httpStatus : 502) : 200,
+      success: !err,
+      request,
+      response: err
+        ? {
+            code: err instanceof WhishError ? err.code : 'WHISH_ERROR',
+            message: err instanceof Error ? err.message : 'unknown',
+            upstream:
+              (err instanceof WhishError ? err.upstreamResponse : undefined) ??
+              details?.upstreamMessage ??
+              null,
+            indeterminate: err instanceof WhishIndeterminateError,
+          }
+        : { status: true },
+    });
   }
 
   /** Admin: fetch one payment by id across companies (e.g. an audit-log deep link). */
@@ -779,7 +1103,12 @@ export class WhishPaymentsService {
    * a double credit if this runs twice.
    */
   private async reconcile(payment: WhishPayment): Promise<WhishPaymentResponse> {
-    if (payment.status === WhishPaymentStatus.PAID) return mapWhishPayment(payment);
+    if (
+      payment.status === WhishPaymentStatus.PAID ||
+      payment.status === WhishPaymentStatus.REFUNDED
+    ) {
+      return mapWhishPayment(payment);
+    }
 
     const currency = payment.currency.trim();
     let collectStatus: WhishCollectStatus;
@@ -1468,11 +1797,48 @@ function mergeMetadata(
   current: WhishPayment['metadata'],
   patch: Record<string, unknown>,
 ): Prisma.InputJsonValue {
-  const base =
-    current && typeof current === 'object' && !Array.isArray(current)
-      ? (current as Record<string, unknown>)
-      : {};
-  return { ...base, ...patch } as Prisma.InputJsonValue;
+  return { ...metadataObject(current), ...patch } as Prisma.InputJsonValue;
+}
+
+/** A copy of the metadata as a plain object ({} when it is null or not an object). */
+function metadataObject(current: WhishPayment['metadata']): Record<string, unknown> {
+  return current && typeof current === 'object' && !Array.isArray(current)
+    ? { ...(current as Record<string, unknown>) }
+    : {};
+}
+
+/**
+ * Metadata once a refund is booked: every operator flag is resolved (the money
+ * is back with the payer and the deposit is reversed). The breadcrumbs —
+ * refundReason, refundRequestedBy, paidAfterExpiry, refundedAfterSettlement —
+ * stay, so the history of the payment is still readable.
+ */
+function withoutRefundFlags(current: WhishPayment['metadata']): Prisma.InputJsonValue {
+  const meta = metadataObject(current);
+  delete meta.needsAttention;
+  delete meta.settlementError;
+  delete meta.refundUnconfirmed;
+  return meta as Prisma.InputJsonValue;
+}
+
+/**
+ * Metadata once a refund request is released (Whish did not refund). Drops what
+ * the request wrote. needsAttention/settlementError are only dropped when the
+ * refund flag raised them, and needsAttention goes back to the one other case
+ * that raises it on a paid row (paid after expiry) — it was there first.
+ */
+function withoutRefundRequest(current: WhishPayment['metadata']): Prisma.InputJsonValue {
+  const meta = metadataObject(current);
+  const flaggedByRefund = meta.refundUnconfirmed === true;
+  delete meta.refundReason;
+  delete meta.refundRequestedBy;
+  delete meta.refundUnconfirmed;
+  if (flaggedByRefund) {
+    delete meta.settlementError;
+    if (meta.paidAfterExpiry === true) meta.needsAttention = true;
+    else delete meta.needsAttention;
+  }
+  return meta as Prisma.InputJsonValue;
 }
 
 function withRef(base: string, externalId: string): string {
@@ -1500,5 +1866,6 @@ function mapWhishPayment(row: WhishPayment): WhishPaymentResponse {
     settlementError: typeof meta?.settlementError === 'string' ? meta.settlementError : null,
     createdAt: row.createdAt.toISOString(),
     paidAt: row.paidAt?.toISOString() ?? null,
+    refundedAt: row.refundedAt?.toISOString() ?? null,
   };
 }

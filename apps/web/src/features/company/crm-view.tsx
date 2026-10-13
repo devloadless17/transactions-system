@@ -367,7 +367,10 @@ x-crm-signature: t=1781018591,sha256=<hex>
       'transaction.failed',
       'The collection did not go through — declined, or the payment link lapsed unpaid. (Whish reports no separate “expired”, so both arrive as failed.)',
     ],
-    ['transaction.reversed', 'A settled deposit was reversed.'],
+    [
+      'transaction.reversed',
+      'A settled deposit was reversed (also when the platform refunds a Whish payment).',
+    ],
   ];
   const withdrawalEvents: [string, string][] = [
     ['withdrawal.pending', 'Requested — status PENDING, awaiting an admin’s decision.'],

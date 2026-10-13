@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { WhishPaymentStatus } from '@app/shared';
 import {
+  ADMIN_ACTOR,
   addTransactionFee,
   buildHarness,
   createCompany,
@@ -125,7 +126,7 @@ describe('Whish reconcile — late success on a terminal link (#3)', () => {
     );
     h.whishClient.status = 'success'; // blocker removed; Whish still holds the money
 
-    const res = await h.whish.adminRefreshStatus(p.id); // no companyId — admin scope
+    const res = await h.whish.adminRefreshStatus(p.id, ADMIN_ACTOR); // no companyId — admin scope
 
     expect(res.status).toBe('PAID');
     expect(res.transactionId).toBeTruthy();

@@ -62,7 +62,7 @@
         },
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"amount\": \"1\",\n  \"currency\": \"USD\",\n  \"invoice\": \"Order #1\",\n  \"externalId\": \"{{externalId}}\",\n  \"successCallbackUrl\": \"https://example.com/api/payment/success\",\n  \"failureCallbackUrl\": \"https://example.com/api/payment/failure\",\n  \"successRedirectUrl\": \"https://example.com/thank-you\",\n  \"failureRedirectUrl\": \"https://example.com/payment-error\"\n}",
+          "raw": "{\n  \"amount\": \"1\",\n  \"currency\": \"USD\",\n  \"invoice\": \"Order #1\",\n  \"externalId\": \"{{externalId}}\",\n  \"successCallbackUrl\": \"https://merchant.example/api/payment/success\",\n  \"failureCallbackUrl\": \"https://merchant.example/api/payment/failure\",\n  \"successRedirectUrl\": \"https://merchant.example/thank-you\",\n  \"failureRedirectUrl\": \"https://merchant.example/payment-error\"\n}",
           "options": {
             "raw": {
               "language": "json"

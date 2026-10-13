@@ -1,10 +1,21 @@
-import { Controller, Get, Param, ParseUUIDPipe, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import type { StreamableFile } from '@nestjs/common';
 import {
   WHISH_CURRENCIES,
   listWhishPaymentsQuerySchema,
+  refundWhishPaymentSchema,
   UserRole,
   type ListWhishPaymentsQuery,
+  type RefundWhishPaymentInput,
   type WhishCurrency,
 } from '@app/shared';
 import { ZodPipe } from '../../common/pipes/zod-validation.pipe';
@@ -66,8 +77,9 @@ export class WhishAdminController {
   /**
    * Re-attempt settlement of one payment (cross-company). The operator's recovery
    * for a paid-but-unsettled link: asks Whish for the authoritative status and
-   * books it if collected. Restricted to SUPER_ADMIN/ADMIN_OPERATOR (BACKOFFICE
-   * is view-only) — overrides the class-level roles for this mutation.
+   * books it if collected — and, on a paid one, books a refund Whish has since
+   * confirmed. Restricted to SUPER_ADMIN/ADMIN_OPERATOR (BACKOFFICE is
+   * view-only) — overrides the class-level roles for this mutation.
    */
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR)
   @Post('payments/:id/refresh-status')
@@ -76,7 +88,28 @@ export class WhishAdminController {
     entityType: 'whish_payment',
     idFrom: 'params.id',
   })
-  async refresh(@Param('id', new ParseUUIDPipe()) id: string) {
-    return this.payments.adminRefreshStatus(id);
+  async refresh(@Param('id', new ParseUUIDPipe()) id: string, @CurrentUser() user: AuthPrincipal) {
+    return this.payments.adminRefreshStatus(id, user.userId);
+  }
+
+  /**
+   * Refund a paid payment to its payer through Whish (always the full amount)
+   * and reverse its settled deposit. Real money leaves the platform's Whish
+   * account, so only the roles that may reverse a deposit can do it
+   * (SUPER_ADMIN/ADMIN_OPERATOR); BACKOFFICE is view-only.
+   */
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR)
+  @Post('payments/:id/refund')
+  @Audited({
+    action: 'whish.payment_refunded',
+    entityType: 'whish_payment',
+    idFrom: 'params.id',
+  })
+  async refund(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body(new ZodPipe(refundWhishPaymentSchema)) body: RefundWhishPaymentInput,
+    @CurrentUser() user: AuthPrincipal,
+  ) {
+    return this.payments.refundPayment(id, { actorId: user.userId, reason: body.reason });
   }
 }

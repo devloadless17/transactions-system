@@ -10,6 +10,7 @@
 // Control endpoints:
 //   /__set-status?s=success|failed|pending|refunded|unknown
 //   /__set-envelope?mode=ok|indeterminate|http500
+//   /__set-refund?mode=ok|refuse|lost   (lost = refunded, but the reply says code 500)
 const http = require('node:http');
 const crypto = require('node:crypto');
 
@@ -21,6 +22,13 @@ let collectStatus = 'success';
 // indeterminate— `status:false` + code "500": v1.4.4 "pending, do not mark failed"
 // http500      — a raw 5xx (e.g. a proxy), body not even JSON
 let envelopeMode = 'ok';
+// How POST /payment/whish/refund answers:
+// ok     — refunds it (`status:true`, data null); collect/status then says `refunded`
+// refuse — a definite refusal; nothing is refunded
+// lost   — refunds it, but replies code "500" (the reply is lost): the client
+//          must find the refund through collect/status, never refund again
+let refundMode = 'ok';
+const refundedExternalIds = new Set();
 const knownExternalIds = new Set();
 const received = []; // webhook deliveries captured at /sink
 const seenHeaders = []; // header sets seen on Whish calls (to verify the client)
@@ -62,11 +70,17 @@ const server = http.createServer(async (req, res) => {
     envelopeMode = url.searchParams.get('mode') || 'ok';
     return send(res, 200, { envelopeMode });
   }
+  if (p === '/__set-refund') {
+    refundMode = url.searchParams.get('mode') || 'ok';
+    return send(res, 200, { refundMode });
+  }
   if (p === '/__reset') {
     received.length = 0;
     seenHeaders.length = 0;
     collectStatus = 'success';
     envelopeMode = 'ok';
+    refundMode = 'ok';
+    refundedExternalIds.clear();
     knownExternalIds.clear();
     return send(res, 200, { reset: true });
   }
@@ -85,8 +99,13 @@ const server = http.createServer(async (req, res) => {
   // --- Whish API ---
   if (p.startsWith('/itel-service/api/')) {
     const missing = REQUIRED_HEADERS.filter((h) => !req.headers[h]);
-    seenHeaders.push({ path: p, present: REQUIRED_HEADERS.filter((h) => !!req.headers[h]), missing });
-    if (missing.length) return send(res, 200, fail('MISSING_HEADERS', `missing: ${missing.join(',')}`));
+    seenHeaders.push({
+      path: p,
+      present: REQUIRED_HEADERS.filter((h) => !!req.headers[h]),
+      missing,
+    });
+    if (missing.length)
+      return send(res, 200, fail('MISSING_HEADERS', `missing: ${missing.join(',')}`));
 
     // Simulated upstream trouble. Both shapes mean "outcome unknown" to the
     // client, which must NOT mark the payment failed.
@@ -117,13 +136,36 @@ const server = http.createServer(async (req, res) => {
       if (knownExternalIds.size && !knownExternalIds.has(body.externalId)) {
         return send(res, 200, fail('external_id.not_exists', 'unknown externalId'));
       }
-      const phone = collectStatus === 'success' ? '96170902894' : null;
-      return send(res, 200, ok({ collectStatus, payerPhoneNumber: phone }));
+      // A refunded payment stays refunded, whatever the global status says.
+      const status = refundedExternalIds.has(body.externalId) ? 'refunded' : collectStatus;
+      const phone = status === 'success' || status === 'refunded' ? '96170902894' : null;
+      return send(res, 200, ok({ collectStatus: status, payerPhoneNumber: phone }));
     }
     if (p.endsWith('/payment/whish/refund') && req.method === 'POST') {
-      // v1.4.3+. Not implemented by the platform (it needs egress IP
-      // whitelisting); answered here so a manual probe gets a truthful reply.
-      return send(res, 200, { ...ok(null), retrieved: false });
+      // v1.4.3+. Documented body { currency, externalId, refundReason }; the
+      // documented success reply is the envelope with data null.
+      const body = JSON.parse((await readBody(req)) || '{}');
+      if (typeof body.externalId !== 'string') {
+        return send(res, 200, fail('request.invalid', 'externalId must be a String'));
+      }
+      if (!body.refundReason) {
+        return send(res, 200, fail('request.invalid', 'refundReason is required'));
+      }
+      if (refundedExternalIds.has(body.externalId)) {
+        return send(
+          res,
+          200,
+          fail('payment.already_refunded', 'This payment was already refunded'),
+        );
+      }
+      if (refundMode === 'refuse') {
+        return send(res, 200, fail('payment.not_refundable', 'This payment cannot be refunded'));
+      }
+      refundedExternalIds.add(body.externalId);
+      if (refundMode === 'lost') {
+        return send(res, 200, fail('500', 'service temporarily unavailable'));
+      }
+      return send(res, 200, ok(null));
     }
     if (p.endsWith('/payment/account/balance') && req.method === 'GET') {
       return send(res, 200, ok({ balance: 12345.0 }));

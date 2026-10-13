@@ -248,11 +248,14 @@ export type SupportedCurrency = (typeof SUPPORTED_CURRENCIES)[number];
 //   PAID    — confirmed via collect/status; a ledger Transaction was written
 //   FAILED  — Whish reported failure (or link creation failed)
 //   EXPIRED — never paid; closed out by reconciliation
+//   REFUNDED — was PAID, then an operator refunded it to the payer through
+//              Whish; the settled deposit was reversed in the ledger. Terminal.
 export const WhishPaymentStatus = {
   PENDING: 'PENDING',
   PAID: 'PAID',
   FAILED: 'FAILED',
   EXPIRED: 'EXPIRED',
+  REFUNDED: 'REFUNDED',
 } as const;
 export type WhishPaymentStatus = (typeof WhishPaymentStatus)[keyof typeof WhishPaymentStatus];
 
