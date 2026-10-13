@@ -125,6 +125,31 @@ describe('WhishReconciliationService — each link is checked when it is due', (
     service.onModuleDestroy();
   });
 
+  it('when Whish says "too many requests" the poller stops looping and waits for the next every-minute pass', async () => {
+    vi.useFakeTimers();
+    const { service, tick, payments } = build();
+    // A wake-up is already set from an earlier pass…
+    payments.nextPollDueAt.mockResolvedValueOnce(Date.now() + 30_000);
+    await tick();
+    expect(vi.getTimerCount()).toBe(1);
+
+    // …then a pass with a backlog is throttled by Whish on its first batch.
+    payments.reconcileStalePayments.mockResolvedValue({
+      checked: 3,
+      timedOut: 0,
+      more: true,
+      throttled: true,
+    } as never);
+    await tick();
+
+    expect(payments.reconcileStalePayments).toHaveBeenCalledTimes(2); // no second batch
+    expect(payments.nextPollDueAt).toHaveBeenCalledOnce(); // and no new wake-up asked for
+    expect(vi.getTimerCount()).toBe(0); // the earlier one is cancelled too
+    await vi.advanceTimersByTimeAsync(59_000);
+    expect(payments.reconcileStalePayments).toHaveBeenCalledTimes(2);
+    service.onModuleDestroy();
+  });
+
   it('sets no wake-up while another instance is the poller', async () => {
     vi.useFakeTimers();
     const { tick, payments } = build({ leaseTaken: true });

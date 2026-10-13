@@ -1506,8 +1506,10 @@ export class WhishPaymentsService {
      * 10s), and a deploy must not wait for that.
      */
     shouldStop?: () => boolean;
-  }): Promise<{ checked: number; timedOut: number; more: boolean }> {
-    if (!this.whish.isConfigured()) return { checked: 0, timedOut: 0, more: false };
+  }): Promise<{ checked: number; timedOut: number; more: boolean; throttled: boolean }> {
+    if (!this.whish.isConfigured()) {
+      return { checked: 0, timedOut: 0, more: false, throttled: false };
+    }
 
     const now = Date.now();
     const limit = opts?.limit ?? RECONCILE_MAX_PER_TICK;
@@ -1560,17 +1562,28 @@ export class WhishPaymentsService {
     let timedOut = 0;
     let cursor = 0;
     let checked = 0;
+    // Set when Whish answers "too many requests": no further link is started,
+    // and the caller waits for its next every-minute pass. Whish documents no
+    // rate limit, and the account is the one every company's link creation
+    // goes through — so at the first sign the poller is the one that yields.
+    const run = { throttled: false };
     const worker = async (): Promise<void> => {
-      while (cursor < rows.length && !opts?.shouldStop?.()) {
+      while (cursor < rows.length && !run.throttled && !opts?.shouldStop?.()) {
         const p = rows[cursor++]!;
         checked++;
-        if (await this.pollStaleLink(p, now)) timedOut++;
+        if (await this.pollStaleLink(p, now, run)) timedOut++;
       }
     };
     await Promise.all(
       Array.from({ length: Math.min(RECONCILE_CONCURRENCY, rows.length) }, () => worker()),
     );
-    return { checked, timedOut, more };
+    if (run.throttled) {
+      this.logger.warn(
+        `Whish answered "too many requests" to a status check: reconciliation stopped after ` +
+          `${checked} link(s) and waits for its next every-minute pass; the rest stay due.`,
+      );
+    }
+    return { checked, timedOut, more, throttled: run.throttled };
   }
 
   /**
@@ -1598,7 +1611,11 @@ export class WhishPaymentsService {
    * if it is still unresolved — schedule its next check. Resolves `true` when
    * the cutoff closed it. Never throws.
    */
-  private async pollStaleLink(p: WhishPayment, now: number): Promise<boolean> {
+  private async pollStaleLink(
+    p: WhishPayment,
+    now: number,
+    run: { throttled: boolean },
+  ): Promise<boolean> {
     // Defence in depth: the selection already excludes flagged rows, but one
     // may have been flagged between that query and this check.
     if ((p.metadata as { needsAttention?: boolean } | null)?.needsAttention === true) return false;
@@ -1695,6 +1712,7 @@ export class WhishPaymentsService {
       // due, so a link Whish keeps erroring on can never hold the head of the
       // queue.
       this.logger.warn(`Reconcile failed for payment ${p.externalId}: ${(err as Error).message}`);
+      if (err instanceof WhishError && err.details?.httpStatus === 429) run.throttled = true;
       await this.scheduleNextPoll(p.id, now + 60_000);
     }
     return timedOut;

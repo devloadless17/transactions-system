@@ -343,7 +343,10 @@ Read the entry for every release you are about to roll back across. Newest first
     is closed at 10 minutes if Whish still reports it unpaid — one Whish call
     for an unpaid link, none for a paid one. The poller wakes at the moment the
     next link is due (measured: 0.2s after it), with a pass every minute as the
-    safety net; a full batch of 250 is followed by the next at once. Its query
+    safety net; a full batch of 250 is followed by the next at once, unless
+    Whish answers HTTP 429: then the poller stops and only the next
+    every-minute pass asks again (Whish documents no rate limit, and link
+    creation uses the same account). Its query
     takes the head of the schedule off the PENDING-only index, so its cost does
     not grow with the number of open links (measured with 500,000 payable
     links: 250 rows, 0.3 ms; the previous form read all 500,000, 135 ms).

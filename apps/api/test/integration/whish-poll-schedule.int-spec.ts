@@ -151,7 +151,7 @@ describe('the reconciliation poller follows the schedule', () => {
 
     const res = await h.whish.reconcileStalePayments();
 
-    expect(res).toEqual({ checked: 1, timedOut: 0, more: false });
+    expect(res).toEqual({ checked: 1, timedOut: 0, more: false, throttled: false });
     expect(h.whishClient.getStatusCalls).toEqual([due.externalId]);
     // The next thing due is the link 2 seconds short of its check.
     const next = await h.whish.nextPollDueAt();
@@ -168,7 +168,7 @@ describe('the reconciliation poller follows the schedule', () => {
 
     const res = await h.whish.reconcileStalePayments({ limit: 2 });
 
-    expect(res).toEqual({ checked: 2, timedOut: 0, more: true });
+    expect(res).toEqual({ checked: 2, timedOut: 0, more: true, throttled: false });
     expect([...h.whishClient.getStatusCalls].sort()).toEqual(
       [first.externalId, second.externalId].sort(),
     );
@@ -295,7 +295,36 @@ describe('the reconciliation poller follows the schedule', () => {
     expect(h.crm.names()).toEqual([]);
   });
 
-  it('a Whish callback we could not act on is retried at the next run, not at the 6-minute check', async () => {
+  it('if Whish answers "too many requests" the run stops at once and says so', async () => {
+    const links = await Promise.all(
+      Array.from({ length: 12 }, (_, i) => insertPending((6.5 + i * 0.25) * MIN)),
+    );
+    h.whishClient.failGetStatusWith = new WhishError('Too many requests', { httpStatus: 429 });
+
+    const res = await h.whish.reconcileStalePayments();
+
+    // The (up to 4) checks already in flight finish; no further link is started.
+    expect(res.throttled).toBe(true);
+    expect(res.checked).toBeLessThanOrEqual(4);
+    expect(h.whishClient.getStatusCalls).toHaveLength(res.checked);
+    const rows = await Promise.all(links.map((l) => rowOf(l.id)));
+    expect(rows.every((r) => r.status === 'PENDING')).toBe(true); // nothing closed
+    // The links it asked about retry in a minute; the rest are still due.
+    expect(rows.filter((r) => r.nextPollAt!.getTime() > Date.now())).toHaveLength(res.checked);
+    expect(h.crm.names()).toEqual([]);
+  });
+
+  it('an ordinary Whish error does not stop the run', async () => {
+    const links = [await insertPending(7 * MIN), await insertPending(8 * MIN)];
+    h.whishClient.failGetStatusWith = new WhishError('Could not reach Whish');
+
+    const res = await h.whish.reconcileStalePayments();
+
+    expect(res).toEqual({ checked: 2, timedOut: 0, more: false, throttled: false });
+    expect(h.whishClient.getStatusCalls).toHaveLength(links.length);
+  });
+
+  it('a Whish callback we could not act on is retried at the next run, not at its 5:10 check', async () => {
     // One minute old: still payable, so the poller would not look at it yet.
     const p = await insertPending(MIN);
     const { callbackToken } = await rowOf(p.id);
@@ -392,7 +421,7 @@ describe('the reconciliation poller follows the schedule', () => {
 
     const res = await h.whish.reconcileStalePayments();
 
-    expect(res).toEqual({ checked: 2, timedOut: 1, more: false });
+    expect(res).toEqual({ checked: 2, timedOut: 1, more: false, throttled: false });
     expect((await rowOf(open.id)).status).toBe('PENDING');
     const closed = await rowOf(lapsed.id);
     expect(closed.status).toBe('FAILED');

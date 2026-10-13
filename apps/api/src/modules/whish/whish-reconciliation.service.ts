@@ -38,7 +38,8 @@ const LEASE_TTL_MS = 60_000;
  *    that comes before the next heartbeat. So a check lands on its second, and
  *    the poller still does nothing between heartbeats while no link is due.
  * A pass that took a full batch is followed by the next at once, so a backlog
- * is worked through continuously, never at one batch a minute.
+ * is worked through continuously, never at one batch a minute — unless Whish
+ * answers "too many requests", which sends the poller back to the heartbeat.
  *
  * Self-guards against overlapping passes. No-op until Whish is configured (the
  * service checks that internally).
@@ -113,6 +114,14 @@ export class WhishReconciliationService implements OnApplicationBootstrap, OnMod
           this.logger.log(
             `Reconciliation tick: checked ${r.checked}, timed-out→failed ${r.timedOut}`,
           );
+        }
+        if (r.throttled) {
+          // Whish said "too many requests": do not come back early. Only the
+          // next every-minute pass asks again, so link creation — which uses
+          // the same Whish account — keeps the room.
+          if (this.wake) clearTimeout(this.wake);
+          this.wake = undefined;
+          return;
         }
         // A full batch: more links are already due. Take them now.
         if (!r.more || this.stopping) break;
