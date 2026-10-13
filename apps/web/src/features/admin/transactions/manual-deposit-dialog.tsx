@@ -39,6 +39,25 @@ interface DepositForm {
   note: string;
 }
 
+// The source last used on this browser, so a run of entries for one source needs
+// no re-picking. Browser storage can be unavailable (private mode, blocked site
+// data) — every access is guarded and the form works without it.
+const LAST_SOURCE_KEY = 'manual-deposit:last-source';
+function readLastSource(): string | null {
+  try {
+    return window.localStorage.getItem(LAST_SOURCE_KEY);
+  } catch {
+    return null;
+  }
+}
+function rememberSource(id: string): void {
+  try {
+    window.localStorage.setItem(LAST_SOURCE_KEY, id);
+  } catch {
+    // not remembered — the default below still applies next time
+  }
+}
+
 const EMPTY: DepositForm = {
   sourceId: '',
   companyId: '',
@@ -78,8 +97,14 @@ export function ManualDepositDialog({ open, onClose }: { open: boolean; onClose:
     enabled: open,
   });
   const sources = sourcesQ.data?.data ?? [];
-  // One active source (the usual case while a single provider is pending): pick it.
-  const sourceId = form.sourceId || (sources.length === 1 ? sources[0]!.id : '');
+  // Preselected (still changeable): the source last used here, else Whish — the
+  // provider whose deposits are entered by hand today — else the only active one.
+  const lastSource = readLastSource();
+  const defaultSource =
+    sources.find((s) => s.id === lastSource) ??
+    sources.find((s) => s.code === 'whish') ??
+    (sources.length === 1 ? sources[0] : undefined);
+  const sourceId = form.sourceId || defaultSource?.id || '';
   const source = sources.find((s) => s.id === sourceId);
   const companyName = useCompanyNames([form.companyId]).get(form.companyId) ?? '…';
 
@@ -115,6 +140,7 @@ export function ManualDepositDialog({ open, onClose }: { open: boolean; onClose:
         },
       }),
     onSuccess: (t) => {
+      rememberSource(t.sourceId);
       toast.success(
         `Deposit recorded — ${companyName} credited ${trimAmount(t.netAmount)} ${t.currency}`,
       );
@@ -154,7 +180,7 @@ export function ManualDepositDialog({ open, onClose }: { open: boolean; onClose:
                   value={sourceId}
                   onChange={(e) => set({ sourceId: e.target.value })}
                 >
-                  {sources.length !== 1 && <option value="">Choose a source</option>}
+                  {!sourceId && <option value="">Choose a source</option>}
                   {sources.map((s) => (
                     <option key={s.id} value={s.id}>
                       {s.name}

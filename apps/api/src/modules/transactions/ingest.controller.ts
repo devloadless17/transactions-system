@@ -48,7 +48,8 @@ const sourcePayloadSchema = z
   })
   .passthrough();
 
-const ingestSourceTransactionSchema = z.object({
+// Exported so tests can validate a body exactly as the route's ZodPipe does.
+export const ingestSourceTransactionSchema = z.object({
   // The shared slug rule (same definition company create/rename validate with),
   // so the two ends of the slug contract can never drift; the DB lookup is
   // still the authority on whether the slug exists.
