@@ -18,8 +18,15 @@
  * peer — or else takes the peer's own address, and hands this API exactly ONE
  * address in `X-Forwarded-For`, replacing whatever the request arrived with.
  *
+ * Our own web server calls this API too (it server-renders pages), from the same
+ * container network. It passes on that one address, which it received from the
+ * proxy, so a page load is counted, audited and logged under the VISITOR — not
+ * under the web server, where every visitor's page loads (and its own health
+ * check) would share a single rate-limit budget. It forwards exactly one
+ * well-formed IP or nothing at all (apps/web/src/lib/client-ip.ts).
+ *
  * So the API trusts only the hop it is directly attached to: the container
- * network that proxy reaches us over. It deliberately does NOT trust
+ * network that proxy and that web server reach us over. It deliberately does NOT trust
  * Cloudflare's ranges itself. Walking an X-Forwarded-For chain past "trusted"
  * Cloudflare hops is unsafe — Cloudflare appends to a chain the caller started,
  * and a caller whose own address is inside Cloudflare's space (a Worker) would
@@ -31,7 +38,8 @@
 
 /**
  * Express `trust proxy` value. `loopback`/`linklocal`/`uniquelocal` cover the
- * container network Caddy talks to us over (and the local health probe).
+ * container network Caddy and the web server talk to us over (and the local
+ * health probe).
  *
  * `TRUSTED_PROXIES` overrides the whole list (comma-separated CIDRs/presets) as
  * an escape hatch if the topology changes and a code deploy is not an option.

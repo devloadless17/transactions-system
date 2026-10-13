@@ -1,6 +1,7 @@
 import 'server-only';
-import { cookies } from 'next/headers';
+import { cookies, headers } from 'next/headers';
 import { ApiClientError, unwrapEnvelope, type ApiErrorBody } from './api';
+import { visitorIpHeader } from './client-ip';
 
 // Server-side (Node) base URL for the API. Use 127.0.0.1, NOT localhost:
 // Node's fetch (undici) resolves `localhost` to IPv6 `::1` first on Windows,
@@ -18,11 +19,14 @@ interface RequestOpts {
 
 /**
  * Server-side fetch to the API. Forwards the inbound user's cookies so
- * RLS / role checks work. Throws ApiClientError on non-2xx.
+ * RLS / role checks work, and the visitor's IP so the API rate-limits, audits
+ * and logs the call under the person it is made for — not under this server,
+ * which would put every visitor's page loads into one shared budget (see
+ * client-ip.ts). Throws ApiClientError on non-2xx.
  */
 export async function apiServer<T>(path: string, opts: RequestOpts = {}): Promise<T> {
   const method = opts.method ?? 'GET';
-  const jar = await cookies();
+  const [jar, incoming] = await Promise.all([cookies(), headers()]);
   const cookieHeader = jar
     .getAll()
     .map((c) => `${c.name}=${c.value}`)
@@ -33,6 +37,7 @@ export async function apiServer<T>(path: string, opts: RequestOpts = {}): Promis
     headers: {
       ...(opts.body ? { 'content-type': 'application/json' } : {}),
       ...(cookieHeader ? { cookie: cookieHeader } : {}),
+      ...visitorIpHeader(incoming.get('x-forwarded-for')),
     },
     body: opts.body ? JSON.stringify(opts.body) : undefined,
     cache: 'no-store',

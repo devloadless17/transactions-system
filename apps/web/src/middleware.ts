@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server';
+import { visitorIpHeader } from '@/lib/client-ip';
 
 // Match the API's auth cookie names (apps/api/src/modules/auth/auth.constants.ts).
 const ACCESS = 'txn_access';
@@ -31,7 +32,13 @@ export async function middleware(req: NextRequest): Promise<NextResponse> {
   try {
     refreshRes = await fetch(`${INTERNAL_BASE}/auth/refresh`, {
       method: 'POST',
-      headers: { cookie: req.headers.get('cookie') ?? '' },
+      headers: {
+        cookie: req.headers.get('cookie') ?? '',
+        // The refresh is made FOR this visitor: pass their address on, so it is
+        // counted against their own refresh limit and recorded on their session
+        // — not against one budget shared by everyone (see lib/client-ip.ts).
+        ...visitorIpHeader(req.headers.get('x-forwarded-for')),
+      },
     });
   } catch {
     return NextResponse.next();

@@ -59,6 +59,15 @@ describe('trustedProxies → req.ip', () => {
     expect(await ipFor('6.6.6.6, 2a06:98c0:3600::103')).toBe('2a06:98c0:3600::103');
   });
 
+  it('the web server passing on its own health check lands in a bucket of its own', async () => {
+    // The web container's health check renders a page, which calls this API.
+    // Next reports its caller as loopback, the web server passes that on, and
+    // every hop is then one we trust — so the furthest one is the answer. Real
+    // visitors (above) never share a rate-limit budget with it.
+    expect(await ipFor('127.0.0.1')).toBe('127.0.0.1');
+    expect(await ipFor('::1')).toBe('::1');
+  });
+
   it('with no header at all (the container health probe) it is the socket peer', async () => {
     expect(await ipFor()).toMatch(/127\.0\.0\.1$/);
   });
