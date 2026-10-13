@@ -809,16 +809,21 @@ export class WhishPaymentsService {
       });
       return this.resolveUnconfirmedRefund(payment, args.actorId, err);
     }
-    this.logRefund(payment, request, null, {
-      before: balanceBefore,
-      after: await this.readBalanceForLog(currency),
-    });
     this.logger.log(
       `Whish refunded payment ${externalId} (${payment.amount.toString()} ${currency}, company ${payment.companyId}) — booking it.`,
     );
 
-    // 4. BOOK.
-    return this.bookConfirmedRefund(payment, args.actorId);
+    // 4. BOOK — straight away; the after-balance for the log is read once the
+    // booking is done (it doesn't touch the Whish balance), so a slow balance
+    // call never widens the gap between Whish paying and our ledger booking.
+    try {
+      return await this.bookConfirmedRefund(payment, args.actorId);
+    } finally {
+      this.logRefund(payment, request, null, {
+        before: balanceBefore,
+        after: await this.readBalanceForLog(currency),
+      });
+    }
   }
 
   /**
