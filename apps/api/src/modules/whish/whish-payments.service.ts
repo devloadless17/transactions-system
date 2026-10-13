@@ -13,6 +13,7 @@ import {
   type SetWhishRedirectConfigInput,
   type SupportedCurrency,
   type WhishClientConfig,
+  type WhishCurrency,
   type WhishPaymentResponse,
   type WhishRedirectConfig,
   WhishPaymentStatus,
@@ -790,15 +791,28 @@ export class WhishPaymentsService {
       );
     }
 
-    // 3. REFUND.
+    // 3. REFUND. The platform's Whish balance is read just before and just after,
+    // so the super-admin log shows exactly what Whish took out of the account for
+    // this refund — the full amount, or the amount minus the collection fee Whish
+    // kept when the customer paid. That is how we learn whether Whish returns its
+    // fee on a refund. Best effort: a failed read never blocks the refund.
     const request = { currency, externalId, refundReason: args.reason };
+    const balanceBefore = await this.readBalanceForLog(currency);
     try {
       await this.whish.refund(request);
     } catch (err) {
-      this.logRefund(payment, request, err);
+      // After a failed or unanswered call the balance also shows whether the
+      // money left anyway.
+      this.logRefund(payment, request, err, {
+        before: balanceBefore,
+        after: await this.readBalanceForLog(currency),
+      });
       return this.resolveUnconfirmedRefund(payment, args.actorId, err);
     }
-    this.logRefund(payment, request, null);
+    this.logRefund(payment, request, null, {
+      before: balanceBefore,
+      after: await this.readBalanceForLog(currency),
+    });
     this.logger.log(
       `Whish refunded payment ${externalId} (${payment.amount.toString()} ${currency}, company ${payment.companyId}) — booking it.`,
     );
@@ -973,8 +987,20 @@ export class WhishPaymentsService {
     payment: WhishPayment,
     request: { currency: string; externalId: string; refundReason: string },
     err: unknown,
+    balance: { before: string | null; after: string | null },
   ): void {
     const details = err instanceof WhishError ? err.details : undefined;
+    // What left the platform's Whish account across the call (another payment
+    // landing in the same second would show here too). null when either read
+    // failed.
+    const platformBalance = {
+      before: balance.before,
+      after: balance.after,
+      change:
+        balance.before !== null && balance.after !== null
+          ? Money.of(balance.after).sub(Money.of(balance.before)).toFixed(2)
+          : null,
+    };
     this.txLogs.record({
       kind: 'WHISH_REFUND',
       companyId: payment.companyId,
@@ -993,9 +1019,24 @@ export class WhishPaymentsService {
               details?.upstreamMessage ??
               null,
             indeterminate: err instanceof WhishIndeterminateError,
+            platformBalance,
           }
-        : { status: true },
+        : { status: true, platformBalance },
     });
+  }
+
+  /** The platform's Whish balance as a decimal string, or null if it can't be read. */
+  private async readBalanceForLog(currency: string): Promise<string | null> {
+    if (!(WHISH_CURRENCIES as readonly string[]).includes(currency)) return null;
+    try {
+      const { balance } = await this.whish.getBalance(currency as WhishCurrency);
+      return Money.of(String(balance)).toFixed(2);
+    } catch (err) {
+      this.logger.warn(
+        `Could not read the Whish balance for the refund log: ${err instanceof Error ? err.message : 'unknown'}`,
+      );
+      return null;
+    }
   }
 
   /** Admin: fetch one payment by id across companies (e.g. an audit-log deep link). */

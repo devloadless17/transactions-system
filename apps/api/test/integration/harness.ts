@@ -44,7 +44,10 @@ import type {
   WhishCollectStatus,
 } from '../../src/modules/whish/whish.client';
 import type { WhishWebhookService } from '../../src/modules/whish/whish-webhook.service';
-import type { TransactionLogsService } from '../../src/modules/transaction-logs/transaction-logs.service';
+import type {
+  TransactionLogEntry,
+  TransactionLogsService,
+} from '../../src/modules/transaction-logs/transaction-logs.service';
 import type { ConfigService } from '@nestjs/config';
 import type { Env } from '../../src/config/env.schema';
 
@@ -61,6 +64,8 @@ export interface Harness {
   whishClient: FakeWhishClient;
   /** Records every CRM dispatch, so tests can assert WHICH event fired. */
   crm: FakeCrmDispatch;
+  /** Every super-admin transaction-log entry written, in order. */
+  txLogs: TransactionLogEntry[];
   /** The real company admin service — e.g. the network-fee config write path. */
   companies: CompaniesService;
 }
@@ -117,11 +122,26 @@ export class FakeWhishClient {
   /** With failRefundWith: the refund still went through at Whish (its reply was lost). */
   refundTookEffect = false;
 
+  /** The platform account balance getBalance reports. */
+  balance = 1000;
+  /**
+   * What a refund takes out of the balance, given the payment amount. Defaults
+   * to the full amount; a test can model Whish returning its collection fee.
+   */
+  refundDebit: (amount: number) => number = (amount) => amount;
+  /** The amount behind each externalId, for refundDebit (set by the test). */
+  amountFor = new Map<string, number>();
+
+  getBalance(): Promise<{ balance: number }> {
+    return Promise.resolve({ balance: this.balance });
+  }
+
   /** Like Whish: a refund that goes through makes getStatus report `refunded`. */
   refund(input: { currency: string; externalId: string; refundReason: string }): Promise<void> {
     this.refundCalls.push(input);
     if (!this.failRefundWith || this.refundTookEffect) {
       this.statusFor.set(input.externalId, 'refunded');
+      this.balance -= this.refundDebit(this.amountFor.get(input.externalId) ?? 0);
     }
     if (this.failRefundWith) return Promise.reject(this.failRefundWith);
     return Promise.resolve();
@@ -211,11 +231,10 @@ const fakeTransfers = {
   sessionStatus: async () => ({ configured: false }),
 } as unknown as WhishTransfersService;
 
-// Whish settlement side-effects not under test here (webhook delivery, tx logs),
-// plus a minimal config the service reads. The reconcile path never touches
-// these on the asserted branches; they exist only to satisfy construction.
+// Whish settlement side-effects not under test here (webhook delivery), plus a
+// minimal config the service reads. The reconcile path never touches these on
+// the asserted branches; they exist only to satisfy construction.
 const fakeWhishWebhooks = { deliverPaid: async () => undefined } as unknown as WhishWebhookService;
-const fakeTxLogs = { record: () => undefined } as unknown as TransactionLogsService;
 const fakeWhishConfig = {
   get: (key: string) =>
     key === 'WHISH_ENABLED_CURRENCIES'
@@ -294,6 +313,11 @@ export function buildHarness(): Harness {
   );
 
   const whishClient = new FakeWhishClient();
+  // Per-harness, like the CRM recorder, so a test sees only its own log rows.
+  const txLogs: TransactionLogEntry[] = [];
+  const fakeTxLogs = {
+    record: (entry: TransactionLogEntry) => void txLogs.push(entry),
+  } as unknown as TransactionLogsService;
   const whish = new WhishPaymentsService(
     prisma,
     whishClient as unknown as WhishClient,
@@ -320,6 +344,7 @@ export function buildHarness(): Harness {
     whish,
     whishClient,
     crm: crmRecorder,
+    txLogs,
     companies,
   };
 }

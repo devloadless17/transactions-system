@@ -91,7 +91,51 @@ describe('Whish refund — admin refunds a paid payment to the payer', () => {
     h.whishClient.failRefundWith = null;
     h.whishClient.refundTookEffect = false;
     h.whishClient.failGetStatusWith = null;
+    h.whishClient.balance = 1000;
+    h.whishClient.amountFor.clear();
+    h.txLogs.length = 0;
     vi.restoreAllMocks();
+  });
+
+  // Whish charges the platform a collection fee on every Whish Pay deposit. The
+  // log records what each refund actually took out of the platform's Whish
+  // account, so the first real refund shows whether Whish gives that fee back.
+  it('logs what the refund took out of the platform Whish account', async () => {
+    const { id } = await paidPayment(h);
+    h.whishClient.amountFor.set((await readRow(h, id)).externalId.toString(), 50);
+
+    await refund(h, id);
+
+    const log = h.txLogs.find((l) => l.kind === 'WHISH_REFUND');
+    expect(log?.success).toBe(true);
+    expect(log?.response).toMatchObject({
+      status: true,
+      platformBalance: { before: '1000.00', after: '950.00', change: '-50.00' },
+    });
+  });
+
+  it('shows a refund where Whish returns its fee — less than the amount leaves the account', async () => {
+    const { id } = await paidPayment(h);
+    h.whishClient.amountFor.set((await readRow(h, id)).externalId.toString(), 50);
+    h.whishClient.refundDebit = (amount) => amount * 0.99; // Whish gives its 1% back
+
+    await refund(h, id);
+
+    expect(h.txLogs.find((l) => l.kind === 'WHISH_REFUND')?.response).toMatchObject({
+      platformBalance: { change: '-49.50' },
+    });
+    h.whishClient.refundDebit = (amount) => amount;
+  });
+
+  it('a balance that cannot be read never blocks the refund', async () => {
+    const { id } = await paidPayment(h);
+    vi.spyOn(h.whishClient, 'getBalance').mockRejectedValue(new Error('balance unavailable'));
+
+    expect((await refund(h, id)).status).toBe('REFUNDED');
+    expect(h.txLogs.find((l) => l.kind === 'WHISH_REFUND')?.response).toMatchObject({
+      status: true,
+      platformBalance: { before: null, after: null, change: null },
+    });
   });
 
   it('refunds through Whish, reverses the deposit and tells the CRM once', async () => {
