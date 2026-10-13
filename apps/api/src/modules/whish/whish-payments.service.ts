@@ -45,8 +45,19 @@ import { CrmDispatchService } from '../crm/crm-dispatch.service';
 import { TransactionLogsService } from '../transaction-logs/transaction-logs.service';
 
 const WHISH_SOURCE_CODE = 'whish';
-// Stale-payment reconciliation window.
-const RECONCILE_MIN_AGE_MS = 60_000; // don't poll links younger than this
+// The reconciliation poller's timing follows what Whish does with a link.
+// Measured on production (2026-10: ~22,500 links; the last 30 days in full):
+//   - Whish tells us itself the moment a link is paid (the success callback),
+//     so an open link is NOT asked about while it can still be paid: half of
+//     all paid links are paid within 22 seconds, 99% within 3 minutes.
+//   - Whish closes an unpaid link about 5 minutes after it was created and never
+//     says so; asking is the only way to learn it. Asked every minute, as the
+//     poller used to, the close showed up 5.5 minutes after creation on average
+//     and 7.0 at the latest (1,640 unpaid links) — never later.
+// So the first check comes once the link can no longer be paid: it finds an
+// unpaid link closed (one check, where there used to be six), and it books a
+// payment whose callback never reached us.
+const RECONCILE_MIN_AGE_MS = 6 * 60_000; // the first check of a link
 // A TRANSIENT settlement failure (DB blip, exhausted serializable retries — NOT a
 // DomainError) stays in the poller's retry set; only after this many consecutive
 // failed attempts is it parked as needsAttention for an operator. Permanent
@@ -56,7 +67,14 @@ const RECONCILE_MIN_AGE_MS = 60_000; // don't poll links younger than this
 // books pricing gaps at net 0): a parked link settles AT THE CORRECT FEE via
 // admin Refresh once pricing is fixed, which beats an irreversible net-0 booking.
 const TRANSIENT_SETTLE_PARK_AFTER = 10;
-const EXPIRE_AGE_MS = 24 * 3600_000; // give up (EXPIRED) after this
+// A link Whish still reports unpaid ('pending') this long after it was created
+// is closed (→ FAILED): Whish's own close has never come this late.
+const EXPIRE_AGE_MS = 10 * 60_000;
+// 'unknown' is different: Whish cannot say whether it collected, so the money
+// may be ours and closing it would tell the company's CRM a paid deposit
+// failed. Those links are asked about until Whish answers; one still unknown
+// after this long is closed AND flagged for an operator.
+const UNKNOWN_EXPIRE_AGE_MS = 24 * 3600_000;
 // Max pending links polled per reconciliation tick — a safety bound on Whish API
 // calls per minute. Whish calls back per ATTEMPT — a failure callback means one
 // attempt failed while the link stays payable — and never when a link finally
@@ -85,21 +103,17 @@ const REFUNDED_NOT_BOOKED =
   'Whish refunded this payment, but booking the refund failed; nothing has been booked yet.';
 
 /**
- * When to ask Whish again about a link that is still PENDING, by its age.
+ * When to ask Whish again about a link that is still unresolved, by its age.
  *
- * Measured on production (2026-10, ~22,500 links): half of all paid links are
- * paid within 22 seconds and 99% within ~3 minutes; Whish marks an abandoned
- * link failed after ~6 minutes. So a young link is checked every minute (as
- * before). A link still pending after 15 minutes is almost always one Whish
- * never resolves; checking each of those every minute for 24 hours is what used
- * to fill the poller, so they are checked less and less often. (A late payment
- * still arrives at once through Whish's success callback; this only paces the
- * backstop.) The 24h timeout still closes a link at its next check after 24h.
+ * Until the unpaid-link cutoff (EXPIRE_AGE_MS) a link is waiting for Whish to
+ * close it, which is a matter of a minute or two: asked every minute. Nothing
+ * ordinary lives past the cutoff — only a link Whish reports as 'unknown', or
+ * one Whish keeps failing to answer for — and those are asked about every 5
+ * minutes. (A payment still reaches us at once through Whish's success
+ * callback; this only paces the poller.)
  */
 export function nextPollDelayMs(ageMs: number): number {
-  if (ageMs < 15 * 60_000) return 60_000;
-  if (ageMs < 2 * 3600_000) return 5 * 60_000;
-  return 30 * 60_000;
+  return ageMs < EXPIRE_AGE_MS ? 60_000 : 5 * 60_000;
 }
 
 @Injectable()
@@ -415,7 +429,7 @@ export class WhishPaymentsService {
       // INDETERMINATE (Whish v1.4.4 `code:500`, a timeout, or a 5xx): the link
       // MAY exist upstream, so this is NOT a failure. Leave the row PENDING —
       // it already is, and it carries the externalId the reconciler polls by —
-      // and let the 60s reconciler resolve it (24h timeout as the backstop).
+      // and let the reconciliation poller resolve it at its first check.
       //
       // Marking it FAILED here would be UNRECOVERABLE: the poller only selects
       // PENDING rows, so a FAILED row is never re-checked, and if Whish did mint
@@ -597,8 +611,12 @@ export class WhishPaymentsService {
     try {
       await this.reconcile(payment);
     } catch (err) {
-      // Swallow — Whish only needs a 200; reconciliation can be retried.
+      // Swallow — Whish only needs a 200. Whish will not call again for this
+      // attempt, and the poller leaves a link alone while it is still payable,
+      // so make it due now: the next poller run retries what we could not
+      // finish here, instead of the first scheduled check minutes later.
       this.logger.error(`Whish callback reconcile failed externalId=${externalId}`, err as Error);
+      await this.scheduleNextPoll(payment.id, Date.now());
     }
     return true;
   }
@@ -1078,11 +1096,12 @@ export class WhishPaymentsService {
   }
 
   /**
-   * Remember the last NOT-settled status Whish reported, so the 24h backstop can
-   * tell "the customer simply never paid" (`pending`) from "Whish could not tell
-   * us whether it collected" (`unknown`). Only writes when the value actually
-   * changes, so a link sitting pending for a day costs no extra writes. Never
-   * touches `needsAttention` — that would stop the poller from re-checking it.
+   * Remember the last NOT-settled status Whish reported, so the poller can tell
+   * "the customer simply never paid" (`pending`, closed at EXPIRE_AGE_MS) from
+   * "Whish could not tell us whether it collected" (`unknown`, asked about until
+   * UNKNOWN_EXPIRE_AGE_MS). Only writes when the value actually changes, so
+   * repeated checks cost no extra writes. Never touches `needsAttention` — that
+   * would stop the poller from re-checking it.
    */
   private async noteLastCollectStatus(
     payment: WhishPayment,
@@ -1208,8 +1227,9 @@ export class WhishPaymentsService {
         // collected. Also not settled, so keep polling exactly like 'pending'.
         // Deliberately NOT flagged needsAttention: the poller SKIPS flagged rows,
         // which would freeze the payment instead of resolving it. The status is
-        // recorded so that if this link is still unresolved at the 24h backstop
-        // we can close it as an operator case rather than a silent lapse.
+        // recorded so the poller keeps asking past the unpaid-link cutoff, and
+        // closes a link still unresolved at UNKNOWN_EXPIRE_AGE_MS as an operator
+        // case rather than a silent lapse.
         return this.noteLastCollectStatus(payment, 'unknown');
 
       case 'failed':
@@ -1374,6 +1394,10 @@ export class WhishPaymentsService {
                   ? { needsAttention: true, paidButUnsettled: true, settlementError: safeError }
                   : { paidButUnsettled: true, settlementAttempts: priorAttempts },
               ),
+              // Left for automatic retry: due at the poller's next run, whoever
+              // asked (callback, a company's refresh, the poller) and however
+              // young the link is.
+              ...(park ? {} : { nextPollAt: new Date() }),
             },
           }),
         );
@@ -1456,9 +1480,10 @@ export class WhishPaymentsService {
   }
 
   /**
-   * Background reconciliation: pull status for stale PENDING payments (a
-   * callback may have been missed), and give up on very old ones (→ FAILED,
-   * since Whish has no "expired" status to distinguish a lapse from a decline).
+   * Background reconciliation: ask Whish about PENDING links that are past
+   * their payable window (the link expired unpaid, or a callback was missed),
+   * and close the ones Whish never resolves (→ FAILED, since Whish has no
+   * "expired" status to distinguish a lapse from a decline).
    * No-op when Whish isn't configured. Returns a small summary for logging.
    */
   async reconcileStalePayments(opts?: {
@@ -1532,14 +1557,15 @@ export class WhishPaymentsService {
   /**
    * One poller check of a due PENDING link: ask Whish, settle or close it, or —
    * if it is still unresolved — schedule its next check. Resolves `true` when
-   * the 24h backstop closed it. Never throws.
+   * the cutoff closed it. Never throws.
    */
   private async pollStaleLink(p: WhishPayment, now: number): Promise<boolean> {
     // Defence in depth: the selection already excludes flagged rows, but one
     // may have been flagged between that query and this check.
     if ((p.metadata as { needsAttention?: boolean } | null)?.needsAttention === true) return false;
     let timedOut = false;
-    const tooOld = now - p.createdAt.getTime() > EXPIRE_AGE_MS;
+    const ageMs = now - p.createdAt.getTime();
+    const tooOld = ageMs > EXPIRE_AGE_MS;
     try {
       // Always ask Whish for the authoritative status first — never time out a
       // payment that actually settled just before the cutoff.
@@ -1561,9 +1587,10 @@ export class WhishPaymentsService {
       if (tooOld && result.status === WhishPaymentStatus.PENDING && !result.needsAttention) {
         // A link whose LAST reading was 'unknown' is not the same as one the
         // customer simply never paid: Whish told us it could not determine
-        // whether it collected, so it may be holding the money. Still close it
-        // (the backstop exists so nothing pends forever) but flag it, so it
-        // lands in the operator queue instead of quietly becoming a lapse.
+        // whether it collected, so it may be holding the money. It is asked
+        // about for much longer, and then still closed (nothing pends forever)
+        // but flagged, so it lands in the operator queue instead of quietly
+        // becoming a lapse.
         // Re-read: reconcile() just wrote lastCollectStatus, so `p` is stale.
         // Everything below merges onto THIS value, not the stale snapshot.
         const fresh = await this.prisma.runAsAdmin((tx) =>
@@ -1572,6 +1599,10 @@ export class WhishPaymentsService {
         const freshMeta = fresh?.metadata ?? null;
         const indeterminate =
           (freshMeta as { lastCollectStatus?: string } | null)?.lastCollectStatus === 'unknown';
+        if (indeterminate && ageMs <= UNKNOWN_EXPIRE_AGE_MS) {
+          await this.scheduleNextPoll(p.id, now + nextPollDelayMs(ageMs) - POLL_SCHEDULE_SLACK_MS);
+          return false;
+        }
 
         // Guard on the row STILL being PENDING. reconcile() acted on a stale
         // snapshot; a success callback may have settled it to PAID meanwhile.
@@ -1615,16 +1646,15 @@ export class WhishPaymentsService {
         }
       } else if (result.status === WhishPaymentStatus.PENDING && !result.needsAttention) {
         // Still unresolved: the next check, paced by the link's age.
-        await this.scheduleNextPoll(
-          p.id,
-          now + nextPollDelayMs(now - p.createdAt.getTime()) - POLL_SCHEDULE_SLACK_MS,
-        );
+        await this.scheduleNextPoll(p.id, now + nextPollDelayMs(ageMs) - POLL_SCHEDULE_SLACK_MS);
       }
     } catch (err) {
-      // Couldn't reach Whish — leave it PENDING and retry next run rather than
-      // blindly expiring a possibly-paid payment. Retried at the young-link
-      // pace, behind the links already due, so a link Whish keeps erroring on
-      // can never hold the head of the queue.
+      // Couldn't reach Whish (or Whish has the money and booking it failed) —
+      // leave it PENDING and retry next run rather than blindly expiring a
+      // possibly-paid payment. Retried every minute whatever the link's age (it
+      // may be a paid deposit waiting to be booked), behind the links already
+      // due, so a link Whish keeps erroring on can never hold the head of the
+      // queue.
       this.logger.warn(`Reconcile failed for payment ${p.externalId}: ${(err as Error).message}`);
       await this.scheduleNextPoll(p.id, now + 60_000 - POLL_SCHEDULE_SLACK_MS);
     }

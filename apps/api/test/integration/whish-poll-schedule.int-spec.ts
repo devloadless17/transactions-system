@@ -5,17 +5,23 @@
  * success, so a failed link reaches the company's CRM, and a success whose
  * callback was lost is booked, only when the poller asks Whish.
  *
+ * Its timing follows Whish: a link is payable for about 5 minutes, and Whish
+ * tells us itself when one is paid. So a link is not asked about while it can
+ * still be paid (first check at 6 minutes), and one Whish still reports unpaid
+ * at 10 minutes is closed.
+ *
  * Pinned here against the real database:
- *   - links Whish never resolves can no longer starve newer links (the poller
- *     used to take the oldest pending links every tick, and a link can stay
- *     pending for 24 hours);
+ *   - no check before 6 minutes, and the close at 10;
+ *   - a link Whish reports as 'unknown' (it may have collected) is NOT closed
+ *     at 10 minutes — it is asked about until Whish answers;
+ *   - links Whish cannot resolve never starve newer links;
  *   - paid-but-unsettled links (needsAttention) never take a slot;
- *   - each check schedules the next one by age, and an upstream error retries
- *     soon without holding the head of the queue;
- *   - rows written before the schedule existed (next_poll_at NULL) are polled
- *     exactly as before.
+ *   - a callback we could not act on, or a payment we could not book, is
+ *     retried at the poller's next run — it does not wait for the first check;
+ *   - each check schedules the next one by age, and an upstream error never
+ *     closes a link or holds the head of the queue.
  */
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WhishPaymentStatus } from '@app/shared';
 import { WhishError } from '../../src/modules/whish/whish.client';
 import { nextPollDelayMs } from '../../src/modules/whish/whish-payments.service';
@@ -86,22 +92,33 @@ beforeEach(async () => {
   h.crm.reset();
 });
 
-describe('nextPollDelayMs — the backstop slows down for links Whish never resolves', () => {
-  it('checks a young link every minute, then every 5 minutes, then every 30', () => {
-    expect(nextPollDelayMs(1 * MIN)).toBe(MIN);
-    expect(nextPollDelayMs(14 * MIN)).toBe(MIN);
-    expect(nextPollDelayMs(15 * MIN)).toBe(5 * MIN);
-    expect(nextPollDelayMs(119 * MIN)).toBe(5 * MIN);
-    expect(nextPollDelayMs(120 * MIN)).toBe(30 * MIN);
-    expect(nextPollDelayMs(23 * 60 * MIN)).toBe(30 * MIN);
+describe('nextPollDelayMs — every minute until the 10-minute cutoff, every 5 minutes past it', () => {
+  it('asks every minute while Whish is about to close the link, then every 5 minutes', () => {
+    expect(nextPollDelayMs(6 * MIN)).toBe(MIN);
+    expect(nextPollDelayMs(10 * MIN - 1)).toBe(MIN);
+    expect(nextPollDelayMs(10 * MIN)).toBe(5 * MIN);
+    expect(nextPollDelayMs(23 * 60 * MIN)).toBe(5 * MIN);
   });
 });
 
 describe('the reconciliation poller follows the schedule', () => {
-  it('a still-pending link is scheduled by its age', async () => {
-    const young = await insertPending(2 * MIN);
-    const middle = await insertPending(30 * MIN);
+  it('a link is not asked about while it can still be paid — the first check is at 6 minutes', async () => {
+    // Whish reports a payment itself (the success callback), so asking about a
+    // link that is still open would only ever answer "pending".
+    const payable = [await insertPending(30_000), await insertPending(5 * MIN)];
+    const due = await insertPending(6 * MIN + 5_000);
+
+    await h.whish.reconcileStalePayments();
+
+    expect(h.whishClient.getStatusCalls).toEqual([due.externalId]);
+    for (const p of payable) expect((await rowOf(p.id)).nextPollAt).toBeNull();
+  });
+
+  it('a still-unresolved link is scheduled by its age', async () => {
+    const young = await insertPending(7 * MIN);
+    // Past the cutoff only a link Whish cannot resolve is still open.
     const old = await insertPending(3 * 60 * MIN);
+    h.whishClient.statusFor.set(old.externalId, 'unknown');
 
     const before = Date.now();
     await h.whish.reconcileStalePayments();
@@ -110,14 +127,12 @@ describe('the reconciliation poller follows the schedule', () => {
     // A few seconds early on purpose (so the next tick never misses it by jitter).
     expect(await nextIn(young.id)).toBeGreaterThan(50_000);
     expect(await nextIn(young.id)).toBeLessThanOrEqual(MIN);
-    expect(await nextIn(middle.id)).toBeGreaterThan(4 * MIN);
-    expect(await nextIn(middle.id)).toBeLessThanOrEqual(5 * MIN);
-    expect(await nextIn(old.id)).toBeGreaterThan(29 * MIN);
-    expect(await nextIn(old.id)).toBeLessThanOrEqual(30 * MIN);
+    expect(await nextIn(old.id)).toBeGreaterThan(4 * MIN);
+    expect(await nextIn(old.id)).toBeLessThanOrEqual(5 * MIN);
   });
 
   it('a link checked this tick is not asked about again until it is due', async () => {
-    const p = await insertPending(5 * MIN);
+    const p = await insertPending(7 * MIN);
     await h.whish.reconcileStalePayments();
     expect(h.whishClient.getStatusCalls).toEqual([p.externalId]);
 
@@ -135,11 +150,12 @@ describe('the reconciliation poller follows the schedule', () => {
     expect(h.whishClient.getStatusCalls).toEqual([p.externalId, p.externalId]);
   });
 
-  it('links Whish never resolves cannot starve a newer link (the old oldest-first bug)', async () => {
-    // Two links stuck pending for hours fill a per-tick budget of 2…
+  it('links Whish cannot resolve never starve a newer link (the old oldest-first bug)', async () => {
+    // Two links Whish has reported as 'unknown' for hours fill a per-tick budget of 2…
     const stuck = [await insertPending(5 * 60 * MIN), await insertPending(4 * 60 * MIN)];
-    // …and a customer pays a newer link whose success callback was lost.
-    const newer = await insertPending(3 * MIN);
+    for (const s of stuck) h.whishClient.statusFor.set(s.externalId, 'unknown');
+    // …and a customer paid a newer link whose success callback was lost.
+    const newer = await insertPending(7 * MIN);
     h.whishClient.statusFor.set(newer.externalId, 'success');
 
     // Tick 1: the two oldest (never-polled) are due first and take the budget.
@@ -147,9 +163,9 @@ describe('the reconciliation poller follows the schedule', () => {
     expect([...h.whishClient.getStatusCalls].sort()).toEqual(stuck.map((s) => s.externalId).sort());
     expect((await rowOf(newer.id)).status).toBe('PENDING');
 
-    // Tick 2: the stuck links are scheduled 30 minutes out, so the newer one
-    // is next — before, the same two stuck links were polled every tick for up
-    // to 24 hours and this deposit was never booked.
+    // Tick 2: the stuck links are scheduled 5 minutes out, so the newer one is
+    // next — before the schedule, the same two stuck links were polled every
+    // tick and this deposit was never booked.
     await h.whish.reconcileStalePayments({ limit: 2 });
     expect(h.whishClient.getStatusCalls.slice(2)).toEqual([newer.externalId]);
     const settled = await rowOf(newer.id);
@@ -166,7 +182,7 @@ describe('the reconciliation poller follows the schedule', () => {
       await insertPending(50 * MIN, { metadata: { needsAttention: true } }),
     ];
     // Metadata present but WITHOUT the flag — must still be polled.
-    const normal = await insertPending(10 * MIN, { metadata: { lastCollectStatus: 'pending' } });
+    const normal = await insertPending(7 * MIN, { metadata: { lastCollectStatus: 'pending' } });
 
     const res = await h.whish.reconcileStalePayments({ limit: 2 });
 
@@ -175,28 +191,80 @@ describe('the reconciliation poller follows the schedule', () => {
     for (const f of flagged) expect((await rowOf(f.id)).nextPollAt).toBeNull();
   });
 
-  it('an upstream error retries in about a minute, behind the links already due', async () => {
-    const p = await insertPending(10 * 60 * MIN);
+  it('an upstream error never closes a link — it is asked again in about a minute', async () => {
+    const young = await insertPending(7 * MIN);
+    const old = await insertPending(10 * 60 * MIN); // far past the cutoff
     h.whishClient.failGetStatusWith = new WhishError('Could not reach Whish');
 
     const before = Date.now();
     await h.whish.reconcileStalePayments();
 
-    const row = await rowOf(p.id);
-    expect(row.status).toBe('PENDING'); // never closed on an upstream blip
-    const nextIn = row.nextPollAt!.getTime() - before;
-    expect(nextIn).toBeGreaterThan(50_000);
-    expect(nextIn).toBeLessThanOrEqual(MIN);
+    for (const p of [young, old]) {
+      const row = await rowOf(p.id);
+      // We could not read its status, so we do not know it is unpaid — and it
+      // may be a paid deposit waiting to be booked, so the retry is not slowed.
+      expect(row.status).toBe('PENDING');
+      const nextIn = row.nextPollAt!.getTime() - before;
+      expect(nextIn).toBeGreaterThan(50_000);
+      expect(nextIn).toBeLessThanOrEqual(MIN);
+    }
+    expect(h.crm.names()).toEqual([]);
   });
 
-  it('a link written before the schedule existed (next_poll_at NULL) is polled as before', async () => {
-    const tooYoung = await insertPending(30_000); // < 1 minute old: not yet
-    const legacy = await insertPending(2 * MIN);
+  it('a Whish callback we could not act on is retried at the next run, not at the 6-minute check', async () => {
+    // One minute old: still payable, so the poller would not look at it yet.
+    const p = await insertPending(MIN);
+    const { callbackToken } = await rowOf(p.id);
+    h.whishClient.failGetStatusWith = new WhishError('Could not reach Whish');
 
+    // Whish says "paid"; we cannot verify it with Whish right now.
+    expect(await h.whish.handleCallback(Number(p.externalId), callbackToken)).toBe(true);
+
+    const waiting = await rowOf(p.id);
+    expect(waiting.status).toBe('PENDING');
+    expect(waiting.nextPollAt!.getTime()).toBeLessThanOrEqual(Date.now()); // due now
+
+    // Whish answers again → booked by the very next run.
+    h.whishClient.failGetStatusWith = null;
+    h.whishClient.statusFor.set(p.externalId, 'success');
     await h.whish.reconcileStalePayments();
 
-    expect(h.whishClient.getStatusCalls).toEqual([legacy.externalId]);
-    expect((await rowOf(tooYoung.id)).nextPollAt).toBeNull();
+    const settled = await rowOf(p.id);
+    expect(settled.status).toBe('PAID');
+    const snap = await snapshot(h, companyId);
+    expect(snap.balanced).toBe(true);
+    expect(Number(snap.wallet?.available)).toBe(50);
+  });
+
+  it('a payment Whish collected but we could not book is retried at the next run', async () => {
+    const p = await insertPending(MIN);
+    h.whishClient.statusFor.set(p.externalId, 'success');
+    // The booking fails once (a database blip), then works.
+    const ingest = vi
+      .spyOn(h.transactions, 'ingest')
+      .mockRejectedValueOnce(new Error('could not serialize access'));
+
+    try {
+      // Whoever asked — here the company's own refresh, not a callback.
+      await expect(h.whish.refreshStatus(companyId, p.id)).rejects.toThrow();
+
+      const waiting = await rowOf(p.id);
+      expect(waiting.status).toBe('PENDING');
+      expect(waiting.metadata).toMatchObject({ paidButUnsettled: true, settlementAttempts: 1 });
+      expect((waiting.metadata as { needsAttention?: boolean }).needsAttention).toBeUndefined();
+      expect(waiting.nextPollAt!.getTime()).toBeLessThanOrEqual(Date.now()); // due now
+
+      await h.whish.reconcileStalePayments();
+    } finally {
+      ingest.mockRestore();
+    }
+
+    const settled = await rowOf(p.id);
+    expect(settled.status).toBe('PAID');
+    expect(settled.transactionId).toBeTruthy();
+    const snap = await snapshot(h, companyId);
+    expect(snap.balanced).toBe(true);
+    expect(Number(snap.wallet?.available)).toBe(50);
   });
 
   it('a link Whish reports failed is closed and leaves the schedule', async () => {
@@ -215,7 +283,7 @@ describe('the reconciliation poller follows the schedule', () => {
     // A run can take minutes (250 links, Whish calls of up to 10s); a deploy must
     // not wait for it, and must never leave a link half-handled.
     const links = await Promise.all(
-      Array.from({ length: 12 }, (_, i) => insertPending((10 + i) * MIN)),
+      Array.from({ length: 12 }, (_, i) => insertPending((6.5 + i * 0.25) * MIN)),
     );
 
     const res = await h.whish.reconcileStalePayments({
@@ -233,9 +301,84 @@ describe('the reconciliation poller follows the schedule', () => {
     expect(rows.every((r) => r.status === 'PENDING')).toBe(true);
   });
 
-  it('the 24h backstop still closes a link Whish never resolved', async () => {
-    const p = await insertPending(25 * 60 * MIN);
+  it('a link Whish still reports unpaid 10 minutes after it was created is closed', async () => {
+    const open = await insertPending(9 * MIN);
+    const lapsed = await insertPending(10 * MIN + 5_000);
+
+    const res = await h.whish.reconcileStalePayments();
+
+    expect(res).toEqual({ checked: 2, timedOut: 1 });
+    expect((await rowOf(open.id)).status).toBe('PENDING');
+    const closed = await rowOf(lapsed.id);
+    expect(closed.status).toBe('FAILED');
+    expect(
+      (closed.metadata as { needsAttention?: boolean } | null)?.needsAttention,
+    ).toBeUndefined();
+    expect(h.crm.names()).toEqual(['transaction.failed']);
+    // Closed for good: never asked about again.
+    h.whishClient.getStatusCalls = [];
+    await h.prisma.runAsAdmin((tx) =>
+      tx.whishPayment.updateMany({
+        where: { id: { in: [open.id, lapsed.id] } },
+        data: { nextPollAt: new Date(Date.now() - 1) },
+      }),
+    );
     await h.whish.reconcileStalePayments();
-    expect((await rowOf(p.id)).status).toBe('FAILED');
+    expect(h.whishClient.getStatusCalls).toEqual([open.externalId]);
+  });
+
+  it("a link Whish reports as 'unknown' is NOT closed at 10 minutes — it may have been paid", async () => {
+    const p = await insertPending(11 * MIN);
+    h.whishClient.statusFor.set(p.externalId, 'unknown');
+
+    const before = Date.now();
+    const res = await h.whish.reconcileStalePayments();
+
+    expect(res.timedOut).toBe(0);
+    const row = await rowOf(p.id);
+    expect(row.status).toBe('PENDING');
+    expect(row.metadata).toMatchObject({ lastCollectStatus: 'unknown' });
+    expect((row.metadata as { needsAttention?: boolean }).needsAttention).toBeUndefined();
+    expect(h.crm.names()).toEqual([]); // the CRM is NOT told it failed
+    expect(row.nextPollAt!.getTime() - before).toBeGreaterThan(4 * MIN);
+
+    // Whish then resolves it: the customer had paid. Booked at the next check.
+    h.whishClient.statusFor.set(p.externalId, 'success');
+    await h.prisma.runAsAdmin((tx) =>
+      tx.whishPayment.update({
+        where: { id: p.id },
+        data: { nextPollAt: new Date(Date.now() - 1) },
+      }),
+    );
+    await h.whish.reconcileStalePayments();
+
+    const settled = await rowOf(p.id);
+    expect(settled.status).toBe('PAID');
+    expect(settled.transactionId).toBeTruthy();
+    const snap = await snapshot(h, companyId);
+    expect(snap.balanced).toBe(true);
+    expect(Number(snap.wallet?.available)).toBe(50);
+  });
+
+  it("an 'unknown' link that Whish then reports unpaid is closed like any other", async () => {
+    const p = await insertPending(11 * MIN);
+    h.whishClient.statusFor.set(p.externalId, 'unknown');
+    await h.whish.reconcileStalePayments();
+    expect((await rowOf(p.id)).status).toBe('PENDING');
+
+    // Whish can tell again, and the link is still unpaid: past the cutoff → closed.
+    h.whishClient.statusFor.set(p.externalId, 'pending');
+    await h.prisma.runAsAdmin((tx) =>
+      tx.whishPayment.update({
+        where: { id: p.id },
+        data: { nextPollAt: new Date(Date.now() - 1) },
+      }),
+    );
+    const res = await h.whish.reconcileStalePayments();
+
+    expect(res.timedOut).toBe(1);
+    const closed = await rowOf(p.id);
+    expect(closed.status).toBe('FAILED');
+    expect((closed.metadata as { needsAttention?: boolean }).needsAttention).toBeUndefined();
   });
 });

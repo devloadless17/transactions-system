@@ -185,8 +185,16 @@ We are the _outbound_ caller (the inverse of source-key ingest).
 - **Flow** — `POST /v1/company/whish/payments` → Whish `POST /payment/whish` →
   `collectUrl`. Customer pays → Whish `GET /v1/whish/callback/{success,failure}`
   (token-guarded, **verified** via `POST /payment/collect/status` before crediting).
-  Missed callbacks self-heal via a 60s reconciliation interval (and manual
-  `POST .../:id/refresh-status`).
+  Whish reports a payment itself (the success callback) but never says when a
+  link expires unpaid — about 5 minutes after it was created. So the
+  reconciliation poller leaves a link alone while it can still be paid: its first
+  check comes at 6 minutes (it finds the link expired, or books a payment whose
+  callback was missed), then every minute, and a link Whish still reports unpaid
+  at 10 minutes is closed `FAILED`. Only a link Whish reports as `unknown` (it
+  may have collected) is asked about longer — every 5 minutes, flagged for an
+  operator after 24 hours. A callback we could not act on, or a payment we could
+  not book, is retried at the poller's next run (within a minute), not at the
+  first check. Manual: `POST .../:id/refresh-status`.
 - **Refunds** — a **SUPER_ADMIN** (only — like Transfer Money; companies cannot
   refund, they ask the platform) refunds a `PAID` payment from the Whish Pay page.
   No fee is kept on a refund: both fees go back to the company. The call:

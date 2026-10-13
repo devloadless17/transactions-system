@@ -740,7 +740,7 @@ model WhishPayment {
   // When the refund was booked (status REFUNDED).
   refundedAt        DateTime?          @map("refunded_at") @db.Timestamptz(6)
   // When the reconciliation poller should next ask Whish about this PENDING
-  // link. NULL = never polled (due once a minute old). Set after each poll by
+  // link. NULL = never polled (due once 6 minutes old). Set after each poll by
   // the link's age. Partial expression index on COALESCE(next_poll_at,
   // created_at) WHERE status = 'PENDING' — SQL-only, see migration
   // 20261013120000_whish_payment_poll_schedule.

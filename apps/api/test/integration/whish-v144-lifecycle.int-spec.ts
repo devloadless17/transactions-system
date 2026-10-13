@@ -143,7 +143,8 @@ describe('Whish v1.4.4 — collectStatus refunded / unknown', () => {
 
   it('the 24h timeout closes a link stuck on unknown, but FLAGS it for an operator', async () => {
     const { companyId } = await createCompany(h);
-    // Older than EXPIRE_AGE_MS (24h) and older than RECONCILE_MIN_AGE_MS.
+    // Older than UNKNOWN_EXPIRE_AGE_MS (24h): an 'unknown' link is asked about
+    // for that long (see whish-poll-schedule), far past the unpaid-link cutoff.
     const p = await insertPayment(
       h,
       companyId,
@@ -162,13 +163,13 @@ describe('Whish v1.4.4 — collectStatus refunded / unknown', () => {
     expect(row.metadata).toMatchObject({ needsAttention: true, closedFromUnknown: true });
   });
 
-  it('the 24h timeout closes an ordinary un-paid link quietly (no operator flag)', async () => {
+  it('the 10-minute cutoff closes an ordinary un-paid link quietly (no operator flag)', async () => {
     const { companyId } = await createCompany(h);
     const p = await insertPayment(
       h,
       companyId,
       WhishPaymentStatus.PENDING,
-      new Date(Date.now() - 25 * 3600_000),
+      new Date(Date.now() - 11 * 60_000),
     );
     h.whishClient.status = 'pending'; // the customer simply never paid
 
@@ -351,7 +352,7 @@ describe('Whish v1.4.4 — indeterminate link creation', () => {
     await h.prisma.runAsAdmin((tx) =>
       tx.whishPayment.update({
         where: { id: row.id },
-        data: { createdAt: new Date(Date.now() - 5 * 60_000) },
+        data: { createdAt: new Date(Date.now() - 7 * 60_000) },
       }),
     );
     h.whishClient.failPostPaymentWith = null;
@@ -380,11 +381,11 @@ describe('Whish v1.4.4 — indeterminate link creation', () => {
     await h.prisma.runAsAdmin((tx) =>
       tx.whishPayment.update({
         where: { id: row.id },
-        data: { createdAt: new Date(Date.now() - 5 * 60_000) },
+        data: { createdAt: new Date(Date.now() - 7 * 60_000) },
       }),
     );
     // Whish's definitive answer for an id it never created. Without special
-    // handling this throws on every tick, and because the 24h backstop sits
+    // handling this throws on every check, and because the cutoff sits
     // AFTER reconcile() the row would never expire either.
     h.whishClient.failGetStatusWith = new WhishError('unknown externalId', {
       code: 'external_id.not_exists',
