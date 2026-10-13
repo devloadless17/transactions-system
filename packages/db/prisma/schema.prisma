@@ -860,6 +860,23 @@ model WithdrawalAutoApprovalConfig {
   @@map("withdrawal_auto_approval_configs")
 }
 
+// -------------------------- Job Leases ----------------------------
+// Cross-instance leases (20261013160000_job_leases). Background work that must
+// never run twice at once (auto-approval, W2W sends, the Whish poller) holds
+// one while it works, because a blue/green deploy runs two API versions side
+// by side. Expiry is judged by the database clock. Platform-level (admin-only
+// RLS). Written with raw SQL by apps/api/src/database/job-lease.service.ts;
+// modelled here so schema.prisma matches the live DB.
+model JobLease {
+  name       String   @id
+  holder     String
+  acquiredAt DateTime @default(now()) @map("acquired_at") @db.Timestamptz(6)
+  renewedAt  DateTime @default(now()) @map("renewed_at") @db.Timestamptz(6)
+  expiresAt  DateTime @map("expires_at") @db.Timestamptz(6)
+
+  @@map("job_leases")
+}
+
 // -------------------------- Webhook Deliveries -------------------
 // Durable log/queue of outbound webhook attempts. Created in 0001 and protected
 // by RLS (0002). NOTE: not yet wired — the current Whish webhook delivery is

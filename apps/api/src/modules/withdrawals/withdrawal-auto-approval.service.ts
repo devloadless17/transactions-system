@@ -1,3 +1,9 @@
+/* eslint-disable @typescript-eslint/consistent-type-imports --
+ * NestJS DI: the classes below are constructor-injected, so they must be VALUE
+ * imports. `import type` elides them and `emitDecoratorMetadata` then writes
+ * `Object` into design:paramtypes, which makes Nest fail to resolve the
+ * provider at runtime. The lint rule cannot see that distinction.
+ */
 import type { OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
 import { Injectable, Logger } from '@nestjs/common';
 import { Money } from '@app/shared';
@@ -5,15 +11,23 @@ import type { Withdrawal } from '@app/db';
 import { WithdrawalsService } from './withdrawals.service';
 import { AutoApprovalConfigStore } from './auto-approval-config.store';
 import { classifyW2WFailure } from './auto-approval-rules';
-import { WhishTransfersService } from '../whish/whish-transfers.service';
+import { TransferInProgressError, WhishTransfersService } from '../whish/whish-transfers.service';
 import { WhishSessionExpiredError } from '../whish/whish-w2w.client';
 import { AuditService } from '../audit/audit.service';
 import { ValidationError } from '../../common/errors/domain.error';
 import { registerBackgroundJob } from '../../common/lifecycle/background-jobs';
+import { JobLeaseService, type HeldLease } from '../../database/job-lease.service';
+import type { AutoApprovalState } from './auto-approval-config.store';
 
 const INTERVAL_MS = 15_000;
 // Cap rows touched per tick so a backlog can't make one tick run unbounded.
 const BATCH = 25;
+// Only one instance auto-approves at a time: a blue/green deploy runs two API
+// versions side by side. The lease is renewed in the background while a run
+// goes on and re-confirmed before every withdrawal; it outlives any one
+// withdrawal's work (a Whish call times out at 15s).
+const LEASE = 'withdrawal-auto-approval';
+const LEASE_TTL_MS = 60_000;
 
 /**
  * Background processor that auto-approves Whish (WISH) withdrawals: claim
@@ -44,6 +58,7 @@ export class WithdrawalAutoApprovalService implements OnApplicationBootstrap, On
     private readonly config: AutoApprovalConfigStore,
     private readonly transfers: WhishTransfersService,
     private readonly audit: AuditService,
+    private readonly leases: JobLeaseService,
   ) {}
 
   /** WITHDRAWAL_AUTO_APPROVAL_SIMULATE — single authority is the config store. */
@@ -150,39 +165,15 @@ export class WithdrawalAutoApprovalService implements OnApplicationBootstrap, On
         }
       }
 
-      // 1. Resolve rows already in PROCESSING (crash recovery / settle retries).
-      const stuck = await this.withdrawals.findStuckProcessing(BATCH);
-      for (const w of stuck) {
-        // Re-check the master switch every iteration: flipping it OFF stops the
-        // run immediately, so a disable can never let one more transfer through.
-        if (this.stopping) return; // shutdown: before the next withdrawal, never mid-transfer
-        if (!(await this.config.isEnabled())) return;
-        const stop = await this.processClaimed(w);
-        if (stop) return;
-      }
-
-      // 2. Claim & process fresh PENDING candidates past the hold window.
-      const candidates = await this.withdrawals.findAutoApprovalCandidates({
-        holdSeconds: state.holdSeconds,
-        enabledAt: state.enabledAt,
-        maxAutoApproveAmount: state.maxAutoApproveAmount,
-        limit: BATCH,
-      });
-      let processed = 0;
-      for (const w of candidates) {
-        if (this.stopping) break; // shutdown → stop, before claiming
-        if (!(await this.config.isEnabled())) break; // disabled mid-run → stop, before claiming
-        const claimed = await this.withdrawals.claimForProcessing(w.id, w.companyId);
-        if (!claimed) continue; // cancelled / raced away — skip
-        processed++;
-        const stop = await this.processClaimed(w);
-        if (stop) return;
-      }
-      // Heartbeat so the processor's decisions are visible in the logs.
-      this.logger.log(
-        `${this.simulate ? '[SIMULATED] ' : ''}Auto-approval tick: ${candidates.length} candidate(s), ${stuck.length} stuck, ${processed} processed ` +
-          `(hold=${state.holdSeconds}s, cap=${state.maxAutoApproveAmount}).`,
+      // Never on two instances at once (see LEASE). If the other one holds it,
+      // skip: its run covers the work, and this instance's next tick follows.
+      const { enabledAt } = state; // narrowed to a Date by the gate above
+      const run = await this.leases.runExclusive(LEASE, LEASE_TTL_MS, (lease) =>
+        this.processBatch(state, enabledAt, lease),
       );
+      if (!run.ran) {
+        this.logger.log('Auto-approval tick skipped: another instance holds the lease.');
+      }
     } catch (err) {
       this.logger.warn(`Auto-approval tick failed: ${(err as Error).message}`);
     } finally {
@@ -190,9 +181,55 @@ export class WithdrawalAutoApprovalService implements OnApplicationBootstrap, On
     }
   }
 
+  /** One run, holding the lease: resolve PROCESSING rows, then claim fresh ones. */
+  private async processBatch(
+    state: AutoApprovalState,
+    enabledAt: Date,
+    lease: HeldLease,
+  ): Promise<void> {
+    // 1. Resolve rows already in PROCESSING (crash recovery / settle retries).
+    const stuck = await this.withdrawals.findStuckProcessing(BATCH);
+    for (const w of stuck) {
+      // Re-check the master switch every iteration: flipping it OFF stops the
+      // run immediately, so a disable can never let one more transfer through.
+      if (this.stopping) return; // shutdown: before the next withdrawal, never mid-transfer
+      // Still ours, confirmed by the database, before touching each withdrawal:
+      // a run that lost its lease stops rather than overlap another instance.
+      if (!(await lease.confirm())) return;
+      if (!(await this.config.isEnabled())) return;
+      const stop = await this.processClaimed(w);
+      if (stop) return;
+    }
+
+    // 2. Claim & process fresh PENDING candidates past the hold window.
+    const candidates = await this.withdrawals.findAutoApprovalCandidates({
+      holdSeconds: state.holdSeconds,
+      enabledAt,
+      maxAutoApproveAmount: state.maxAutoApproveAmount,
+      limit: BATCH,
+    });
+    let processed = 0;
+    for (const w of candidates) {
+      if (this.stopping) break; // shutdown → stop, before claiming
+      if (!(await lease.confirm())) break; // lease lost → stop, before claiming
+      if (!(await this.config.isEnabled())) break; // disabled mid-run → stop, before claiming
+      const claimed = await this.withdrawals.claimForProcessing(w.id, w.companyId);
+      if (!claimed) continue; // cancelled / raced away — skip
+      processed++;
+      const stop = await this.processClaimed(w);
+      if (stop) return;
+    }
+    // Heartbeat so the processor's decisions are visible in the logs.
+    this.logger.log(
+      `${this.simulate ? '[SIMULATED] ' : ''}Auto-approval tick: ${candidates.length} candidate(s), ${stuck.length} stuck, ${processed} processed ` +
+        `(hold=${state.holdSeconds}s, cap=${state.maxAutoApproveAmount}).`,
+    );
+  }
+
   /**
    * Drive one PROCESSING withdrawal through transfer → settle. Returns true if the
-   * tick should STOP (session expired — the whole W2W side is down).
+   * tick should STOP (session expired — the whole W2W side is down — or another
+   * instance's transfer is holding the Whish session).
    */
   private async processClaimed(w: Withdrawal): Promise<boolean> {
     const phone = (w.payoutDetails as { recipientPhone?: string } | null)?.recipientPhone;
@@ -230,6 +267,15 @@ export class WithdrawalAutoApprovalService implements OnApplicationBootstrap, On
         { source: 'WITHDRAWAL', actorId: null, companyId: w.companyId, withdrawalId: w.id },
       );
     } catch (err) {
+      if (err instanceof TransferInProgressError) {
+        // Another instance's transfer kept the Whish session past our wait.
+        // NOTHING was recorded or sent, so the row stays PROCESSING untouched:
+        // the next tick takes it up again (findStuckProcessing). Stop this one.
+        this.logger.warn(
+          `Withdrawal ${w.id}: the Whish session is busy with another transfer — retrying next tick.`,
+        );
+        return true;
+      }
       if (err instanceof WhishSessionExpiredError) {
         // Money did NOT move — revert to manual and pause the whole feature.
         await this.withdrawals.revertFromProcessing(w.id, w.companyId, {

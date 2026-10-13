@@ -1,9 +1,22 @@
+/* eslint-disable @typescript-eslint/consistent-type-imports --
+ * NestJS DI: the classes below are constructor-injected, so they must be VALUE
+ * imports. `import type` elides them and `emitDecoratorMetadata` then writes
+ * `Object` into design:paramtypes, which makes Nest fail to resolve the
+ * provider at runtime. The lint rule cannot see that distinction.
+ */
 import type { OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
 import { Injectable, Logger } from '@nestjs/common';
 import { WhishPaymentsService } from './whish-payments.service';
 import { registerBackgroundJob } from '../../common/lifecycle/background-jobs';
+import { JobLeaseService } from '../../database/job-lease.service';
 
 const INTERVAL_MS = 60_000;
+// One poller at a time across instances: a blue/green deploy runs two API
+// versions side by side, and two pollers would check every due link twice
+// (Whish calls that share the per-key budget with link creation). Renewed
+// while a run goes on — a run can take minutes.
+const LEASE = 'whish-reconciliation';
+const LEASE_TTL_MS = 60_000;
 
 /**
  * Periodically reconciles stale PENDING Whish payments in case a callback was
@@ -18,7 +31,10 @@ export class WhishReconciliationService implements OnApplicationBootstrap, OnMod
   private running = false;
   private stopping = false;
 
-  constructor(private readonly payments: WhishPaymentsService) {}
+  constructor(
+    private readonly payments: WhishPaymentsService,
+    private readonly leases: JobLeaseService,
+  ) {}
 
   onApplicationBootstrap(): void {
     this.logger.log(`Whish reconciliation poller STARTED (every ${INTERVAL_MS / 1000}s)`);
@@ -47,7 +63,15 @@ export class WhishReconciliationService implements OnApplicationBootstrap, OnMod
     if (this.running) return;
     this.running = true;
     try {
-      const r = await this.payments.reconcileStalePayments({ shouldStop: () => this.stopping });
+      const run = await this.leases.runExclusive(LEASE, LEASE_TTL_MS, (lease) =>
+        // A lost lease stops the run between links, like a shutdown does.
+        this.payments.reconcileStalePayments({ shouldStop: () => this.stopping || !lease.held }),
+      );
+      if (!run.ran) {
+        this.logger.log('Reconciliation tick skipped: another instance holds the lease.');
+        return;
+      }
+      const r = run.value;
       // Heartbeat: log EVERY tick (even when it finds nothing) so we can confirm
       // the poller is actually running in each environment — a silent poller was
       // indistinguishable from a missing one.

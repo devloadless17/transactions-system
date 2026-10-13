@@ -1,3 +1,9 @@
+/* eslint-disable @typescript-eslint/consistent-type-imports --
+ * NestJS DI: the classes below are constructor-injected, so they must be VALUE
+ * imports. `import type` elides them and `emitDecoratorMetadata` then writes
+ * `Object` into design:paramtypes, which makes Nest fail to resolve the
+ * provider at runtime. The lint rule cannot see that distinction.
+ */
 import { Injectable, Logger } from '@nestjs/common';
 import crypto from 'node:crypto';
 import {
@@ -12,7 +18,8 @@ import {
 import { Prisma } from '@app/db';
 import type { WhishTransfer } from '@app/db';
 import { PrismaService } from '../../database/prisma.service';
-import { ValidationError } from '../../common/errors/domain.error';
+import { JobLeaseService, LeaseUnavailableError } from '../../database/job-lease.service';
+import { DomainError, ValidationError } from '../../common/errors/domain.error';
 import { assertListOffset } from '../../common/pagination';
 import { TransactionLogsService } from '../transaction-logs/transaction-logs.service';
 import { RealtimeService } from '../realtime/realtime.service';
@@ -23,6 +30,30 @@ import { WhishW2WClient, WhishSessionExpiredError, type W2WSubmitResult } from '
 // One submit + at most one drift-corrected retry. The retry only ever fires on a
 // clean `failed` (money did not move), so this can never double-send.
 const MAX_TRANSFER_ATTEMPTS = 2;
+
+// One send at a time across ALL instances, not just this process (see
+// sendQueue): a blue/green deploy runs two API versions side by side, and both
+// use the one Whish session and its counter. The lease outlives any send (the
+// Whish call times out at 15s) and is renewed while one runs.
+const SEND_LEASE = 'whish-w2w-send';
+const SEND_LEASE_TTL_MS = 60_000;
+// How long a send waits for another instance's send before giving up, unsent.
+const SEND_LEASE_WAIT_MS = 30_000;
+
+/**
+ * Another instance's transfer held the Whish session for longer than we wait.
+ * Thrown BEFORE anything is recorded or sent — money did not move — so the
+ * caller can simply try again (auto-approval does, on its next tick).
+ */
+export class TransferInProgressError extends DomainError {
+  constructor() {
+    super(
+      'TRANSFER_IN_PROGRESS',
+      'Another Whish transfer is in progress. Nothing was sent; try again in a moment.',
+      409,
+    );
+  }
+}
 
 /** Where a transfer originated — admin tool now, withdrawal auto-transfer later. */
 export interface TransferOrigin {
@@ -49,7 +80,8 @@ export class WhishTransfersService {
   private readonly logger = new Logger(WhishTransfersService.name);
   // Serializes all sends in this process (admin tool + auto-poller) so the
   // sessionCounter lifecycle (reserve → submit → heal) of one transfer completes
-  // before the next begins, preventing counter reuse under concurrency.
+  // before the next begins, preventing counter reuse under concurrency. The
+  // SEND_LEASE extends the same guarantee across instances (sendExclusive).
   private sendQueue: Promise<unknown> = Promise.resolve();
 
   constructor(
@@ -58,6 +90,7 @@ export class WhishTransfersService {
     private readonly session: WhishSessionStore,
     private readonly txLogs: TransactionLogsService,
     private readonly realtime: RealtimeService,
+    private readonly leases: JobLeaseService,
   ) {}
 
   /** Whether W2W transfers are configured/enabled (env flag). */
@@ -70,14 +103,17 @@ export class WhishTransfersService {
     return this.session.status();
   }
 
-  /** Public entry — serialized through `sendQueue` (see field) then runs executeSend. */
+  /**
+   * Public entry — serialized through `sendQueue` (see field), then runs
+   * executeSend holding the cross-instance SEND_LEASE (sendExclusive).
+   */
   async sendTransfer(
     input: SendWhishTransferInput,
     origin: TransferOrigin,
   ): Promise<WhishTransferResponse> {
     const result = this.sendQueue.then(
-      () => this.executeSend(input, origin),
-      () => this.executeSend(input, origin), // run even if the previous send rejected
+      () => this.sendExclusive(input, origin),
+      () => this.sendExclusive(input, origin), // run even if the previous send rejected
     );
     // Keep the chain alive regardless of this send's outcome.
     this.sendQueue = result.then(
@@ -93,6 +129,28 @@ export class WhishTransfersService {
       () => this.realtime.admin(['whish']),
     );
     return result;
+  }
+
+  /**
+   * executeSend, one at a time across every instance. Waits for another
+   * instance's send to finish; if it can't get its turn, NOTHING has been
+   * recorded or sent and TransferInProgressError says so.
+   */
+  private async sendExclusive(
+    input: SendWhishTransferInput,
+    origin: TransferOrigin,
+  ): Promise<WhishTransferResponse> {
+    try {
+      return await this.leases.withLease(
+        SEND_LEASE,
+        { ttlMs: SEND_LEASE_TTL_MS, waitMs: SEND_LEASE_WAIT_MS },
+        () => this.executeSend(input, origin),
+      );
+    } catch (err) {
+      // Only ever thrown before executeSend starts.
+      if (err instanceof LeaseUnavailableError) throw new TransferInProgressError();
+      throw err;
+    }
   }
 
   private async executeSend(

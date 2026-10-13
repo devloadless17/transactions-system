@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { Prisma } from '@app/db';
 import { WhishTransferStatus } from '@app/shared';
-import { WhishTransfersService, type TransferOrigin } from './whish-transfers.service';
+import {
+  TransferInProgressError,
+  WhishTransfersService,
+  type TransferOrigin,
+} from './whish-transfers.service';
+import { LeaseUnavailableError } from '../../database/job-lease.service';
 import { WhishSessionExpiredError } from './whish-w2w.client';
 import { W2WCryptoError } from './w2w-crypto';
 import { ValidationError } from '../../common/errors/domain.error';
@@ -71,6 +76,8 @@ function build(opts: {
   nextRequest?: ReturnType<typeof vi.fn>;
   isEnabled?: boolean;
   seedRow?: Record<string, unknown>;
+  /** The cross-instance send lease stays with another instance past the wait. */
+  leaseBusy?: boolean;
 }) {
   const { rows, delegate } = makeFakeDb();
   if (opts.seedRow) rows.set(opts.seedRow.id as string, opts.seedRow);
@@ -117,6 +124,14 @@ function build(opts: {
   };
   const txLogs = { record: vi.fn() };
   const realtime = { admin: vi.fn(), company: vi.fn() };
+  // The real lease runs against Postgres (test/integration/job-leases.int-spec.ts);
+  // here it either grants the turn (running the send inside it) or never does.
+  const leases = {
+    withLease: vi.fn(async (name: string, _opts: unknown, fn: () => Promise<unknown>) => {
+      if (opts.leaseBusy) throw new LeaseUnavailableError(name);
+      return fn();
+    }),
+  };
 
   const svc = new WhishTransfersService(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -129,8 +144,10 @@ function build(opts: {
     txLogs as any,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     realtime as any,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    leases as any,
   );
-  return { svc, rows, delegate, client, session, txLogs, realtime };
+  return { svc, rows, delegate, client, session, txLogs, realtime, leases };
 }
 
 const ORIGIN: TransferOrigin = {
@@ -415,5 +432,61 @@ describe('WhishTransfersService.sendTransfer (audit) — recipient phone normali
     expect(client.submit).toHaveBeenCalledWith(expect.objectContaining({ phone: expected }));
     // The audit row records the same destination we actually submitted.
     expect(rows.get(res.id)!.recipientPhone).toBe(expected);
+  });
+});
+
+describe('WhishTransfersService.sendTransfer — one send at a time across instances', () => {
+  it('sends only while holding the cross-instance send lease', async () => {
+    const { svc, client, leases } = build({});
+    let insideLease = false;
+    leases.withLease.mockImplementationOnce(
+      async (_name: string, _opts: unknown, fn: () => Promise<unknown>) => {
+        insideLease = true;
+        try {
+          return await fn();
+        } finally {
+          insideLease = false;
+        }
+      },
+    );
+    client.submit.mockImplementationOnce(async () => {
+      expect(insideLease).toBe(true); // Whish is only ever called inside the lease
+      return {
+        outcome: 'success',
+        httpStatus: 200,
+        traceId: 't1',
+        nextCounter: 2,
+        code: null,
+        message: null,
+        response: { status: true },
+      };
+    });
+    const res = await svc.sendTransfer(
+      { amount: '20', recipientPhone: '71505894', currency: 'USD' },
+      ORIGIN,
+    );
+    expect(res.status).toBe(WhishTransferStatus.SUCCESS);
+    expect(leases.withLease).toHaveBeenCalledWith(
+      'whish-w2w-send',
+      { ttlMs: 60_000, waitMs: 30_000 },
+      expect.any(Function),
+    );
+  });
+
+  it('when another instance keeps the session busy, NOTHING is recorded or sent', async () => {
+    const { svc, rows, client, session } = build({ leaseBusy: true });
+    await expect(
+      svc.sendTransfer({ amount: '20', recipientPhone: '71505894', currency: 'USD' }, ORIGIN),
+    ).rejects.toBeInstanceOf(TransferInProgressError);
+    expect(rows.size).toBe(0); // no PENDING row: a retry is a clean first attempt
+    expect(session.nextRequest).not.toHaveBeenCalled(); // no session counter consumed
+    expect(client.submit).not.toHaveBeenCalled(); // money cannot have moved
+  });
+
+  it('a busy session is a 409 the admin tool can show, not a 500', () => {
+    const err = new TransferInProgressError();
+    expect(err.httpStatus).toBe(409);
+    expect(err.code).toBe('TRANSFER_IN_PROGRESS');
+    expect(err.message).toMatch(/Nothing was sent/);
   });
 });

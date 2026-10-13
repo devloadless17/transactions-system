@@ -60,6 +60,13 @@ function build() {
       ),
   };
   const audit = { record: vi.fn().mockResolvedValue(undefined) };
+  // This instance holds the auto-approval lease (see the main spec for contention).
+  const leases = {
+    runExclusive: vi.fn(async (_n: string, _t: number, fn: (l: unknown) => Promise<unknown>) => ({
+      ran: true,
+      value: await fn({ held: true, confirm: async () => true }),
+    })),
+  };
   const service = new WithdrawalAutoApprovalService(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     withdrawals as any,
@@ -69,6 +76,8 @@ function build() {
     transfers as any,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     audit as any,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    leases as any,
   );
   return { service, withdrawals, config };
 }

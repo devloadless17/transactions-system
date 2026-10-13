@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { WithdrawalAutoApprovalService } from './withdrawal-auto-approval.service';
 import { ValidationError } from '../../common/errors/domain.error';
 import { WhishSessionExpiredError } from '../whish/whish-w2w.client';
+import { TransferInProgressError } from '../whish/whish-transfers.service';
 
 // Safety guarantee under test: when auto-approval is OFF (or the toggle is flipped
 // OFF mid-run), the processor must NEVER claim a withdrawal or send a transfer.
@@ -29,6 +30,10 @@ function build(opts: {
   sessionConfigured?: boolean;
   candidates?: unknown[];
   simulate?: boolean;
+  /** Another instance holds the auto-approval lease for this whole tick. */
+  leaseTaken?: boolean;
+  /** The lease confirms this many times, then reports lost. */
+  leaseLostAfter?: number;
 }) {
   const withdrawals = {
     findStuckProcessing: vi.fn().mockResolvedValue([]),
@@ -53,6 +58,21 @@ function build(opts: {
     sendTransfer: vi.fn().mockResolvedValue({ status: 'SUCCESS', reference: 'wt_x', traceId: 't' }),
   };
   const audit = { record: vi.fn().mockResolvedValue(undefined) };
+  // The real lease runs against Postgres (test/integration/job-leases.int-spec.ts).
+  let confirms = 0;
+  const lease = {
+    held: true,
+    confirm: vi.fn(async () => {
+      confirms++;
+      return opts.leaseLostAfter === undefined || confirms <= opts.leaseLostAfter;
+    }),
+  };
+  const leases = {
+    runExclusive: vi.fn(
+      async (_name: string, _ttl: number, fn: (l: typeof lease) => Promise<unknown>) =>
+        opts.leaseTaken ? { ran: false } : { ran: true, value: await fn(lease) },
+    ),
+  };
   const service = new WithdrawalAutoApprovalService(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     withdrawals as any,
@@ -62,8 +82,10 @@ function build(opts: {
     transfers as any,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     audit as any,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    leases as any,
   );
-  return { service, withdrawals, transfers, config, audit };
+  return { service, withdrawals, transfers, config, audit, leases, lease };
 }
 
 // tick() is private; invoke it directly for the unit test.
@@ -142,6 +164,66 @@ describe('WithdrawalAutoApprovalService — shutdown', () => {
     expect(withdrawals.approve).toHaveBeenCalledOnce(); // …and was settled
     expect(withdrawals.claimForProcessing).toHaveBeenCalledTimes(1); // w2 was never claimed
     expect(withdrawals.claimForProcessing).not.toHaveBeenCalledWith('w2', expect.anything());
+  });
+});
+
+describe('WithdrawalAutoApprovalService — one instance at a time (blue/green)', () => {
+  it('while another instance holds the lease, this one claims nothing and sends nothing', async () => {
+    const { service, withdrawals, transfers, leases } = build({
+      state: makeState(),
+      candidates: [candidate],
+      leaseTaken: true,
+    });
+    await runTick(service);
+    expect(leases.runExclusive).toHaveBeenCalledWith(
+      'withdrawal-auto-approval',
+      60_000,
+      expect.any(Function),
+    );
+    expect(withdrawals.findStuckProcessing).not.toHaveBeenCalled();
+    expect(withdrawals.claimForProcessing).not.toHaveBeenCalled();
+    expect(transfers.sendTransfer).not.toHaveBeenCalled();
+  });
+
+  it('does not even take the lease while auto-approval is OFF (the default)', async () => {
+    const { service, leases } = build({ state: makeState({ enabled: false }) });
+    await runTick(service);
+    expect(leases.runExclusive).not.toHaveBeenCalled();
+  });
+
+  it('re-confirms the lease before every withdrawal and stops once it is lost', async () => {
+    const second = { ...candidate, id: 'w2' };
+    const stuckRow = { ...candidate, id: 'w0' };
+    const { service, withdrawals, transfers, lease } = build({
+      state: makeState(),
+      candidates: [candidate, second],
+      leaseLostAfter: 2, // confirmed for w0 (stuck) and w1; lost before w2
+    });
+    withdrawals.findStuckProcessing.mockResolvedValue([stuckRow]);
+    await runTick(service);
+    expect(lease.confirm).toHaveBeenCalledTimes(3);
+    expect(transfers.sendTransfer).toHaveBeenCalledTimes(2); // w0 and w1 only
+    expect(withdrawals.claimForProcessing).toHaveBeenCalledOnce();
+    expect(withdrawals.claimForProcessing).not.toHaveBeenCalledWith('w2', expect.anything());
+  });
+
+  it("another instance's transfer holding the Whish session: the row is left untouched for the next tick", async () => {
+    const second = { ...candidate, id: 'w2' };
+    const { service, withdrawals, transfers, config } = build({
+      state: makeState(),
+      candidates: [candidate, second],
+    });
+    transfers.sendTransfer.mockRejectedValueOnce(new TransferInProgressError());
+    await runTick(service);
+    // Nothing was sent, so nothing is reverted, flagged or counted as a failure:
+    // w1 stays PROCESSING and findStuckProcessing hands it to the next tick.
+    expect(withdrawals.revertFromProcessing).not.toHaveBeenCalled();
+    expect(withdrawals.setAutoMeta).not.toHaveBeenCalled();
+    expect(withdrawals.approve).not.toHaveBeenCalled();
+    expect(config.recordFailure).not.toHaveBeenCalled();
+    expect(config.trip).not.toHaveBeenCalled();
+    // And the tick stops: w2 is not claimed behind a busy session.
+    expect(withdrawals.claimForProcessing).toHaveBeenCalledOnce();
   });
 });
 
