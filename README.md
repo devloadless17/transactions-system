@@ -158,10 +158,12 @@ We are the _outbound_ caller (the inverse of source-key ingest).
   (token-guarded, **verified** via `POST /payment/collect/status` before crediting).
   Missed callbacks self-heal via a 60s reconciliation interval (and manual
   `POST .../:id/refresh-status`).
-- **Refunds** — an admin (SUPER_ADMIN / ADMIN_OPERATOR) refunds a `PAID` payment
-  from the Whish Pay page: `POST /v1/admin/whish/payments/:id/refund` with a
-  reason → Whish `POST /payment/whish/refund` (v1.4.3+; always the **full**
-  amount, the call takes none). Real money leaves the platform account, so: the
+- **Refunds** — a **SUPER_ADMIN** (only — like Transfer Money; companies cannot
+  refund, they ask the platform) refunds a `PAID` payment from the Whish Pay page.
+  No fee is kept on a refund: both fees go back to the company. The call:
+  `POST /v1/admin/whish/payments/:id/refund` with a reason → Whish
+  `POST /payment/whish/refund` (v1.4.3+; always the **full** amount, the call
+  takes none). Real money leaves the platform account, so: the
   row is locked (`refund_requested_at`) before Whish is called, so it is asked at
   most once; Whish's status is checked first, so a payment already refunded in its
   portal is booked without paying again; and the ledger only moves once Whish

@@ -95,10 +95,12 @@ export class WhishAdminController {
   /**
    * Refund a paid payment to its payer through Whish (always the full amount)
    * and reverse its settled deposit. Real money leaves the platform's Whish
-   * account, so only the roles that may reverse a deposit can do it
-   * (SUPER_ADMIN/ADMIN_OPERATOR); BACKOFFICE is view-only.
+   * account, so — like Transfer Money — it is SUPER_ADMIN only. Companies never
+   * refund themselves: they ask the platform, and a super admin presses Refund.
+   * (Refresh stays open to ADMIN_OPERATOR: it can only BOOK a refund a super
+   * admin already sent and Whish confirmed — it never asks Whish to pay.)
    */
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR)
+  @Roles(UserRole.SUPER_ADMIN)
   @Post('payments/:id/refund')
   @Audited({
     action: 'whish.payment_refunded',

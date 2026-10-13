@@ -26,10 +26,17 @@ import {
 
 const PAGE_SIZE = 20;
 
-// `canManage` gates the operator actions (Refresh, Refund) — the API allows
-// them to SUPER_ADMIN/ADMIN_OPERATOR only. Back office views the payments but
-// would get a 403, so it doesn't see the buttons. Defaults to false.
-export function AdminWhishView({ canManage = false }: { canManage?: boolean }) {
+// `canManage` gates Refresh (SUPER_ADMIN/ADMIN_OPERATOR at the API); `canRefund`
+// gates Refund (SUPER_ADMIN only — real money leaves the platform's Whish
+// account). Back office views the payments but would get a 403, so it sees
+// neither button. Both default to false.
+export function AdminWhishView({
+  canManage = false,
+  canRefund = false,
+}: {
+  canManage?: boolean;
+  canRefund?: boolean;
+}) {
   const [page, setPage] = useState(1);
   const [detail, setDetail] = useState<WhishPaymentResponse | null>(null);
   const [refundTarget, setRefundTarget] = useState<WhishPaymentResponse | null>(null);
@@ -154,7 +161,7 @@ export function AdminWhishView({ canManage = false }: { canManage?: boolean }) {
                 >
                   {refreshMu.isPending && refreshMu.variables === p.id ? 'Refreshing…' : 'Refresh'}
                 </Button>
-                {p.status === 'PAID' && (
+                {canRefund && p.status === 'PAID' && (
                   <Button
                     variant="ghost"
                     size="sm"

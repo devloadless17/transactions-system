@@ -170,8 +170,9 @@ Read the entry for every release you are about to roll back across. Newest first
   `REFUNDED` payment can never change status again. The guard's rules for
   transactions, withdrawals, payouts and loads are unchanged. Catalog-only: no
   backfill, no index.
-- **Nothing is refunded by deploying it.** A refund happens only when an admin
-  (`SUPER_ADMIN` or `ADMIN_OPERATOR`) presses Refund on a PAID payment. Whish then
+- **Nothing is refunded by deploying it.** A refund happens only when a
+  `SUPER_ADMIN` presses Refund on a PAID payment (companies cannot refund; they ask
+  the platform). Whish then
   sends the full amount back to the payer from the platform's Whish account — real
   money — and the deposit is reversed like the admin Reverse.
 - **ROLLBACK RULE.** Rolling the API image back past this release is safe **only
