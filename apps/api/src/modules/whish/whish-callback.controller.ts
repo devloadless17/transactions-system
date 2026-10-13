@@ -3,6 +3,9 @@ import { Throttle } from '@nestjs/throttler';
 import { SkipResponseEnvelope } from '../../common/decorators/skip-response-envelope.decorator';
 import { WhishPaymentsService } from './whish-payments.service';
 
+/** Whish payment confirmations accepted per minute from one IP (see below). */
+export const WHISH_CALLBACKS_PER_MINUTE = 3_000;
+
 /**
  * Public Whish callback endpoints. Whish performs a GET to these URLs when a
  * payment completes, preserving the query params we attached (token +
@@ -10,15 +13,23 @@ import { WhishPaymentsService } from './whish-payments.service';
  * callback: it matches the token and re-verifies the real status with Whish
  * before settling. We always reply 200 so Whish considers us notified.
  *
- * Throttled (not skipped): the route is unauthenticated and externalId is a
- * sequential, enumerable reference, so a generous-but-finite per-IP cap stops
- * an attacker from hammering the DB / burning Whish API quota by spraying
- * guessed ids, while staying well above any real Whish callback volume.
+ * Throttled (not skipped), but the cap is sized for WHISH, not for an attacker.
+ * Every genuine callback comes from Whish's own server (production sees a
+ * single address), so this per-IP cap is, in effect, the number of PAID
+ * deposits per minute we accept a confirmation for. Paid money must never wait
+ * on a rate limit: a callback refused here leaves that deposit to the 60-second
+ * reconciliation poller (oldest links first), so a burst of payments would be
+ * credited minutes late. The old cap (120/min) was 12x the busiest minute ever
+ * seen; this one leaves room for 50 paid deposits per SECOND.
+ *
+ * It still bounds a single sprayer: the route is unauthenticated and externalId
+ * is sequential, but a guess without the per-payment secret token costs one
+ * indexed lookup and is rejected before any Whish call or booking.
  */
 // Inbound ack FROM Whish: it only keys off HTTP 200, so keep the {received}
 // body raw rather than coupling the provider to our API envelope.
 @SkipResponseEnvelope()
-@Throttle({ default: { limit: 120, ttl: 60_000 } })
+@Throttle({ default: { limit: WHISH_CALLBACKS_PER_MINUTE, ttl: 60_000 } })
 @Controller('whish/callback')
 export class WhishCallbackController {
   constructor(private readonly payments: WhishPaymentsService) {}
