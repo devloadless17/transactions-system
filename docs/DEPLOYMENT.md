@@ -175,10 +175,12 @@ Read the entry for every release you are about to roll back across. Newest first
   and refreshing Whish payment links is now `INTEGRATION_CREATE_RATE_LIMIT_MAX`
   (default 6000 a minute; status lookups have their own
   `INTEGRATION_LOOKUP_RATE_LIMIT_MAX`, default 30000). The old
-  `INTEGRATION_RATE_LIMIT_MAX` is **no longer read**: the production and staging
-  env files still carry `INTEGRATION_RATE_LIMIT_MAX=300` (the old combined cap,
-  copied from the old example), and that line is now inert — remove it at
-  leisure. To change a brake, set the new names.
+  `INTEGRATION_RATE_LIMIT_MAX` is **no longer read**. Staging's hand-kept
+  `.env.staging` still carries `INTEGRATION_RATE_LIMIT_MAX=300` (the old combined
+  cap, copied from the old example) and that line is now inert — remove it at
+  leisure. Production's `.env` is re-rendered from `.env.prod.example` on every
+  production deploy, so it picks up the new names by itself. To change a brake,
+  set the new names.
 - **Behaviour changes, no configuration needed:**
   - `/v1/integrations/whish/*` has no per-IP limit any more (per-key brakes
     only); Whish's payment confirmations are never limited — only fake ones

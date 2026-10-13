@@ -101,10 +101,10 @@ export const envSchema = z
     // minute: no real customer base gets there, a loop does at once. 0 disables.
     // (No per-IP cap on these endpoints: key guessing is limited separately, per
     // failed attempt — AUTH_FAILURE_MAX_PER_MIN.)
-    // A NEW name on purpose: the servers' env files still carry the retired
-    // INTEGRATION_RATE_LIMIT_MAX=300 (the old combined cap, copied from the old
-    // example), and that line must never cap link creation again — so the old
-    // name is not read anywhere (docs-contract.spec.ts pins it).
+    // A NEW name on purpose: staging's hand-kept env file still carries the
+    // retired INTEGRATION_RATE_LIMIT_MAX=300 (the old combined cap, copied from
+    // the old example), and that line must never cap link creation again — so
+    // the old name is not read anywhere (docs-contract.spec.ts pins it).
     INTEGRATION_CREATE_RATE_LIMIT_MAX: z.coerce.number().int().min(0).default(6000),
 
     // Status LOOKUPS on the Whish Pay API (GET /v1/integrations/whish/payments/

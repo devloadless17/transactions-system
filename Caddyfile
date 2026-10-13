@@ -19,8 +19,8 @@
 
 	# WHO IS THE VISITOR? Decided HERE, once, for both sites.
 	#
-	# Cloudflare fronts the prod domain, so the peer Caddy sees there is a CF edge —
-	# not the visitor. Undeclared, the API received `X-Forwarded-For: <cloudflare-ip>`
+	# Cloudflare fronts both sites — prod and staging — so the peer Caddy sees is a
+	# CF edge, not the visitor. Undeclared, the API received `X-Forwarded-For: <cloudflare-ip>`
 	# with the visitor stripped, so every prod request logged and rate-limited as a
 	# CF edge IP (104.22.x / 172.7x.x) — measured 2026-09-10, and the reason the
 	# Sept 9 export investigation could not identify a session by IP.
@@ -42,8 +42,8 @@
 	# request and cannot be supplied by the caller (for a Worker it is the Worker's
 	# shared address, so Workers share ONE bucket).
 	#
-	# Staging is reached directly (no Cloudflare): its visitors are not in these
-	# ranges, so nothing they send is believed and they are identified by peer
+	# A caller that reaches this server directly, not through Cloudflare, is not in
+	# these ranges, so nothing it sends is believed and it is identified by its peer
 	# address. A caller that IS in Cloudflare's space but is not our edge (a Worker
 	# fetching the origin directly) cannot set CF-Connecting-IP either.
 	#
@@ -113,10 +113,13 @@
 # Served by THIS Caddy over the shared `edge` network to the staging containers
 # (docker-compose.staging.yml: api-staging / web-staging). If the staging stack
 # isn't running, this block simply 502s; it never affects the prod site above.
-# Caddy auto-provisions a separate TLS cert once a DNS A record for this host
-# points at the server. Change the hostname here if you use a different one.
+# Proxied by Cloudflare exactly like the prod domain (same edge, same visitor-IP
+# handling). Caddy gets its own Let's Encrypt cert for the origin: Cloudflare
+# passes the plain-HTTP challenge through, as for prod. The name must stay a
+# FIRST-level subdomain — Cloudflare's Universal SSL covers *.rivalpayments.com
+# only, so the old staging.portal.rivalpayments.com could not be proxied.
 # ---------------------------------------------------------------------------
-staging.portal.rivalpayments.com {
+staging-portal.rivalpayments.com {
 	encode zstd gzip
 
 	header {

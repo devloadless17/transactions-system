@@ -915,8 +915,8 @@ describe('docs contract — deposits are never rate-limited', () => {
     }
   });
 
-  it('never reads the retired INTEGRATION_RATE_LIMIT_MAX — the servers still carry =300', () => {
-    // The old combined cap. Its line is still in the servers' env files, so
+  it('never reads the retired INTEGRATION_RATE_LIMIT_MAX — staging still carries =300', () => {
+    // The old combined cap. Its line is still in staging's hand-kept env file, so
     // reading that name again would silently cap link creation at 300 a minute.
     expect(ENV_SCHEMA).not.toMatch(/^\s*INTEGRATION_RATE_LIMIT_MAX:/m);
     expect(read('apps/api/src/modules/api-keys/guards/api-key-rate-limit.guard.ts')).not.toMatch(

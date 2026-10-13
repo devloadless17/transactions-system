@@ -9,7 +9,8 @@ its own public hostname.
 ```
                          ┌──────────── txn_caddy (prod, :80/:443) ────────────┐
 DNS  portal.rivalpayments.com ───────▶ │  portal.rivalpayments.com  → api / web        (LIVE) │
-DNS  staging.portal.rivalpayments.com ▶│  staging.portal...         → api-staging / web-staging (SANDBOX) │
+DNS  staging-portal.rivalpayments.com ▶│  staging-portal...         → api-staging / web-staging (SANDBOX) │
+     (both proxied by Cloudflare)
                          └──────── reaches staging over the shared `edge` network ──────┘
 
 prod project   : postgres / redis / api / web            (live DB, live Whish)
@@ -24,11 +25,20 @@ entrypoint) and the `edge` network it uses to reach staging.
 
 ## One-time setup
 
-**1. DNS** — add an A record so Caddy can get a cert and route traffic:
+**1. DNS** — in Cloudflare, an A record for the staging host, **proxied (orange
+cloud) like prod**, so staging sits behind the same edge as production: same TLS
+in front, same visitor-IP handling (Caddy reads `CF-Connecting-IP`), same zone
+rules:
 
 ```
-staging.portal.rivalpayments.com   A   <server IP>     # same IP as prod
+staging-portal.rivalpayments.com   A   <server IP>   Proxied   # same IP as prod
 ```
+
+Keep it a **first-level** subdomain: Cloudflare's Universal SSL certificate covers
+`rivalpayments.com` and `*.rivalpayments.com` only, so a deeper name (the old
+`staging.portal.rivalpayments.com`) cannot be proxied. Caddy still gets its own
+Let's Encrypt certificate for the origin — Cloudflare passes the plain-HTTP
+challenge through to it, exactly as for prod.
 
 **2. Create the shared `edge` network on the server** (REQUIRED before the next
 prod deploy — `docker-compose.prod.yml` now references it as external):
@@ -76,8 +86,10 @@ $SC up -d --remove-orphans
 $SC ps
 ```
 
-Caddy auto-issues the TLS cert on first hit. Visit
-`https://staging.portal.rivalpayments.com` — log in with the seeded admin and
+Caddy issues the origin cert as soon as it loads a Caddyfile naming the host.
+The Caddyfile reaches the server only with a production deploy, which reloads
+Caddy; a staging deploy never touches it. Visit
+`https://staging-portal.rivalpayments.com` — log in with the seeded admin and
 confirm a Whish payment link mints against the sandbox.
 
 ---
@@ -160,8 +172,9 @@ docker logs -f txn_web_staging
   blacklisting the substring `sandbox`, so `WHISH_ALLOW_SANDBOX=true` is
   **required** on staging — without it the API refuses to boot. That is the
   point: the old check silently stopped matching when the sandbox became `sbx`.
-- Whish sandbox callbacks hit `https://staging.portal.rivalpayments.com/v1` — make
-  sure the sandbox account is configured for that host.
+- Whish sandbox callbacks hit `https://staging-portal.rivalpayments.com/v1`
+  (`WHISH_CALLBACK_BASE`, sent with every payment) — make sure the sandbox account
+  accepts that host.
 - Whish rejects `localhost`/loopback callback and redirect URLs with HTTP 403
   (v1.4.4), so staging is the only place the real sandbox can be exercised.
   Local development uses `node scripts/fake-whish.cjs` instead.
