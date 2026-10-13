@@ -183,6 +183,10 @@ Read the entry for every release you are about to roll back across. Newest first
   - `/v1/integrations/whish/*` has no per-IP limit any more (per-key brakes
     only); Whish's payment confirmations are never limited — only fake ones
     (unknown link or wrong token), 60 a minute per sender IP.
+  - On its dashboard twin, `/v1/company/whish/payments`, a link's own calls
+    (create, look up, refresh-status) carry the same per-key brakes — per user
+    on a dashboard session — instead of the per-IP cap; its list and CSV keep
+    the per-IP cap. Rolling back restores the per-IP cap on all of them.
   - Failed company API keys count against the per-(IP, key prefix) limiter,
     as source keys already did.
   - One company's money transactions take turns inside the API process
