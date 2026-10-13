@@ -160,15 +160,14 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, fail('request.invalid', 'externalId must be a String'));
       }
       refundCalls.push(body);
-      if (!body.refundReason) {
-        return send(res, 200, fail('request.invalid', 'refundReason is required'));
-      }
+      // refundReason is OPTIONAL (v1.4.4). "Already processed": a duplicate
+      // refund replays as a success with `retrieved: true`; an id Whish never
+      // minted is `external_id.not_exists`.
       if (refundedExternalIds.has(body.externalId)) {
-        return send(
-          res,
-          200,
-          fail('payment.already_refunded', 'This payment was already refunded'),
-        );
+        return send(res, 200, { ...ok(null), retrieved: true });
+      }
+      if (knownExternalIds.size && !knownExternalIds.has(body.externalId)) {
+        return send(res, 200, fail('external_id.not_exists', 'unknown externalId'));
       }
       if (refundMode === 'refuse') {
         return send(res, 200, fail('payment.not_refundable', 'This payment cannot be refunded'));

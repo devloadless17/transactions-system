@@ -13,6 +13,7 @@ in at least four places.
     loopback callback + redirect URLs are rejected with HTTP 403.
 
 Current sources of truth:
+  * Whish/whish-pay-docs-v1.4.4.txt (text capture of the full v1.4.4 docs page)
   * Whish/whish-pay.openapi.json (vendor OpenAPI spec, v1.4.4)
   * Whish/whish-pay.postman_collection.json (vendor collection, v1.4.4)
   * https://whish-partners.pages.dev/whish-pay-9z366gc6922w/

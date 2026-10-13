@@ -139,14 +139,18 @@ export class FakeWhishClient {
   }
 
   /** Like Whish: a refund that goes through makes getStatus report `refunded`. */
-  refund(input: { currency: string; externalId: string; refundReason: string }): Promise<void> {
+  refund(input: {
+    currency: string;
+    externalId: string;
+    refundReason: string;
+  }): Promise<{ alreadyProcessed: boolean }> {
     this.refundCalls.push(input);
     if (!this.failRefundWith || this.refundTookEffect) {
       this.statusFor.set(input.externalId, 'refunded');
       this.balance -= this.refundDebit(this.amountFor.get(input.externalId) ?? 0);
     }
     if (this.failRefundWith) return Promise.reject(this.failRefundWith);
-    return Promise.resolve();
+    return Promise.resolve({ alreadyProcessed: false });
   }
 }
 

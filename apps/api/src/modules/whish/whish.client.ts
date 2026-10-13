@@ -58,13 +58,32 @@ export class WhishIndeterminateError extends WhishError {
   }
 }
 
-// The unified Whish response envelope. v1.4.4 also returns `actions`, `extra`
-// and `retrieved`; we ignore them, and unknown keys are harmless here.
+// The unified Whish response envelope. v1.4.4 also returns `actions` and
+// `extra` (reserved); unknown keys are harmless here.
 interface WhishEnvelope<T> {
   status: boolean;
-  code: string | null;
+  // Documented as a String, but the special value is written `500` — accept a
+  // number too, so a numeric 500 can never be misread as a definite failure.
+  code: string | number | null;
   dialog: { title?: string | null; message?: string | null } | null;
   data: T | null;
+  // On idempotent operations: true = this reply REPLAYS a request Whish already
+  // processed (it was not run again).
+  retrieved?: boolean | null;
+}
+
+/**
+ * Text Whish can store. Its database rejects emoji and other characters outside
+ * the Basic Multilingual Plane with `emoji.not_supported` ("strip unsupported
+ * characters, then retry" — v1.4.4 error reference). They are stripped before
+ * sending, so a decorative character in an invoice can never cost a company its
+ * customer's payment. Our own record keeps the original text.
+ */
+export function whishSafeText(text: string): string {
+  return text
+    .replace(/[\u{10000}-\u{10FFFF}]/gu, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
 }
 
 export interface PostPaymentInput {
@@ -123,10 +142,12 @@ export class WhishClient {
     if (!EXTERNAL_ID_RE.test(input.externalId)) {
       throw new ValidationError(`externalId must be a digit string: got '${input.externalId}'`);
     }
+    // `invoice` is optional at Whish; one that is empty once made safe is left out.
+    const invoice = whishSafeText(input.invoice);
     const data = await this.call<{ collectUrl: string }>('POST', '/payment/whish', {
       amount: input.amount,
       currency: input.currency,
-      invoice: input.invoice,
+      ...(invoice ? { invoice } : {}),
       externalId: input.externalId,
       successCallbackUrl: input.successCallbackUrl,
       failureCallbackUrl: input.failureCallbackUrl,
@@ -185,23 +206,29 @@ export class WhishClient {
     currency: string;
     externalId: string;
     refundReason: string;
-  }): Promise<void> {
+  }): Promise<{ alreadyProcessed: boolean }> {
     if (!EXTERNAL_ID_RE.test(input.externalId)) {
       throw new ValidationError(`externalId must be a digit string: got '${input.externalId}'`);
     }
+    // `refundReason` is optional at Whish; one that is empty once made safe is left out.
+    const refundReason = whishSafeText(input.refundReason);
     try {
-      await this.call<null>('POST', '/payment/whish/refund', {
+      const reply = await this.request<null>('POST', '/payment/whish/refund', {
         currency: input.currency,
         externalId: input.externalId,
-        refundReason: input.refundReason,
+        ...(refundReason ? { refundReason } : {}),
       });
+      // `retrieved: true` = Whish had already processed this refund and replayed
+      // its result (a duplicate) — the payer was not paid a second time.
+      return { alreadyProcessed: reply.retrieved === true };
     } catch (err) {
       // An `auth.*` refusal here does NOT mean bad credentials — the same
       // channel/secret just answered the status check that runs before every
-      // refund. Whish is refusing REFUNDS for this account (seen on the sandbox
-      // as `auth.error` "An error has occurred, please try again later."):
-      // refunds not enabled for the merchant, or the server's IP not allowed.
-      // Say that, instead of the generic "invalid or expired credentials".
+      // refund. Whish documents the cause (v1.4.4, "IP whitelisting"): the
+      // Refund endpoint only accepts calls from server IPs Whish has registered
+      // for the account, per environment; until then refunds are rejected (the
+      // sandbox answers `auth.error` "An error has occurred, please try again
+      // later."). Say that, instead of the generic "invalid credentials".
       const code = err instanceof WhishError ? err.details?.code : undefined;
       if (
         err instanceof WhishError &&
@@ -210,9 +237,9 @@ export class WhishClient {
         code.startsWith('auth.')
       ) {
         throw new WhishError(
-          `Whish refused the refund as not authorized for the platform's Whish account ` +
-            `(Whish code ${code}). Whish has to enable refunds for this account (and may need ` +
-            `to allow our server's IP). Nothing was refunded.`,
+          `Whish refused the refund as not authorized (Whish code ${code}). Whish only accepts ` +
+            `refunds from server IPs it has registered for our account — ask Whish to allowlist ` +
+            `this server's public IP for this environment. Nothing was refunded.`,
           err.details,
           err.upstreamResponse,
         );
@@ -249,7 +276,17 @@ export class WhishClient {
     };
   }
 
+  /** A Whish call, unwrapped to its `data`. */
   private async call<T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> {
+    return (await this.request<T>(method, path, body)).data as T;
+  }
+
+  /** A Whish call, returning the whole success envelope (for `retrieved`). */
+  private async request<T>(
+    method: 'GET' | 'POST',
+    path: string,
+    body?: unknown,
+  ): Promise<WhishEnvelope<T>> {
     if (!this.isConfigured()) {
       throw new ValidationError('Whish is not configured (missing WHISH_CHANNEL / WHISH_SECRET)');
     }
@@ -296,11 +333,18 @@ export class WhishClient {
     try {
       json = (await res.json()) as WhishEnvelope<T>;
     } catch {
-      throw new WhishError(`Whish returned a non-JSON response (HTTP ${res.status})`, { path });
+      // v1.4.4: a callback or redirect URL that is localhost / not publicly
+      // reachable is rejected with HTTP 403 and an HTML page, not the envelope.
+      throw new WhishError(
+        res.status === 403
+          ? 'Whish refused the request (HTTP 403). For a payment link this means a callback or redirect URL is not publicly reachable (localhost or a private host).'
+          : `Whish returned a non-JSON response (HTTP ${res.status})`,
+        { path, httpStatus: res.status },
+      );
     }
 
     if (!res.ok || !json.status) {
-      const code = json.code ?? undefined;
+      const code = json.code != null ? String(json.code) : undefined;
       const upstreamMessage =
         json.dialog?.message ?? code ?? `Whish call failed (HTTP ${res.status})`;
       // v1.4.4: `status:false` + `code:"500"` is PENDING, not failed — "the call
@@ -314,7 +358,7 @@ export class WhishClient {
           json,
         );
       }
-      this.logger.warn(`Whish ${path} failed: code=${json.code} msg=${upstreamMessage}`);
+      this.logger.warn(`Whish ${path} failed: code=${code} msg=${upstreamMessage}`);
       // Whish reports invalid/expired API credentials as a consumer-facing
       // "Please sign in again. You have been signed out." dialog. Relaying that
       // verbatim makes a platform misconfiguration look like the company user's
@@ -335,6 +379,6 @@ export class WhishClient {
       );
     }
 
-    return json.data as T;
+    return json;
   }
 }

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { WhishClient, WhishError, WhishIndeterminateError } from './whish.client';
+import { WhishClient, WhishError, WhishIndeterminateError, whishSafeText } from './whish.client';
 import { ValidationError } from '../../common/errors/domain.error';
 
 // Contract tests for the Whish Pay envelope, pinned against Whish Pay v1.4.4.
@@ -107,6 +107,13 @@ describe('WhishClient envelope handling', () => {
       // Cloudflare replaces an origin 502 with its own page and the caller would
       // never see this JSON.
       expect((err as WhishError).httpStatus).toBe(503);
+    });
+
+    // The docs type `code` as a String but write the special value as `500`.
+    it('classifies a NUMERIC code 500 as INDETERMINATE too', async () => {
+      mockWhish(200, { ...fail('x'), code: 500 });
+      const err = await client.postPayment(payment).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(WhishIndeterminateError);
     });
 
     it('classifies an HTTP 5xx as INDETERMINATE even when the body is not JSON', async () => {
@@ -240,7 +247,7 @@ describe('WhishClient envelope handling', () => {
     it('sends the documented body to the refund endpoint', async () => {
       // The documented success reply: data is null, plus the additive fields.
       mockWhish(200, ok(null));
-      await expect(client.refund(refund)).resolves.toBeUndefined();
+      await expect(client.refund(refund)).resolves.toEqual({ alreadyProcessed: false });
       expect(lastUrl).toBe(`${BASE}/payment/whish/refund`);
       expect(lastMethod).toBe('POST');
       expect(lastBody).toEqual({
@@ -251,12 +258,29 @@ describe('WhishClient envelope handling', () => {
       expect(typeof lastBody?.externalId).toBe('string');
     });
 
-    it('an auth.* refusal is explained as refunds not being enabled — not "invalid credentials"', async () => {
+    // v1.4.4 "Already processed": a duplicate refund replays as status:true with
+    // `retrieved: true` — still a success, and the payer is not paid twice.
+    it('reports a refund Whish had already processed (retrieved: true)', async () => {
+      mockWhish(200, { ...ok(null), retrieved: true });
+      await expect(client.refund(refund)).resolves.toEqual({ alreadyProcessed: true });
+    });
+
+    it('strips characters Whish cannot store from the reason, and omits an empty one', async () => {
+      mockWhish(200, ok(null));
+      await client.refund({ ...refund, refundReason: 'Customer cancelled 🎉' });
+      expect(lastBody?.refundReason).toBe('Customer cancelled');
+      await client.refund({ ...refund, refundReason: '🎉🎉' });
+      expect(lastBody).not.toHaveProperty('refundReason'); // optional at Whish
+    });
+
+    // v1.4.4 "IP whitelisting": refunds are only accepted from registered IPs.
+    it('an auth.* refusal is explained as our IP not being allowlisted — not "invalid credentials"', async () => {
       mockWhish(200, fail('auth.error', 'An error has occurred, please try again later.'));
       const err = (await client.refund(refund).catch((e: unknown) => e)) as WhishError;
       expect(err).toBeInstanceOf(WhishError);
       expect(err).not.toBeInstanceOf(WhishIndeterminateError);
       expect(err.message).toMatch(/refused the refund as not authorized/i);
+      expect(err.message).toMatch(/allowlist this server's public IP/i);
       expect(err.message).not.toMatch(/invalid or expired credentials/i);
       expect(err.details?.code).toBe('auth.error');
       expect(err.httpStatus).toBe(503);
@@ -289,6 +313,39 @@ describe('WhishClient envelope handling', () => {
         ValidationError,
       );
       expect(fetchSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  // v1.4.4 error reference: `emoji.not_supported` — "Payload contained
+  // characters the database rejects (for example emoji). Strip unsupported
+  // characters, then retry." Stripped before sending, so an emoji in an invoice
+  // never costs a company its customer's payment.
+  describe('text Whish cannot store', () => {
+    it('strips emoji and other non-BMP characters, keeping every script Whish accepts', () => {
+      expect(whishSafeText('Order #12 🎉 paid')).toBe('Order #12 paid');
+      expect(whishSafeText('طلب رقم ١٢ ✅')).toBe('طلب رقم ١٢ ✅'); // Arabic + BMP symbols stay
+      expect(whishSafeText('  MT5 5000123 • OWM-E6  ')).toBe('MT5 5000123 • OWM-E6');
+      expect(whishSafeText('🚀')).toBe('');
+    });
+
+    it('sends the invoice made safe, and leaves an empty one out (it is optional)', async () => {
+      mockWhish(200, ok({ collectUrl: 'https://whish.money/collect/abc' }));
+      await client.postPayment({ ...payment, invoice: 'Deposit 💸 #88' });
+      expect(lastBody?.invoice).toBe('Deposit #88');
+      await client.postPayment({ ...payment, invoice: '💸' });
+      expect(lastBody).not.toHaveProperty('invoice');
+    });
+  });
+
+  // v1.4.4: a non-public callback/redirect URL is refused with HTTP 403 and an
+  // HTML page, not the envelope.
+  describe('HTTP 403 with an HTML body', () => {
+    it('is a definite failure that says what Whish means by it', async () => {
+      mockWhish(403, '<html>Forbidden</html>', false);
+      const err = (await client.postPayment(payment).catch((e: unknown) => e)) as WhishError;
+      expect(err).toBeInstanceOf(WhishError);
+      expect(err).not.toBeInstanceOf(WhishIndeterminateError);
+      expect(err.message).toMatch(/not publicly reachable/i);
     });
   });
 

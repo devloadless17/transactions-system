@@ -58,8 +58,9 @@ const RECONCILE_MIN_AGE_MS = 60_000; // don't poll links younger than this
 const TRANSIENT_SETTLE_PARK_AFTER = 10;
 const EXPIRE_AGE_MS = 24 * 3600_000; // give up (EXPIRED) after this
 // Max pending links polled per reconciliation tick — a safety bound on Whish API
-// calls per minute. Whish never pushes a failure (only a success callback), so
-// polling is the ONLY way failed/abandoned links reach the CRM live. Which links
+// calls per minute. Whish calls back per ATTEMPT — a failure callback means one
+// attempt failed while the link stays payable — and never when a link finally
+// expires, so polling is the ONLY way failed/abandoned links reach the CRM live. Which links
 // are polled is decided by their schedule (next_poll_at, see nextPollDelayMs):
 // the earliest-due first, so a backlog can delay a link but never starve it.
 const RECONCILE_MAX_PER_TICK = 250;
@@ -798,8 +799,9 @@ export class WhishPaymentsService {
     // fee on a refund. Best effort: a failed read never blocks the refund.
     const request = { currency, externalId, refundReason: args.reason };
     const balanceBefore = await this.readBalanceForLog(currency);
+    let alreadyProcessed = false;
     try {
-      await this.whish.refund(request);
+      ({ alreadyProcessed } = await this.whish.refund(request));
     } catch (err) {
       // After a failed or unanswered call the balance also shows whether the
       // money left anyway.
@@ -810,7 +812,8 @@ export class WhishPaymentsService {
       return this.resolveUnconfirmedRefund(payment, args.actorId, err);
     }
     this.logger.log(
-      `Whish refunded payment ${externalId} (${payment.amount.toString()} ${currency}, company ${payment.companyId}) — booking it.`,
+      `Whish refunded payment ${externalId} (${payment.amount.toString()} ${currency}, company ${payment.companyId})` +
+        `${alreadyProcessed ? ' — a replay: Whish had already processed this refund' : ''} — booking it.`,
     );
 
     // 4. BOOK — straight away; the after-balance for the log is read once the
@@ -819,10 +822,13 @@ export class WhishPaymentsService {
     try {
       return await this.bookConfirmedRefund(payment, args.actorId);
     } finally {
-      this.logRefund(payment, request, null, {
-        before: balanceBefore,
-        after: await this.readBalanceForLog(currency),
-      });
+      this.logRefund(
+        payment,
+        request,
+        null,
+        { before: balanceBefore, after: await this.readBalanceForLog(currency) },
+        alreadyProcessed,
+      );
     }
   }
 
@@ -993,6 +999,8 @@ export class WhishPaymentsService {
     request: { currency: string; externalId: string; refundReason: string },
     err: unknown,
     balance: { before: string | null; after: string | null },
+    // Whish's `retrieved` flag: it had already processed this refund (a replay).
+    alreadyProcessed = false,
   ): void {
     const details = err instanceof WhishError ? err.details : undefined;
     // What left the platform's Whish account across the call (another payment
@@ -1026,7 +1034,7 @@ export class WhishPaymentsService {
             indeterminate: err instanceof WhishIndeterminateError,
             platformBalance,
           }
-        : { status: true, platformBalance },
+        : { status: true, retrieved: alreadyProcessed, platformBalance },
     });
   }
 

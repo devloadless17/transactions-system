@@ -203,6 +203,20 @@ We are the _outbound_ caller (the inverse of source-key ingest).
   it (after 2 minutes) if Whish still reports it paid. Every refund call is in the
   super-admin transaction log (`WHISH_REFUND`). Contract:
   `Whish/whish-pay.openapi.json`.
+  **Whish only accepts refund calls from server IPs it has registered for the
+  account, per environment** (v1.4.4, "IP whitelisting") — until Whish allowlists
+  our egress IP for Sandbox and Production, every refund is refused (the sandbox
+  answers `auth.error`), nothing is refunded, and the admin is told why. A
+  duplicate refund is a success replay (`retrieved: true`), never a second payout.
+- **Whish's reference** — the full v1.4.4 documentation is captured in
+  `Whish/whish-pay-docs-v1.4.4.txt` (the site is often blocked from the office).
+  From it: sandbox test payer **phone `96170123456`, OTP `111111`** (any other OTP
+  is a failed attempt and the link stays payable); callbacks come from fixed IPs —
+  production `18.213.222.45`, `52.21.189.51`, `52.21.55.64`, sandbox `52.4.4.47` —
+  to allowlist only if inbound traffic is ever restricted (e.g. a WAF rule);
+  text is sent with characters Whish's database rejects (emoji) stripped, since
+  it refuses them with `emoji.not_supported`; and `User-Agent` must identify OUR
+  app (`AppName/version (website; contact-email)`), not Whish's.
 - **CRM integration** — server-to-server via a **company API key**
   (`Authorization: Bearer tsk_…`, minted under Settings → API keys):
   `POST/GET /v1/integrations/whish/payments[/:ref]`. Optional signed webhook

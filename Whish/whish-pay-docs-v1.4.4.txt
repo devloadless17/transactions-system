@@ -1,0 +1,499 @@
+Whish Pay — partner documentation, v1.4.4 (text capture)
+
+Source:   https://whish-partners.pages.dev/whish-pay-9z366gc6922w/
+Captured: 2026-10-14 (plain-text extract of the whole page; tables flattened with " | ")
+Why here: the office firewall often blocks that site, and web search does not index
+          it. This is the reference the Whish Pay integration is checked against,
+          next to whish-pay.openapi.json and the Postman collection in this folder.
+          Re-capture it when Whish publishes a new version.
+
+# Whish Pay
+Collect payments through the Whish Pay payment page, hosted by Whish. Track status and issue refunds.
+REST over HTTPS with JSON requests and responses. Intended for authorized distributors.
+v1.4.4Platform: WhishJSON over HTTPSAuthor: TecFrac
+
+Authentication
+channel + secret + websiteUrl
+
+Production URL
+https://api.whish.money/itel-service/api
+
+Sandbox URL
+https://partner.api.sbx.whish.money/itel-service/api
+
+Currencies
+USD · LBP
+
+## Integration flow
+
+1
+Create a payment. Call Create a payment with the amount, currency, your externalId, and your callback URLs. You receive a collectUrl.
+
+2
+Redirect the payer. Send the customer to the collectUrl. On the payment page they authorize the payment from their Whish balance and confirm with a one-time code (OTP) sent as an in-app notification in the Whish app. Your integration never sends or verifies the OTP.
+
+3
+Receive the callback. When the payment settles, Whish calls your successCallbackUrl or failureCallbackUrl by GET.
+
+4
+Confirm before fulfilling. Call Get payment status to verify the outcome, then release the order. Poll it as a fallback if no callback arrived.
+
+5
+Refund if needed. Use Refund a payment with the original externalId.
+
+A success callback settles the payment; a failure callback does not. After a failure callback the customer can still pay the same link, so confirm with Get payment status before acting on it. See Callbacks.
+
+## Authentication & headers
+
+Every request must include the HTTP headers below, plus Content-Type: application/json on requests that send a body.
+
+ | Header | Description
+ | channel | Value provided by Whish.
+ | secret | Value provided by Whish.
+ | websiteUrl | Site URL or app name. Use the exact value Whish issued with your keys.
+ | User-Agent | Identifies your app. Use your own details, not Whish's. Format: AppName/version (website; contact-email). Example: AcmeStore/2.1 (https://acme.example; dev@acme.example).
+
+Keep your credentials secret. Send them only over HTTPS, store them in a secrets manager, and keep them out of client-side code, logs, and version control. Rotate them at once if you suspect a leak. See Securing your integration.
+
+## Environments
+
+ | Environment | Base URL | Purpose
+ | Sandbox | https://partner.api.sbx.whish.money/itel-service/api | Testing, QA, integration verification.
+ | Production | https://api.whish.money/itel-service/api | Live environment for real transactions.
+The cURL examples on this page target Sandbox. To go live, swap the host for the Production base URL above.
+
+## Response format
+
+All endpoints return HTTP 200 with Content-Type: application/json and a shared envelope. Always branch on the status and code fields in the body, never on the HTTP status code.
+
+ | Field | Description
+ | 
+status
+Boolean | true when the call was accepted and processed. false when it was not; read code for the reason.
+ | 
+code
+String | null whenever status is true. When status is false, an operation-specific error code; the value 500 is special (see below). This field only ever reports errors, never a transaction's progress.
+ | 
+dialog
+Object | Optional title / message to display to the user.
+ | 
+data
+Object | Response payload for the operation; shape varies per endpoint (and may be a scalar or null for some operations).
+ | 
+actions / extra
+Object | Reserved; typically null.
+ | 
+retrieved
+Boolean | Present on idempotent operations. true means this response replays an already-processed request (the original was not run again); false or absent means it ran now.
+The two fields move together, so read them as a pair. There are only these combinations:
+
+ | status | code | Treat as
+ | true | null | Succeeded. Process data.
+ | false | 500 | Pending. The call did not return an outcome, so the result is unknown rather than failed. Reconcile as described below; do not mark it failed.
+ | false | any other code | Failed; read code (and any dialog message) to see why.
+A status: true never carries a code, and a code never reports progress. An operation with a lifecycle of its own (created, paid, refunded) reports it in a separate field inside data: see that endpoint's response fields.
+
+## Get account balance
+
+Returns the real balance of the account. Pass currency as a query-string parameter on the request URL to choose which balance to return.
+GET/payment/account/balance?currency={currency}
+
+ | Parameter | Description
+ | 
+currency
+StringRequired | Currency to return the balance for: USD or LBP. Sent in the query string, for example ?currency=USD.
+
+Each channel supports two currencies (USD and LBP). Use currency to pick which balance to return.
+
+Request
+
+cURL · Sandbox
+curl 'https://partner.api.sbx.whish.money/itel-service/api/payment/account/balance?currency=USD' \
+ -H 'channel: YOUR_CHANNEL' \
+ -H 'secret: YOUR_SECRET' \
+ -H 'websiteUrl: https://yoursite.com' \
+ -H 'User-Agent: AcmeStore/2.1 (https://acme.example; dev@acme.example)'
+
+Response
+
+application/json (USD)
+{
+ "status": true,
+ "code": null,
+ "dialog": null,
+ "actions": null,
+ "extra": null,
+ "data": {
+ "balance": 10439.0
+ }
+}
+
+## Create a payment
+
+Returns a collectUrl that opens the Whish Pay payment page, hosted by Whish, where the payer completes the payment from their Whish balance.
+POST/payment/whish
+
+### Request body
+
+ | Field | Description
+ | 
+amount
+StringRequired | Amount to be paid, sent as a JSON string (double-quoted). USD allows up to 2 decimals (minimum 1.00); LBP takes no decimals (minimum 1000).
+ | 
+currency
+StringRequired | Currency: USD or LBP.
+ | 
+invoice
+StringOptional | Description/details of the payment.
+ | 
+externalId
+StringRequired | Unique per request; the transaction reference.
+ | 
+successCallbackUrl
+StringRequired | GET callback URL Whish calls when a payment succeeds. This is your primary confirmation signal, so it is required.
+ | 
+failureCallbackUrl
+StringRequired | GET callback URL Whish calls when a payment attempt fails. The link stays payable, so this is not a settled outcome.
+ | 
+successRedirectUrl
+StringRequired | Where the payer's browser is sent after a successful payment.
+ | 
+failureRedirectUrl
+StringRequired | Where the payer's browser is sent after a failed payment.
+
+### Response fields
+
+ | Field | Description
+ | 
+collectUrl
+String | URL of the Whish Pay payment page, hosted by Whish. Redirect the payer here to complete payment from their Whish balance.
+
+Callback and redirect URLs must be publicly reachable: localhost, or any loopback or non-public host, in any of the four URLs above is rejected with HTTP 403 Forbidden. The response is an HTML page, not the JSON envelope.
+
+status: true means a collectUrl was generated, not that the customer paid. The outcome arrives at your callback URLs and from Get payment status.
+
+Whish calls the callback URLs via GET on each payment attempt:
+successCallbackUrl: the link is paid.
+failureCallbackUrl: an attempt failed and the link stays open.
+The callback is unauthenticated: confirm with Get payment status before you fulfil the order. Query params you append (order reference, timestamp) are forwarded unchanged. Redirect URLs only send the browser onward.
+
+In sandbox the payer receives no OTP in the Whish app, so the payment page is driven with fixed test values instead. See Sandbox testing.
+
+Request
+
+JSONcURL
+{
+ "amount": "1",
+ "currency": "USD",
+ "invoice": "Order #1",
+ "externalId": "b7e2c9f4-5d1a-4c3e-9a86-2f0d7e41b3a5",
+ "successCallbackUrl": "https://merchant.example/api/payment/success",
+ "failureCallbackUrl": "https://merchant.example/api/payment/failure",
+ "successRedirectUrl": "https://merchant.example/thank-you",
+ "failureRedirectUrl": "https://merchant.example/payment-error"
+}
+
+JSONcURL
+curl -X POST 'https://partner.api.sbx.whish.money/itel-service/api/payment/whish' \
+ -H 'channel: YOUR_CHANNEL' \
+ -H 'secret: YOUR_SECRET' \
+ -H 'websiteUrl: https://yoursite.com' \
+ -H 'User-Agent: AcmeStore/2.1 (https://acme.example; dev@acme.example)' \
+ -H 'Content-Type: application/json' \
+ -d '{
+ "amount": "1",
+ "currency": "USD",
+ "invoice": "Order #1",
+ "externalId": "b7e2c9f4-5d1a-4c3e-9a86-2f0d7e41b3a5",
+ "successCallbackUrl": "https://merchant.example/api/payment/success",
+ "failureCallbackUrl": "https://merchant.example/api/payment/failure",
+ "successRedirectUrl": "https://merchant.example/thank-you",
+ "failureRedirectUrl": "https://merchant.example/payment-error"
+}'
+
+Response
+
+Success
+{
+ "status": true,
+ "code": null,
+ "dialog": null,
+ "extra": null,
+ "data": {
+ "collectUrl": "https://whish.money/pay/8nQS2mL"
+ }
+}
+
+## Get payment status
+
+Returns the collect status of a Whish Pay transaction. Use it to reconcile a missing callback and to confirm a payment finally failed: after a failure callback the status stays pending while the link is still payable.
+POST/payment/collect/status
+
+### Request body
+
+ | Field | Description
+ | 
+currency
+StringRequired | Currency: USD or LBP.
+ | 
+externalId
+StringRequired | The externalId you sent when creating the payment.
+
+### Response fields
+
+ | Field | Description
+ | 
+collectStatus
+String | Payment status. pending: still payable, even after a failed attempt, so not a failure. success: paid; the link is now expired. failed: expired unpaid. refunded: a successful payment was refunded. unknown: final state undetermined. Only success and failed are settled.
+ | 
+payerPhoneNumber
+String | Phone number that performed the payment.
+
+Request
+
+JSONcURL
+{
+ "currency": "USD",
+ "externalId": "b7e2c9f4-5d1a-4c3e-9a86-2f0d7e41b3a5"
+}
+
+JSONcURL
+curl -X POST 'https://partner.api.sbx.whish.money/itel-service/api/payment/collect/status' \
+ -H 'channel: YOUR_CHANNEL' \
+ -H 'secret: YOUR_SECRET' \
+ -H 'websiteUrl: https://yoursite.com' \
+ -H 'User-Agent: AcmeStore/2.1 (https://acme.example; dev@acme.example)' \
+ -H 'Content-Type: application/json' \
+ -d '{ "currency": "USD", "externalId": "b7e2c9f4-5d1a-4c3e-9a86-2f0d7e41b3a5" }'
+
+Response
+
+Success
+{
+ "status": true,
+ "code": null,
+ "dialog": null,
+ "extra": null,
+ "data": {
+ "collectStatus": "success",
+ "payerPhoneNumber": "96170123456"
+ }
+}
+
+## Refund a payment
+
+Initiates a refund for a Whish Pay transaction.
+
+Requires IP whitelisting. Refund only accepts calls from server IPs that Whish has registered for your account. Send Whish your public egress IP(s) for Sandbox and Production; refund calls from other IPs are rejected. See IP whitelisting.
+POST/payment/whish/refund
+
+### Request body
+
+ | Field | Description
+ | 
+currency
+StringRequired | Currency: USD or LBP.
+ | 
+externalId
+StringRequired | The externalId of the original payment to refund.
+ | 
+refundReason
+StringOptional | Reason for the refund.
+
+### Response fields
+
+ | Field | Description
+ | 
+retrieved
+Boolean | true if this refund was already processed before (duplicate).
+
+Request
+
+JSONcURL
+{
+ "currency": "USD",
+ "externalId": "b7e2c9f4-5d1a-4c3e-9a86-2f0d7e41b3a5",
+ "refundReason": "Customer canceled order"
+}
+
+JSONcURL
+curl -X POST 'https://partner.api.sbx.whish.money/itel-service/api/payment/whish/refund' \
+ -H 'channel: YOUR_CHANNEL' \
+ -H 'secret: YOUR_SECRET' \
+ -H 'websiteUrl: https://yoursite.com' \
+ -H 'User-Agent: AcmeStore/2.1 (https://acme.example; dev@acme.example)' \
+ -H 'Content-Type: application/json' \
+ -d '{ "currency": "USD", "externalId": "b7e2c9f4-5d1a-4c3e-9a86-2f0d7e41b3a5", "refundReason": "Customer canceled order" }'
+
+Response
+
+SuccessAlready processedError
+{
+ "status": true,
+ "code": null,
+ "dialog": null,
+ "actions": null,
+ "extra": null,
+ "retrieved": false,
+ "data": null
+}
+
+SuccessAlready processedError
+duplicate externalId
+{
+ "status": true,
+ "code": null,
+ "dialog": null,
+ "actions": null,
+ "extra": null,
+ "retrieved": true,
+ "data": null
+}
+
+SuccessAlready processedError
+{
+ "status": false,
+ "code": "external_id.not_exists",
+ "dialog": null,
+ "actions": null,
+ "extra": null,
+ "data": null
+}
+
+## Sandbox testing
+
+Sandbox does not deliver the OTP that the payer would normally receive in the Whish app. Drive the payment page with the fixed values below instead.
+
+### Test data
+
+ | Field on the payment page | Test value
+ | Phone | 96170123456
+ | OTP | 111111
+
+### Test cases
+
+ | Test case | How to trigger | Expected outcome
+ | Successful payment | Pay with the test phone and OTP above. | collectStatus becomes success.
+ | Failed attempt | Enter any OTP other than 111111. | The failure callback fires, and collectStatus stays pending because the link is still payable. Retry on the same link to see it then succeed.
+ | Expiry | Leave the link unpaid until it expires. | collectStatus settles as failed.
+ | Refund | Refund a payment that succeeded and has not been refunded yet. | The refund is accepted. A payment that never succeeded, or was already refunded, cannot be refunded.
+
+Sandbox behaves exactly like production here: a failed attempt does not end the payment, and the status only settles on a successful payment or on expiry. See Callbacks before you code against a failure callback.
+
+## Callbacks
+
+Callbacks tell you the outcome of a payment attempt. Provide successCallbackUrl and failureCallbackUrl when you create the payment; Whish calls them when an attempt on the payment link succeeds or fails.
+
+A failure callback is not the end of the payment. The link stays payable, so the customer can try again and Get payment status keeps reporting pending. Treat it as this attempt failed, never this order failed, and do not cancel the order on it.
+
+ | What happens | Payment status
+ | An attempt fails | pending: the link stays payable
+ | A payment succeeds | success: the link expires at once
+ | The link expires unpaid | failed
+Each callback is an HTTP GET with no request body.
+You get one callback per attempt, so a link paid on the second try produces a failure callback followed by a success callback.
+Whish adds no identifying parameters of its own, so include your own reference in the callback URL (for example ?externalId=b7e2c9f4-5d1a-4c3e-9a86-2f0d7e41b3a5&order=A-1234); Whish preserves and forwards them unchanged.
+Because the callback is an unauthenticated GET, treat it as a signal to verify, not as proof. Confirm the outcome with Get payment status before releasing the order.
+Respond with HTTP 200 to acknowledge receipt.
+A missing callback (for example a transient network failure) should be reconciled by polling Get payment status, not treated as a failure.
+Success callback URL
+
+GET
+https://merchant.example/api/payment/success?externalId=b7e2c9f4-5d1a-4c3e-9a86-2f0d7e41b3a5&order=A-1234
+
+Whish calls your callback URLs from a fixed set of source IPs. If your callback endpoint restricts inbound traffic, allowlist them; see IP whitelisting for the current list.
+
+## IP whitelisting
+
+IP allowlisting applies to Whish Pay in two directions. Set up whichever your integration uses.
+
+### Calling restricted endpoints (you → Whish)
+The Refund endpoint only accepts calls from IPs registered for your account. Send Whish the public egress IP(s) your servers use in Sandbox and Production; until Whish allowlists them, refund requests from those IPs are rejected.
+
+### Receiving callbacks (Whish → you)
+Whish calls your successCallbackUrl and failureCallbackUrl from the fixed source IPs below. If your endpoint restricts inbound traffic, allowlist every address for the environment you use.
+
+ | Environment | Whish callback source IPs
+ | Production | 18.213.222.45
+52.21.189.51
+52.21.55.64
+ | Sandbox | 52.4.4.47
+
+## Error codes
+
+Every code below is returned with status: false. Match the string exactly and branch on it, never on the dialog message text, which is written for display and can change.
+Re-sending an already-used externalId never re-executes the transaction: the recorded result is replayed verbatim, including the original error code (safe retry, no double charge).
+
+### Whish Pay codes
+
+ | Code | Meaning | Recommended handling
+ | currency.not_supported | Only LBP and USD are accepted on this route. | Send a supported currency.
+ | collect.wrong_denomination | Account has no collect / Whish Pay denomination configured. | Contact Whish (account setup).
+ | collect.wrong_phone_format | The customer phone number could not be normalized. | Fix the phone number format (E.164).
+ | collect.wrong_email_format | The email field is present but invalid. | Fix or omit the email.
+ | refresh.denominations | Service denomination not available or configured server-side. | Retry later; contact Whish if persistent.
+ | credit_card_payment.account_verification_required | Merchant account is not KYC or financially verified for this operation. | Complete account verification with Whish.
+ | whish_pay.missing_pricing_id | No pricing configured for the merchant's Whish Pay profile. | Contact Whish.
+ | whish_pay.code_generation_failed | Payment-code generation for the payment URL failed. | Retry; escalate if persistent.
+ | purchase.confirm | The quoted price changed since the request was prepared (new price in extra.price). | Re-quote and resubmit with the new price.
+ | fail | Pricing or amount computation failed (reason in the dialog). | Check the dialog message; verify amount and currency.
+ | external_id.not_exists | The externalId given to Refund does not exist. | Refund only an externalId from a real payment.
+ | itel.unknown_error | Unhandled exception. | Retry with backoff.
+
+### Common codes (all payment & billing endpoints)
+Authentication, session, and request validation:
+
+ | Code | Meaning | Recommended handling
+ | auth.session_not_exist | Missing or invalid session token. | Re-authenticate, then retry.
+ | auth.session_expired | Session token expired. | Re-authenticate, then retry.
+ | 400 | Required parameters or headers are missing, or the body failed field-level validation. | Fix the request payload; do not retry unchanged.
+ | timestamp.invalid | Request timestamp is outside the allowed clock-skew window. | Sync the client clock (NTP), then retry.
+ | request.invalid / device.invalid_os | Device or channel-level validation rejected the request. | Verify your integration headers; contact Whish if persistent.
+ | 500 | Unhandled server-side exception. | Retry with backoff using the same externalId to avoid double execution; report if persistent.
+ | itel.unknown_error | Generic fallback for unexpected errors or server misconfiguration. | Retry with backoff; escalate if persistent.
+ | emoji.not_supported | Payload contained characters the database rejects (for example emoji). | Strip unsupported characters, then retry.
+ | deprecation | The endpoint version is deprecated. | Migrate to the current endpoint version.
+Account, balance, and limits (any debiting endpoint):
+
+ | Code | Meaning | Recommended handling
+ | sales.account_balance_insufficient | Account balance cannot cover the amount. | Top up the account, then retry with a new externalId.
+ | sales.account_balance_insufficient_no_balance | Same insufficient-balance condition; variant returned on third-party sale routes. | Top up, then retry with a new externalId.
+ | account.terminated | The calling account has been terminated. | Contact Whish (not recoverable client-side).
+ | account.dealer.terminated | The parent dealer account is terminated. | Contact Whish.
+ | sales.denomination_not_active | The requested service/denomination is disabled. | Verify the denomination id; retry later or contact Whish.
+ | sales.schema_not_active | Pricing schema not configured/active for this account and service. | Contact Whish (configuration issue).
+ | sales.exceeded_daily_limit | Daily amount/count limit reached. | Wait for the next day, or request a limit increase.
+ | sales.exceeded_monthly_limit | Monthly limit reached. | Wait, or request a limit increase.
+ | sales.lost_transactions_exist | Earlier transaction results were not acknowledged. | Query the status of prior transactions (replay their externalIds) before submitting new ones.
+ | account.topup.check.condition.fail (surfaced as transfer.failed.title) | The receiving account would exceed its maximum allowed wallet balance. | Final failure; the receiver must reduce balance or verify their account.
+ | currency.not_supported / invalid_currency | The currency is not enabled or recognized for this route (typically only LBP and USD). | Send a supported currency.
+ | fatal | Internal failure while registering the externalId (defensive path; not expected in practice). | Retry with the same externalId; escalate if persistent.
+
+## Version history
+
+Notable changes, newest first.
+
+ | Version | Date | Change
+ | v1.4.4 | 2026-07-15 | Documentation: error-code reference added; externalId documented as a String; localhost callback/redirect URLs rejected with HTTP 403; sandbox base URL updated.
+ | v1.4.3 | 2026-02-11 | Refund API added (POST /payment/whish/refund).
+ | v1.4.2 | 2026-02-09 | Get Rate removed with minor adjustment.
+ | v1.4.1 | 2026-02-03 | Get Balance now supports LBP and USD.
+ | v1.4 | 2025-12-23 | User-Agent requirement and additional field descriptions and notes.
+ | v1.3.1 | 2025-12-11 | Production base URL update.
+ | v1.3 | 2025-10-03 | Sandbox base URL update.
+ | v1.2 | 2025-09-17 | Get Status returns payerPhoneNumber in the response.
+ | v1.1 | 2025-05-12 | Test cases and request content-type requirements added.
+ | v1.0 | 2022-11-08 | Initial release.
+
+## Postman & tools
+ 
+Call every endpoint from Postman, or load the OpenAPI spec into your own tools.
+ 
+Postman collectionEvery endpoint, ready to sendOpenAPI 3.1 specFor SDKs and request validation
+EnvironmentsSandbox · Production
+ 
+In Postman: import the collection and an environment, choose Sandbox or Production (it sets {{baseUrl}}), then fill in your credentials there or as collection variables.
+
+Whish Pay · v1.4.4 · Author: TecFrac
+ 
+Error codes are the exact values returned by the API; match on them precisely, including any unusual spelling. For credentials, Production access, or clarification, see Getting started or email serviceconfiguration@whish.money.
