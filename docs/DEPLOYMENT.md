@@ -253,10 +253,14 @@ Read the entry for every release you are about to roll back across. Newest first
   (`scripts/healthcheck.sh` → `/home/deploy/healthcheck.sh`; it accepts
   `txn_api` and the colours). Otherwise its next run pages "txn_api missing".
 - The Caddyfile (both colours, `lb_policy first`, health-check marker) is loaded
-  by the deploy's Caddy reload, before the release. Staging needs it loaded
-  before its first blue/green deploy (Caddy is shared and only a prod deploy
-  ships its config): a manual reload — it routes to the current containers until
-  colours exist.
+  **by the release itself**, once the new colour runs, and only when the file
+  changed (`.caddyfile-loaded.sha256`). Never before: on this server Docker's DNS
+  takes ~10s to give up on a name that doesn't exist, and Caddy treats a newly
+  listed upstream as healthy until its first check — a reload naming a colour
+  that isn't running made requests wait seconds. Staging (Caddy is shared and
+  only prod ships its config) gets its blue/green block from a one-off manual
+  reload that changes **only** the staging block; prod's routing is untouched
+  until its own deploy.
 - Container names change: `txn_api` → `txn_api_blue` / `txn_api_green`
   (staging: `txn_api_staging_blue` / `_green`). Use `./release.sh prod status`.
 

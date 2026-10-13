@@ -331,20 +331,9 @@ jobs:
           echo "==> Migrations / RLS rotation / seed"
           docker compose -f docker-compose.prod.yml run --rm -T migrate </dev/null
 
-          # Caddy isn't recreated by `up -d` (its compose definition is unchanged),
-          # so the freshly-shipped Caddyfile won't load on its own. Reload it NOW —
-          # while the current web/api are still up — so the new config (incl. the
-          # zero-downtime upstream retry) is ACTIVE before we swap the containers
-          # below, making the swap itself seamless. Reload is graceful + atomic: an
-          # invalid Caddyfile is rejected and the running config is kept, so this can
-          # never break the live proxy.
-          echo "==> Reloading Caddy config"
-          # `</dev/null` is REQUIRED: like the migrate `run` above, a `docker compose
-          # exec` with no stdin redirect swallows the rest of THIS heredoc as its
-          # stdin — so `up -d` and everything below would silently never run (the
-          # deploy goes green but ships nothing). Keep the redirect.
-          docker compose -f docker-compose.prod.yml exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile </dev/null \
-            || echo "::warning::caddy reload failed — Caddy kept its previous config; verify the Caddyfile"
+          # The shipped Caddyfile is loaded by the release itself (release.sh), once
+          # the new API colour runs and only if the file changed — never before,
+          # when it could name a colour that isn't running yet.
 
           # Blue/green: the new API starts BESIDE the live one, takes traffic only
           # once Caddy has seen it healthy, then the old one drains — no request

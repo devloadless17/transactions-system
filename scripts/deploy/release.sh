@@ -56,10 +56,12 @@ case "$ENVIRONMENT" in
   prod)
     COMPOSE=(docker compose -f docker-compose.prod.yml)
     API=api API_CT=txn_api WEB=web WEB_CT=txn_web PG=postgres
+    OWNS_CADDY=yes # the shared Caddy's config ships with prod
     ;;
   staging)
     COMPOSE=(docker compose -p staging --env-file .env.staging -f docker-compose.staging.yml)
     API=api-staging API_CT=txn_api_staging WEB=web-staging WEB_CT=txn_web_staging PG=postgres-staging
+    OWNS_CADDY=no # never touches the shared Caddy (prod owns its config)
     ;;
   *) usage ;;
 esac
@@ -242,6 +244,22 @@ wait_target_healthy() {
     sleep 1
   done
 }
+# A shipped Caddyfile is loaded HERE, not before the release: by now the new
+# colour runs, so every name Caddy is told about resolves. (Docker's DNS takes
+# ~10s to give up on a name that doesn't exist; Caddy treats a newly listed
+# upstream as healthy until its first check, so a reload listing a colour that
+# isn't running made requests wait seconds.) Only when the file changed since
+# the last load — most releases don't reload Caddy at all.
+CADDY_STAMP=.caddyfile-loaded.sha256
+reload_caddy_if_changed() {
+  [ "$OWNS_CADDY" = yes ] || return 0
+  local sum
+  sum=$(sha256sum Caddyfile | cut -d' ' -f1)
+  [ "$sum" = "$(cat "$CADDY_STAMP" 2>/dev/null || true)" ] && return 0
+  log "Loading the new Caddyfile (graceful; an invalid one is refused and the running config kept)"
+  "${COMPOSE[@]}" exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile </dev/null || return 1
+  echo "$sum" >"$CADDY_STAMP"
+}
 # Is the target ready for traffic, as Caddy sees it? A release older than the
 # blue-green label can't say, so it gets Caddy's health interval with margin.
 caddy_ready() {
@@ -269,6 +287,8 @@ case "$MODE" in
     start_target
     wait_target_healthy \
       || target_failed "The new release never became healthy. Nothing was switched: the live API kept serving."
+    reload_caddy_if_changed \
+      || target_failed "Caddy refused the shipped Caddyfile (it kept its running config). Nothing was switched: the live API kept serving."
     caddy_ready \
       || target_failed "Caddy never saw the new release healthy (is the Caddyfile with the colour upstreams loaded?). Nothing was switched: the live API kept serving."
     serving "$TARGET_CT" || target_failed "The new release stopped answering. Nothing was switched."
@@ -283,6 +303,8 @@ case "$MODE" in
     start_target
     wait_target_healthy \
       || target_failed "The new release never became healthy. Nothing was switched: the live API kept serving."
+    reload_caddy_if_changed \
+      || target_failed "Caddy refused the shipped Caddyfile (it kept its running config). Nothing was switched: the live API kept serving."
     caddy_ready \
       || target_failed "Caddy never saw the new release healthy (is the Caddyfile with the colour upstreams loaded?). Nothing was switched: the live API kept serving."
     serving "$TARGET_CT" || target_failed "The new release stopped answering. Nothing was switched."
@@ -296,7 +318,7 @@ case "$MODE" in
     log "No overlap (the new release takes no job leases): the old API drains first, Caddy holds new requests meanwhile"
     for old in "${PREVIOUS[@]}"; do stop_ct "$old"; done
     start_target
-    if ! wait_target_healthy || ! caddy_ready; then
+    if ! wait_target_healthy || ! reload_caddy_if_changed || ! caddy_ready; then
       "${COMPOSE[@]}" logs --tail 80 "$(svc "$TARGET")" </dev/null || true
       docker stop -t 60 "$TARGET_CT" >/dev/null 2>&1 || true
       for old in "${PREVIOUS[@]}"; do docker start "$old" >/dev/null 2>&1 || true; done
