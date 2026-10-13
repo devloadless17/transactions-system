@@ -35,6 +35,7 @@ import { GlobalExceptionFilter } from './common/filters/global-exception.filter'
 import { ResponseEnvelopeInterceptor } from './common/interceptors/response-envelope.interceptor';
 import { AuditInterceptor } from './modules/audit/audit.interceptor';
 import { RedisThrottlerStorage } from './common/throttler/redis-throttler-storage';
+import { skipThrottle } from './common/throttler/skip-throttle';
 import type { Env } from './config/env.schema';
 
 @Module({
@@ -53,11 +54,11 @@ import type { Env } from './config/env.schema';
             limit: cfg.get('RATE_LIMIT_MAX', { infer: true }),
           },
         ],
-        // Escape hatch for the e2e suite ONLY: a serial run does dozens of real
-        // logins and would trip the strict per-IP login limit. Off by default —
-        // prod/staging never set THROTTLE_DISABLED, so the limiter is always live
-        // there. (Skips both the global and the per-route @Throttle limits.)
-        skipIf: () => process.env.THROTTLE_DISABLED === 'true',
+        // Never counted: internal health checks (Caddy routes by them — a 429
+        // there reads as "API down"), and everything under THROTTLE_DISABLED,
+        // the e2e suite's escape hatch, which prod/staging never set. (Skips
+        // both the global and the per-route @Throttle limits.) See skipThrottle.
+        skipIf: skipThrottle,
         // Shared across instances + restart-durable (the in-memory default
         // makes the login/refresh limits per-process — `limit × instances`).
         storage: new RedisThrottlerStorage(cfg.get('REDIS_URL', { infer: true })),

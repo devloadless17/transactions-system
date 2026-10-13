@@ -6,7 +6,12 @@ import { CompanyQueue } from './company-queue';
 // Postgres raises serialization_failure (40001) / deadlock_detected (40P01),
 // which Prisma surfaces as P2034. An aborted transaction commits nothing, so a
 // fresh re-run of the same closure is safe.
-const SERIALIZABLE_MAX_ATTEMPTS = 5;
+//
+// 8 attempts: the backoffs (10ms doubling, plus jitter) add up to over 1.2s.
+// One instance never races itself for a company (CompanyQueue), but at a
+// blue/green switch the old and the new API both write for ~200ms; 5 attempts
+// (≤ ~300ms) sometimes ran out under load, answering WRITE_CONFLICT.
+const SERIALIZABLE_MAX_ATTEMPTS = 8;
 const SERIALIZABLE_BASE_BACKOFF_MS = 10;
 
 function isRetryableTxError(err: unknown): boolean {
@@ -123,17 +128,29 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
    */
   async runAsAdmin<T>(
     fn: (tx: PrismaClient) => Promise<T>,
-    opts?: { timeout?: number },
+    opts?: {
+      timeout?: number;
+      /**
+       * RepeatableRead for a READ that must see one moment across several
+       * statements (the ledger vs wallet reconciliation): READ COMMITTED gives
+       * each statement its own snapshot, so a write landing between two of
+       * them looks like a discrepancy that never existed.
+       */
+      isolationLevel?: Prisma.TransactionIsolationLevel;
+    },
   ): Promise<T> {
     return this.$transaction(
       async (tx) => {
         await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on'`);
         return fn(tx as unknown as PrismaClient);
       },
-      // Heavy cross-tenant reads (e.g. the reconciliation full sweep over the whole
-      // ledger) pass an explicit timeout so they don't hit Prisma's 5s interactive
-      // -transaction default and abort at scale. Reads, so a long timeout is safe.
-      opts?.timeout ? { timeout: opts.timeout, maxWait: 5_000 } : undefined,
+      {
+        // Heavy cross-tenant reads (e.g. the reconciliation full sweep over the whole
+        // ledger) pass an explicit timeout so they don't hit Prisma's 5s interactive
+        // -transaction default and abort at scale. Reads, so a long timeout is safe.
+        ...(opts?.timeout ? { timeout: opts.timeout, maxWait: 5_000 } : {}),
+        ...(opts?.isolationLevel ? { isolationLevel: opts.isolationLevel } : {}),
+      },
     );
   }
 

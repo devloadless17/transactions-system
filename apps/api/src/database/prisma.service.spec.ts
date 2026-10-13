@@ -56,7 +56,11 @@ describe('PrismaService.runSerializable', () => {
       throw serializationFailure();
     });
 
+    const t0 = performance.now();
     await expect(svc.runSerializable(async () => 'ok')).rejects.toThrow(/serialize/);
-    expect(calls).toBe(5);
+    expect(calls).toBe(8);
+    // Long enough to outlast a blue/green switch, where two instances briefly
+    // write for the same company (~200ms).
+    expect(performance.now() - t0).toBeGreaterThan(1_000);
   });
 });

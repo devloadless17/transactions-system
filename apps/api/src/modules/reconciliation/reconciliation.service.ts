@@ -3,6 +3,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectMetric } from '@willsoto/nestjs-prometheus';
 import type { Gauge } from 'prom-client';
 import { Money } from '@app/shared';
+import { Prisma } from '@app/db';
 import { PrismaService } from '../../database/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { registerBackgroundJob } from '../../common/lifecycle/background-jobs';
@@ -22,6 +23,12 @@ const FULL_RECONCILE_EVERY_N_TICKS = 4;
 // interactive-tx default and would abort — silently killing the only detective
 // control. Give them a generous read timeout instead.
 const RECONCILE_TX_TIMEOUT_MS = 120_000;
+// The ledger sums and the wallets must be read at ONE moment. Under READ
+// COMMITTED each statement sees its own: a deposit committing between the two
+// reads showed as a divergence that never existed (seen in a rehearsal under
+// load, and it would page under real traffic). REPEATABLE READ gives the whole
+// read one snapshot; a read-only transaction never conflicts at that level.
+const CONSISTENT_READ = Prisma.TransactionIsolationLevel.RepeatableRead;
 
 // Only these ledger accounts have a wallet projection. FEE and EXTERNAL are
 // platform/counterparty accounts with no corresponding wallet column.
@@ -329,7 +336,7 @@ export class ReconciliationService implements OnApplicationBootstrap, OnModuleDe
         const report = buildReconciliationReport(ledgerRows, walletRows, new Date().toISOString());
         return { report, companyIds };
       },
-      { timeout: RECONCILE_TX_TIMEOUT_MS },
+      { timeout: RECONCILE_TX_TIMEOUT_MS, isolationLevel: CONSISTENT_READ },
     );
 
     if (!result) {
@@ -465,7 +472,7 @@ export class ReconciliationService implements OnApplicationBootstrap, OnModuleDe
 
         return buildReconciliationReport(ledgerRows, walletRows, new Date().toISOString());
       },
-      { timeout: RECONCILE_TX_TIMEOUT_MS },
+      { timeout: RECONCILE_TX_TIMEOUT_MS, isolationLevel: CONSISTENT_READ },
     );
   }
 
