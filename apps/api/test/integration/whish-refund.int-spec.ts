@@ -389,6 +389,45 @@ describe('Whish refund — admin refunds a paid payment to the payer', () => {
     expect((await readRow(h, id)).refundRequestedAt).toBeNull();
   });
 
+  it('the admin deposit list says which Whish payment a deposit settled — the company list never does', async () => {
+    const { companyId, id, txId } = await paidPayment(h);
+    const query = { page: 1, pageSize: 20, companyId };
+
+    const admin = await h.transactions.listForAdmin(query);
+    expect(admin.data.find((t) => t.id === txId)?.whishPayment).toEqual({ id, status: 'PAID' });
+
+    const company = await h.transactions.list({ companyId, query });
+    expect(company.data.find((t) => t.id === txId)).not.toHaveProperty('whishPayment');
+
+    // After a refund the row says so (the Deposits page shows REFUNDED, not just REVERSED).
+    await refund(h, id);
+    const after = await h.transactions.listForAdmin(query);
+    const row = after.data.find((t) => t.id === txId);
+    expect(row?.status).toBe('REVERSED');
+    expect(row?.whishPayment).toEqual({ id, status: 'REFUNDED' });
+  });
+
+  it('a deposit that did not come from a Whish Pay payment carries no link (nothing to refund)', async () => {
+    const { companyId } = await createCompany(h);
+    await addTransactionFee(h, companyId, '0');
+    const source = await h.prisma.runAsAdmin((tx) =>
+      tx.source.findUniqueOrThrow({ where: { code: 'whish' } }),
+    );
+    const direct = await h.transactions.ingest(
+      { kind: 'source', sourceId: source.id },
+      {
+        companyId,
+        externalTransactionId: `direct-${Date.now()}`,
+        amount: '10.00',
+        currency: USD,
+        payload: {},
+      },
+    );
+
+    const admin = await h.transactions.listForAdmin({ page: 1, pageSize: 20, companyId });
+    expect(admin.data.find((t) => t.id === direct.id)?.whishPayment).toBeNull();
+  });
+
   it('the database refuses to move a REFUNDED payment to any other status', async () => {
     const { id } = await paidPayment(h);
     await refund(h, id);

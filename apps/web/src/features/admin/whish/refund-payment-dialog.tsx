@@ -59,7 +59,11 @@ export function RefundPaymentDialog({
       onClose();
     },
     onError: (err) => toast.error(err instanceof ApiClientError ? err.message : 'Refund failed'),
-    onSettled: () => qc.invalidateQueries({ queryKey: ['admin', 'whish'] }),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ['admin', 'whish'] });
+      // The deposit it settled is reversed — refresh the Deposits list too.
+      qc.invalidateQueries({ queryKey: ['admin', 'transactions'] });
+    },
   });
 
   const close = () => {

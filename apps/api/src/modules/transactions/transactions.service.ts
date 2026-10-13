@@ -11,6 +11,7 @@ import {
   type IngestTransactionInput,
   type ListTransactionsQuery,
   type ManualDepositPreview,
+  type AdminTransactionResponse,
   type PaginatedResponse,
   type TransactionResponse,
 } from '@app/shared';
@@ -1051,6 +1052,30 @@ export class TransactionsService {
     companyId?: string;
     query: ListTransactionsQuery;
   }): Promise<PaginatedResponse<TransactionResponse>> {
+    const { rows, meta } = await this.listRows(args);
+    return { data: rows.map((r) => mapTxRow(r, r.source.code)), meta };
+  }
+
+  /**
+   * The admin (cross-company) list: each row also says which Whish Pay payment,
+   * if any, it settled — so the Deposits page can offer Refund on exactly those.
+   */
+  async listForAdmin(
+    query: ListTransactionsQuery,
+  ): Promise<PaginatedResponse<AdminTransactionResponse>> {
+    const { rows, meta } = await this.listRows({ query });
+    return {
+      data: rows.map((r) => ({
+        ...mapTxRow(r, r.source.code),
+        whishPayment: r.whishPayment
+          ? { id: r.whishPayment.id, status: r.whishPayment.status }
+          : null,
+      })),
+      meta,
+    };
+  }
+
+  private async listRows(args: { companyId?: string; query: ListTransactionsQuery }) {
     return this.prisma.runAsScoped(args.companyId ?? null, async (tx) => {
       const where: Prisma.TransactionWhereInput = {};
       if (args.companyId) where.companyId = args.companyId;
@@ -1087,7 +1112,12 @@ export class TransactionsService {
           take: args.query.pageSize,
           // Join the source code for just this page's rows (indexed FK). Cheaper
           // and more scalable than loading the whole sources table per request.
-          include: { source: { select: { code: true } } },
+          // The Whish Pay link a deposit settled (unique FK, so one indexed
+          // lookup per row) — only the admin list exposes it.
+          include: {
+            source: { select: { code: true } },
+            whishPayment: { select: { id: true, status: true } },
+          },
         }),
         // singleFlight:false — runs inside the caller's tx; compute-on-miss, never
         // block on the cross-request poll (which would pin this pooled connection).
@@ -1097,7 +1127,7 @@ export class TransactionsService {
       ]);
 
       return {
-        data: rows.map((r) => mapTxRow(r, r.source.code)),
+        rows,
         meta: {
           page: args.query.page,
           pageSize: args.query.pageSize,

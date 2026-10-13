@@ -19,6 +19,8 @@ export default async function Page({
   const session = await getSession();
   const canReverse = !!session && FULL_ADMIN_ROLES.includes(session.role);
   const canCreateDeposit = session?.role === UserRole.SUPER_ADMIN;
+  // Refund sends real money back through Whish — super admins only, like the API.
+  const canRefund = session?.role === UserRole.SUPER_ADMIN;
   const backoffice = session?.role === UserRole.BACKOFFICE;
   const qc = makeServerQueryClient();
 
@@ -46,6 +48,7 @@ export default async function Page({
       <TransactionsView
         scope="admin"
         canReverse={canReverse}
+        canRefund={canRefund}
         canCreateDeposit={canCreateDeposit}
         backoffice={backoffice}
       />

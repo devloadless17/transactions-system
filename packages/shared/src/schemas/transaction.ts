@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { FeeApplication, TransactionStatus } from '../enums';
+import { FeeApplication, TransactionStatus, WhishPaymentStatus } from '../enums';
 import { currencySchema, moneyAmountSchema, quantizedAmountSchema } from './common';
 
 // Money IN. A sub-cent amount is quantized, never rejected: the deposit already
@@ -114,6 +114,16 @@ export const transactionResponseSchema = z.object({
   createdAt: z.string(),
 });
 export type TransactionResponse = z.infer<typeof transactionResponseSchema>;
+
+// Admin list rows also say which Whish Pay payment (if any) a deposit settled,
+// so the Deposits page can offer Refund on exactly those and show a refunded
+// one as such. Admin-only: company and source responses never carry it.
+export const adminTransactionResponseSchema = transactionResponseSchema.extend({
+  whishPayment: z
+    .object({ id: z.string().uuid(), status: z.nativeEnum(WhishPaymentStatus) })
+    .nullable(),
+});
+export type AdminTransactionResponse = z.infer<typeof adminTransactionResponseSchema>;
 
 export const transactionDetailResponseSchema = z.object({
   transaction: transactionResponseSchema.extend({

@@ -5,9 +5,11 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import { toast } from '@/lib/toast';
 import {
   TransactionStatus,
+  type AdminTransactionResponse,
   type PaginatedResponse,
   type SourceResponse,
   type TransactionResponse,
+  type WhishPaymentResponse,
 } from '@app/shared';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -37,6 +39,11 @@ import { isoBound, quickRangePresets } from '@/lib/date-presets';
 import { CompanyFilter, useCompanyNames } from '@/features/admin/company-filter';
 import { TransactionDetailDrawer } from './transaction-detail-drawer';
 import { ManualDepositDialog } from './manual-deposit-dialog';
+import { RefundPaymentDialog } from '@/features/admin/whish/refund-payment-dialog';
+
+// The admin list says which Whish Pay payment (if any) a deposit settled; the
+// company list never does.
+type Row = TransactionResponse & { whishPayment?: AdminTransactionResponse['whishPayment'] };
 
 interface Filters {
   status?: TransactionStatus | '';
@@ -92,11 +99,15 @@ function urlParamsFromState(page: number, filters: Filters): string {
 export function TransactionsView({
   scope,
   canReverse = false,
+  canRefund = false,
   canCreateDeposit = false,
   backoffice = false,
 }: {
   scope: 'admin' | 'company';
   canReverse?: boolean;
+  // Super admins can refund a deposit that came from a Whish Pay payment
+  // (the API is SUPER_ADMIN-only), next to Reverse.
+  canRefund?: boolean;
   // Super admins can record a deposit by hand (the API is SUPER_ADMIN-only).
   canCreateDeposit?: boolean;
   // BACKOFFICE sees only what the customer paid — never the net credited or a
@@ -154,6 +165,15 @@ export function TransactionsView({
   );
   const [reverseTarget, setReverseTarget] = useState<TransactionResponse | null>(null);
   const [newDepositOpen, setNewDepositOpen] = useState(false);
+  const [refundTarget, setRefundTarget] = useState<WhishPaymentResponse | null>(null);
+  // The refund dialog needs the Whish payment itself (payer, amount, invoice).
+  const openRefundMu = useMutation({
+    mutationFn: (whishPaymentId: string) =>
+      apiFetch<WhishPaymentResponse>(`/admin/whish/payments/${whishPaymentId}`),
+    onSuccess: setRefundTarget,
+    onError: (err) =>
+      toast.error(err instanceof ApiClientError ? err.message : 'Could not load the payment'),
+  });
   const [detailTarget, setDetailTarget] = useState<TransactionResponse | null>(null);
 
   // Debounce the free-text search into the query key only; the input stays live.
@@ -181,8 +201,7 @@ export function TransactionsView({
   const basePath = scope === 'admin' ? '/admin/transactions' : '/company/transactions';
   const { data, isLoading, error } = useQuery({
     queryKey: [scope, 'transactions', params.toString()],
-    queryFn: () =>
-      apiFetch<PaginatedResponse<TransactionResponse>>(`${basePath}?${params.toString()}`),
+    queryFn: () => apiFetch<PaginatedResponse<Row>>(`${basePath}?${params.toString()}`),
     placeholderData: keepPreviousData,
   });
 
@@ -285,7 +304,19 @@ export function TransactionsView({
     {
       key: 'status',
       header: 'Status',
-      cell: (t) => <Badge variant={statusVariant(t.status)}>{t.status}</Badge>,
+      cell: (t) =>
+        // A deposit refunded through Whish is REVERSED in the ledger; say what
+        // actually happened to the money.
+        t.status === 'REVERSED' && (t as Row).whishPayment?.status === 'REFUNDED' ? (
+          <Badge
+            variant="warning"
+            title="Refunded to the payer through Whish; the deposit was reversed"
+          >
+            REFUNDED
+          </Badge>
+        ) : (
+          <Badge variant={statusVariant(t.status)}>{t.status}</Badge>
+        ),
     },
     {
       key: 'created',
@@ -293,21 +324,45 @@ export function TransactionsView({
       className: 'text-muted-foreground text-xs',
       cell: (t) => new Date(t.createdAt).toLocaleString(),
     },
-    ...(scope === 'admin' && canReverse
+    ...(scope === 'admin' && (canReverse || canRefund)
       ? [
           {
             key: 'actions',
             header: '',
             align: 'right',
-            cell: (t: TransactionResponse) => (
-              <span onClick={(e) => e.stopPropagation()}>
-                {t.status === 'COMPLETED' && (
-                  <Button variant="ghost" size="sm" onClick={() => setReverseTarget(t)}>
-                    Reverse
-                  </Button>
-                )}
-              </span>
-            ),
+            cell: (t: TransactionResponse) => {
+              const wp = (t as Row).whishPayment;
+              // Refund = money back to the payer through Whish (then the deposit
+              // is reversed) — only for a deposit a Whish Pay payment settled.
+              // Reverse = the books only; no money moves.
+              const refundable = canRefund && t.status === 'COMPLETED' && wp?.status === 'PAID';
+              return (
+                <span className="flex justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+                  {canReverse && t.status === 'COMPLETED' && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setReverseTarget(t)}
+                      title="Undo the deposit in the books only — no money is sent back"
+                    >
+                      Reverse
+                    </Button>
+                  )}
+                  {refundable && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-destructive hover:text-destructive"
+                      disabled={openRefundMu.isPending && openRefundMu.variables === wp.id}
+                      onClick={() => openRefundMu.mutate(wp.id)}
+                      title="Send the full amount back to the payer through Whish"
+                    >
+                      Refund
+                    </Button>
+                  )}
+                </span>
+              );
+            },
           } as Column<TransactionResponse>,
         ]
       : []),
@@ -443,6 +498,17 @@ export function TransactionsView({
 
       {canCreateDeposit && (
         <ManualDepositDialog open={newDepositOpen} onClose={() => setNewDepositOpen(false)} />
+      )}
+      {canRefund && (
+        <RefundPaymentDialog
+          target={refundTarget}
+          companyName={
+            refundTarget
+              ? (companyNames.get(refundTarget.companyId) ?? refundTarget.companyId.slice(0, 8))
+              : ''
+          }
+          onClose={() => setRefundTarget(null)}
+        />
       )}
       <ReverseTransactionDialog
         target={reverseTarget}

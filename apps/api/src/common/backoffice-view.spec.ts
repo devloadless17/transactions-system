@@ -159,6 +159,11 @@ describe('back-office views', () => {
     expect(keysOf(backofficeLoad(lExtra))).not.toContain('walletCreditAmount');
   });
 
+  it("an admin deposit row's Whish payment link never reaches back office (it can't refund)", () => {
+    const adminRow = { ...deposit, whishPayment: { id: 'wp-1', status: 'PAID' } };
+    expect(keysOf(backofficeTransaction(adminRow))).not.toContain('whishPayment');
+  });
+
   it('deposit detail: no payload, no ledger legs — but the idempotency key stays', () => {
     const d: TransactionDetailResponse = {
       transaction: { ...deposit, payload: { gross: '100', fee: '3' }, idempotencyKey: 'idem-1' },

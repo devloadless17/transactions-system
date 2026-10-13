@@ -46,7 +46,7 @@ export class TransactionsReadController {
     @Query(new ZodPipe(listTransactionsQuerySchema)) query: ListTransactionsQuery,
     @CurrentUser() user: AuthPrincipal,
   ) {
-    const page = await this.transactions.list({ query });
+    const page = await this.transactions.listForAdmin(query);
     return isBackoffice(user) ? backofficeList(page, backofficeTransaction) : page;
   }
 
