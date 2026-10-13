@@ -19,10 +19,10 @@ running untouched for seven weeks.
 
 There are two separate certificates and confusing them wastes hours:
 
-|                                                                                       | Who issues it                     | Who renews it        | How to see it                                            |
-| ------------------------------------------------------------------------------------- | --------------------------------- | -------------------- | -------------------------------------------------------- |
-| What clients see on `portal.rivalpayments.com` and `staging-portal.rivalpayments.com` | **Cloudflare** (both are proxied) | Cloudflare, forever  | browser padlock, or `curl -I` shows `server: cloudflare` |
-| Caddy → origin leg, for both sites                                                    | Let's Encrypt via Caddy           | Caddy, automatically | inside the container (below)                             |
+|                                                                                | Who issues it                     | Who renews it        | How to see it                                            |
+| ------------------------------------------------------------------------------ | --------------------------------- | -------------------- | -------------------------------------------------------- |
+| What clients see on `portal.rivalpayments.com` and `staging.rivalpayments.com` | **Cloudflare** (both are proxied) | Cloudflare, forever  | browser padlock, or `curl -I` shows `server: cloudflare` |
+| Caddy → origin leg, for both sites                                             | Let's Encrypt via Caddy           | Caddy, automatically | inside the container (below)                             |
 
 ```bash
 # What Caddy actually holds and when it expires:

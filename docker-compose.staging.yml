@@ -5,7 +5,7 @@
 # domain-agnostic / same-origin, so no separate build is needed) but with:
 #   • its own Postgres + Redis + volumes (zero shared data with prod),
 #   • its own secrets and the Whish SANDBOX credentials,
-#   • a different public hostname (staging-portal.rivalpayments.com, proxied
+#   • a different public hostname (staging.rivalpayments.com, proxied
 #     by Cloudflare like prod),
 #   • NO published host ports — the prod Caddy reaches it over the shared `edge`
 #     network and terminates TLS, exactly like it does for prod.

@@ -9,7 +9,7 @@ its own public hostname.
 ```
                          ┌──────────── txn_caddy (prod, :80/:443) ────────────┐
 DNS  portal.rivalpayments.com ───────▶ │  portal.rivalpayments.com  → api / web        (LIVE) │
-DNS  staging-portal.rivalpayments.com ▶│  staging-portal...         → api-staging / web-staging (SANDBOX) │
+DNS  staging.rivalpayments.com ▶       │  staging...                → api-staging / web-staging (SANDBOX) │
      (both proxied by Cloudflare)
                          └──────── reaches staging over the shared `edge` network ──────┘
 
@@ -31,7 +31,7 @@ in front, same visitor-IP handling (Caddy reads `CF-Connecting-IP`), same zone
 rules:
 
 ```
-staging-portal.rivalpayments.com   A   <server IP>   Proxied   # same IP as prod
+staging.rivalpayments.com          A   <server IP>   Proxied   # same IP as prod
 ```
 
 Keep it a **first-level** subdomain: Cloudflare's Universal SSL certificate covers
@@ -89,7 +89,7 @@ $SC ps
 Caddy issues the origin cert as soon as it loads a Caddyfile naming the host.
 The Caddyfile reaches the server only with a production deploy, which reloads
 Caddy; a staging deploy never touches it. Visit
-`https://staging-portal.rivalpayments.com` — log in with the seeded admin and
+`https://staging.rivalpayments.com` — log in with the seeded admin and
 confirm a Whish payment link mints against the sandbox.
 
 ---
@@ -172,7 +172,7 @@ docker logs -f txn_web_staging
   blacklisting the substring `sandbox`, so `WHISH_ALLOW_SANDBOX=true` is
   **required** on staging — without it the API refuses to boot. That is the
   point: the old check silently stopped matching when the sandbox became `sbx`.
-- Whish sandbox callbacks hit `https://staging-portal.rivalpayments.com/v1`
+- Whish sandbox callbacks hit `https://staging.rivalpayments.com/v1`
   (`WHISH_CALLBACK_BASE`, sent with every payment) — make sure the sandbox account
   accepts that host.
 - Whish rejects `localhost`/loopback callback and redirect URLs with HTTP 403

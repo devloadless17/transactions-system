@@ -129,9 +129,10 @@
 # handling). Caddy gets its own Let's Encrypt cert for the origin: Cloudflare
 # passes the plain-HTTP challenge through, as for prod. The name must stay a
 # FIRST-level subdomain — Cloudflare's Universal SSL covers *.rivalpayments.com
-# only, so the old staging.portal.rivalpayments.com could not be proxied.
+# only, so a deeper name (the first one, staging.portal.rivalpayments.com) cannot
+# be proxied.
 # ---------------------------------------------------------------------------
-staging-portal.rivalpayments.com {
+staging.rivalpayments.com {
 	encode zstd gzip
 
 	header {

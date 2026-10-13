@@ -73,8 +73,8 @@ done
 # whether Caddy's own renewal is working.
 #
 # Only a name Caddy SERVES can be urgent. Caddy keeps a host's cert in storage
-# after the host leaves its config — a renamed site (staging.portal… became
-# staging-portal… in 2026-10) — and never renews it again, so that cert runs
+# after the host leaves its config — a renamed site (staging was renamed twice
+# in 2026-10) — and never renews it again, so that cert runs
 # out: alerting on it would page the payouts chat daily for weeks about a host
 # nobody uses. Such a leftover is a notice. The served names come from the
 # RUNNING config (Caddy's admin API); if they can't be read, every cert counts,
