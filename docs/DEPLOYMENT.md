@@ -337,11 +337,16 @@ Read the entry for every release you are about to roll back across. Newest first
     expiry are still checked live on every request), and `last_used_at` is
     stamped at most once a minute per key.
   - The Whish reconciliation poller follows `next_poll_at`, earliest-due first,
-    up to 4 links at a time. A link is first checked 6 minutes after it was
-    created (Whish closes an unpaid link at about 5, and reports a payment
-    itself), then every minute, and is closed at 10 minutes if Whish still
-    reports it unpaid — one Whish call for a typical unpaid link, none for a
-    paid one.
+    up to 4 Whish calls at a time (about 800 links a minute). A link is
+    scheduled at birth for one check 5:10 after it was created (Whish closes an
+    unpaid link at 5:00, and reports a payment itself), then every minute, and
+    is closed at 10 minutes if Whish still reports it unpaid — one Whish call
+    for an unpaid link, none for a paid one. The poller wakes at the moment the
+    next link is due (measured: 0.2s after it), with a pass every minute as the
+    safety net; a full batch of 250 is followed by the next at once. Its query
+    takes the head of the schedule off the PENDING-only index, so its cost does
+    not grow with the number of open links (measured with 500,000 payable
+    links: 250 rows, 0.3 ms; the previous form read all 500,000, 135 ms).
 
 #### Network fee — `20261008120000_network_fee_ledger_account` … `20261008120700_network_fee_ledger_index`
 

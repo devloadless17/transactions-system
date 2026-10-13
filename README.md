@@ -186,15 +186,19 @@ We are the _outbound_ caller (the inverse of source-key ingest).
   `collectUrl`. Customer pays → Whish `GET /v1/whish/callback/{success,failure}`
   (token-guarded, **verified** via `POST /payment/collect/status` before crediting).
   Whish reports a payment itself (the success callback) but never says when a
-  link expires unpaid — about 5 minutes after it was created. So the
-  reconciliation poller leaves a link alone while it can still be paid: its first
-  check comes at 6 minutes (it finds the link expired, or books a payment whose
-  callback was missed), then every minute, and a link Whish still reports unpaid
-  at 10 minutes is closed `FAILED`. Only a link Whish reports as `unknown` (it
-  may have collected) is asked about longer — every 5 minutes, flagged for an
-  operator after 24 hours. A callback we could not act on, or a payment we could
-  not book, is retried at the poller's next run (within a minute), not at the
-  first check. Manual: `POST .../:id/refresh-status`.
+  link expires unpaid — exactly 5 minutes after it was created. So the
+  reconciliation poller leaves a link alone while it can still be paid: every
+  link is scheduled at birth for ONE check 5:10 after creation (it finds the
+  link expired, or books a payment whose callback was missed), and the poller
+  wakes at that moment rather than at its next every-minute pass. A link still
+  unresolved is asked about every minute and closed `FAILED` at 10 minutes. Only
+  a link Whish reports as `unknown` (it may have collected) is asked about
+  longer — every 5 minutes, flagged for an operator after 24 hours. A callback
+  we could not act on, or a payment we could not book, is retried at the
+  poller's next pass (within a minute), not at the scheduled check. Under load a
+  pass reads only the head of the schedule (250 rows however many links are
+  open) and a full batch is followed by the next at once. Manual:
+  `POST .../:id/refresh-status`.
 - **Refunds** — a **SUPER_ADMIN** (only — like Transfer Money; companies cannot
   refund, they ask the platform) refunds a `PAID` payment from the Whish Pay page.
   No fee is kept on a refund: both fees go back to the company. The call:

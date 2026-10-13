@@ -348,11 +348,14 @@ describe('Whish v1.4.4 — indeterminate link creation', () => {
     const row = await h.prisma.runAsAdmin((tx) =>
       tx.whishPayment.findFirstOrThrow({ where: { companyId }, orderBy: { createdAt: 'desc' } }),
     );
-    // Age it past the poller's min-age window; Whish did in fact mint the link.
+    // Age it past its first check; Whish did in fact mint the link.
     await h.prisma.runAsAdmin((tx) =>
       tx.whishPayment.update({
         where: { id: row.id },
-        data: { createdAt: new Date(Date.now() - 7 * 60_000) },
+        data: {
+          createdAt: new Date(Date.now() - 7 * 60_000),
+          nextPollAt: new Date(Date.now() - 1),
+        },
       }),
     );
     h.whishClient.failPostPaymentWith = null;
@@ -381,7 +384,10 @@ describe('Whish v1.4.4 — indeterminate link creation', () => {
     await h.prisma.runAsAdmin((tx) =>
       tx.whishPayment.update({
         where: { id: row.id },
-        data: { createdAt: new Date(Date.now() - 7 * 60_000) },
+        data: {
+          createdAt: new Date(Date.now() - 7 * 60_000),
+          nextPollAt: new Date(Date.now() - 1),
+        },
       }),
     );
     // Whish's definitive answer for an id it never created. Without special

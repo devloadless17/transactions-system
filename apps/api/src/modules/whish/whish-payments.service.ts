@@ -46,18 +46,20 @@ import { TransactionLogsService } from '../transaction-logs/transaction-logs.ser
 
 const WHISH_SOURCE_CODE = 'whish';
 // The reconciliation poller's timing follows what Whish does with a link.
-// Measured on production (2026-10: ~22,500 links; the last 30 days in full):
+// Measured on production (2026-10: ~22,500 links, 2,655 of them unpaid in the
+// last 60 days):
 //   - Whish tells us itself the moment a link is paid (the success callback),
 //     so an open link is NOT asked about while it can still be paid: half of
 //     all paid links are paid within 22 seconds, 99% within 3 minutes.
-//   - Whish closes an unpaid link about 5 minutes after it was created and never
-//     says so; asking is the only way to learn it. Asked every minute, as the
-//     poller used to, the close showed up 5.5 minutes after creation on average
-//     and 7.0 at the latest (1,640 unpaid links) — never later.
-// So the first check comes once the link can no longer be paid: it finds an
-// unpaid link closed (one check, where there used to be six), and it books a
-// payment whose callback never reached us.
-const RECONCILE_MIN_AGE_MS = 6 * 60_000; // the first check of a link
+//   - Whish closes an unpaid link 5 minutes after it created it and never says
+//     so; asking is the only way to learn it. Asked once a minute, as the
+//     poller used to, the close showed up evenly between 5:01 and 6:01 after
+//     OUR row was created (all but 3 links) — so Whish's own close falls within
+//     a second or two of 5:00.
+// So every link gets ONE scheduled check, 10 seconds after Whish closes it:
+// that check finds an unpaid link closed (it used to take about six), and it
+// books a payment whose callback never reached us.
+export const FIRST_POLL_AGE_MS = 5 * 60_000 + 10_000;
 // A TRANSIENT settlement failure (DB blip, exhausted serializable retries — NOT a
 // DomainError) stays in the poller's retry set; only after this many consecutive
 // failed attempts is it parked as needsAttention for an operator. Permanent
@@ -75,20 +77,19 @@ const EXPIRE_AGE_MS = 10 * 60_000;
 // failed. Those links are asked about until Whish answers; one still unknown
 // after this long is closed AND flagged for an operator.
 const UNKNOWN_EXPIRE_AGE_MS = 24 * 3600_000;
-// Max pending links polled per reconciliation tick — a safety bound on Whish API
-// calls per minute. Whish calls back per ATTEMPT — a failure callback means one
-// attempt failed while the link stays payable — and never when a link finally
-// expires, so polling is the ONLY way failed/abandoned links reach the CRM live. Which links
-// are polled is decided by their schedule (next_poll_at, see nextPollDelayMs):
-// the earliest-due first, so a backlog can delay a link but never starve it.
+// Max pending links polled per reconciliation run. Whish calls back per ATTEMPT
+// — a failure callback means one attempt failed while the link stays payable —
+// and never when a link finally expires, so polling is the ONLY way
+// failed/abandoned links reach the CRM live. Which links are polled is decided
+// by their schedule (next_poll_at, see nextPollDelayMs): the earliest-due
+// first, so a backlog can delay a link but never starve it. A full run is
+// followed by the next one at once (WhishReconciliationService), so this is the
+// size of one batch, not a ceiling per minute.
 const RECONCILE_MAX_PER_TICK = 250;
-// Links polled at the same time within a tick. Each poll is one Whish call
-// (~0.3s), so 250 one-after-another outran the 60s interval; a few in parallel
-// finish a full tick in seconds, at the same number of Whish calls.
+// Links polled at the same time within a run — the bound on Whish API calls in
+// flight, however large the backlog. Each poll is one Whish call (~0.3s), so
+// this is about 800 links a minute.
 const RECONCILE_CONCURRENCY = 4;
-// Scheduled checks are set this much early, so a link due "in a minute" is
-// always taken by the NEXT tick rather than missing it by a timer's jitter.
-const POLL_SCHEDULE_SLACK_MS = 5_000;
 // A refund call answers within the client's 10s timeout. A refund request older
 // than this is no longer in flight, so if Whish still reports the payment as
 // paid, Whish did not refund it and the request can be released for a retry.
@@ -105,14 +106,16 @@ const REFUNDED_NOT_BOOKED =
 /**
  * When to ask Whish again about a link that is still unresolved, by its age.
  *
- * Until the unpaid-link cutoff (EXPIRE_AGE_MS) a link is waiting for Whish to
- * close it, which is a matter of a minute or two: asked every minute. Nothing
- * ordinary lives past the cutoff — only a link Whish reports as 'unknown', or
- * one Whish keeps failing to answer for — and those are asked about every 5
- * minutes. (A payment still reaches us at once through Whish's success
- * callback; this only paces the poller.)
+ * A link asked about before its first check (something made it due early: a
+ * callback we could not act on, a row without a schedule) goes back to that
+ * check — it is still payable, and Whish reports a payment itself. From the
+ * first check to the unpaid-link cutoff (EXPIRE_AGE_MS) Whish should already
+ * have closed it: asked every minute. Nothing ordinary lives past the cutoff —
+ * only a link Whish reports as 'unknown' — and those are asked about every 5
+ * minutes.
  */
 export function nextPollDelayMs(ageMs: number): number {
+  if (ageMs < FIRST_POLL_AGE_MS) return FIRST_POLL_AGE_MS - ageMs;
   return ageMs < EXPIRE_AGE_MS ? 60_000 : 5 * 60_000;
 }
 
@@ -262,6 +265,8 @@ export class WhishPaymentsService {
             invoice: input.invoice,
             idempotencyKey: input.idempotencyKey ?? null,
             status: WhishPaymentStatus.PENDING,
+            // On the poller's schedule from birth (see FIRST_POLL_AGE_MS).
+            nextPollAt: new Date(Date.now() + FIRST_POLL_AGE_MS),
           },
         }),
       );
@@ -382,7 +387,12 @@ export class WhishPaymentsService {
       });
 
       const updated = await this.prisma.runAsTenant(companyId, (tx) =>
-        tx.whishPayment.update({ where: { id: created.id }, data: { collectUrl } }),
+        tx.whishPayment.update({
+          where: { id: created.id },
+          // Whish's 5 minutes run from NOW, the moment it made the link — on a
+          // retried orphan that is long after the row was created.
+          data: { collectUrl, nextPollAt: new Date(Date.now() + FIRST_POLL_AGE_MS) },
+        }),
       );
       this.logger.log(
         `Whish link created: company=${companyId} externalId=${externalId} amount=${input.amount} ${input.currency}`,
@@ -1496,14 +1506,19 @@ export class WhishPaymentsService {
      * 10s), and a deploy must not wait for that.
      */
     shouldStop?: () => boolean;
-  }): Promise<{ checked: number; timedOut: number }> {
-    if (!this.whish.isConfigured()) return { checked: 0, timedOut: 0 };
+  }): Promise<{ checked: number; timedOut: number; more: boolean }> {
+    if (!this.whish.isConfigured()) return { checked: 0, timedOut: 0, more: false };
 
     const now = Date.now();
-    const youngerThan = new Date(now - RECONCILE_MIN_AGE_MS);
     const limit = opts?.limit ?? RECONCILE_MAX_PER_TICK;
-    // The links due now, earliest-due first (see next_poll_at). A never-polled
-    // link (next_poll_at NULL) is due once it is RECONCILE_MIN_AGE_MS old.
+    // The links due now, earliest-due first. Every link is on the schedule from
+    // birth (next_poll_at; a row without one is due at once), and the
+    // PENDING-only index is in schedule order — so this takes the HEAD of the
+    // schedule and keeps what is due, reading at most `limit` rows however many
+    // links are open. Measured with 500,000 payable links: 250 rows, 0.3 ms.
+    // Asking for "the due rows" directly read all 500,000 on every run: the
+    // row-security barrier keeps a condition on the COALESCE out of the index
+    // scan, so only the LIMIT can stop it.
     //
     // Paid-but-unsettled rows (needsAttention) are excluded HERE, in the SQL, so
     // they can never take a slot: Whish HAS the customer's money but we couldn't
@@ -1515,19 +1530,23 @@ export class WhishPaymentsService {
     const due = await this.prisma.runAsAdmin(
       (tx) =>
         tx.$queryRaw<Array<{ id: string }>>`
-        SELECT id FROM whish_payments
-        WHERE status = 'PENDING'
-          AND (metadata->>'needsAttention') IS DISTINCT FROM 'true'
-          AND (next_poll_at <= ${new Date(now)}
-               OR (next_poll_at IS NULL AND created_at < ${youngerThan}))
-        ORDER BY COALESCE(next_poll_at, created_at)
-        LIMIT ${limit}`,
+        SELECT id FROM (
+          SELECT id, COALESCE(next_poll_at, created_at) AS due_at
+          FROM whish_payments
+          WHERE status = 'PENDING'
+            AND (metadata->>'needsAttention') IS DISTINCT FROM 'true'
+          ORDER BY COALESCE(next_poll_at, created_at)
+          LIMIT ${limit}
+        ) head
+        WHERE due_at <= ${new Date(now)}
+        ORDER BY due_at`,
     );
-    if (due.length === limit) {
-      // Hit the per-tick safety cap — a real backlog. The rest stay due and are
-      // taken next tick, earliest-due first; flag it so the cap can be raised.
+    // A full batch: more links may be due. The caller runs again at once,
+    // earliest-due first, instead of leaving them for the next heartbeat.
+    const more = due.length === limit;
+    if (more) {
       this.logger.warn(
-        `Reconciliation hit the ${limit}-link cap this tick; remaining due links roll to the next tick.`,
+        `Reconciliation took a full batch of ${limit} due links; the next run follows at once.`,
       );
     }
     const fetched = due.length
@@ -1551,7 +1570,27 @@ export class WhishPaymentsService {
     await Promise.all(
       Array.from({ length: Math.min(RECONCILE_CONCURRENCY, rows.length) }, () => worker()),
     );
-    return { checked, timedOut };
+    return { checked, timedOut, more };
+  }
+
+  /**
+   * When the next link is due for a check — in the past if one is waiting, null
+   * when no link is open. One row off the head of the schedule (0.07 ms with
+   * 500,000 open links); the poller uses it to come back at that moment.
+   */
+  async nextPollDueAt(): Promise<number | null> {
+    if (!this.whish.isConfigured()) return null;
+    const rows = await this.prisma.runAsAdmin(
+      (tx) =>
+        tx.$queryRaw<Array<{ due_at: Date }>>`
+        SELECT COALESCE(next_poll_at, created_at) AS due_at
+        FROM whish_payments
+        WHERE status = 'PENDING'
+          AND (metadata->>'needsAttention') IS DISTINCT FROM 'true'
+        ORDER BY COALESCE(next_poll_at, created_at)
+        LIMIT 1`,
+    );
+    return rows[0]?.due_at.getTime() ?? null;
   }
 
   /**
@@ -1600,7 +1639,7 @@ export class WhishPaymentsService {
         const indeterminate =
           (freshMeta as { lastCollectStatus?: string } | null)?.lastCollectStatus === 'unknown';
         if (indeterminate && ageMs <= UNKNOWN_EXPIRE_AGE_MS) {
-          await this.scheduleNextPoll(p.id, now + nextPollDelayMs(ageMs) - POLL_SCHEDULE_SLACK_MS);
+          await this.scheduleNextPoll(p.id, now + nextPollDelayMs(ageMs));
           return false;
         }
 
@@ -1646,7 +1685,7 @@ export class WhishPaymentsService {
         }
       } else if (result.status === WhishPaymentStatus.PENDING && !result.needsAttention) {
         // Still unresolved: the next check, paced by the link's age.
-        await this.scheduleNextPoll(p.id, now + nextPollDelayMs(ageMs) - POLL_SCHEDULE_SLACK_MS);
+        await this.scheduleNextPoll(p.id, now + nextPollDelayMs(ageMs));
       }
     } catch (err) {
       // Couldn't reach Whish (or Whish has the money and booking it failed) —
@@ -1656,7 +1695,7 @@ export class WhishPaymentsService {
       // due, so a link Whish keeps erroring on can never hold the head of the
       // queue.
       this.logger.warn(`Reconcile failed for payment ${p.externalId}: ${(err as Error).message}`);
-      await this.scheduleNextPoll(p.id, now + 60_000 - POLL_SCHEDULE_SLACK_MS);
+      await this.scheduleNextPoll(p.id, now + 60_000);
     }
     return timedOut;
   }
