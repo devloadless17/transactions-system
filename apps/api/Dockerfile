@@ -52,4 +52,9 @@ WORKDIR /repo/apps/api
 # — src/common/http/graceful-drain.ts), so it is given up to 60s; an older one
 # keeps the old 10s.
 LABEL com.rivalpayments.graceful-drain="1"
+# Safe to run BESIDE another release (blue/green, scripts/deploy/release.sh):
+# its background work takes database leases (src/database/job-lease.service.ts)
+# and it reports when Caddy's health check last passed. A release swap overlaps
+# two versions only if BOTH carry this label; with an older one it never does.
+LABEL com.rivalpayments.blue-green="1"
 CMD ["node", "dist/main.js"]

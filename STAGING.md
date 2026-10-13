@@ -9,13 +9,16 @@ its own public hostname.
 ```
                          ┌──────────── txn_caddy (prod, :80/:443) ────────────┐
 DNS  portal.rivalpayments.com ───────▶ │  portal.rivalpayments.com  → api / web        (LIVE) │
-DNS  staging.rivalpayments.com ▶       │  staging...                → api-staging / web-staging (SANDBOX) │
+DNS  staging.rivalpayments.com ▶       │  staging...                → api-staging-blue|green / web-staging (SANDBOX) │
      (both proxied by Cloudflare)
                          └──────── reaches staging over the shared `edge` network ──────┘
 
-prod project   : postgres / redis / api / web            (live DB, live Whish)
+prod project   : postgres / redis / api-blue|green / web (live DB, live Whish)
 staging project: postgres-staging / redis-staging /
-                 api-staging / web-staging               (separate DB, sandbox Whish)
+                 api-staging-blue|green / web-staging    (separate DB, sandbox Whish)
+
+The API runs blue/green in both (one colour live, both during a release —
+scripts/deploy/release.sh, docs/DEPLOYMENT.md).
 ```
 
 Nothing is shared between the two stacks except the prod Caddy (the single TLS
@@ -78,11 +81,12 @@ openssl rand -base64 36   # JWT_ACCESS_SECRET, JWT_REFRESH_SECRET, CSRF_SECRET, 
 ```bash
 SC="docker compose -p staging --env-file .env.staging -f docker-compose.staging.yml"
 
-$SC pull
+$SC pull api-staging-blue web-staging migrate-staging
+$SC up -d --no-deps postgres-staging redis-staging
 # First run only: seed the super admin. Set SEED_DATABASE=true in .env.staging,
 # run migrate, then set it back to false.
 $SC run --rm migrate-staging
-$SC up -d --remove-orphans
+./release-staging.sh staging     # the API (blue/green), then the web
 $SC ps
 ```
 
@@ -133,9 +137,9 @@ git push origin main:production   # ← the only thing that deploys the live sit
 ```bash
 SC="docker compose -p staging --env-file .env.staging -f docker-compose.staging.yml"
 # Optionally pin .env.staging IMAGE_TAG to a specific image tag first.
-$SC pull
+$SC pull api-staging-blue web-staging migrate-staging
 $SC run --rm migrate-staging     # only if there are new migrations
-$SC up -d --remove-orphans
+./release-staging.sh staging     # never a bare `up -d`: it would start both colours
 ```
 
 ## Stop / remove staging (prod untouched)
@@ -149,7 +153,8 @@ $SC down -v              # ALSO wipe the staging DB + redis volumes
 ## Logs
 
 ```bash
-docker logs -f txn_api_staging
+./release-staging.sh staging status   # which colour serves
+docker logs -f txn_api_staging_blue   # or txn_api_staging_green
 docker logs -f txn_web_staging
 ```
 

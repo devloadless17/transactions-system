@@ -155,10 +155,14 @@ jobs:
           KEY=~/.ssh/deploy_key
           COMMON="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 
-          echo "==> Copying staging compose to $SSH_USER@$HOST:$DEPLOY_DIR"
+          echo "==> Copying staging compose + release script to $SSH_USER@$HOST:$DEPLOY_DIR"
           scp -i "$KEY" -P "$PORT" $COMMON \
             docker-compose.staging.yml \
             "$SSH_USER@$HOST:$DEPLOY_DIR/"
+          # Its own copy (release-staging.sh), so production always runs the copy
+          # its own pipeline shipped — staging is usually a release ahead.
+          scp -i "$KEY" -P "$PORT" $COMMON \
+            scripts/deploy/release.sh "$SSH_USER@$HOST:$DEPLOY_DIR/release-staging.sh"
 
           echo "==> Deploying staging stack"
           # Secret over STDIN, not argv (argv is readable via `ps` on the VPS).
@@ -174,8 +178,8 @@ jobs:
             exit 1
           fi
 
-          # Point the staging stack at this commit's immutable image tag, so `up`
-          # reliably recreates api-staging/web-staging on a changed image ref.
+          # Point the staging stack at this commit's immutable image tag: the
+          # release starts exactly these images (the API colour, then the web).
           # APPEND the line if .env.staging doesn't already have it — otherwise the
           # sed silently matches nothing and the stack keeps running a stale
           # `:latest` image (every deploy looks green but ships nothing).
@@ -189,41 +193,21 @@ jobs:
 
           echo "$DOCKER_SECRET" | docker login -u "$DOCKER_USERNAME" --password-stdin
 
+          # Only the images this release ships; Postgres and Redis are never pulled
+          # or recreated by a deploy.
           echo "==> Pulling staging images"
-          $SC pull
+          $SC pull api-staging-blue web-staging migrate-staging </dev/null
+          $SC up -d --no-deps --no-recreate postgres-staging redis-staging </dev/null
 
           echo "==> Migrations / RLS rotation (staging DB)"
           $SC run --rm -T migrate-staging </dev/null
 
-          # Zero-loss swap, the API first and alone (see the Caddyfile and
-          # apps/api/src/common/http/graceful-drain.ts). The running API leaves Caddy's
-          # rotation and finishes everything in flight; requests arriving meanwhile are
-          # HELD by Caddy until the new API is healthy. A release labelled
-          # graceful-drain exits on its own in seconds, so it gets up to 60s; an older
-          # one never finishes under traffic, so it keeps the old 10s.
-          echo "==> Swapping the staging API"
-          if [ "$(docker inspect -f '{{index .Config.Labels "com.rivalpayments.graceful-drain"}}' txn_api_staging 2>/dev/null)" = "1" ]; then STOP_TIMEOUT=60; else STOP_TIMEOUT=10; fi
-          $SC stop -t "$STOP_TIMEOUT" api-staging </dev/null
-          $SC up -d --no-deps api-staging </dev/null
-
-          echo "==> Waiting for staging API health"
-          RETRIES=0; MAX=45
-          until [ "$RETRIES" -ge "$MAX" ]; do
-            STATUS=$(docker inspect --format='{{.State.Health.Status}}' txn_api_staging 2>/dev/null || echo "starting")
-            [ "$STATUS" = "healthy" ] && { echo "Staging API is healthy!"; break; }
-            RETRIES=$((RETRIES + 1)); echo "  ...($RETRIES/$MAX) status=$STATUS"; sleep 4
-          done
-          if [ "$RETRIES" -ge "$MAX" ]; then
-            echo "Staging API did not become healthy in time:"
-            $SC logs --tail 80 api-staging
-            echo "::error::Staging release is unhealthy."
-            exit 1
-          fi
-
-          # Only once the new API is healthy is the web swapped, so the web server's
-          # own calls to the API never wait on a stopped one.
-          echo "==> Starting the rest of the staging stack (web)"
-          $SC up -d --remove-orphans </dev/null
+          # Blue/green, exactly like prod (scripts/deploy/release.sh): the new API
+          # starts beside the live one and takes traffic only once Caddy has seen it
+          # healthy; then the old one drains, then the web is swapped.
+          echo "==> Releasing (API blue/green, then the web)"
+          chmod +x release-staging.sh
+          ./release-staging.sh staging </dev/null
 
           $SC ps
           REMOTE

@@ -14,11 +14,14 @@
 # prod, and point it at the staging env file:
 #
 #   docker network create edge            # once; shared with prod's Caddy
-#   docker compose -p staging --env-file .env.staging -f docker-compose.staging.yml pull
+#   docker compose -p staging --env-file .env.staging -f docker-compose.staging.yml \
+#     pull api-staging-blue web-staging migrate-staging
 #   docker compose -p staging --env-file .env.staging -f docker-compose.staging.yml \
 #     run --rm migrate-staging            # migrate / rotate RLS / seed
-#   docker compose -p staging --env-file .env.staging -f docker-compose.staging.yml \
-#     up -d --remove-orphans
+#   ./release-staging.sh staging          # the API (blue/green), then the web
+#
+# (.github/workflows/deploy-staging.yml does exactly this.) Never a bare `up -d`
+# (it would start BOTH API colours) and never `--remove-orphans`.
 #
 # All service names carry a `-staging` suffix so their network aliases on `edge`
 # never clash with the prod `api` / `web` aliases the prod Caddy also resolves.
@@ -26,8 +29,93 @@
 
 # Hard-pin the compose project name so staging's volumes/networks are always
 # `staging_*` and can NEVER be mistaken for the prod project (whose name derives
-# from the deploy directory). This makes `--remove-orphans` etc. safe to run.
+# from the deploy directory).
 name: staging
+
+# ----------------------------------------------------------------------------
+# The staging API runs as TWO services, api-staging-blue and api-staging-green,
+# with this one shared definition — exactly like prod (docker-compose.prod.yml,
+# scripts/deploy/release.sh). Normally one runs; a release starts the new
+# version beside it and drains the old one only once Caddy has seen the new one
+# healthy. Both answer to `api-staging-pool` (the web server's own calls) and to
+# `api-staging`, the name of the single container they replaced (on `edge`
+# too, where the shared Caddy reaches them).
+# ----------------------------------------------------------------------------
+x-api-staging: &api
+  image: ${DOCKER_USERNAME}/transactions-api:${IMAGE_TAG:-latest}
+  restart: unless-stopped
+  # Zero-loss shutdown (apps/api/src/common/http/graceful-drain.ts): on SIGTERM
+  # the API leaves Caddy's rotation, finishes every request and background run
+  # in flight, then exits — normally in ~3s. `init` delivers the signal to Node
+  # properly; the grace period only bounds a request that never finishes.
+  init: true
+  stop_grace_period: 60s
+  depends_on:
+    postgres-staging:
+      condition: service_healthy
+    redis-staging:
+      condition: service_healthy
+  environment: &api-env
+    NODE_ENV: production
+    API_PORT: 3001
+    API_HOST: 0.0.0.0
+    API_GLOBAL_PREFIX: v1
+    DATABASE_URL: postgresql://${POSTGRES_USER_RLS:-txn_app_rls}:${POSTGRES_PASSWORD_RLS}@postgres-staging:5432/${POSTGRES_DB}?schema=public
+    REDIS_URL: redis://redis-staging:6379
+    JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
+    JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+    CSRF_SECRET: ${CSRF_SECRET}
+    COOKIE_DOMAIN: ${COOKIE_DOMAIN}
+    COOKIE_SECURE: 'true'
+    WEB_ORIGIN: ${WEB_ORIGIN}
+    ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+    API_PUBLIC_URL: ${API_PUBLIC_URL}
+    METRICS_TOKEN: ${METRICS_TOKEN}
+    # Source-ingest limiters. Absent = schema defaults (ingest UNLIMITED,
+    # 20 failed auths/IP/min, Whish Pay API braked at 6000 link creations
+    # and 30000 status lookups per key per minute). Listed
+    # here so they are genuinely tunable from the server .env without a
+    # code deploy — compose only passes through what it names.
+    INGEST_RATE_LIMIT_MAX: ${INGEST_RATE_LIMIT_MAX:-0}
+    AUTH_FAILURE_MAX_PER_MIN: ${AUTH_FAILURE_MAX_PER_MIN:-20}
+    INTEGRATION_CREATE_RATE_LIMIT_MAX: ${INTEGRATION_CREATE_RATE_LIMIT_MAX:-6000}
+    INTEGRATION_LOOKUP_RATE_LIMIT_MAX: ${INTEGRATION_LOOKUP_RATE_LIMIT_MAX:-30000}
+    # Whish SANDBOX for staging. WHISH_ALLOW_SANDBOX=true lets the prod build
+    # accept the sandbox base + (non-https) sandbox website URL.
+    WHISH_BASE_URL: ${WHISH_BASE_URL}
+    WHISH_CHANNEL: ${WHISH_CHANNEL:-}
+    WHISH_SECRET: ${WHISH_SECRET:-}
+    WHISH_WEBSITE_URL: ${WHISH_WEBSITE_URL}
+    WHISH_CALLBACK_BASE: ${WHISH_CALLBACK_BASE}
+    WHISH_USER_AGENT: '${WHISH_USER_AGENT}'
+    WHISH_ENABLED_CURRENCIES: ${WHISH_ENABLED_CURRENCIES:-USD}
+    WHISH_ALLOW_SANDBOX: ${WHISH_ALLOW_SANDBOX:-true}
+    # Whish W2W (consumer-app) transfers. NO sandbox exists for W2W — these move
+    # REAL money even on staging. Set WHISH_W2W_ENABLED / WHISH_W2W_ENC_KEY in
+    # .env.staging on the server to use it; default OFF.
+    WHISH_W2W_ENABLED: ${WHISH_W2W_ENABLED:-false}
+    WHISH_W2W_ENC_KEY: ${WHISH_W2W_ENC_KEY:-}
+    WHISH_W2W_BASE_URL: ${WHISH_W2W_BASE_URL:-https://api.whish.money/itel-service}
+    # Staging-only: fake the auto-approval transfer — the pipeline runs with all
+    # its rules (admin toggle, hold window, WISH/USD, cap) but approves with a
+    # SIMULATED- reference instead of moving money. Mutually exclusive with
+    # WHISH_W2W_ENABLED — the API refuses to boot with both. NOT passed through
+    # in docker-compose.prod.yml, so production can never enable it.
+    WITHDRAWAL_AUTO_APPROVAL_SIMULATE: ${WITHDRAWAL_AUTO_APPROVAL_SIMULATE:-true}
+    # Telegram alerts for load/payout requests. Intentionally a PRODUCTION-only
+    # feature: leave TELEGRAM_* UNSET in .env.staging so this no-ops on staging.
+    # The passthrough mirrors prod only so the two compose files stay identical.
+    TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+    TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+  healthcheck:
+    test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:3001/v1/health || exit 1']
+    interval: 10s
+    timeout: 5s
+    retries: 6
+    # Checked every second while starting, so a new release shows healthy
+    # as soon as it is (the release script itself asks the API directly).
+    start_period: 120s
+    start_interval: 1s
 
 services:
   postgres-staging:
@@ -85,81 +173,30 @@ services:
       WHISH_SANDBOX_SEQ_FIX: 'true'
     command: ['sh', '/repo/packages/db/deploy.sh']
 
-  api-staging:
-    image: ${DOCKER_USERNAME}/transactions-api:${IMAGE_TAG:-latest}
-    container_name: txn_api_staging
-    restart: unless-stopped
-    # Zero-loss shutdown (apps/api/src/common/http/graceful-drain.ts): on SIGTERM
-    # the API leaves Caddy's rotation, finishes every request and background run
-    # in flight, then exits — normally in ~3s. `init` delivers the signal to Node
-    # properly; the grace period only bounds a request that never finishes.
-    init: true
-    stop_grace_period: 60s
-    depends_on:
-      postgres-staging:
-        condition: service_healthy
-      redis-staging:
-        condition: service_healthy
+  api-staging-blue:
+    <<: *api
+    container_name: txn_api_staging_blue
     environment:
-      NODE_ENV: production
-      API_PORT: 3001
-      API_HOST: 0.0.0.0
-      API_GLOBAL_PREFIX: v1
-      DATABASE_URL: postgresql://${POSTGRES_USER_RLS:-txn_app_rls}:${POSTGRES_PASSWORD_RLS}@postgres-staging:5432/${POSTGRES_DB}?schema=public
-      REDIS_URL: redis://redis-staging:6379
-      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
-      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
-      CSRF_SECRET: ${CSRF_SECRET}
-      COOKIE_DOMAIN: ${COOKIE_DOMAIN}
-      COOKIE_SECURE: 'true'
-      WEB_ORIGIN: ${WEB_ORIGIN}
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
-      API_PUBLIC_URL: ${API_PUBLIC_URL}
-      METRICS_TOKEN: ${METRICS_TOKEN}
-      # Source-ingest limiters. Absent = schema defaults (ingest UNLIMITED,
-      # 20 failed auths/IP/min, Whish Pay API braked at 6000 link creations
-      # and 30000 status lookups per key per minute). Listed
-      # here so they are genuinely tunable from the server .env without a
-      # code deploy — compose only passes through what it names.
-      INGEST_RATE_LIMIT_MAX: ${INGEST_RATE_LIMIT_MAX:-0}
-      AUTH_FAILURE_MAX_PER_MIN: ${AUTH_FAILURE_MAX_PER_MIN:-20}
-      INTEGRATION_CREATE_RATE_LIMIT_MAX: ${INTEGRATION_CREATE_RATE_LIMIT_MAX:-6000}
-      INTEGRATION_LOOKUP_RATE_LIMIT_MAX: ${INTEGRATION_LOOKUP_RATE_LIMIT_MAX:-30000}
-      # Whish SANDBOX for staging. WHISH_ALLOW_SANDBOX=true lets the prod build
-      # accept the sandbox base + (non-https) sandbox website URL.
-      WHISH_BASE_URL: ${WHISH_BASE_URL}
-      WHISH_CHANNEL: ${WHISH_CHANNEL:-}
-      WHISH_SECRET: ${WHISH_SECRET:-}
-      WHISH_WEBSITE_URL: ${WHISH_WEBSITE_URL}
-      WHISH_CALLBACK_BASE: ${WHISH_CALLBACK_BASE}
-      WHISH_USER_AGENT: '${WHISH_USER_AGENT}'
-      WHISH_ENABLED_CURRENCIES: ${WHISH_ENABLED_CURRENCIES:-USD}
-      WHISH_ALLOW_SANDBOX: ${WHISH_ALLOW_SANDBOX:-true}
-      # Whish W2W (consumer-app) transfers. NO sandbox exists for W2W — these move
-      # REAL money even on staging. Set WHISH_W2W_ENABLED / WHISH_W2W_ENC_KEY in
-      # .env.staging on the server to use it; default OFF.
-      WHISH_W2W_ENABLED: ${WHISH_W2W_ENABLED:-false}
-      WHISH_W2W_ENC_KEY: ${WHISH_W2W_ENC_KEY:-}
-      WHISH_W2W_BASE_URL: ${WHISH_W2W_BASE_URL:-https://api.whish.money/itel-service}
-      # Staging-only: fake the auto-approval transfer — the pipeline runs with all
-      # its rules (admin toggle, hold window, WISH/USD, cap) but approves with a
-      # SIMULATED- reference instead of moving money. Mutually exclusive with
-      # WHISH_W2W_ENABLED — the API refuses to boot with both. NOT passed through
-      # in docker-compose.prod.yml, so production can never enable it.
-      WITHDRAWAL_AUTO_APPROVAL_SIMULATE: ${WITHDRAWAL_AUTO_APPROVAL_SIMULATE:-true}
-      # Telegram alerts for load/payout requests. Intentionally a PRODUCTION-only
-      # feature: leave TELEGRAM_* UNSET in .env.staging so this no-ops on staging.
-      # The passthrough mirrors prod only so the two compose files stay identical.
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
-      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
-    healthcheck:
-      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:3001/v1/health || exit 1']
-      interval: 10s
-      timeout: 5s
-      retries: 6
+      <<: *api-env
+      # Names this instance in job leases (src/database/job-lease.service.ts).
+      API_INSTANCE: staging-blue
     networks:
-      - default
-      - edge
+      default:
+        aliases: [api-staging, api-staging-pool]
+      edge:
+        aliases: [api-staging]
+
+  api-staging-green:
+    <<: *api
+    container_name: txn_api_staging_green
+    environment:
+      <<: *api-env
+      API_INSTANCE: staging-green
+    networks:
+      default:
+        aliases: [api-staging, api-staging-pool]
+      edge:
+        aliases: [api-staging]
 
   web-staging:
     image: ${DOCKER_USERNAME}/transactions-web:${IMAGE_TAG:-latest}
@@ -168,9 +205,6 @@ services:
     # Drains on SIGTERM and exits in seconds (apps/web/drain-server.cjs).
     init: true
     stop_grace_period: 30s
-    depends_on:
-      api-staging:
-        condition: service_started
     environment:
       NODE_ENV: production
       PORT: 3000
@@ -180,9 +214,19 @@ services:
       # edge IP unbound and Caddy's dial gets "connection refused". Bind all
       # interfaces so Caddy can reach it over `edge`.
       HOSTNAME: '0.0.0.0'
-      # SSR → staging API over the internal staging network. The browser resolves
-      # the API same-origin (https://staging.../v1) at runtime, so no build-time URL.
-      API_INTERNAL_BASE_URL: http://api-staging:3001/v1
+      # SSR → staging API over the internal staging network, to whichever API
+      # colour is running (both answer to `api-staging-pool`). The browser
+      # resolves the API same-origin (https://staging.../v1) at runtime.
+      API_INTERNAL_BASE_URL: http://api-staging-pool:3001/v1
+    healthcheck:
+      # Same as prod's web: `/` renders /login (asking the API for the session),
+      # so a green check also proves web → API works.
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:3000/ >/dev/null 2>&1 || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 120s
+      start_interval: 1s
     networks:
       - default
       - edge

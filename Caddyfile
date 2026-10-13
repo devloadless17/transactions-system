@@ -61,23 +61,38 @@
 			2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32
 		client_ip_headers CF-Connecting-IP
 	}
+
+	# The API runs blue/green (below): one colour is normally stopped, so its
+	# health check fails every second, by design. Those checks log at INFO, one
+	# line a second per stopped colour, forever. Keep them out of the main log;
+	# a real health-checker error still shows.
+	log default {
+		exclude http.handlers.reverse_proxy.health_checker.active
+	}
+	log health_checks {
+		include http.handlers.reverse_proxy.health_checker.active
+		level ERROR
+	}
 }
 #
-# Zero-loss deploys — this is a money system: a deploy must not drop a single
-# request. Measured before this (2026-10-13): three deploys under deposit load
-# lost 21 deposits (Caddy's 15s hold ran out, and the old API was killed with
-# requests in flight). Now:
-#   - The API is health-checked every second (health_uri). On SIGTERM it answers
-#     503 (apps/api/src/common/http/graceful-drain.ts), so Caddy stops routing
-#     to it BEFORE it closes any connection, while it finishes everything in
-#     flight — no request can be written onto a connection being closed.
-#   - With no healthy upstream, Caddy HOLDS each request (lb_try_duration) and
-#     retries every lb_try_interval until the new container is healthy. A
-#     request held this way never reached a backend, so retrying it runs nothing
-#     twice. 60s covers a normal swap (~5s) with a wide margin and stays inside
-#     Cloudflare's 100s limit.
-# Proven locally behind this Caddy: three deploys under continuous deposit load,
-# 0 failures, every deposit booked exactly once (requests waited ≤ ~6s).
+# Zero-loss, zero-wait deploys (blue/green) — this is a money system: a deploy
+# must not drop or stall a single request.
+#   - The API runs as two containers, blue and green (docker-compose.prod.yml).
+#     Each site lists BOTH, plus `api` (the single container they replaced, and
+#     a name both colours still answer to). `lb_policy first` sends every
+#     request to the first HEALTHY one in that order; a stopped colour simply
+#     fails its health check and is skipped.
+#   - A release (scripts/deploy/release.sh) starts the new version in the other
+#     colour beside the live one, and waits until this Caddy's health check has
+#     passed on it (the API remembers checks carrying `health_headers`, and the
+#     script asks it). Only then does the old one drain: on SIGTERM it answers
+#     503 (apps/api/src/common/http/graceful-drain.ts), Caddy moves to the other
+#     colour within a second, and the old one finishes everything in flight —
+#     no request is lost and none waits, because a healthy colour is always up.
+#   - If no colour is healthy (a first start, or a crash), Caddy HOLDS each
+#     request (lb_try_duration) and retries every lb_try_interval. A request held
+#     this way never reached a backend, so retrying it runs nothing twice. 60s
+#     stays inside Cloudflare's 100s limit.
 #
 # `header_up X-Forwarded-For {client_ip}` in every reverse_proxy: the upstream is
 # told ONE visitor address — the one resolved by the global options above — and
@@ -100,13 +115,17 @@
 	# exclusive and ordered, so this never shadows the web catch-all below.
 	@api path /v1/* /socket.io/*
 	handle @api {
-		reverse_proxy api:3001 {
+		reverse_proxy api-blue:3001 api-green:3001 api:3001 {
 			header_up X-Forwarded-For {client_ip}
+			lb_policy first
 			lb_try_duration 60s
 			lb_try_interval 250ms
 			health_uri /v1/health
 			health_interval 1s
 			health_timeout 3s
+			health_headers {
+				X-Health-Check caddy
+			}
 		}
 	}
 
@@ -123,7 +142,8 @@
 # ---------------------------------------------------------------------------
 # OPTIONAL staging instance — same app, isolated DB/Redis, Whish SANDBOX.
 # Served by THIS Caddy over the shared `edge` network to the staging containers
-# (docker-compose.staging.yml: api-staging / web-staging). If the staging stack
+# (docker-compose.staging.yml: api-staging-blue/-green / web-staging), blue/green
+# exactly like prod. If the staging stack
 # isn't running, this block simply 502s; it never affects the prod site above.
 # Proxied by Cloudflare exactly like the prod domain (same edge, same visitor-IP
 # handling). Caddy gets its own Let's Encrypt cert for the origin: Cloudflare
@@ -145,13 +165,17 @@ staging.rivalpayments.com {
 
 	@api path /v1/* /socket.io/*
 	handle @api {
-		reverse_proxy api-staging:3001 {
+		reverse_proxy api-staging-blue:3001 api-staging-green:3001 api-staging:3001 {
 			header_up X-Forwarded-For {client_ip}
+			lb_policy first
 			lb_try_duration 60s
 			lb_try_interval 250ms
 			health_uri /v1/health
 			health_interval 1s
 			health_timeout 3s
+			health_headers {
+				X-Health-Check caddy
+			}
 		}
 	}
 

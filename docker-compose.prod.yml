@@ -1,16 +1,107 @@
 # ============================================================================
 # Production stack — pulled images + Caddy (auto-HTTPS). Shipped to the server
-# by .github/workflows/deploy.yml and driven with:
+# by .github/workflows/deploy.yml, which runs:
 #
-#   docker compose -f docker-compose.prod.yml pull
+#   docker compose -f docker-compose.prod.yml pull api-blue web migrate
 #   docker compose -f docker-compose.prod.yml run --rm migrate   # migrate/seed
-#   docker compose -f docker-compose.prod.yml up -d --remove-orphans
+#   ./release.sh prod            # the API (blue/green), then the web
+#
+# Never a bare `up -d` (it would start BOTH API colours) and never
+# `--remove-orphans`. Postgres, Redis and Caddy are never recreated by a deploy.
 #
 # Only Caddy publishes ports (80/443). Postgres, Redis, the API and the web app
 # talk over the internal compose network and are NOT exposed to the host.
 # All config/secrets come from the server-side .env (rendered by the deploy
 # workflow from .env.prod.example + GitHub secrets).
 # ============================================================================
+# ----------------------------------------------------------------------------
+# The API runs as TWO services, api-blue and api-green, with this one shared
+# definition. Normally one of them runs. A release starts the new version in
+# the other colour BESIDE the live one, waits until Caddy has seen it healthy,
+# then drains the old one (scripts/deploy/release.sh) — no request waits and
+# none is lost, and a release that never gets healthy never takes traffic.
+# Caddy lists both colours and sends traffic to the healthy one (Caddyfile).
+# Both answer to `api-pool` (the web server's own calls) and to `api`, the
+# name of the single container they replaced.
+# ----------------------------------------------------------------------------
+x-api: &api
+  image: ${DOCKER_USERNAME}/transactions-api:${IMAGE_TAG:-latest}
+  restart: unless-stopped
+  # Zero-loss shutdown (apps/api/src/common/http/graceful-drain.ts): on SIGTERM
+  # the API leaves Caddy's rotation, finishes every request and background run
+  # in flight, then exits — normally in ~3s. `init` delivers the signal to Node
+  # properly; the grace period only bounds a request that never finishes.
+  init: true
+  stop_grace_period: 60s
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  environment: &api-env
+    NODE_ENV: production
+    API_PORT: 3001
+    API_HOST: 0.0.0.0
+    API_GLOBAL_PREFIX: v1
+    # Runtime connects as the non-superuser RLS role so Row Level Security is
+    # actually enforced. Its password was rotated to POSTGRES_PASSWORD_RLS by
+    # the migrate step above.
+    DATABASE_URL: postgresql://${POSTGRES_USER_RLS:-txn_app_rls}:${POSTGRES_PASSWORD_RLS}@postgres:5432/${POSTGRES_DB}?schema=public
+    REDIS_URL: redis://redis:6379
+    JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
+    JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+    CSRF_SECRET: ${CSRF_SECRET}
+    COOKIE_DOMAIN: ${COOKIE_DOMAIN}
+    COOKIE_SECURE: 'true'
+    WEB_ORIGIN: ${WEB_ORIGIN}
+    ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+    API_PUBLIC_URL: ${API_PUBLIC_URL}
+    METRICS_TOKEN: ${METRICS_TOKEN}
+    # Source-ingest limiters. Absent = schema defaults (ingest UNLIMITED,
+    # 20 failed auths/IP/min, Whish Pay API braked at 6000 link creations
+    # and 30000 status lookups per key per minute). Listed
+    # here so they are genuinely tunable from the server .env without a
+    # code deploy — compose only passes through what it names.
+    INGEST_RATE_LIMIT_MAX: ${INGEST_RATE_LIMIT_MAX:-0}
+    AUTH_FAILURE_MAX_PER_MIN: ${AUTH_FAILURE_MAX_PER_MIN:-20}
+    INTEGRATION_CREATE_RATE_LIMIT_MAX: ${INTEGRATION_CREATE_RATE_LIMIT_MAX:-6000}
+    INTEGRATION_LOOKUP_RATE_LIMIT_MAX: ${INTEGRATION_LOOKUP_RATE_LIMIT_MAX:-30000}
+    # Whish Pay (optional). Empty channel/secret = "not configured" (the API
+    # boots fine and Whish features stay off).
+    WHISH_BASE_URL: ${WHISH_BASE_URL}
+    WHISH_CHANNEL: ${WHISH_CHANNEL:-}
+    WHISH_SECRET: ${WHISH_SECRET:-}
+    WHISH_WEBSITE_URL: ${WHISH_WEBSITE_URL}
+    WHISH_CALLBACK_BASE: ${WHISH_CALLBACK_BASE}
+    WHISH_USER_AGENT: '${WHISH_USER_AGENT}'
+    WHISH_ENABLED_CURRENCIES: ${WHISH_ENABLED_CURRENCIES:-USD}
+    # Must be forwarded too — without it the API never sees the sandbox opt-in
+    # and prod env-validation rejects a sandbox base URL / non-https website URL.
+    WHISH_ALLOW_SANDBOX: ${WHISH_ALLOW_SANDBOX:-false}
+    # Whish W2W (consumer-app) outbound transfers. Session creds are entered in
+    # the UI and encrypted at rest with WHISH_W2W_ENC_KEY; only the on/off flag +
+    # the key are forwarded here. Without this passthrough the API can't
+    # encrypt/save the session ("missing WHISH_W2W_ENC_KEY").
+    WHISH_W2W_ENABLED: ${WHISH_W2W_ENABLED:-false}
+    WHISH_W2W_ENC_KEY: ${WHISH_W2W_ENC_KEY:-}
+    WHISH_W2W_BASE_URL: ${WHISH_W2W_BASE_URL:-https://api.whish.money/itel-service}
+    # Telegram alerts for load/payout requests. Both must be set to enable;
+    # leaving them unset (the default) disables the feature. This is what keeps
+    # staging silent while shipping identical code — only prod sets these.
+    TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+    TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+  healthcheck:
+    # 127.0.0.1 (not localhost): the API binds IPv4; busybox wget would hit
+    # IPv6 ::1 first and get connection-refused. Pin IPv4.
+    test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:3001/v1/health || exit 1']
+    interval: 10s
+    timeout: 5s
+    retries: 6
+    # Checked every second while starting, so a new release shows healthy
+    # as soon as it is (the release script itself asks the API directly).
+    start_period: 120s
+    start_interval: 1s
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -63,80 +154,26 @@ services:
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD}
     command: ['sh', '/repo/packages/db/deploy.sh']
 
-  api:
-    image: ${DOCKER_USERNAME}/transactions-api:${IMAGE_TAG:-latest}
-    container_name: txn_api
-    restart: unless-stopped
-    # Zero-loss shutdown (apps/api/src/common/http/graceful-drain.ts): on SIGTERM
-    # the API leaves Caddy's rotation, finishes every request and background run
-    # in flight, then exits — normally in ~3s. `init` delivers the signal to Node
-    # properly; the grace period only bounds a request that never finishes.
-    init: true
-    stop_grace_period: 60s
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+  api-blue:
+    <<: *api
+    container_name: txn_api_blue
     environment:
-      NODE_ENV: production
-      API_PORT: 3001
-      API_HOST: 0.0.0.0
-      API_GLOBAL_PREFIX: v1
-      # Runtime connects as the non-superuser RLS role so Row Level Security is
-      # actually enforced. Its password was rotated to POSTGRES_PASSWORD_RLS by
-      # the migrate step above.
-      DATABASE_URL: postgresql://${POSTGRES_USER_RLS:-txn_app_rls}:${POSTGRES_PASSWORD_RLS}@postgres:5432/${POSTGRES_DB}?schema=public
-      REDIS_URL: redis://redis:6379
-      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
-      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
-      CSRF_SECRET: ${CSRF_SECRET}
-      COOKIE_DOMAIN: ${COOKIE_DOMAIN}
-      COOKIE_SECURE: 'true'
-      WEB_ORIGIN: ${WEB_ORIGIN}
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
-      API_PUBLIC_URL: ${API_PUBLIC_URL}
-      METRICS_TOKEN: ${METRICS_TOKEN}
-      # Source-ingest limiters. Absent = schema defaults (ingest UNLIMITED,
-      # 20 failed auths/IP/min, Whish Pay API braked at 6000 link creations
-      # and 30000 status lookups per key per minute). Listed
-      # here so they are genuinely tunable from the server .env without a
-      # code deploy — compose only passes through what it names.
-      INGEST_RATE_LIMIT_MAX: ${INGEST_RATE_LIMIT_MAX:-0}
-      AUTH_FAILURE_MAX_PER_MIN: ${AUTH_FAILURE_MAX_PER_MIN:-20}
-      INTEGRATION_CREATE_RATE_LIMIT_MAX: ${INTEGRATION_CREATE_RATE_LIMIT_MAX:-6000}
-      INTEGRATION_LOOKUP_RATE_LIMIT_MAX: ${INTEGRATION_LOOKUP_RATE_LIMIT_MAX:-30000}
-      # Whish Pay (optional). Empty channel/secret = "not configured" (the API
-      # boots fine and Whish features stay off).
-      WHISH_BASE_URL: ${WHISH_BASE_URL}
-      WHISH_CHANNEL: ${WHISH_CHANNEL:-}
-      WHISH_SECRET: ${WHISH_SECRET:-}
-      WHISH_WEBSITE_URL: ${WHISH_WEBSITE_URL}
-      WHISH_CALLBACK_BASE: ${WHISH_CALLBACK_BASE}
-      WHISH_USER_AGENT: '${WHISH_USER_AGENT}'
-      WHISH_ENABLED_CURRENCIES: ${WHISH_ENABLED_CURRENCIES:-USD}
-      # Must be forwarded too — without it the API never sees the sandbox opt-in
-      # and prod env-validation rejects a sandbox base URL / non-https website URL.
-      WHISH_ALLOW_SANDBOX: ${WHISH_ALLOW_SANDBOX:-false}
-      # Whish W2W (consumer-app) outbound transfers. Session creds are entered in
-      # the UI and encrypted at rest with WHISH_W2W_ENC_KEY; only the on/off flag +
-      # the key are forwarded here. Without this passthrough the API can't
-      # encrypt/save the session ("missing WHISH_W2W_ENC_KEY").
-      WHISH_W2W_ENABLED: ${WHISH_W2W_ENABLED:-false}
-      WHISH_W2W_ENC_KEY: ${WHISH_W2W_ENC_KEY:-}
-      WHISH_W2W_BASE_URL: ${WHISH_W2W_BASE_URL:-https://api.whish.money/itel-service}
-      # Telegram alerts for load/payout requests. Both must be set to enable;
-      # leaving them unset (the default) disables the feature. This is what keeps
-      # staging silent while shipping identical code — only prod sets these.
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
-      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
-    healthcheck:
-      # 127.0.0.1 (not localhost): the API binds IPv4; busybox wget would hit
-      # IPv6 ::1 first and get connection-refused. Pin IPv4.
-      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:3001/v1/health || exit 1']
-      interval: 10s
-      timeout: 5s
-      retries: 6
+      <<: *api-env
+      # Names this instance in job leases (src/database/job-lease.service.ts).
+      API_INSTANCE: blue
+    networks:
+      default:
+        aliases: [api, api-pool]
+
+  api-green:
+    <<: *api
+    container_name: txn_api_green
+    environment:
+      <<: *api-env
+      API_INSTANCE: green
+    networks:
+      default:
+        aliases: [api, api-pool]
 
   web:
     image: ${DOCKER_USERNAME}/transactions-web:${IMAGE_TAG:-latest}
@@ -145,9 +182,6 @@ services:
     # Drains on SIGTERM and exits in seconds (apps/web/drain-server.cjs).
     init: true
     stop_grace_period: 30s
-    depends_on:
-      api:
-        condition: service_started
     environment:
       NODE_ENV: production
       PORT: 3000
@@ -155,9 +189,11 @@ services:
       # the container ID, i.e. a single network IP). Harmless on prod's single
       # network; keeps web reachable if it ever joins a second network.
       HOSTNAME: '0.0.0.0'
-      # SSR → API over the internal network. The browser resolves the API
-      # same-origin at runtime (apps/web/src/lib/api.ts:publicApiBase).
-      API_INTERNAL_BASE_URL: http://api:3001/v1
+      # SSR → API over the internal network, to whichever API colour is running
+      # (both answer to `api-pool`; during a release, either may answer and a
+      # refused call is retried — apps/web/src/lib/api-reconnect.ts). The
+      # browser resolves the API same-origin at runtime (apps/web/src/lib/api.ts).
+      API_INTERNAL_BASE_URL: http://api-pool:3001/v1
     healthcheck:
       # Readiness for `docker ps` (and so a deploy's readiness is observable). The
       # Next.js standalone server answers once it's up; `/` 307-redirects to
@@ -177,8 +213,6 @@ services:
     container_name: txn_caddy
     restart: unless-stopped
     depends_on:
-      api:
-        condition: service_started
       web:
         condition: service_started
     ports:

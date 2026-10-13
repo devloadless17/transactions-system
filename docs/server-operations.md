@@ -102,7 +102,8 @@ To inspect a dump without restoring: `pg_restore -l /tmp/r.dump`.
 ## Watchdog
 
 `txn-healthcheck.timer` runs daily at 08:00 Beirut and checks: every prod container
-is up and healthy, every TLS cert for a name Caddy serves has >21 days left (a
+is up and healthy (for the API: one of `txn_api_blue` / `txn_api_green` serves — both at
+once outside a release is a notice), every TLS cert for a name Caddy serves has >21 days left (a
 leftover cert of a removed or renamed host is only a notice), a backup exists and is fresh,
 disk is under 85/90%, and the public site answers over HTTPS.
 
@@ -203,18 +204,28 @@ itself: zero jobs, 0s duration, and `gh run rerun` refusing with "cannot be retr
 through the API". Approve it once in the Actions UI and it proceeds. Do not go hunting
 for a protection rule — there are no environments configured on this repo.
 
-**The Postgres container can be replaced by any deploy.** `docker-compose.prod.yml`
-pins `postgres:16-alpine`, a _floating_ tag, so `docker compose pull` may fetch a newer
-build and `up -d` then recreates the container — observed on 2026-08-20, which moved the
-engine to 16.15. The named volume survives and the data is untouched (verified: ledger
-still nets to exactly 0), but it means the database briefly goes down on deploys you
-expected to be api/web-only, and the engine version is not reproducible.
+**A deploy never touches Postgres, Redis or Caddy** (since blue/green, 2026-10). It
+used to: `docker-compose.prod.yml` uses _floating_ tags (`postgres:16-alpine`,
+`redis:7-alpine`, `caddy:2-alpine`), the deploy pulled every image and a bare `up -d`
+recreated whatever had a newer build — observed on 2026-08-20, which moved the engine to
+16.15 and briefly took the database down on a deploy meant to be api/web-only. Now the
+deploy pulls only the API, web and migrate images, and only starts those three if they
+are missing (`up -d --no-recreate`).
 
-If that matters, pin the patch — `postgres:16.15-alpine` — and bump deliberately. Same
-applies to `redis:7-alpine` and `caddy:2-alpine`. Do it at a calm moment: changing the
-pin itself causes one more recreate.
+Updating one of them is therefore a deliberate step, at a calm moment (each restarts
+for a few seconds; Caddy's restart drops open connections for prod AND staging):
 
-A deploy with no migrations is code-only: images swap, Caddy rides out the gap with
-`lb_try_duration`, and the health gate rolls you back if the new release is unhealthy
-(`./rollback.sh` on the server). A deploy _with_ migrations changes the database and
-deserves the low-traffic window.
+```bash
+cd /home/deploy/transactions-system
+C="docker compose -f docker-compose.prod.yml"
+$C pull postgres && $C up -d --no-deps postgres    # same for redis / caddy
+```
+
+Pinning the patch (`postgres:16.15-alpine`) makes the version reproducible; bump it
+deliberately.
+
+A deploy with no migrations is code-only and invisible: the new API runs beside the old
+one until Caddy has seen it healthy, and a release that never gets healthy never takes
+traffic — the deploy fails red and nothing changed (`./release.sh prod status`). A
+deploy _with_ migrations changes the database (expand-only — the previous release keeps
+serving after it) and deserves the low-traffic window.

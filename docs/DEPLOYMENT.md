@@ -121,36 +121,74 @@ git push origin main:production
   password; production refuses to boot with that), then seeds if requested. The
   API then connects as that non-superuser role so Postgres RLS is enforced.
 - **TLS:** Caddy (`Caddyfile`) terminates HTTPS and reverse-proxies by path.
-- **Zero-loss deploys — no request is dropped.** The deploy swaps the API
-  first and alone, then the web:
+- **Zero-downtime, zero-loss deploys (blue/green).** The API runs as two
+  containers, `api-blue` and `api-green`; normally one of them runs. Caddy lists
+  both and sends every request to the first **healthy** one (`lb_policy first`,
+  health-checked every second). A release (`scripts/deploy/release.sh`, shipped
+  to the server as `release.sh`) never stops the live API first:
 
-  1. `docker compose stop api` sends SIGTERM. The API
-     (`apps/api/src/main.ts`, `common/http/graceful-drain.ts`) answers 503 on
-     `/v1/health`, so Caddy, which health-checks it every second, stops routing
-     to it and **holds** new requests (`lb_try_duration 60s`). Everything
-     already in flight finishes. Dashboards' realtime websockets are closed
-     once the API stops accepting connections; browsers reconnect through
-     Caddy's hold. Background runs stop **between** items: the Whish poller
-     between links, CRM delivery between deliveries, auto-approval between
-     withdrawals (a transfer that has started always completes). Only then are
-     Postgres and Redis closed. That normally takes ~3s.
-  2. The new API starts. Once `/v1/health` answers 200, Caddy releases the held
-     requests to it. Requests that arrive during a swap wait a few seconds;
-     none fails.
-  3. The web is swapped only after the new API is healthy;
-     `apps/web/drain-server.cjs` drains it the same way.
+  1. The new version starts in the other colour, **beside** the live one.
+  2. It must answer its health check, and Caddy's own health check must have
+     passed on it: Caddy marks its checks (`health_headers`), and the API
+     reports, to a caller inside its container, when one last passed
+     (`proxyCheckedMsAgo`). A release that never gets there is stopped and the
+     live API carries on — the deploy fails red and nothing changed.
+  3. The old colour drains: it answers 503, Caddy moves to the new one within a
+     second, it finishes everything in flight (websockets are closed and
+     reconnect), its background runs stop **between** items, then it exits.
+     A healthy colour is up at every moment, so no request waits.
+  4. The new colour is watched for a few seconds; if it falls over, the previous
+     one (stopped, not removed) is started again.
+  5. The web is swapped; Caddy holds its requests for the second it restarts.
 
-  The stop timeout comes from the running image: one labelled
-  `com.rivalpayments.graceful-drain=1` gets 60s, and an older image, which never
-  finishes draining under traffic, keeps the old 10s. An uncaught exception
-  goes through the same shutdown, capped at 15s, before the container restarts.
+  **Background work never runs in two versions at once.** Withdrawal
+  auto-approval (real Whish transfers), every Whish W2W send (one shared session
+  counter) and the Whish payment poller take a **database lease** first
+  (`job_leases`, `apps/api/src/database/job-lease.service.ts`): one holder at a
+  time, judged by the database clock, renewed while it works, re-confirmed
+  before each withdrawal, released when done, and a crashed holder's runs out
+  in 60s. CRM delivery already takes a Redis lock; the ledger reconciliation and
+  maintenance are safe to run twice.
 
-  Measured locally behind Caddy, with three deploys under continuous deposit
-  load and a dashboard connected: 0 failures, and every deposit was booked
-  exactly once. Before this change the same test lost 21 deposits. On staging
-  through Cloudflare (2026-10-13), the old API stopped by itself in 3.2s, and
-  357 probe requests (deposit POSTs, API reads, pages) all succeeded; the
-  longest wait was 5.1s.
+  The release script picks one of three modes from the image label
+  `com.rivalpayments.blue-green` (an API that takes leases):
+
+  | Mode           | When                                                               | How                                                                                                                                                                                                                        |
+  | -------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | `overlap`      | both releases carry it (normal)                                    | as above                                                                                                                                                                                                                   |
+  | `overlap-held` | only the new one (the switch-over from the single `api` container) | the script holds the leases, so only the old API runs background work; traffic and the web move to the new one, the old one is stopped between two Whish transfers with nothing calling it, then the leases are given back |
+  | `sequential`   | the new one does not (a rollback to an older tag)                  | never side by side: the old one drains first, Caddy holds requests until the new one is healthy (a few seconds)                                                                                                            |
+
+  Three things make it hold under real conditions, each found in a rehearsal:
+
+  - Internal health checks are never rate limited (`skipThrottle`). Caddy checks
+    each upstream name every second from one IP; over the per-IP limit a 429
+    made Caddy think the API was down and hold every request ~16s a minute.
+  - A conflicting money transaction is retried 8 times (over 1.2s). At a switch
+    both versions write for ~200ms, and 5 attempts sometimes ran out.
+  - A release that crashes on start is caught in seconds (its restart count),
+    not after the 3-minute health wait.
+
+  **Rehearsed locally** with the real compose file, release script, images and
+  Caddy (2.11.7), under continuous load from 12 deposit streams, Whish
+  withdrawals auto-approved (SIMULATE) and API reads:
+
+  - normal releases (`overlap`): **0 failures, no request waited over 1s**
+    (slowest 0.58s, the load's own p99 ~0.35s);
+  - the switch-over and rollbacks (`overlap-held` / `sequential`): 0 failures;
+  - a release that won't start, one Caddy can't reach, two at once, a release
+    script killed half-way: the live API kept serving, 0 failures;
+  - every deposit booked exactly once (60,000+), every withdrawal approved
+    exactly once, wallets equal to the ledger at rest.
+
+  What it cannot do: a **hard crash** (process killed, not a deploy) loses the
+  requests that process was handling at that instant (502). Nothing of theirs is
+  booked, and sources resend safely by their own reference. Requests still
+  running after 40s at a shutdown are cut.
+
+  Never run a bare `docker compose up -d` on the server (it starts **both**
+  colours — harmless, the leases hold, but untidy) or `--remove-orphans`. A
+  deploy never pulls or recreates Postgres, Redis or Caddy.
 
 - **Config:** `.env.prod.example` is the template; the workflow renders it to
   `/home/deploy/transactions-system/.env` on the server from the secrets above
@@ -160,10 +198,13 @@ git push origin main:production
 
 ```bash
 cd /home/deploy/transactions-system
+./release.sh prod status          # which colour serves, its image, whether Caddy sees it
 docker compose -f docker-compose.prod.yml ps
-docker compose -f docker-compose.prod.yml logs -f api
+docker logs -f txn_api_blue       # or txn_api_green — whichever `status` says serves
 # re-run migrations only (-T so it doesn't eat piped stdin in scripts):
 docker compose -f docker-compose.prod.yml run --rm -T migrate
+# re-release the current tag (e.g. after an interrupted deploy):
+./release.sh prod
 ```
 
 ### Rollback
@@ -178,8 +219,12 @@ cd ~/transactions-system
 ./rollback.sh <git-sha>   # or a specific commit's image
 ```
 
-It recreates **only** api + web (`--no-deps`), so Postgres/Redis and their data
-volumes are never touched, and pins `.env` to the rolled-back tag so it sticks.
+A rollback is an ordinary release of the older tag (`./release.sh prod <tag>`):
+the current API keeps serving until the older one is healthy, so it is as
+zero-downtime as a deploy (a tag from before job leases runs `sequential`: a
+few seconds of held requests, none lost). Postgres/Redis/Caddy and their data
+volumes are never touched, and `.env` is pinned to the rolled-back tag so it
+sticks.
 Migrations are forward-only — `rollback.sh` reverts code, not schema; if a bad
 release ran a destructive migration, restore the DB from a backup.
 
@@ -191,17 +236,37 @@ release ran a destructive migration, restore the DB from a backup.
 
 Read the entry for every release you are about to roll back across. Newest first.
 
+#### Blue/green API + job leases — `20261013160000_job_leases`
+
+- **Additive only:** a new table, `job_leases`; nothing existing is touched or
+  locked, and the previous release ignores it. A rollback to an older tag needs
+  nothing special — the release script runs such a tag `sequential` (never
+  beside another version).
+- **The first production deploy that ships this** replaces the single `txn_api`
+  container (a release that can neither drain nor take leases, with
+  auto-approval ON and real W2W transfers). It runs `overlap-held`: the new API
+  starts beside it while the script holds the leases (so only the old one runs
+  auto-approval), traffic and the web move to the new one, and the old one is
+  stopped only between two Whish transfers, with nothing left calling it. No
+  request reaches an API that is shutting down, and no transfer is cut.
+- **Before that deploy, on the server:** install the updated watchdog
+  (`scripts/healthcheck.sh` → `/home/deploy/healthcheck.sh`; it accepts
+  `txn_api` and the colours). Otherwise its next run pages "txn_api missing".
+- The Caddyfile (both colours, `lb_policy first`, health-check marker) is loaded
+  by the deploy's Caddy reload, before the release. Staging needs it loaded
+  before its first blue/green deploy (Caddy is shared and only a prod deploy
+  ships its config): a manual reload — it routes to the current containers until
+  colours exist.
+- Container names change: `txn_api` → `txn_api_blue` / `txn_api_green`
+  (staging: `txn_api_staging_blue` / `_green`). Use `./release.sh prod status`.
+
 #### Zero-loss deploys (no migration)
 
 - **No database change**, so a rollback needs nothing special. An image without
   the `graceful-drain` label is stopped with the old 10s timeout.
-- **The first production deploy that ships this** replaces an API that does not
-  drain yet. That API is stopped the old way (10s), so a request in flight on it
-  at that moment can still fail, as on every deploy until now. Deploy that one at
-  a quiet time: every deploy after it is zero-loss.
-- The new Caddy settings (health checks on `/v1/health` every second, a 60s
-  hold) are loaded by the production deploy's Caddy reload, before the API is
-  swapped.
+- Superseded for the switch-over by the blue/green entry above (it ships in the
+  same production deploy): the old API is no longer stopped while it still
+  receives requests.
 
 #### Whish refunds — `20261013140000_whish_refund`
 

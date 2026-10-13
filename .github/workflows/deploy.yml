@@ -286,9 +286,13 @@ jobs:
           COMMON="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 
           echo "==> Copying files to $SSH_USER@$HOST:$DEPLOY_DIR"
+          # Not docker-compose.staging.yml: the staging pipeline ships its own, and
+          # production lags staging, so this copy could be older than staging needs.
           scp -i "$KEY" -P "$PORT" $COMMON \
-            docker-compose.prod.yml docker-compose.staging.yml Caddyfile rollback.sh .env.rendered \
+            docker-compose.prod.yml Caddyfile rollback.sh .env.rendered \
             "$SSH_USER@$HOST:$DEPLOY_DIR/"
+          scp -i "$KEY" -P "$PORT" $COMMON \
+            scripts/deploy/release.sh "$SSH_USER@$HOST:$DEPLOY_DIR/release.sh"
 
           echo "==> Activating .env + deploying"
           # The remote script is captured into a variable so DOCKER_SECRET can be
@@ -301,7 +305,7 @@ jobs:
           cd "$DEPLOY_DIR"
           mv -f .env.rendered .env
           chmod 600 .env
-          chmod +x rollback.sh 2>/dev/null || true
+          chmod +x rollback.sh release.sh
 
           # Tag of the release currently running (empty on the very first deploy).
           # If the new release proves healthy this becomes the rollback target.
@@ -310,8 +314,13 @@ jobs:
 
           echo "$DOCKER_SECRET" | docker login -u "$DOCKER_USERNAME" --password-stdin
 
+          # Only the images this release ships. Postgres, Redis and Caddy are never
+          # pulled or recreated by a deploy (a floating tag's update would restart the
+          # database or the edge in the middle of a release); updating them is a
+          # deliberate step of its own (docs/server-operations.md).
           echo "==> Pulling images"
-          docker compose -f docker-compose.prod.yml pull
+          docker compose -f docker-compose.prod.yml pull api-blue web migrate </dev/null
+          docker compose -f docker-compose.prod.yml up -d --no-deps --no-recreate postgres redis caddy </dev/null
 
           # `</dev/null` is load-bearing. This whole script is piped into `bash -s`
           # over ssh, so the remote bash reads it from stdin. `docker compose run`
@@ -337,55 +346,13 @@ jobs:
           docker compose -f docker-compose.prod.yml exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile </dev/null \
             || echo "::warning::caddy reload failed — Caddy kept its previous config; verify the Caddyfile"
 
-          # IMAGE_TAG is pinned to this commit's SHA, so only api/web (whose image ref
-          # changed) get recreated. postgres/redis/caddy keep running untouched — the
-          # data volumes are never recreated, so nothing in the DB is lost.
-          # Zero-loss swap, the API first and alone (see the Caddyfile and
-          # apps/api/src/common/http/graceful-drain.ts). The running API leaves Caddy's
-          # rotation and finishes everything in flight; requests arriving meanwhile are
-          # HELD by Caddy until the new API is healthy. A release labelled
-          # graceful-drain exits on its own in seconds, so it gets up to 60s; an older
-          # one never finishes under traffic, so it keeps the old 10s.
-          echo "==> Swapping the API"
-          if [ "$(docker inspect -f '{{index .Config.Labels "com.rivalpayments.graceful-drain"}}' txn_api 2>/dev/null)" = "1" ]; then STOP_TIMEOUT=60; else STOP_TIMEOUT=10; fi
-          docker compose -f docker-compose.prod.yml stop -t "$STOP_TIMEOUT" api </dev/null
-          docker compose -f docker-compose.prod.yml up -d --no-deps api </dev/null
-
-          echo "==> Waiting for API health"
-          RETRIES=0; MAX=45
-          until [ "$RETRIES" -ge "$MAX" ]; do
-            STATUS=$(docker inspect --format='{{.State.Health.Status}}' txn_api 2>/dev/null || echo "starting")
-            [ "$STATUS" = "healthy" ] && { echo "API is healthy!"; break; }
-            RETRIES=$((RETRIES + 1)); echo "  ...($RETRIES/$MAX) status=$STATUS"; sleep 4
-          done
-          if [ "$RETRIES" -ge "$MAX" ]; then
-            echo "API did not become healthy in time:"
-            docker compose -f docker-compose.prod.yml logs --tail 80 api
-            echo "::error::New release is unhealthy. Old image kept — run ./rollback.sh on the server to revert."
-            exit 1
-          fi
-
-          # Only once the new API is healthy is the web swapped, so the web server's
-          # own calls to the API never wait on a stopped one.
-          echo "==> Starting the rest of the stack (web)"
-          docker compose -f docker-compose.prod.yml up -d --remove-orphans </dev/null
-
-          # The dashboard must come up too — a runtime-broken web (bad standalone
-          # start, missing asset) previously deployed green because only the API was
-          # gated. Same loop, against the web container's healthcheck.
-          echo "==> Waiting for web health"
-          RETRIES=0
-          until [ "$RETRIES" -ge "$MAX" ]; do
-            STATUS=$(docker inspect --format='{{.State.Health.Status}}' txn_web 2>/dev/null || echo "starting")
-            [ "$STATUS" = "healthy" ] && { echo "Web is healthy!"; break; }
-            RETRIES=$((RETRIES + 1)); echo "  ...($RETRIES/$MAX) status=$STATUS"; sleep 4
-          done
-          if [ "$RETRIES" -ge "$MAX" ]; then
-            echo "Web did not become healthy in time:"
-            docker compose -f docker-compose.prod.yml logs --tail 80 web
-            echo "::error::New release is unhealthy (web). Old image kept — run ./rollback.sh on the server to revert."
-            exit 1
-          fi
+          # Blue/green: the new API starts BESIDE the live one, takes traffic only
+          # once Caddy has seen it healthy, then the old one drains — no request
+          # waits or is lost, and a release that never gets healthy never takes
+          # traffic (the live one keeps serving; the deploy fails red). Then the web.
+          # All of it, every check and every fallback: scripts/deploy/release.sh.
+          echo "==> Releasing (API blue/green, then the web)"
+          ./release.sh prod </dev/null
 
           # Healthy: commit the rollback pointer, then drop images we no longer need.
           # We keep the new release + the previous one (for rollback) + the floating

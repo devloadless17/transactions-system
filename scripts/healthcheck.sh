@@ -40,7 +40,11 @@ DISK_URGENT_PCT=90
 DISK_NOTICE_PCT=85
 BACKUP_NOTICE_H=48
 BACKUP_URGENT_H=168          # 7 days: the nightly job is properly dead, not late
-EXPECTED_CONTAINERS="txn_postgres txn_redis txn_api txn_web txn_caddy"
+EXPECTED_CONTAINERS="txn_postgres txn_redis txn_web txn_caddy"
+# The API is blue/green (scripts/deploy/release.sh): one colour serves, both
+# during a release. txn_api is the single container they replaced — accepted
+# until the first blue/green release removes it.
+API_CONTAINERS="txn_api_blue txn_api_green txn_api"
 
 URGENT=()
 NOTICES=()
@@ -66,6 +70,21 @@ for c in $EXPECTED_CONTAINERS; do
     *)            urgent "container $c is $health" ;;
   esac
 done
+
+# --- 1b. the API: at least one colour serving -------------------------------
+api_serving=()
+for c in $API_CONTAINERS; do
+  [ "$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" = true ] || continue
+  [ "$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$c" 2>/dev/null)" = healthy ] \
+    && api_serving+=("$c")
+done
+case "${#api_serving[@]}" in
+  0) urgent "no API container is running and healthy ($API_CONTAINERS)" ;;
+  1) ok "API serving: ${api_serving[0]}" ;;
+  # Harmless (background work is leased, Caddy uses one), but outside a release
+  # it means one was interrupted: the next release tidies it up.
+  *) notice "API colours running side by side: ${api_serving[*]} — an interrupted release? See ./release.sh prod status" ;;
+esac
 
 # --- 2. TLS certificates (the original worry) --------------------------------
 # Read what Caddy actually holds. Checking the public URL with openssl would show
