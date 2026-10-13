@@ -19,10 +19,10 @@ running untouched for seven weeks.
 
 There are two separate certificates and confusing them wastes hours:
 
-|                                                | Who issues it                      | Who renews it        | How to see it                                            |
-| ---------------------------------------------- | ---------------------------------- | -------------------- | -------------------------------------------------------- |
-| What clients see on `portal.rivalpayments.com` | **Cloudflare** (domain is proxied) | Cloudflare, forever  | browser padlock, or `curl -I` shows `server: cloudflare` |
-| Caddy → origin leg, and all of staging         | Let's Encrypt via Caddy            | Caddy, automatically | inside the container (below)                             |
+|                                                                                       | Who issues it                     | Who renews it        | How to see it                                            |
+| ------------------------------------------------------------------------------------- | --------------------------------- | -------------------- | -------------------------------------------------------- |
+| What clients see on `portal.rivalpayments.com` and `staging-portal.rivalpayments.com` | **Cloudflare** (both are proxied) | Cloudflare, forever  | browser padlock, or `curl -I` shows `server: cloudflare` |
+| Caddy → origin leg, for both sites                                                    | Let's Encrypt via Caddy           | Caddy, automatically | inside the container (below)                             |
 
 ```bash
 # What Caddy actually holds and when it expires:
@@ -34,8 +34,19 @@ docker logs txn_caddy 2>&1 | grep "renewal information" | tail -2
 date -u -d @<selected_time-from-the-log>
 ```
 
-Running `openssl s_client` against the prod domain from outside shows you
+Running `openssl s_client` against either domain from outside shows you
 **Cloudflare's** cert and tells you nothing about Caddy's. Use the commands above.
+
+Caddy gets its origin certs over plain HTTP through Cloudflare (the HTTP-01
+challenge; Cloudflare passes `http://` requests through to the server). That is
+also why a proxied name must stay a **first-level** subdomain: Cloudflare's free
+certificate covers `*.rivalpayments.com` only, so a deeper name fails at
+Cloudflare with **525** (TLS handshake to the origin failed) or never gets an
+edge cert.
+
+When a host is renamed or removed, Caddy keeps its last cert in storage and
+never renews it. The watchdog ignores such a leftover (it only checks names
+Caddy serves — see below), and Caddy deletes it some time after it expires.
 
 Renewal only breaks if one of four things breaks: DNS stops pointing here, ports
 80/443 stop being reachable, Caddy stops running, or the `caddy_data` volume is
@@ -91,7 +102,8 @@ To inspect a dump without restoring: `pg_restore -l /tmp/r.dump`.
 ## Watchdog
 
 `txn-healthcheck.timer` runs daily at 08:00 Beirut and checks: every prod container
-is up and healthy, both TLS certs have >21 days left, a backup exists and is fresh,
+is up and healthy, every TLS cert for a name Caddy serves has >21 days left (a
+leftover cert of a removed or renamed host is only a notice), a backup exists and is fresh,
 disk is under 85/90%, and the public site answers over HTTPS.
 
 **It is silent unless something is wrong.** Two tiers, deliberately:

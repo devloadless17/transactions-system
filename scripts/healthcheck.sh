@@ -69,15 +69,30 @@ done
 
 # --- 2. TLS certificates (the original worry) --------------------------------
 # Read what Caddy actually holds. Checking the public URL with openssl would show
-# Cloudflare's cert for the proxied domain instead, which says nothing about
+# Cloudflare's cert for the proxied domains instead, which says nothing about
 # whether Caddy's own renewal is working.
+#
+# Only a name Caddy SERVES can be urgent. Caddy keeps a host's cert in storage
+# after the host leaves its config — a renamed site (staging.portal… became
+# staging-portal… in 2026-10) — and never renews it again, so that cert runs
+# out: alerting on it would page the payouts chat daily for weeks about a host
+# nobody uses. Such a leftover is a notice. The served names come from the
+# RUNNING config (Caddy's admin API); if they can't be read, every cert counts,
+# as before — a broken lookup must never silence a real renewal failure.
 now=$(date +%s)
+served=$(docker exec "$CADDY" wget -qO- http://127.0.0.1:2019/config/apps/http/servers 2>/dev/null |
+  grep -oE '"host":\[[^]]*\]' | grep -oE '"[^"]*"' | grep -vx '"host"' | tr -d '"' | sort -u)
 certs=$(docker exec "$CADDY" find /data/caddy/certificates -name '*.crt' 2>/dev/null)
 if [ -z "$certs" ]; then
   urgent "no TLS certificates found in $CADDY — renewal machinery may be broken"
 else
+  [ -n "$served" ] || notice "could not read the names Caddy serves — checking every stored cert"
   for crt in $certs; do
     name=$(basename "$crt" .crt)
+    if [ -n "$served" ] && ! grep -qxF "$name" <<<"$served"; then
+      notice "TLS cert $name is left over from a host Caddy no longer serves — not checked"
+      continue
+    fi
     end=$(docker exec "$CADDY" cat "$crt" 2>/dev/null | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)
     if [ -z "$end" ]; then notice "could not read expiry of cert $name"; continue; fi
     # Guard the date parse too: an unparseable enddate would make the command
