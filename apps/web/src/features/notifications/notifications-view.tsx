@@ -2,7 +2,15 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowDownToLine, ArrowUpFromLine, BellOff, CheckCheck, HandCoins, X } from 'lucide-react';
+import {
+  AlertTriangle,
+  ArrowDownToLine,
+  ArrowUpFromLine,
+  BellOff,
+  CheckCheck,
+  HandCoins,
+  X,
+} from 'lucide-react';
 import type { NotificationFlow, NotificationListResponse, NotificationResponse } from '@app/shared';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -16,6 +24,8 @@ const FLOW_ICON: Record<NotificationFlow, typeof ArrowUpFromLine> = {
   WITHDRAWAL: ArrowUpFromLine,
   PAYOUT: HandCoins,
   LOAD: ArrowDownToLine,
+  // Admin alerts about a deposit (e.g. a source re-sent one with another amount).
+  DEPOSIT: AlertTriangle,
 };
 
 type Filter = 'active' | 'unread' | 'cleared';

@@ -124,6 +124,11 @@ and `transaction.completed` CRM event. Before confirming, the admin sees
 - **Never credited twice.** The source's own reference is the dedupe key: when the
   source later sends that deposit through the API, it is answered as a replay
   (`replayed: true`) and books nothing.
+- **Never silently short-credited.** A repeat only replays when it is the same
+  transaction: if the source sends that reference with a different amount or currency
+  (e.g. the hand-entered amount was a typo), ingest refuses it with
+  `409 TRANSACTION_MISMATCH`, books nothing, and raises an admin notification
+  ("Deposit refused — amount differs") so the difference is reconciled.
 - **Strict where a person is typing:** a pricing gap is refused with its real error
   (never booked at net 0, unlike the API, which must never bounce), the amount must be
   whole cents, and a reference the source already has is refused rather than replayed —

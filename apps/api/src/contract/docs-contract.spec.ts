@@ -260,6 +260,10 @@ describe('docs ↔ API schema contract (anti-drift)', () => {
       }
       expect(INGEST_DOC).toContain('VALIDATION_ERROR');
       expect(INGEST_DOC).toContain('DUPLICATE_TRANSACTION');
+      // A repeat with different money is refused, not replayed — sources must
+      // be told, in both the internal and the partner doc.
+      expect(INGEST_DOC).toContain('TRANSACTION_MISMATCH');
+      expect(read('docs/rival-ingest-api-integration.md')).toContain('TRANSACTION_MISMATCH');
     });
 
     it('every company-facing money/limit error code appears in the companies guide', () => {

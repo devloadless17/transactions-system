@@ -80,6 +80,19 @@ export class RateLimitError extends DomainError {
 }
 
 /**
+ * A repeat of a transaction that is NOT the same transaction: its reference (or
+ * idempotencyKey) is already recorded, but with a different amount or currency
+ * — or the idempotencyKey belongs to a different reference. Answering it as a
+ * replay would silently drop the money it carries, so it is refused and nothing
+ * is recorded. `details` never carries internal identifiers.
+ */
+export class TransactionMismatchError extends DomainError {
+  constructor(message: string, details: Record<string, unknown>) {
+    super('TRANSACTION_MISMATCH', message, 409, details);
+  }
+}
+
+/**
  * An `externalTransactionId` that is already used for this source (the
  * `(source, externalTransactionId)` pair is globally unique). Distinct from a
  * same-company idempotent replay, which returns the existing transaction.

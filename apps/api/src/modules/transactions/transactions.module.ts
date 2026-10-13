@@ -6,6 +6,7 @@ import { LedgerModule } from '../ledger/ledger.module';
 import { WalletsModule } from '../wallets/wallets.module';
 import { AnalyticsModule } from '../analytics/analytics.module';
 import { CrmModule } from '../crm/crm.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { AdminDepositsController } from './admin-deposits.controller';
 import { IngestController } from './ingest.controller';
 import { TransactionsReadController } from './transactions.controller';
@@ -21,6 +22,7 @@ import { IngestLogInterceptor } from './interceptors/ingest-log.interceptor';
     WalletsModule,
     AnalyticsModule,
     CrmModule,
+    NotificationsModule,
   ],
   controllers: [IngestController, TransactionsReadController, AdminDepositsController],
   providers: [TransactionsService, IngestLogInterceptor],

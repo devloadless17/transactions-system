@@ -16,6 +16,10 @@ import type { AuthPrincipal } from '../../common/types/request.types';
 import { NotFoundError, ValidationError } from '../../common/errors/domain.error';
 import { isBackoffice } from '../../common/backoffice-view';
 
+// The flows that are requests someone approves (and that Telegram pages for).
+// DEPOSIT notifications are admin alerts, never requests.
+type RequestFlow = Exclude<NotificationFlow, 'DEPOSIT'>;
+
 // Reject offsets beyond this — deep paging should narrow with filters instead of
 // scanning, mirroring the transactions/activity lists.
 const MAX_LIST_OFFSET = 50_000;
@@ -24,11 +28,13 @@ const FLOW_LABEL: Record<NotificationFlow, string> = {
   WITHDRAWAL: 'withdrawal',
   PAYOUT: 'payout',
   LOAD: 'load',
+  DEPOSIT: 'deposit',
 };
 const FLOW_PATH: Record<NotificationFlow, string> = {
   WITHDRAWAL: 'withdrawals',
   PAYOUT: 'payouts',
   LOAD: 'loads',
+  DEPOSIT: 'deposits',
 };
 // REJECTED reads as "declined" to the company ("approved or declined").
 const EVENT_PAST: Record<NotificationEvent, string> = {
@@ -37,6 +43,7 @@ const EVENT_PAST: Record<NotificationEvent, string> = {
   REJECTED: 'declined',
   COMPLETED: 'completed',
   CANCELLED: 'cancelled',
+  ATTENTION: 'flagged',
 };
 
 interface CreateInput {
@@ -69,7 +76,7 @@ interface AdminNotificationMeta {
  * notification created before the figure was recorded) it names no amount.
  */
 export function adminRequestBody(
-  flow: NotificationFlow,
+  flow: RequestFlow,
   companyName: string | null | undefined,
   operator?: { amount: string; currency: string } | null,
 ): string {
@@ -96,9 +103,45 @@ export class NotificationsService {
 
   // ---------- creation (called by the money services) ----------
 
+  /**
+   * A source re-sent a deposit we already recorded, with a different amount or
+   * currency. It was refused (409), so the money it holds for the company is not
+   * credited until an admin reconciles it with the source. ADMIN scope only and
+   * in-app only: the source was told at once, and Telegram stays for requests
+   * someone must pay out.
+   */
+  async depositMismatch(p: {
+    companyId: string;
+    companyName: string | null;
+    sourceCode: string;
+    reference: string;
+    /** e.g. "100.00 USD" */
+    recorded: string;
+    sent: string;
+    transactionId: string;
+  }): Promise<void> {
+    try {
+      await this.create({
+        scope: 'ADMIN',
+        companyId: p.companyId,
+        companyName: p.companyName,
+        flow: 'DEPOSIT',
+        event: 'ATTENTION',
+        entityId: p.transactionId,
+        title: 'Deposit refused — amount differs',
+        body:
+          `${p.sourceCode} sent ${p.reference} for ${p.sent}, but it is recorded as ${p.recorded}` +
+          `${p.companyName ? ` (${p.companyName})` : ''}. Nothing was credited — reconcile it with the source.`,
+        link: `/admin/${FLOW_PATH.DEPOSIT}?search=${encodeURIComponent(p.reference)}`,
+      });
+    } catch (e) {
+      this.logger.warn(`notify depositMismatch failed: ${(e as Error).message}`);
+    }
+  }
+
   /** A company submitted a request → notify platform admins to action it. */
   async requestSubmitted(p: {
-    flow: NotificationFlow;
+    flow: RequestFlow;
     companyId: string;
     entityId: string;
     /**
@@ -186,7 +229,7 @@ export class NotificationsService {
 
   /** An admin resolved a request → notify the requesting company. */
   async requestResolved(p: {
-    flow: NotificationFlow;
+    flow: RequestFlow;
     event: Extract<NotificationEvent, 'APPROVED' | 'REJECTED' | 'COMPLETED' | 'CANCELLED'>;
     companyId: string;
     entityId: string;
@@ -225,7 +268,7 @@ export class NotificationsService {
    * while staying reviewable under the "Cleared" filter. Best-effort, post-commit:
    * a failure here never blocks or rolls back the money operation.
    */
-  async clearAdminRequest(p: { flow: NotificationFlow; entityId: string }): Promise<void> {
+  async clearAdminRequest(p: { flow: RequestFlow; entityId: string }): Promise<void> {
     try {
       await this.prisma.runAsAdmin(async (tx) => {
         const notif = await tx.notification.findFirst({
@@ -462,8 +505,9 @@ export class NotificationsService {
     // REQUESTED amount, which next to the row's pay/collect figure gives the fee
     // away. Back office gets the body rebuilt from the notification's data —
     // the operator's figure when it was recorded, no amount at all when not.
+    // (A DEPOSIT alert is never a request, and states no fee — kept as stored.)
     const body =
-      viewer.backoffice && r.scope === 'ADMIN' && event === 'REQUESTED'
+      viewer.backoffice && r.scope === 'ADMIN' && event === 'REQUESTED' && flow !== 'DEPOSIT'
         ? adminRequestBody(
             flow,
             meta.companyName,

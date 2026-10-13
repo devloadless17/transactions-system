@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  AlertTriangle,
   ArrowDownToLine,
   ArrowUpFromLine,
   Bell,
@@ -25,6 +26,8 @@ const FLOW_ICON: Record<NotificationFlow, typeof ArrowUpFromLine> = {
   WITHDRAWAL: ArrowUpFromLine,
   PAYOUT: HandCoins,
   LOAD: ArrowDownToLine,
+  // Admin alerts about a deposit (e.g. a source re-sent one with another amount).
+  DEPOSIT: AlertTriangle,
 };
 
 export function NotificationBell({ scope }: { scope: 'admin' | 'company' }) {

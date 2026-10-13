@@ -218,22 +218,27 @@ export const NotificationScope = {
 } as const;
 export type NotificationScope = (typeof NotificationScope)[keyof typeof NotificationScope];
 
-// The approvable money flow a notification is about.
+// The money flow a notification is about. WITHDRAWAL/PAYOUT/LOAD are the
+// approvable requests; DEPOSIT carries admin alerts about deposits (a source
+// re-sent a recorded deposit with a different amount — see ATTENTION).
 export const NotificationFlow = {
   WITHDRAWAL: 'WITHDRAWAL',
   PAYOUT: 'PAYOUT',
   LOAD: 'LOAD',
+  DEPOSIT: 'DEPOSIT',
 } as const;
 export type NotificationFlow = (typeof NotificationFlow)[keyof typeof NotificationFlow];
 
-// What happened. REQUESTED → admins must action it; the others are resolutions
-// the requesting company sees on its own request.
+// What happened. REQUESTED → admins must action it; APPROVED…CANCELLED are
+// resolutions the requesting company sees on its own request; ATTENTION → an
+// admin alert about something that needs reconciling (no request behind it).
 export const NotificationEvent = {
   REQUESTED: 'REQUESTED',
   APPROVED: 'APPROVED',
   REJECTED: 'REJECTED',
   COMPLETED: 'COMPLETED',
   CANCELLED: 'CANCELLED',
+  ATTENTION: 'ATTENTION',
 } as const;
 export type NotificationEvent = (typeof NotificationEvent)[keyof typeof NotificationEvent];
 

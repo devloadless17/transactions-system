@@ -262,3 +262,46 @@ describe('admin "new request" notifications and back office', () => {
     ]);
   });
 });
+
+describe('NotificationsService.depositMismatch — a refused, mismatched deposit', () => {
+  const alert = {
+    companyId: 'c-1',
+    companyName: 'Acme Trading',
+    sourceCode: 'whish',
+    reference: 'REF 42/A',
+    recorded: '100.00 USD',
+    sent: '1000.00 USD',
+    transactionId: 't-1',
+  };
+
+  it('raises an ADMIN alert that names both figures and links to the deposit', async () => {
+    const { svc, notificationCreate } = makeService();
+    await svc.depositMismatch(alert);
+
+    const data = notificationCreate.mock.calls[0]![0].data;
+    expect(data).toMatchObject({
+      scope: 'ADMIN',
+      companyId: null, // ADMIN rows are never visible to a tenant
+      flow: 'DEPOSIT',
+      event: 'ATTENTION',
+      entityId: 't-1',
+      link: '/admin/deposits?search=REF%2042%2FA',
+    });
+    expect(data.body).toContain('1000.00 USD');
+    expect(data.body).toContain('100.00 USD');
+    expect(data.body).toContain('Acme Trading');
+  });
+
+  it('never pages Telegram — the source was already told, and that channel is for requests', async () => {
+    const { svc, notifyRequest } = makeService({ configured: true });
+    await svc.depositMismatch(alert);
+    await flush();
+    expect(notifyRequest).not.toHaveBeenCalled();
+  });
+
+  it('a failed write never throws into the money path', async () => {
+    const { svc, notificationCreate } = makeService();
+    notificationCreate.mockRejectedValueOnce(new Error('db down'));
+    await expect(svc.depositMismatch(alert)).resolves.toBeUndefined();
+  });
+});

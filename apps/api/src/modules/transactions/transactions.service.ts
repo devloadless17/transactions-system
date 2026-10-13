@@ -39,10 +39,12 @@ import { AnalyticsService } from '../analytics/analytics.service';
 import { RealtimeService } from '../realtime/realtime.service';
 import { CacheService } from '../cache/cache.service';
 import { CrmDispatchService } from '../crm/crm-dispatch.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import {
   ConflictError,
   DuplicateTransactionError,
   NotFoundError,
+  TransactionMismatchError,
   ValidationError,
 } from '../../common/errors/domain.error';
 import { csvCell } from '../../common/csv';
@@ -76,6 +78,10 @@ const MAX_LIST_OFFSET = 100_000;
 // alert ops loudly. Re-alert at most once per (kind, company, source) per this
 // window so a busy source can't flood the error log.
 const NO_RULE_ALERT_TTL_MS = 10 * 60_000;
+// One admin notification per mismatched reference per day: a source retrying the
+// same refused request must not flood the bell, but a new day's retry is a new
+// reminder that the money is still not reconciled.
+const MISMATCH_ALERT_TTL_MS = 24 * 3600_000;
 
 // Source-fee schedules are admin-only static config that changes rarely, yet the
 // fee is priced on EVERY deposit. Without caching, each ingest opens a second
@@ -103,6 +109,7 @@ export class TransactionsService {
     private readonly pricingIssueCounter: Counter<string>,
     private readonly cache: CacheService,
     private readonly crm: CrmDispatchService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   /**
@@ -275,11 +282,24 @@ export class TransactionsService {
     // Run the whole financial mutation scoped to the target company, so RLS
     // WITH CHECK validates that every row written (transaction, ledger, wallet)
     // belongs to `companyId` — a bug can't mis-book into another tenant.
-    const { result, replayed, pricingIssue, networkCapped } =
+    // What this request is, for comparing against a recorded transaction.
+    const sent = {
+      sourceId: source.id,
+      externalTransactionId: input.externalTransactionId,
+      amount,
+      currency: input.currency,
+    };
+    const { result, replayed, pricingIssue, networkCapped, mismatch } =
       await this.prisma.runSerializableAsTenant(companyId, async (tx) => {
         const cTx = tx as unknown as PrismaClient;
 
         // ---- idempotency: explicit key OR natural (source,external) pair ----
+        // A replay must carry the SAME money. One whose amount or currency
+        // differs from the recorded row is not a retry: answering it "replayed"
+        // would silently drop the money it carries — e.g. a deposit recorded by
+        // hand as 100.00 that the source then sends as 1000.00 leaves the books
+        // balanced, so nothing would ever notice the missing 900. It is returned
+        // as `mismatch` and refused below, outside this transaction.
         if (input.idempotencyKey) {
           const existing = await cTx.transaction.findFirst({
             where: { companyId, idempotencyKey: input.idempotencyKey },
@@ -290,6 +310,7 @@ export class TransactionsService {
               replayed: true,
               pricingIssue: null,
               networkCapped: false,
+              mismatch: replayMismatch(existing, sent),
             };
           }
         }
@@ -307,6 +328,7 @@ export class TransactionsService {
             replayed: true,
             pricingIssue: null,
             networkCapped: false,
+            mismatch: replayMismatch(dup, sent),
           };
         }
 
@@ -417,8 +439,19 @@ export class TransactionsService {
           replayed: false,
           pricingIssue,
           networkCapped,
+          mismatch: null,
         };
       });
+
+    // Not the same transaction → refuse. Nothing was written. An amount or
+    // currency difference is a real discrepancy — money at the source that is
+    // not credited here — so the platform admins are alerted to reconcile it.
+    if (mismatch) {
+      if (mismatch.kind === 'amount') {
+        await this.alertReplayMismatch(companyId, source, input.externalTransactionId, mismatch);
+      }
+      throw replayMismatchError(input, mismatch);
+    }
 
     // A pricing gap no longer blocks the deposit (it books at net 0), but it is
     // still an operator problem: the company is credited nothing until the rule
@@ -708,6 +741,49 @@ export class TransactionsService {
       );
     } catch {
       // Best-effort: alerting must never affect the money path.
+    }
+  }
+
+  /**
+   * A source re-sent a reference we already recorded, with a different amount
+   * or currency, and it was refused. Money it holds for the company is NOT
+   * credited until someone reconciles it, so: an error log, and an ADMIN
+   * notification (deduped per reference, so a retrying source can't flood the
+   * bell). Best-effort: alerting must never change the refusal.
+   */
+  private async alertReplayMismatch(
+    companyId: string,
+    source: { id: string; code: string },
+    reference: string,
+    mismatch: ReplayMismatch,
+  ): Promise<void> {
+    try {
+      const recorded = `${mismatch.recorded.amount} ${mismatch.recorded.currency}`;
+      const sent = `${mismatch.sent.amount} ${mismatch.sent.currency}`;
+      this.logger.error(
+        `Ingest MISMATCH — source ${source.code} re-sent '${reference}' for ${sent}, but it is ` +
+          `recorded as ${recorded} (company ${companyId}, transaction ${mismatch.transactionId}). ` +
+          `Refused; nothing booked — reconcile it with the source.`,
+      );
+      const token = await this.cache.tryLock(
+        `ingest-mismatch:${source.id}:${reference}`,
+        MISMATCH_ALERT_TTL_MS,
+      );
+      if (!token) return; // already alerted for this reference within the window
+      const company = await this.prisma.runAsAdmin((tx) =>
+        tx.company.findUnique({ where: { id: companyId }, select: { name: true } }),
+      );
+      await this.notifications.depositMismatch({
+        companyId,
+        companyName: company?.name ?? null,
+        sourceCode: source.code,
+        reference,
+        recorded,
+        sent,
+        transactionId: mismatch.transactionId,
+      });
+    } catch (err) {
+      this.logger.warn(`deposit mismatch alert failed: ${(err as Error).message}`);
     }
   }
 
@@ -1142,6 +1218,84 @@ export const TRANSACTIONS_CSV_HEADER = [
  *     the company is credited the full amount.
  * In both cases external = credit + both fees, so the ledger set stays balanced.
  */
+/** How a repeated request differs from the transaction already recorded for it. */
+interface ReplayMismatch {
+  // 'amount': the same reference (same source) with a different amount or
+  //   currency — a money discrepancy an admin must reconcile.
+  // 'key': an idempotencyKey match whose transaction has a different reference
+  //   or source, AND different money — a key reused for another transaction.
+  kind: 'amount' | 'key';
+  transactionId: string;
+  // Shown to the caller only for 'amount', where the row is provably this
+  // source's own (an idempotencyKey can collide across sources, and another
+  // source's figures must not leak).
+  recorded: { amount: string; currency: string };
+  sent: { amount: string; currency: string };
+}
+
+/**
+ * Compare a request with the transaction its idempotencyKey or reference
+ * matched. A replay is decided on the MONEY: the same amount and currency is
+ * the same transaction (an idempotencyKey retry carrying a fresh reference has
+ * always replayed, by design), and different money is never a replay. null =
+ * a true replay. Amounts compare as Money at the platform scale, so "100" and
+ * "100.00" are the same.
+ */
+function replayMismatch(
+  recorded: {
+    id: string;
+    sourceId: string;
+    externalTransactionId: string;
+    amount: { toString(): string };
+    currency: string;
+  },
+  sent: { sourceId: string; externalTransactionId: string; amount: Money; currency: string },
+): ReplayMismatch | null {
+  const recordedAmount = Money.fromDb(recorded.amount);
+  const recordedCurrency = recorded.currency.trim();
+  if (recordedAmount.eq(sent.amount) && recordedCurrency === sent.currency) return null;
+  const sameReference =
+    recorded.sourceId === sent.sourceId &&
+    recorded.externalTransactionId === sent.externalTransactionId;
+  return {
+    kind: sameReference ? 'amount' : 'key',
+    transactionId: recorded.id,
+    recorded: { amount: recordedAmount.toFixed(2), currency: recordedCurrency },
+    sent: { amount: sent.amount.toFixed(2), currency: sent.currency },
+  };
+}
+
+/**
+ * The caller-facing refusal of a mismatched repeat (crosses the source
+ * boundary). Both kinds say "do not retry, contact us" — never "send a new
+ * key": a source that regenerates its reference per retry would follow that
+ * advice into booking the same deposit twice.
+ */
+function replayMismatchError(
+  input: IngestTransactionInput,
+  m: ReplayMismatch,
+): TransactionMismatchError {
+  if (m.kind === 'key') {
+    return new TransactionMismatchError(
+      `idempotencyKey '${input.idempotencyKey}' is already used for a transaction with a ` +
+        `different amount or currency. Nothing was recorded — do not retry; contact Rival ` +
+        `Payments.`,
+      { externalTransactionId: input.externalTransactionId, sent: m.sent },
+    );
+  }
+  return new TransactionMismatchError(
+    `Transaction '${input.externalTransactionId}' is already recorded with a different amount ` +
+      `or currency (recorded ${m.recorded.amount} ${m.recorded.currency}, sent ` +
+      `${m.sent.amount} ${m.sent.currency}). Nothing was recorded — do not retry; ` +
+      `contact Rival Payments to reconcile it.`,
+    {
+      externalTransactionId: input.externalTransactionId,
+      recorded: m.recorded,
+      sent: m.sent,
+    },
+  );
+}
+
 /** A manual deposit whose reference this source already has — never booked twice. */
 function manualDuplicate(
   reference: string,

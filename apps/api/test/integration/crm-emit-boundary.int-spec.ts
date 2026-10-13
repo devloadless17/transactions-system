@@ -128,6 +128,7 @@ beforeAll(async () => {
     fakeCounter,
     fakeCache,
     crmSpy, // real spy: ingest WILL call emitFromTransaction (the control)
+    fakeNotifications,
   );
 });
 
@@ -194,6 +195,7 @@ describe('CRM emit boundary (invariant 5: loads/payouts never emitted)', () => {
       fakeCounter,
       fakeCache,
       { emitFromTransaction: () => undefined } as unknown as CrmDispatchService,
+      fakeNotifications,
     );
     await fundTx.ingest({ kind: 'source', sourceId }, ingestInput(companyId, '100'));
     vi.clearAllMocks();

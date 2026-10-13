@@ -163,11 +163,18 @@ In both cases you receive a `201` with the **existing** transaction, marked
 `"replayed": true`, and **the transaction is not recorded twice**. This means: if you
 get a network timeout, you can safely resend the exact same request.
 
+A repeat must carry the **same amount and currency** as the transaction already
+recorded. A repeat whose amount or currency differs is **not** a replay — it is refused
+with `409 TRANSACTION_MISMATCH`, nothing is recorded, and `error.details` shows what you
+`sent` (and, for the same `externalTransactionId`, what is `recorded`). Do not retry it:
+contact Rival Payments so the difference is reconciled.
+
 The same applies to transactions Rival Payments recorded for you by hand (for example,
 before your integration went live): when you send one of them with **your own
-transaction reference** as `externalTransactionId`, you receive it back with
-`"replayed": true` and it is not recorded twice. So it is safe to send your full
-history, including transactions we already recorded.
+transaction reference** as `externalTransactionId` and the **same amount and
+currency**, you receive it back with `"replayed": true` and it is not recorded twice.
+If the amount differs from what we recorded, you receive `409 TRANSACTION_MISMATCH`
+and we reconcile it with you.
 
 > Reusing the _same_ `externalTransactionId` for a _different_ entity is rejected with
 > `409 DUPLICATE_TRANSACTION`. Keep your `externalTransactionId` globally unique per
@@ -197,22 +204,24 @@ echoes the HTTP status.
 
 ### Status codes
 
-| HTTP  | `code`                  | When                                                                                                                                    |
-| ----- | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `201` | —                       | Success — transaction created (or replayed, see Idempotency).                                                                           |
-| `400` | `VALIDATION_ERROR`      | Body failed validation (missing/invalid field, bad `amount`, unsupported `currency`), or the `companySlug` is unknown or not available. |
-| `401` | `UNAUTHORIZED`          | Missing, malformed, invalid, or revoked API key.                                                                                        |
-| `403` | `FORBIDDEN`             | Your key was used on a source path other than `whish`, or the request was made without a source API key.                                |
-| `409` | `DUPLICATE_TRANSACTION` | The `externalTransactionId` was already used for a **different** entity. Do not retry — use a new reference.                            |
-| `409` | `WRITE_CONFLICT`        | Transient write conflict under concurrent load — safe to retry.                                                                         |
-| `500` | `INTERNAL_ERROR`        | Unexpected server error. Retry with backoff; contact Rival Payments if persistent.                                                      |
+| HTTP  | `code`                  | When                                                                                                                                                                        |
+| ----- | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `201` | —                       | Success — transaction created (or replayed, see Idempotency).                                                                                                               |
+| `400` | `VALIDATION_ERROR`      | Body failed validation (missing/invalid field, bad `amount`, unsupported `currency`), or the `companySlug` is unknown or not available.                                     |
+| `401` | `UNAUTHORIZED`          | Missing, malformed, invalid, or revoked API key.                                                                                                                            |
+| `403` | `FORBIDDEN`             | Your key was used on a source path other than `whish`, or the request was made without a source API key.                                                                    |
+| `409` | `DUPLICATE_TRANSACTION` | The `externalTransactionId` was already used for a **different** entity. Do not retry — use a new reference.                                                                |
+| `409` | `TRANSACTION_MISMATCH`  | The `externalTransactionId` (or `idempotencyKey`) is already recorded with a **different amount or currency**. Nothing was recorded. Do not retry — contact Rival Payments. |
+| `409` | `WRITE_CONFLICT`        | Transient write conflict under concurrent load — safe to retry.                                                                                                             |
+| `500` | `INTERNAL_ERROR`        | Unexpected server error. Retry with backoff; contact Rival Payments if persistent.                                                                                          |
 
 ### Recommended retry policy
 
 - **Network errors / timeouts / `409 WRITE_CONFLICT` / `5xx`:** retry with
   exponential backoff. Because of idempotency, resending the identical request is safe.
-- **`400` / `401` / `403` / `409 DUPLICATE_TRANSACTION`:** do **not** blindly retry —
-  the request itself is wrong; fix the payload/credentials/configuration first.
+- **`400` / `401` / `403` / `409 DUPLICATE_TRANSACTION` / `409 TRANSACTION_MISMATCH`:**
+  do **not** blindly retry — the request itself is wrong; fix the
+  payload/credentials/configuration first (for a mismatch, contact Rival Payments).
 
 ---
 

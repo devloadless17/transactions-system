@@ -66,6 +66,8 @@ export interface Harness {
   crm: FakeCrmDispatch;
   /** Every super-admin transaction-log entry written, in order. */
   txLogs: TransactionLogEntry[];
+  /** Every admin "deposit refused — amount differs" alert raised, in order. */
+  depositAlerts: Array<Record<string, unknown>>;
   /** The real company admin service — e.g. the network-fee config write path. */
   companies: CompaniesService;
 }
@@ -183,9 +185,17 @@ export class FakeCrmDispatch {
 }
 
 // Pass-through cache: always recompute (no Redis). Keeps fee resolution real.
+// tryLock dedupes like the real one (a held key returns null), so alert
+// throttling is exercised; keys never expire within a test run.
+const heldLocks = new Set<string>();
 const fakeCache = {
   async wrap<T>(_key: string, _ttl: number, fn: () => Promise<T>): Promise<T> {
     return fn();
+  },
+  async tryLock(key: string): Promise<string | null> {
+    if (heldLocks.has(key)) return null;
+    heldLocks.add(key);
+    return `lock:${key}`;
   },
 } as unknown as CacheService;
 
@@ -264,6 +274,12 @@ export function buildHarness(): Harness {
   const repo = new CommissionsRepository(fakeCache);
   const fees = new FeesService(resolver, repo);
 
+  // Per-harness, so a test sees only the alerts its own ingests raised.
+  const depositAlerts: Array<Record<string, unknown>> = [];
+  const transactionNotifications = {
+    ...(fakeNotifications as unknown as Record<string, unknown>),
+    depositMismatch: async (p: Record<string, unknown>) => void depositAlerts.push(p),
+  } as unknown as NotificationsService;
   const transactions = new TransactionsService(
     prisma,
     resolver,
@@ -277,6 +293,7 @@ export function buildHarness(): Harness {
     fakeCounter, // txn_ingest_pricing_issue_total
     fakeCache,
     fakeCrm,
+    transactionNotifications,
   );
   const withdrawals = new WithdrawalsService(
     prisma,
@@ -345,6 +362,7 @@ export function buildHarness(): Harness {
     whishClient,
     crm: crmRecorder,
     txLogs,
+    depositAlerts,
     companies,
   };
 }

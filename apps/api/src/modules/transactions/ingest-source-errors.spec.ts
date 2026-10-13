@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { DomainError, ValidationError } from '../../common/errors/domain.error';
+import {
+  DomainError,
+  TransactionMismatchError,
+  ValidationError,
+} from '../../common/errors/domain.error';
 import {
   CommissionExceedsAmountError,
   NoMatchingCommissionRuleError,
@@ -51,6 +55,21 @@ describe('toSourceFacingError — pricing errors never cross the source boundary
   it('any other DomainError passes through as the SAME instance', () => {
     const validation = new ValidationError('amount must be positive');
     expect(toSourceFacingError(validation, SLUG)).toBe(validation);
+  });
+
+  it('TRANSACTION_MISMATCH passes through: the source must learn its repeat was NOT recorded', () => {
+    const mismatch = new TransactionMismatchError('already recorded with a different amount', {
+      externalTransactionId: 'ref-1',
+      recorded: { amount: '100.00', currency: 'USD' },
+      sent: { amount: '1000.00', currency: 'USD' },
+    });
+    const out = toSourceFacingError(mismatch, SLUG) as DomainError;
+    expect(out).toBe(mismatch);
+    expect(out.httpStatus).toBe(409);
+    // Its own reference and the two amounts — never an internal identifier.
+    expect(JSON.stringify(out.details)).not.toMatch(
+      /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i,
+    );
   });
 
   it('non-domain errors pass through untouched', () => {
