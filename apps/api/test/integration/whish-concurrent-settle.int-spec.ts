@@ -82,7 +82,8 @@ describe('concurrent Whish settle race (exactly-once)', () => {
     h.whishClient.status = 'success'; // Whish reports success to BOTH racers
 
     // Fire both authoritative entry points at the exact same time on the SAME
-    // payment. handleCallback resolves void (it swallows + logs); adminRefreshStatus
+    // payment. handleCallback resolves whether the callback was authentic (it swallows + logs
+    // settlement errors); adminRefreshStatus
     // returns the mapped row. NEITHER may reject — the loser must replay the winner's
     // transaction (natural idempotency), not blow up.
     const results = await Promise.allSettled([

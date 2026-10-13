@@ -98,13 +98,15 @@ These are the codes you will meet most often; the Whish Pay endpoints add a few 
 
 ### Rate limits
 
-Two limits exist, and both answer with `429 RATE_LIMITED`.
+**Deposits are never rate-limited.** However many of your customers pay at the same moment, nothing refuses them: Whish's payment confirmations are never limited, and creating payment links has no per-IP limit — only a per-key safety brake far above real traffic. What is limited answers `429 RATE_LIMITED`:
 
-**Global safety throttle — every endpoint.** **100 requests per 60 seconds, per IP, counted separately for each endpoint** (so 100 calls to `GET /company/wallets` do not use up your budget for `POST /company/withdrawals`). It covers everything under `/v1/company/*` (wallets, transactions, withdrawals, payouts, loads, and `/company/whish/payments`) **and** `/v1/integrations/whish/*`. The only exception is `/v1/company/analytics/*`, which is not throttled. Every response carries `X-RateLimit-Limit` / `X-RateLimit-Remaining` / `X-RateLimit-Reset`, and its `429` adds `Retry-After` — the seconds to wait before retrying — but no `error.details`.
+**Whish Pay API — `/v1/integrations/whish/*`, per API key, no per-IP limit.** Creating a link: **6,000 a minute** (100 a second). Refreshing a status from Whish: **6,000 a minute**. Looking a payment up: **30,000 a minute**. Each has its **own** counter, so polling can never use up your link creation. The same brakes, on the same counters, cover a link's own calls on the dashboard twin `/v1/company/whish/payments` (create, look up, refresh-status). These are brakes against a broken integration stuck in a loop — every link and refresh is a call to Whish — not ceilings for real customers; if your volume ever approaches one, contact us and it is raised. Responses carry `RateLimit-Limit` / `RateLimit-Remaining` / `RateLimit-Reset`, and a `429` adds `Retry-After` and echoes the limit in `error.details`.
 
-**Per-key limit — `/v1/integrations/whish/*` only.** On top of the throttle above, these endpoints allow **300 requests per 60 seconds, per key**, counted across all three of them together. Go over and you get a `429 RATE_LIMITED` with the limit echoed in `error.details`, plus `RateLimit-Limit` / `RateLimit-Remaining` / `RateLimit-Reset` headers on every response (and `Retry-After` on the `429`) so you can self-pace. All of these header values are in **seconds**.
+**Every other endpoint — per IP.** **100 requests per 60 seconds, per IP, counted separately for each endpoint** (so 100 calls to `GET /company/wallets` do not use up your budget for `POST /company/withdrawals`). It covers everything else under `/v1/company/*` — wallets, transactions, withdrawals, payouts, loads, and the payment-link list and CSV of `/company/whish/payments`. The only exception is `/v1/company/analytics/*`, which is not throttled. Every response carries `X-RateLimit-Limit` / `X-RateLimit-Remaining` / `X-RateLimit-Reset`, and its `429` adds `Retry-After` — the seconds to wait before retrying — but no `error.details`.
 
-In practice, from a single server IP you can make up to 100 calls a minute to any one endpoint. Note that `/v1/company/whish/payments` is the dashboard-side twin of the Whish Pay endpoints and is throttled per IP only, not per key.
+**Wrong API keys — per IP.** A missing, malformed or invalid key counts as a failed attempt: 20 a minute per key prefix from one IP (100 per IP), then `429`. A working key never counts, so this never slows a real integration.
+
+All of these header values are in **seconds**.
 
 ### Your first call
 

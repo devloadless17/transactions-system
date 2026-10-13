@@ -12,10 +12,35 @@ import { NotFoundError } from '../../common/errors/domain.error';
 // - the remainder is the secret, hashed via argon2id
 const KEY_PRODUCT = 'tsk';
 
+// argon2 is deliberately slow — tens of milliseconds and 64 MB per check, on
+// Node's 4-thread pool — so running it on EVERY request capped one integration
+// at ~40 requests a second, and a burst queued the pool's other work (DNS
+// lookups for calls to Whish) behind it. A key that verified once is remembered
+// by this process, so its later requests skip argon2. Safe by construction:
+//   - only a pure function is memoized: argon2.verify's answer for this exact
+//     stored hash and this exact key never changes;
+//   - revocation, rotation and expiry are still decided by the live candidate
+//     query on every request, so a revoked key stops working at once, on every
+//     instance;
+//   - only successes are remembered (a wrong key is never answered from memory
+//     and cannot grow the memo), and never the key itself — only its sha256,
+//     compared in constant time.
+const VERIFIED_MEMO_MAX = 10_000;
+// last_used_at is for people ("Last used" in the dashboard): stamped at most
+// once a minute per key, not one row write per request in a burst.
+const LAST_USED_EVERY_MS = 60_000;
+
 type Owner = { kind: 'company'; companyId: string } | { kind: 'source'; sourceId: string };
 
 @Injectable()
 export class ApiKeysService {
+  /** Stored argon2 hash → sha256 of the key that verified against it. */
+  private readonly verified = new Map<string, Buffer>();
+  /** argon2 checks running now, by stored hash + key digest — shared, not repeated. */
+  private readonly inflight = new Map<string, Promise<boolean>>();
+  /** Key id → when this process last stamped its last_used_at. */
+  private readonly lastUsedStamped = new Map<string, number>();
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly realtime: RealtimeService,
@@ -126,9 +151,10 @@ export class ApiKeysService {
   }
 
   /**
-   * Look up by the 8-char prefix to narrow the candidate set, then argon2-verify
-   * each candidate. There's a finite set (~1-10) per prefix, so this is fast.
-   * Updates last_used_at on hit (best effort).
+   * Look up by the 8-char prefix to narrow the candidate set, then verify each
+   * candidate (argon2, or the memo of an earlier success — see
+   * VERIFIED_MEMO_MAX). Updates last_used_at on hit (best effort, at most once
+   * a minute per key).
    *
    * Returns the owner — either a companyId or a sourceId — so callers can
    * dispatch on the key flavour.
@@ -150,19 +176,58 @@ export class ApiKeysService {
       }),
     );
 
+    const digest = crypto.createHash('sha256').update(plaintext).digest();
     for (const c of candidates) {
-      const ok = await argon2.verify(c.keyHash, plaintext).catch(() => false);
-      if (ok) {
-        this.prisma
-          .runAsAdmin((tx) =>
-            tx.apiKey.update({ where: { id: c.id }, data: { lastUsedAt: new Date() } }),
-          )
-          .catch(() => undefined);
-        return { companyId: c.companyId, sourceId: c.sourceId, keyId: c.id };
-      }
+      if (!(await this.matches(c.keyHash, plaintext, digest))) continue;
+      this.stampLastUsed(c.id);
+      return { companyId: c.companyId, sourceId: c.sourceId, keyId: c.id };
     }
     return null;
   }
+
+  private async matches(keyHash: string, plaintext: string, digest: Buffer): Promise<boolean> {
+    const known = this.verified.get(keyHash);
+    if (known && crypto.timingSafeEqual(known, digest)) return true;
+    // Requests with the same key that arrive together (a burst right after a
+    // restart, before anything is remembered) share one argon2 check instead
+    // of queueing one each on the thread pool.
+    const flightKey = `${keyHash}:${digest.toString('hex')}`;
+    let flight = this.inflight.get(flightKey);
+    if (!flight) {
+      flight = argon2
+        .verify(keyHash, plaintext)
+        .catch(() => false)
+        .then((ok) => {
+          if (ok) setCapped(this.verified, keyHash, digest);
+          return ok;
+        })
+        .finally(() => this.inflight.delete(flightKey));
+      this.inflight.set(flightKey, flight);
+    }
+    return flight;
+  }
+
+  private stampLastUsed(keyId: string): void {
+    const now = Date.now();
+    const last = this.lastUsedStamped.get(keyId);
+    if (last !== undefined && now - last < LAST_USED_EVERY_MS) return;
+    setCapped(this.lastUsedStamped, keyId, now);
+    this.prisma
+      .runAsAdmin((tx) =>
+        tx.apiKey.update({ where: { id: keyId }, data: { lastUsedAt: new Date(now) } }),
+      )
+      .catch(() => undefined);
+  }
+}
+
+/** Set, first dropping the oldest entry once the map is full (Maps keep insertion order). */
+function setCapped<V>(map: Map<string, V>, key: string, value: V): void {
+  map.delete(key);
+  if (map.size >= VERIFIED_MEMO_MAX) {
+    const oldest = map.keys().next().value;
+    if (oldest !== undefined) map.delete(oldest);
+  }
+  map.set(key, value);
 }
 
 function generateKey(): string {

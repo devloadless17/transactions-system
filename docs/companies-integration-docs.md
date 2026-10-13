@@ -296,23 +296,34 @@ There is **no global `Idempotency-Key` header**. Idempotency is per-flow and exp
 
 ### Rate limits
 
-There are two independent limiters:
+**Deposits are never rate-limited.** However many of your customers pay at the same moment, no volume rule refuses one:
 
-**1. Global per-IP throttler** (`ThrottlerGuard`, Redis-backed, shared across instances) — applies to every route a company can call, including `/v1/integrations/whish/*`. The only company-facing exemption is `/v1/company/analytics/*`. (Two surfaces a company key cannot reach are not IP-throttled either: the source ingest endpoints and the operator-only analytics routes.)
+- **Whish payment confirmations** — Whish telling us a customer has paid — are never limited.
+- **Creating Whish payment links** — the start of your customers' deposits — has **no per-IP limit**. Every link comes from your own server, and a per-IP cap would refuse your customers at your busiest minute. There is only a per-API-key safety brake, far above any real customer traffic (below).
+- **Deposits pushed to you by payment sources** are never limited either.
+
+What is limited — three things, each answering `429 RATE_LIMITED`:
+
+**1. Payment links — per API key, one budget for each kind of call.** This covers the Whish Pay API (`/v1/integrations/whish/*`) and a link's own calls on its dashboard twin, `/v1/company/whish/payments` (create, look up, refresh-status), on the same counters for the same key — signed in on the dashboard, the budget is per user. Neither has a per-IP limit.
+
+| Call                                                              | Budget per API key                | Counter |
+| ----------------------------------------------------------------- | --------------------------------- | ------- |
+| Create a payment link — `POST /payments`                          | **6,000 a minute** (100 a second) | its own |
+| Refresh a status from Whish — `POST /payments/:reference/refresh` | **6,000 a minute**                | its own |
+| Look up a payment — `GET /payments/:reference`                    | **30,000 a minute**               | its own |
+
+These are **safety brakes, not ceilings for real traffic**: 100 customers starting a deposit every second for a whole minute is far beyond any real customer base, while a broken integration stuck in a retry loop reaches it at once. They exist because every link creation and refresh is a call to Whish, through an account Rival shares across companies — one runaway loop must not get it throttled for everyone. Each kind of call has its **own** counter, so polling statuses can never use up your link creation. If your volume ever approaches a brake, contact us: they are raised in configuration (`INTEGRATION_CREATE_RATE_LIMIT_MAX`, default 6000; `INTEGRATION_LOOKUP_RATE_LIMIT_MAX`, default 30000). Fixed one-minute windows.
+
+**2. Every other company route — per IP.** Everything else under `/v1/company/*` — wallets, transactions, withdrawals, payouts, loads, and the payment-link list and CSV of `/company/whish/payments` — whether called with a session or an API key:
 
 - Default **`RATE_LIMIT_MAX` = 100 requests / `RATE_LIMIT_TTL` = 60s** per IP, **counted separately for each endpoint** (100 calls to `GET /company/wallets` do not use up the budget for `POST /company/withdrawals`).
-- Auth routes are stricter via per-route overrides: **login = 10/60s**, **token refresh = 30/60s**.
-- Fails **open** if Redis is down (no limit rather than locking everyone out).
+- `/v1/company/analytics/*` is exempt. Auth routes are stricter: **login = 10/60s**, **token refresh = 30/60s**. (Two surfaces a company key cannot reach are not per-IP throttled either: the source ingest endpoints and the operator-only analytics routes.)
 
-**2. Per-API-key limiter** (`ApiKeyRateLimitGuard`) — applies to the `integrations/whish` endpoints **only**, keyed on the API key (not IP). It is enforced **in addition to** limiter 1, not instead of it.
+**3. Wrong API keys — per IP.** A request whose API key is missing, malformed or invalid counts as a failed attempt: **20 a minute** for one key prefix from one IP, and **100 a minute** for the IP across prefixes; past that, the IP gets `429` until the minute ends. This applies to every route that takes an API key. A working key **never** counts, and a key that recently worked from an address is never blocked from it — so this cannot slow a real integration; it stops key guessing.
 
-- **300 requests / 60s** per key (`INTEGRATION_RATE_LIMIT_MAX`, default 300), fixed-window, counted across all `/v1/integrations/whish/*` endpoints together.
-- Because limiter 1 still applies, a single server IP is capped at 100 calls / 60s to any one of these endpoints (for example, 100 link creations a minute).
-- Fails **open** if Redis is unavailable.
+All three fail **open** if the counter store (Redis) is unavailable: an outage never blocks you.
 
-> **Which limiter applies to you.** Every `/v1/company/*` route — including `/company/whish/payments`, `/company/withdrawals` and `/company/transactions` — is governed by limiter 1 **only**, even when you call it with an API key. `/v1/integrations/whish/*` is governed by **both** limiters, and is the only surface that carries the per-key `RateLimit-*` headers below. (The source ingest endpoint is a separate surface, not reachable with a company key, and is unlimited by default.) If you drive `company/*` at volume, pace against the per-IP budget (default 100/60s).
-
-Both emit HTTP **429** with `error.code = "RATE_LIMITED"`. The per-key limiter returns the standard flat envelope, with the limit in `error.details`:
+The per-key and wrong-key limiters return the standard flat envelope, with the limit in `error.details`:
 
 ```json
 {
@@ -320,20 +331,21 @@ Both emit HTTP **429** with `error.code = "RATE_LIMITED"`. The per-key limiter r
   "statusCode": 429,
   "error": {
     "code": "RATE_LIMITED",
-    "message": "Rate limit exceeded: 300 requests per 60s",
-    "details": { "limit": 300, "windowSeconds": 60 }
+    "message": "Rate limit exceeded: 6000 requests per 60s",
+    "details": { "limit": 6000, "windowSeconds": 60 }
   }
 }
 ```
 
-Both limiters send headers so you can self-pace. **Every value is in seconds.**
+Every limiter sends headers so you can self-pace. **Every value is in seconds.**
 
-| Limiter                               | On every response                                                 | Added on a 429 |
-| ------------------------------------- | ----------------------------------------------------------------- | -------------- |
-| Per-key (`/v1/integrations/whish/*`)  | `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset`       | `Retry-After`  |
-| Global per-IP (every throttled route) | `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset` | `Retry-After`  |
+| Limiter                              | On every response                                                 | Added on a 429                                                             |
+| ------------------------------------ | ----------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| Payment links (both routes, per key) | `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset`       | `Retry-After`                                                              |
+| Company routes (per IP)              | `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset` | `Retry-After`                                                              |
+| Wrong API keys (per IP)              | —                                                                 | `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset`, `Retry-After` |
 
-`…-Reset` and `Retry-After` are the seconds left until the current window ends. The **global per-IP** throttler's 429 is the default NestJS `ThrottlerException`: same envelope and `code`, but **no `error.details`**. On any 429, wait `Retry-After` seconds before retrying.
+`…-Reset` and `Retry-After` are the seconds left until the current window ends. The **per-IP** throttler's 429 is the default NestJS `ThrottlerException`: same envelope and `code`, but **no `error.details`**. On any 429, wait `Retry-After` seconds before retrying.
 
 ### Authentication & API keys
 
@@ -402,15 +414,15 @@ In the dashboard, your keys are managed under the **API Keys** screen — the co
 
 **`ApiKeyResponse` fields** (returned by list and inside `apiKey`):
 
-| Field        | Type              | Notes                                                      |
-| ------------ | ----------------- | ---------------------------------------------------------- |
-| `id`         | string (uuid)     | Use in rotate/revoke URLs.                                 |
-| `name`       | string            |                                                            |
-| `keyPrefix`  | string            | 8-char prefix; identifies the key (secret never returned). |
-| `createdAt`  | string (ISO-8601) |                                                            |
-| `lastUsedAt` | string \| null    | Best-effort, updated on successful auth.                   |
-| `expiresAt`  | string \| null    |                                                            |
-| `revokedAt`  | string \| null    | Set once revoked; key stops authenticating.                |
+| Field        | Type              | Notes                                                           |
+| ------------ | ----------------- | --------------------------------------------------------------- |
+| `id`         | string (uuid)     | Use in rotate/revoke URLs.                                      |
+| `name`       | string            |                                                                 |
+| `keyPrefix`  | string            | 8-char prefix; identifies the key (secret never returned).      |
+| `createdAt`  | string (ISO-8601) |                                                                 |
+| `lastUsedAt` | string \| null    | Best-effort: updated on successful auth, at most once a minute. |
+| `expiresAt`  | string \| null    |                                                                 |
+| `revokedAt`  | string \| null    | Set once revoked; key stops authenticating.                     |
 
 **Rotation** is the zero-downtime swap: deploy the new key first, then call rotate — the old key keeps working until the call returns and revokes it (the old key is renamed `<name> (rotated:<id8>)` to free the unique name).
 
@@ -1601,10 +1613,10 @@ Whish Pay lets your CRM mint a hosted payment link, hand the link to your custom
 
 All endpoints in this section are reachable with a **COMPANY API key**: `Authorization: Bearer tsk_<prefix>_<secret>`. There are two route families that do the same job with different identifiers:
 
-| Route family                                  | Auth                                     | Reference used in URL              | Rate limit                                                  |
-| --------------------------------------------- | ---------------------------------------- | ---------------------------------- | ----------------------------------------------------------- |
-| `integrations/whish/*` (recommended for CRMs) | Company API key only                     | numeric `externalId` ("reference") | Per-API-key: **300 req / 60s**                              |
-| `company/whish/payments/*`                    | Company API key **or** dashboard session | UUID `id`                          | Per-IP global throttler (`RATE_LIMIT_MAX`, default 100/60s) |
+| Route family                                  | Auth                                     | Reference used in URL              | Rate limit                                                                                                                    |
+| --------------------------------------------- | ---------------------------------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `integrations/whish/*` (recommended for CRMs) | Company API key only                     | numeric `externalId` ("reference") | Per API key, **no per-IP limit**: 6,000 link creations and 30,000 lookups a minute (safety brakes)                            |
+| `company/whish/payments/*`                    | Company API key **or** dashboard session | UUID `id`                          | Create, look up, refresh: the same per-key brakes, **no per-IP limit** (per user on a session). List and CSV: per IP, 100/60s |
 
 Both families return the **same** payment object. API-key requests skip CSRF. We document the `integrations/whish/*` family first (purpose-built for server-to-server CRM use), then the `company/whish/payments/*` equivalents.
 
@@ -1934,7 +1946,7 @@ The signing secret is `whsec_…`, returned **once** when you first set the URL 
 
 ### `company/whish/payments/*` equivalents (UUID-addressed)
 
-Same payment object, addressed by UUID `id`; accepts a company API key **or** a dashboard session. Useful if you prefer listing/UUID semantics. Note the **per-IP** rate limit (global throttler) rather than the per-key limit of `integrations/whish`. (A company API key authenticates against these as an owner-level principal, so it passes the role checks for every action below.)
+Same payment object, addressed by UUID `id`; accepts a company API key **or** a dashboard session. Useful if you prefer listing/UUID semantics. Creating, looking up and refreshing a link carry the same per-key brakes as `integrations/whish` — no per-IP limit (per user on a dashboard session); only the list and the CSV export are capped per IP (100 a minute per endpoint). (A company API key authenticates against these as an owner-level principal, so it passes the role checks for every action below.)
 
 | Method & path                                                                        | Purpose                                                                                                                                                                                                                                                                  | Roles (session)        |
 | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------- |
@@ -1961,7 +1973,7 @@ curl "https://portal.rivalpayments.com/v1/company/whish/payments?status=PAID&pag
 
 1. (Once) Mint a company API key under the dashboard; optionally register an outbound webhook.
 2. `POST integrations/whish/payments` with `amount` + `invoice` (+ `idempotencyKey` for safe retries). Redirect the customer to `data.collectUrl`. Store `data.externalId`.
-3. Learn the result via webhook **or** poll `GET integrations/whish/payments/:externalId` for `status === "PAID"`.
+3. Learn the result via the CRM webhook (recommended — nothing to poll) **or** poll `GET integrations/whish/payments/:externalId` for `status === "PAID"` (a lookup reads our database only; it has its own budget and never uses up link creation).
 4. If a callback was missed and it's still `PENDING`, call `POST .../:externalId/refresh`.
 5. On `PAID`, `data.transactionId` links to the settled ledger transaction (also visible in the transactions API as reference `whish:<externalId>`).
 

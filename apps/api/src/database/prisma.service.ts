@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { Prisma, PrismaClient } from '@app/db';
+import { CompanyQueue } from './company-queue';
 
 // Serializable transactions are designed to abort-and-retry: under contention
 // Postgres raises serialization_failure (40001) / deadlock_detected (40P01),
@@ -31,6 +32,9 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PrismaService.name);
+  // Same-company money transactions take turns instead of racing for the
+  // company's wallet row — see CompanyQueue.
+  private readonly companyQueue = new CompanyQueue();
 
   constructor() {
     super({
@@ -164,15 +168,22 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
    * `companyId` (defense-in-depth — a bug can't write into another tenant).
    * Used by the company-known write flows (ingest, withdrawal/payout/load
    * request). Caller does NOT set the RLS context — this does.
+   *
+   * Queued per company (CompanyQueue): one company's money transactions run one
+   * at a time, in arrival order, so a burst for the same company is booked in
+   * order instead of conflicting and failing. Never start one from inside
+   * another's `fn` for the same company — use the `tx` you are given.
    */
   async runSerializableAsTenant<T>(
     companyId: string,
     fn: (tx: PrismaClient) => Promise<T>,
   ): Promise<T> {
-    return this.runSerializableRaw(async (tx) => {
-      await setTenantContext(tx, companyId);
-      return fn(tx);
-    });
+    return this.companyQueue.run(companyId, () =>
+      this.runSerializableRaw(async (tx) => {
+        await setTenantContext(tx, companyId);
+        return fn(tx);
+      }),
+    );
   }
 
   private async runSerializableRaw<T>(fn: (tx: PrismaClient) => Promise<T>): Promise<T> {

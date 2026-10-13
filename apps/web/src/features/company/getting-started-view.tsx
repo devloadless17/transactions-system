@@ -185,25 +185,48 @@ export function GettingStartedView() {
         <CardHeader>
           <CardTitle>Rate limits</CardTitle>
           <CardDescription>
-            Two limits exist, and both answer with{' '}
-            <code className="font-mono">429 RATE_LIMITED</code>. The global safety throttle covers
-            every endpoint — everything under <code className="font-mono">/v1/company/*</code>{' '}
-            (including <code className="font-mono">/company/whish/payments</code>) and{' '}
-            <code className="font-mono">/v1/integrations/whish</code>:{' '}
-            <strong>100 requests per 60 seconds, per IP</strong>, counted separately for each
-            endpoint. Only <code className="font-mono">/v1/company/analytics</code> is exempt. Its
-            429 carries no <code className="font-mono">error.details</code>; wait the number of
-            seconds in its <code className="font-mono">Retry-After</code> header (every response
-            also carries <code className="font-mono">X-RateLimit-*</code> headers). On top of that,{' '}
-            <code className="font-mono">/v1/integrations/whish</code> allows{' '}
-            <strong>300 requests per 60 seconds, per key</strong>, counted across its endpoints
-            together; go over and you get the limit echoed in{' '}
-            <code className="font-mono">error.details</code>, plus{' '}
-            <code className="font-mono">RateLimit-*</code> headers to pace against. All of these
-            header values are in seconds. In practice, from a single server IP you can make up to
-            100 calls a minute to any one endpoint.
+            <strong>Deposits are never rate-limited.</strong> However many of your customers pay at
+            the same moment, nothing refuses them: Whish&apos;s payment confirmations are never
+            limited, and creating payment links has no per-IP limit. What is limited answers{' '}
+            <code className="font-mono">429 RATE_LIMITED</code>:
           </CardDescription>
         </CardHeader>
+        <CardContent>
+          <ul className="ml-4 list-disc space-y-2 text-sm text-muted-foreground">
+            <li>
+              <strong className="text-foreground">
+                Whish Pay API — <code className="font-mono">/v1/integrations/whish</code>, per API
+                key, no per-IP limit.
+              </strong>{' '}
+              Creating a link: <strong>6,000 a minute</strong> (100 a second). Refreshing a status
+              from Whish: <strong>6,000 a minute</strong>. Looking a payment up:{' '}
+              <strong>30,000 a minute</strong>. Each has its own counter, so polling never uses up
+              your link creation. The same brakes cover a link&apos;s own calls on{' '}
+              <code className="font-mono">/v1/company/whish/payments</code> (create, look up,
+              refresh). These are brakes against an integration stuck in a loop, not ceilings for
+              real customers — contact us if you ever approach one.{' '}
+              <code className="font-mono">RateLimit-*</code> headers on every response.
+            </li>
+            <li>
+              <strong className="text-foreground">Every other endpoint — per IP.</strong>{' '}
+              <strong>100 requests per 60 seconds, per IP</strong>, counted separately for each
+              endpoint, across the rest of <code className="font-mono">/v1/company/*</code>,
+              including the payment-link list and CSV. Only{' '}
+              <code className="font-mono">/v1/company/analytics</code> is exempt. Its 429 carries no{' '}
+              <code className="font-mono">error.details</code>; wait the number of seconds in its{' '}
+              <code className="font-mono">Retry-After</code> header (every response also carries{' '}
+              <code className="font-mono">X-RateLimit-*</code> headers).
+            </li>
+            <li>
+              <strong className="text-foreground">Wrong API keys — per IP.</strong> A missing,
+              malformed or invalid key counts as a failed attempt: 20 a minute per key from one IP
+              (100 per IP), then 429. A working key never counts.
+            </li>
+          </ul>
+          <p className="mt-2 text-xs text-muted-foreground">
+            All of these header values are in seconds.
+          </p>
+        </CardContent>
       </Card>
 
       <Card>

@@ -90,16 +90,36 @@ export const envSchema = z
     // from the server env, no deploy needed.
     INGEST_RATE_LIMIT_MAX: z.coerce.number().int().min(0).default(0),
 
-    // Company-facing Whish Pay integration endpoints, per API key, per minute.
-    // Stays capped: those calls fan out to Whish's own API, so a runaway CRM
-    // loop burns our upstream quota, and nothing is stranded by slowing it —
-    // the customer has not paid yet. 0 disables.
-    INTEGRATION_RATE_LIMIT_MAX: z.coerce.number().int().min(0).default(300),
+    // Company Whish Pay API (/v1/integrations/whish/*), per API key, per
+    // minute: creating a payment link, and refreshing a status from Whish — each
+    // with its OWN counter (a CRM polling with refresh can never use up its link
+    // creation). Never a ceiling for real customers — a company's customers must
+    // never be refused the start of a deposit — but a BRAKE for a broken CRM
+    // stuck in a loop: each call reaches Whish, and our Whish account is shared
+    // by every company, so one company's runaway loop could get it throttled and
+    // stop EVERYONE's deposits. 6,000 = 100 a second, sustained for a whole
+    // minute: no real customer base gets there, a loop does at once. 0 disables.
+    // (No per-IP cap on these endpoints: key guessing is limited separately, per
+    // failed attempt — AUTH_FAILURE_MAX_PER_MIN.)
+    // A NEW name on purpose: the servers' env files still carry the retired
+    // INTEGRATION_RATE_LIMIT_MAX=300 (the old combined cap, copied from the old
+    // example), and that line must never cap link creation again — so the old
+    // name is not read anywhere (docs-contract.spec.ts pins it).
+    INTEGRATION_CREATE_RATE_LIMIT_MAX: z.coerce.number().int().min(0).default(6000),
 
-    // FAILED API-key authentications per client IP, per minute. Always on: this
-    // is the surface an attacker actually hammers (key guessing, plus argon2 CPU
-    // burn once a valid 8-char key prefix is known). A working key never counts
-    // toward it, so real partners can never trip it.
+    // Status LOOKUPS on the Whish Pay API (GET /v1/integrations/whish/payments/
+    // :reference), per API key, per minute — their own counter. A lookup only
+    // reads our database (no Whish call); CRMs poll each link a few times while
+    // the customer pays (~4 per link in production), so this brake sits 5x
+    // higher. 0 disables.
+    INTEGRATION_LOOKUP_RATE_LIMIT_MAX: z.coerce.number().int().min(0).default(30000),
+
+    // FAILED API-key authentications per (client IP, key prefix), per minute
+    // (5x that per IP across prefixes). Always on, for every API key — source
+    // keys on ingest and company keys on the Whish Pay API and /v1/company/*:
+    // this is the surface an attacker actually hammers (key guessing, plus
+    // argon2 CPU burn once a valid 8-char key prefix is known). A working key
+    // never counts toward it, so real partners can never trip it.
     AUTH_FAILURE_MAX_PER_MIN: z.coerce.number().int().positive().default(20),
 
     // When set, GET /metrics requires `Authorization: Bearer <token>`. Empty in

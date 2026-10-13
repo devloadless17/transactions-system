@@ -55,13 +55,37 @@ const RECONCILE_MIN_AGE_MS = 60_000; // don't poll links younger than this
 // admin Refresh once pricing is fixed, which beats an irreversible net-0 booking.
 const TRANSIENT_SETTLE_PARK_AFTER = 10;
 const EXPIRE_AGE_MS = 24 * 3600_000; // give up (EXPIRED) after this
-// Max stale-pending links polled per reconciliation tick. Whish never pushes a
-// failure (only a success callback), so polling is the ONLY way failed/abandoned
-// links reach the CRM live. A small cap let a backlog of still-pending links
-// starve newer ones (oldest-first), so a genuinely-failed payment could wait
-// until a manual refresh. This drains the whole stale-pending set each tick;
-// the cap is just a safety bound on Whish API calls per minute.
+// Max pending links polled per reconciliation tick — a safety bound on Whish API
+// calls per minute. Whish never pushes a failure (only a success callback), so
+// polling is the ONLY way failed/abandoned links reach the CRM live. Which links
+// are polled is decided by their schedule (next_poll_at, see nextPollDelayMs):
+// the earliest-due first, so a backlog can delay a link but never starve it.
 const RECONCILE_MAX_PER_TICK = 250;
+// Links polled at the same time within a tick. Each poll is one Whish call
+// (~0.3s), so 250 one-after-another outran the 60s interval; a few in parallel
+// finish a full tick in seconds, at the same number of Whish calls.
+const RECONCILE_CONCURRENCY = 4;
+// Scheduled checks are set this much early, so a link due "in a minute" is
+// always taken by the NEXT tick rather than missing it by a timer's jitter.
+const POLL_SCHEDULE_SLACK_MS = 5_000;
+
+/**
+ * When to ask Whish again about a link that is still PENDING, by its age.
+ *
+ * Measured on production (2026-10, ~22,500 links): half of all paid links are
+ * paid within 22 seconds and 99% within ~3 minutes; Whish marks an abandoned
+ * link failed after ~6 minutes. So a young link is checked every minute (as
+ * before). A link still pending after 15 minutes is almost always one Whish
+ * never resolves; checking each of those every minute for 24 hours is what used
+ * to fill the poller, so they are checked less and less often. (A late payment
+ * still arrives at once through Whish's success callback; this only paces the
+ * backstop.) The 24h timeout still closes a link at its next check after 24h.
+ */
+export function nextPollDelayMs(ageMs: number): number {
+  if (ageMs < 15 * 60_000) return 60_000;
+  if (ageMs < 2 * 3600_000) return 5 * 60_000;
+  return 30 * 60_000;
+}
 
 @Injectable()
 export class WhishPaymentsService {
@@ -528,13 +552,21 @@ export class WhishPaymentsService {
    * token matches, then verify the real status with Whish before settling.
    * Always resolves (returns void) so the callback endpoint can reply 200.
    */
-  async handleCallback(externalId: number, token: string): Promise<void> {
+  /**
+   * Handle Whish's callback for one payment. Resolves `true` when the callback
+   * was AUTHENTIC — the payment exists and the per-payment secret token matched
+   * — whatever the settlement outcome; `false` for an unknown id or a wrong
+   * token. Never throws for either: the endpoint always answers 200. The
+   * controller uses the answer to limit only FAKE callbacks (see
+   * WhishCallbackController), so a genuine one is never refused.
+   */
+  async handleCallback(externalId: number, token: string): Promise<boolean> {
     const payment = await this.prisma.runAsAdmin((tx) =>
       tx.whishPayment.findUnique({ where: { externalId: BigInt(externalId) } }),
     );
     if (!payment) {
       this.logger.warn(`Whish callback for unknown externalId=${externalId}`);
-      return;
+      return false;
     }
     // Constant-time compare of the unguessable per-payment token (matches the
     // project's timing-safe posture for secrets elsewhere, e.g. the /metrics gate).
@@ -545,7 +577,7 @@ export class WhishPaymentsService {
       !crypto.timingSafeEqual(expectedToken, providedToken)
     ) {
       this.logger.warn(`Whish callback token mismatch for externalId=${externalId}`);
-      return;
+      return false;
     }
     try {
       await this.reconcile(payment);
@@ -553,6 +585,7 @@ export class WhishPaymentsService {
       // Swallow — Whish only needs a 200; reconciliation can be retried.
       this.logger.error(`Whish callback reconcile failed externalId=${externalId}`, err as Error);
     }
+    return true;
   }
 
   /** Company-initiated reconcile (manual "refresh status" for missed callbacks). */
@@ -1045,127 +1078,182 @@ export class WhishPaymentsService {
    * since Whish has no "expired" status to distinguish a lapse from a decline).
    * No-op when Whish isn't configured. Returns a small summary for logging.
    */
-  async reconcileStalePayments(): Promise<{ checked: number; timedOut: number }> {
+  async reconcileStalePayments(opts?: {
+    /** Per-tick bound (default RECONCILE_MAX_PER_TICK); tests use a small one. */
+    limit?: number;
+  }): Promise<{ checked: number; timedOut: number }> {
     if (!this.whish.isConfigured()) return { checked: 0, timedOut: 0 };
 
     const now = Date.now();
     const youngerThan = new Date(now - RECONCILE_MIN_AGE_MS);
-    const rows = await this.prisma.runAsAdmin((tx) =>
-      tx.whishPayment.findMany({
-        where: {
-          status: WhishPaymentStatus.PENDING,
-          createdAt: { lt: youngerThan },
-          // NOTE: the needs-attention exclusion is done in JS below, NOT here.
-          // A SQL `NOT (metadata->needsAttention = true)` silently DROPS every row
-          // whose metadata is NULL — which is every normal pending payment — so
-          // this query was returning nothing and the poller never reconciled
-          // anything (failed/expired only ever resolved on a manual refresh).
-        },
-        orderBy: { createdAt: 'asc' },
-        // Poll the whole stale-pending set (bounded), not just the oldest 50 —
-        // otherwise a backlog starves newer links and a failed payment can't reach
-        // the CRM until a manual refresh.
-        take: RECONCILE_MAX_PER_TICK,
-      }),
+    const limit = opts?.limit ?? RECONCILE_MAX_PER_TICK;
+    // The links due now, earliest-due first (see next_poll_at). A never-polled
+    // link (next_poll_at NULL) is due once it is RECONCILE_MIN_AGE_MS old.
+    //
+    // Paid-but-unsettled rows (needsAttention) are excluded HERE, in the SQL, so
+    // they can never take a slot: Whish HAS the customer's money but we couldn't
+    // book it (e.g. its commission rule changed) — they wait for an operator,
+    // not for re-polling. `IS DISTINCT FROM` keeps every row whose metadata is
+    // NULL or lacks the flag — which is every normal pending payment. (A Prisma
+    // `NOT (metadata path = true)` silently drops those rows; that bug once kept
+    // the poller from selecting anything.)
+    const due = await this.prisma.runAsAdmin(
+      (tx) =>
+        tx.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM whish_payments
+        WHERE status = 'PENDING'
+          AND (metadata->>'needsAttention') IS DISTINCT FROM 'true'
+          AND (next_poll_at <= ${new Date(now)}
+               OR (next_poll_at IS NULL AND created_at < ${youngerThan}))
+        ORDER BY COALESCE(next_poll_at, created_at)
+        LIMIT ${limit}`,
     );
-    if (rows.length === RECONCILE_MAX_PER_TICK) {
-      // Hit the per-tick safety cap — a real backlog. We still drain the rest on
-      // subsequent ticks (oldest first), but flag it so the cap can be raised.
+    if (due.length === limit) {
+      // Hit the per-tick safety cap — a real backlog. The rest stay due and are
+      // taken next tick, earliest-due first; flag it so the cap can be raised.
       this.logger.warn(
-        `Reconciliation hit the ${RECONCILE_MAX_PER_TICK}-link cap this tick; remaining stale links roll to the next tick.`,
+        `Reconciliation hit the ${limit}-link cap this tick; remaining due links roll to the next tick.`,
       );
     }
+    const fetched = due.length
+      ? await this.prisma.runAsAdmin((tx) =>
+          tx.whishPayment.findMany({ where: { id: { in: due.map((d) => d.id) } } }),
+        )
+      : [];
+    const byId = new Map(fetched.map((r) => [r.id, r]));
+    const rows = due.map((d) => byId.get(d.id)).filter((r): r is WhishPayment => Boolean(r));
 
     let timedOut = 0;
-    for (const p of rows) {
-      // Skip paid-but-unsettled rows: Whish HAS the customer's money but we
-      // couldn't book it (e.g. its commission rule changed) — they stay PENDING +
-      // needsAttention for an operator, not for re-polling. (Done here, not in the
-      // SQL WHERE, so a NULL metadata — every normal pending payment — is NOT
-      // dropped; that bug is what kept the poller from selecting anything.)
-      if ((p.metadata as { needsAttention?: boolean } | null)?.needsAttention === true) continue;
-      const tooOld = now - p.createdAt.getTime() > EXPIRE_AGE_MS;
-      try {
-        // Always ask Whish for the authoritative status first — never time out a
-        // payment that actually settled just before the cutoff.
-        //
-        // INVARIANT: the timeout below MUST stay inside this try and AFTER
-        // reconcile(). An indeterminate upstream (v1.4.4 code:500 / timeout /
-        // 5xx) throws, skipping the timeout entirely — so we never expire a link
-        // whose status we could not read. Moving the timeout out of the try would
-        // silently start failing payments on an upstream blip.
-        const result = await this.reconcile(p);
-        // Whish reports success | failed | pending | refunded | unknown — it has
-        // NO "expired" status, so we can't tell a decline from a lapsed link. A
-        // link still PENDING past our cutoff is one Whish never resolved (either
-        // still 'pending' — it stays payable even after a failed attempt — or
-        // 'unknown'); we collapse it into the same terminal as a Whish 'failed'
-        // (one non-success signal for the CRM). Never do this to a
-        // paid-but-unsettled link (needsAttention): Whish HAS the money but we
-        // couldn't book it — that needs an operator, not a silent fail.
-        if (tooOld && result.status === WhishPaymentStatus.PENDING && !result.needsAttention) {
-          // A link whose LAST reading was 'unknown' is not the same as one the
-          // customer simply never paid: Whish told us it could not determine
-          // whether it collected, so it may be holding the money. Still close it
-          // (the backstop exists so nothing pends forever) but flag it, so it
-          // lands in the operator queue instead of quietly becoming a lapse.
-          // Re-read: reconcile() just wrote lastCollectStatus, so `p` is stale.
-          // Everything below merges onto THIS value, not the stale snapshot.
-          const fresh = await this.prisma.runAsAdmin((tx) =>
-            tx.whishPayment.findUnique({ where: { id: p.id }, select: { metadata: true } }),
-          );
-          const freshMeta = fresh?.metadata ?? null;
-          const indeterminate =
-            (freshMeta as { lastCollectStatus?: string } | null)?.lastCollectStatus === 'unknown';
-
-          // Guard on the row STILL being PENDING. reconcile() acted on a stale
-          // snapshot; a success callback may have settled it to PAID meanwhile.
-          // Without the status guard we'd overwrite a real PAID payment — a
-          // self-contradictory, corrupt record.
-          const res = await this.prisma.runAsAdmin((tx) =>
-            tx.whishPayment.updateMany({
-              where: { id: p.id, status: WhishPaymentStatus.PENDING },
-              data: {
-                status: WhishPaymentStatus.FAILED,
-                ...(indeterminate
-                  ? {
-                      metadata: mergeMetadata(freshMeta, {
-                        needsAttention: true,
-                        closedFromUnknown: true,
-                        settlementError:
-                          'Whish never resolved this link (last status: unknown) — verify with Whish whether it collected before treating it as failed.',
-                      }),
-                    }
-                  : {}),
-              },
-            }),
-          );
-          if (res.count === 1) {
-            if (indeterminate) {
-              this.logger.error(
-                `Whish payment ${p.externalId} timed out while its status was UNKNOWN (company ${p.companyId}) — ` +
-                  `closed FAILED and flagged for an operator; Whish may have collected.`,
-              );
-            }
-            this.realtime.company(p.companyId, ['whish']);
-            this.crm.emitWhish({
-              companyId: p.companyId,
-              externalId: p.externalId,
-              amount: p.amount.toString(),
-              currency: p.currency.trim(),
-              invoice: p.invoice,
-              event: 'transaction.failed',
-            });
-            timedOut++;
-          }
-        }
-      } catch (err) {
-        // Couldn't reach Whish — leave it PENDING and retry next run rather than
-        // blindly expiring a possibly-paid payment.
-        this.logger.warn(`Reconcile failed for payment ${p.externalId}: ${(err as Error).message}`);
+    let cursor = 0;
+    const worker = async (): Promise<void> => {
+      while (cursor < rows.length) {
+        const p = rows[cursor++]!;
+        if (await this.pollStaleLink(p, now)) timedOut++;
       }
-    }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(RECONCILE_CONCURRENCY, rows.length) }, () => worker()),
+    );
     return { checked: rows.length, timedOut };
+  }
+
+  /**
+   * One poller check of a due PENDING link: ask Whish, settle or close it, or —
+   * if it is still unresolved — schedule its next check. Resolves `true` when
+   * the 24h backstop closed it. Never throws.
+   */
+  private async pollStaleLink(p: WhishPayment, now: number): Promise<boolean> {
+    // Defence in depth: the selection already excludes flagged rows, but one
+    // may have been flagged between that query and this check.
+    if ((p.metadata as { needsAttention?: boolean } | null)?.needsAttention === true) return false;
+    let timedOut = false;
+    const tooOld = now - p.createdAt.getTime() > EXPIRE_AGE_MS;
+    try {
+      // Always ask Whish for the authoritative status first — never time out a
+      // payment that actually settled just before the cutoff.
+      //
+      // INVARIANT: the timeout below MUST stay inside this try and AFTER
+      // reconcile(). An indeterminate upstream (v1.4.4 code:500 / timeout /
+      // 5xx) throws, skipping the timeout entirely — so we never expire a link
+      // whose status we could not read. Moving the timeout out of the try would
+      // silently start failing payments on an upstream blip.
+      const result = await this.reconcile(p);
+      // Whish reports success | failed | pending | refunded | unknown — it has
+      // NO "expired" status, so we can't tell a decline from a lapsed link. A
+      // link still PENDING past our cutoff is one Whish never resolved (either
+      // still 'pending' — it stays payable even after a failed attempt — or
+      // 'unknown'); we collapse it into the same terminal as a Whish 'failed'
+      // (one non-success signal for the CRM). Never do this to a
+      // paid-but-unsettled link (needsAttention): Whish HAS the money but we
+      // couldn't book it — that needs an operator, not a silent fail.
+      if (tooOld && result.status === WhishPaymentStatus.PENDING && !result.needsAttention) {
+        // A link whose LAST reading was 'unknown' is not the same as one the
+        // customer simply never paid: Whish told us it could not determine
+        // whether it collected, so it may be holding the money. Still close it
+        // (the backstop exists so nothing pends forever) but flag it, so it
+        // lands in the operator queue instead of quietly becoming a lapse.
+        // Re-read: reconcile() just wrote lastCollectStatus, so `p` is stale.
+        // Everything below merges onto THIS value, not the stale snapshot.
+        const fresh = await this.prisma.runAsAdmin((tx) =>
+          tx.whishPayment.findUnique({ where: { id: p.id }, select: { metadata: true } }),
+        );
+        const freshMeta = fresh?.metadata ?? null;
+        const indeterminate =
+          (freshMeta as { lastCollectStatus?: string } | null)?.lastCollectStatus === 'unknown';
+
+        // Guard on the row STILL being PENDING. reconcile() acted on a stale
+        // snapshot; a success callback may have settled it to PAID meanwhile.
+        // Without the status guard we'd overwrite a real PAID payment — a
+        // self-contradictory, corrupt record.
+        const res = await this.prisma.runAsAdmin((tx) =>
+          tx.whishPayment.updateMany({
+            where: { id: p.id, status: WhishPaymentStatus.PENDING },
+            data: {
+              status: WhishPaymentStatus.FAILED,
+              ...(indeterminate
+                ? {
+                    metadata: mergeMetadata(freshMeta, {
+                      needsAttention: true,
+                      closedFromUnknown: true,
+                      settlementError:
+                        'Whish never resolved this link (last status: unknown) — verify with Whish whether it collected before treating it as failed.',
+                    }),
+                  }
+                : {}),
+            },
+          }),
+        );
+        if (res.count === 1) {
+          if (indeterminate) {
+            this.logger.error(
+              `Whish payment ${p.externalId} timed out while its status was UNKNOWN (company ${p.companyId}) — ` +
+                `closed FAILED and flagged for an operator; Whish may have collected.`,
+            );
+          }
+          this.realtime.company(p.companyId, ['whish']);
+          this.crm.emitWhish({
+            companyId: p.companyId,
+            externalId: p.externalId,
+            amount: p.amount.toString(),
+            currency: p.currency.trim(),
+            invoice: p.invoice,
+            event: 'transaction.failed',
+          });
+          timedOut = true;
+        }
+      } else if (result.status === WhishPaymentStatus.PENDING && !result.needsAttention) {
+        // Still unresolved: the next check, paced by the link's age.
+        await this.scheduleNextPoll(
+          p.id,
+          now + nextPollDelayMs(now - p.createdAt.getTime()) - POLL_SCHEDULE_SLACK_MS,
+        );
+      }
+    } catch (err) {
+      // Couldn't reach Whish — leave it PENDING and retry next run rather than
+      // blindly expiring a possibly-paid payment. Retried at the young-link
+      // pace, behind the links already due, so a link Whish keeps erroring on
+      // can never hold the head of the queue.
+      this.logger.warn(`Reconcile failed for payment ${p.externalId}: ${(err as Error).message}`);
+      await this.scheduleNextPoll(p.id, now + 60_000 - POLL_SCHEDULE_SLACK_MS);
+    }
+    return timedOut;
+  }
+
+  /** Set when the poller next checks a still-PENDING link. Best-effort. */
+  private async scheduleNextPoll(id: string, at: number): Promise<void> {
+    await this.prisma
+      .runAsAdmin((tx) =>
+        tx.whishPayment.updateMany({
+          // Guarded like every write here: a callback may have settled it meanwhile.
+          where: { id, status: WhishPaymentStatus.PENDING },
+          data: { nextPollAt: new Date(at) },
+        }),
+      )
+      .catch((err) =>
+        this.logger.warn(
+          `Could not schedule the next Whish poll for ${id}: ${(err as Error).message}`,
+        ),
+      );
   }
 
   /** Admin: list Whish payments across all companies. */

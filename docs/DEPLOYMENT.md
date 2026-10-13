@@ -160,6 +160,41 @@ release ran a destructive migration, restore the DB from a backup.
 
 Read the entry for every release you are about to roll back across. Newest first.
 
+#### Deposits at volume — `20261013120000_whish_payment_poll_schedule`
+
+- **One additive migration:** `whish_payments.next_poll_at` (nullable, no
+  default — catalog-only) and a partial index over `PENDING` links only (a
+  handful of rows, so the plain `CREATE INDEX` is a blink; the `CONCURRENTLY`
+  command for a large table is in the migration file). The previous API image
+  never reads the column, so it keeps serving while this runs.
+- **Rollback is safe at any time.** The previous image ignores `next_poll_at`
+  and goes back to polling the oldest pending Whish links first — the old
+  behaviour, including its starvation of newer links once hundreds of links
+  Whish never resolves pile up. No data needs repair either way.
+- **Renamed limit — check the server env files.** The per-key brake on creating
+  and refreshing Whish payment links is now `INTEGRATION_CREATE_RATE_LIMIT_MAX`
+  (default 6000 a minute; status lookups have their own
+  `INTEGRATION_LOOKUP_RATE_LIMIT_MAX`, default 30000). The old
+  `INTEGRATION_RATE_LIMIT_MAX` is **no longer read**: the production and staging
+  env files still carry `INTEGRATION_RATE_LIMIT_MAX=300` (the old combined cap,
+  copied from the old example), and that line is now inert — remove it at
+  leisure. To change a brake, set the new names.
+- **Behaviour changes, no configuration needed:**
+  - `/v1/integrations/whish/*` has no per-IP limit any more (per-key brakes
+    only); Whish's payment confirmations are never limited — only fake ones
+    (unknown link or wrong token), 60 a minute per sender IP.
+  - Failed company API keys count against the per-(IP, key prefix) limiter,
+    as source keys already did.
+  - One company's money transactions take turns inside the API process
+    (`CompanyQueue`) instead of racing for the wallet row, so a burst for one
+    company is booked in full, in order.
+  - A key that verified once is remembered by the process (revocation and
+    expiry are still checked live on every request), and `last_used_at` is
+    stamped at most once a minute per key.
+  - The Whish reconciliation poller follows `next_poll_at`: every minute while
+    a link is young, then every 5 and 30 minutes, earliest-due first, up to 4
+    links at a time.
+
 #### Network fee — `20261008120000_network_fee_ledger_account` … `20261008120700_network_fee_ledger_index`
 
 - **Eight small additive migrations**, applied in this order:
@@ -289,6 +324,16 @@ decisions):
   `max_connections`. Append `?connection_limit=<n>&pool_timeout=<s>` to
   `DATABASE_URL` (size it: `N_replicas * connection_limit < max_connections`,
   leaving headroom for migrations/admin).
+- **One company's bookings take turns per API process.** `CompanyQueue`
+  ([apps/api/src/database/company-queue.ts](../apps/api/src/database/company-queue.ts))
+  queues a company's money transactions inside one process — that is what lets
+  a burst of one company's deposits book in full (measured locally: 1,000 at
+  once, ~100 a second, all booked). With several API replicas each queues only
+  its own share, and the replicas race for the company's wallet row again:
+  SERIALIZABLE + retry keeps every booking correct, but a big same-company burst
+  split across replicas can run out of retries (`WRITE_CONFLICT`). Before adding
+  replicas, add a cross-instance turn as well (e.g. a
+  `pg_advisory_xact_lock` on the company, taken first in the transaction).
 - **Build big-table indexes `CONCURRENTLY` out-of-band.** Index-adding migrations
   (`20260619120000_transactions_list_indexes`, `20260622180000_activity_*`) use a
   plain `CREATE INDEX`, which takes a brief write lock. On an already-large

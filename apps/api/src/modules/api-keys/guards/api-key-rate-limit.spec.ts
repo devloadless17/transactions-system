@@ -1,12 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ExecutionContext } from '@nestjs/common';
 import type { ConfigService } from '@nestjs/config';
+import type { Reflector } from '@nestjs/core';
 import type { Env } from '../../../config/env.schema';
 import type { PrismaService } from '../../../database/prisma.service';
 import type { ApiKeysService } from '../api-keys.service';
 import type { ApiKeyRateLimitStore, WindowCount } from '../api-key-rate-limit.store';
 import { ApiKeyAuthGuard, failureBucketKey } from './api-key-auth.guard';
 import { ApiKeyRateLimitGuard, IngestRateLimitGuard } from './api-key-rate-limit.guard';
+import { CompanyApiKeyAuthGuard } from './company-api-key-auth.guard';
 
 /**
  * The ingest limiter policy, pinned:
@@ -25,6 +27,8 @@ function ctxWith(headers: Record<string, string>, ip: string | undefined) {
   return {
     ctx: {
       switchToHttp: () => ({ getResponse: () => res, getRequest: () => req }),
+      getHandler: () => undefined,
+      getClass: () => undefined,
     } as unknown as ExecutionContext,
     req,
     res,
@@ -168,14 +172,155 @@ describe('IngestRateLimitGuard — authenticated ingest volume', () => {
   });
 });
 
-describe('ApiKeyRateLimitGuard — company Whish Pay stays capped', () => {
-  it('still enforces its configured ceiling (unlimited ingest must not leak here)', async () => {
-    const limits = storeStub(null, { count: 301, resetSeconds: 5 });
-    const guard = new ApiKeyRateLimitGuard(cfg(300), limits);
+describe('ApiKeyRateLimitGuard — the company Whish Pay API, one budget per kind of call', () => {
+  // INTEGRATION_CREATE_RATE_LIMIT_MAX → create + refresh; INTEGRATION_LOOKUP_RATE_LIMIT_MAX → lookup.
+  // Production defaults: 6,000 and 30,000 a minute — brakes for a runaway loop,
+  // never a ceiling a real customer base reaches.
+  const config = {
+    get: (key: string) =>
+      key === 'INTEGRATION_LOOKUP_RATE_LIMIT_MAX'
+        ? 30000
+        : key === 'INTEGRATION_CREATE_RATE_LIMIT_MAX'
+          ? 6000
+          : 0,
+  } as unknown as ConfigService<Env, true>;
+  const reflectorFor = (budget: string | undefined) =>
+    ({ getAllAndOverride: vi.fn(() => budget) }) as unknown as Reflector;
+  const call = async (budget: string | undefined, count: number) => {
+    const limits = storeStub(null, { count, resetSeconds: 5 });
+    const guard = new ApiKeyRateLimitGuard(config, limits, reflectorFor(budget));
     const built = ctxWith({}, '203.0.113.9');
     (built.req as Record<string, unknown>).principal = { userId: 'key-1' };
+    const outcome = await guard.canActivate(built.ctx).then(
+      () => 'allowed',
+      (e: { httpStatus?: number }) => e.httpStatus,
+    );
+    return { outcome, limits, res: built.res };
+  };
 
-    await expect(guard.canActivate(built.ctx)).rejects.toMatchObject({ httpStatus: 429 });
+  it('link creation: a brake at 6,000 a minute (100 a second) per key, far above real customers', async () => {
+    expect((await call('create', 6000)).outcome).toBe('allowed');
+    const over = await call('create', 6001);
+    expect(over.outcome).toBe(429);
+    expect(over.res.setHeader).toHaveBeenCalledWith('Retry-After', 5);
+    expect(over.limits.hit).toHaveBeenCalledWith('rl:integration:create:key-1', 60);
+  });
+
+  it('a Whish status refresh has the same ceiling but its OWN counter', async () => {
+    const { outcome, limits } = await call('refresh', 6000);
+    expect(outcome).toBe('allowed');
+    expect(limits.hit).toHaveBeenCalledWith('rl:integration:refresh:key-1', 60);
+    expect((await call('refresh', 6001)).outcome).toBe(429);
+  });
+
+  it('status lookups (our database only) get 30,000 a minute on their own counter', async () => {
+    const { outcome, limits } = await call('lookup', 30000);
+    expect(outcome).toBe('allowed');
+    expect(limits.hit).toHaveBeenCalledWith('rl:integration:lookup:key-1', 60);
+    expect((await call('lookup', 30001)).outcome).toBe(429);
+  });
+
+  it('polling can never spend the budget link creation needs (different counters)', async () => {
+    const lookup = await call('lookup', 25000);
+    const create = await call('create', 1);
+    const lookupKey = (lookup.limits.hit as ReturnType<typeof vi.fn>).mock.calls[0]![0];
+    const createKey = (create.limits.hit as ReturnType<typeof vi.fn>).mock.calls[0]![0];
+    expect(lookupKey).not.toBe(createKey);
+  });
+
+  it('a handler without a declared budget spends the strictest one (create)', async () => {
+    const { limits } = await call(undefined, 1);
+    expect(limits.hit).toHaveBeenCalledWith('rl:integration:create:key-1', 60);
+  });
+
+  it('fails OPEN when the counter is unavailable', async () => {
+    const limits = storeStub(null, null);
+    const guard = new ApiKeyRateLimitGuard(config, limits, reflectorFor('create'));
+    const built = ctxWith({}, '203.0.113.9');
+    (built.req as Record<string, unknown>).principal = { userId: 'key-1' };
+    await expect(guard.canActivate(built.ctx)).resolves.toBe(true);
+  });
+});
+
+/**
+ * Company keys (the Whish Pay API, and every /v1/company/* route through
+ * CompanyAccessGuard) get the same failed-attempt limiting as source keys. It
+ * is what makes it safe for the Whish Pay API to have no per-IP request cap.
+ */
+describe('CompanyApiKeyAuthGuard — failed-attempt limiting', () => {
+  const COMPANY_KEY = { companyId: 'co-1', sourceId: null, keyId: 'key-9' };
+  const SOURCE_KEY = { companyId: null, sourceId: 'src-1', keyId: 'key-src' };
+  const activePrisma = {
+    company: { findUnique: vi.fn().mockResolvedValue({ status: 'ACTIVE' }) },
+    runAsAdmin: vi.fn((fn: (tx: unknown) => unknown) =>
+      fn({ company: { findUnique: vi.fn().mockResolvedValue({ status: 'ACTIVE' }) } }),
+    ),
+  } as unknown as PrismaService;
+
+  it('rejects with 429 once over budget, WITHOUT reaching argon2 verify', async () => {
+    const limits = storeStub({ count: 20, resetSeconds: 30 });
+    const keys = keysWith(COMPANY_KEY);
+    const guard = new CompanyApiKeyAuthGuard(keys, activePrisma, limits, cfg(20));
+    const { ctx, res } = ctxWith({ authorization: 'Bearer tsk_GUESSED1_deadbeef' }, '203.0.113.9');
+
+    await expect(guard.canActivate(ctx)).rejects.toMatchObject({
+      code: 'RATE_LIMITED',
+      httpStatus: 429,
+    });
+    expect(keys.verify).not.toHaveBeenCalled();
+    expect(res.setHeader).toHaveBeenCalledWith('Retry-After', 30);
+  });
+
+  it('counts an invalid key, a missing key and a malformed key as failed attempts', async () => {
+    for (const authorization of ['Bearer tsk_NOPE1234_beef', undefined, 'bearer tsk_ABCD1234_x']) {
+      const limits = storeStub();
+      const guard = new CompanyApiKeyAuthGuard(keysWith(null), activePrisma, limits, cfg(20));
+      const { ctx } = ctxWith(authorization ? { authorization } : {}, '203.0.113.9');
+      await expect(guard.canActivate(ctx)).rejects.toMatchObject({ httpStatus: 401 });
+      expect(limits.hit).toHaveBeenCalledTimes(2); // per-prefix AND per-IP
+    }
+  });
+
+  it('a working company key records no failure, clears the budget and is trusted', async () => {
+    const limits = storeStub({ count: 7, resetSeconds: 30 });
+    const guard = new CompanyApiKeyAuthGuard(keysWith(COMPANY_KEY), activePrisma, limits, cfg(20));
+    const { ctx, req } = ctxWith({ authorization: 'Bearer tsk_REALKEY1_beef' }, '203.0.113.9');
+
+    await expect(guard.canActivate(ctx)).resolves.toBe(true);
+    expect(limits.hit).not.toHaveBeenCalled();
+    expect(limits.clear).toHaveBeenCalledWith('rl:authfail:key:203.0.113.9:REALKEY1', 60);
+    expect(limits.markTrusted).toHaveBeenCalled();
+    expect(req.principal).toMatchObject({ companyId: 'co-1', apiKeyAuth: true });
+  });
+
+  it('a trusted key is never blocked, even from an IP an attacker has flooded', async () => {
+    const IP = '203.0.113.9';
+    const limits = storeStub(null, null, {
+      trusted: true,
+      peekByKey: { [`rl:authfail:ip:${IP}`]: { count: 9999, resetSeconds: 30 } },
+    });
+    const guard = new CompanyApiKeyAuthGuard(keysWith(COMPANY_KEY), activePrisma, limits, cfg(20));
+    const { ctx } = ctxWith({ authorization: 'Bearer tsk_REALKEY1_beef' }, IP);
+
+    await expect(guard.canActivate(ctx)).resolves.toBe(true);
+    expect(limits.peek).not.toHaveBeenCalled();
+  });
+
+  it('a real SOURCE key on a company endpoint is refused but not counted as a guess', async () => {
+    const limits = storeStub();
+    const guard = new CompanyApiKeyAuthGuard(keysWith(SOURCE_KEY), activePrisma, limits, cfg(20));
+    const { ctx } = ctxWith({ authorization: 'Bearer tsk_SOURCEK1_beef' }, '203.0.113.9');
+
+    await expect(guard.canActivate(ctx)).rejects.toMatchObject({ httpStatus: 401 });
+    expect(limits.hit).not.toHaveBeenCalled();
+  });
+
+  it('fails OPEN when the counter is unavailable', async () => {
+    const limits = storeStub(null, null);
+    const guard = new CompanyApiKeyAuthGuard(keysWith(COMPANY_KEY), activePrisma, limits, cfg(1));
+    const { ctx } = ctxWith({ authorization: 'Bearer tsk_REALKEY1_beef' }, '203.0.113.9');
+
+    await expect(guard.canActivate(ctx)).resolves.toBe(true);
   });
 });
 

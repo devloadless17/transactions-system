@@ -5,8 +5,9 @@
  * provider at runtime. The lint rule cannot see that distinction.
  */
 import type { CanActivate, ExecutionContext } from '@nestjs/common';
-import { Injectable } from '@nestjs/common';
+import { Injectable, SetMetadata } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Reflector } from '@nestjs/core';
 import type { Response } from 'express';
 import type { AuthenticatedRequest } from '../../../common/types/request.types';
 import type { Env } from '../../../config/env.schema';
@@ -54,24 +55,62 @@ async function enforce(
 }
 
 /**
- * Per-API-key limiter for COMPANY-facing integration endpoints (Whish Pay link
- * creation). Stays capped by default: these calls fan out to Whish's own API,
- * so a runaway CRM loop would burn our upstream quota and cost, and nothing is
- * stranded by asking it to slow down — the customer has not paid yet.
+ * The per-key budgets of the company Whish Pay API. Each is its OWN counter, so
+ * one kind of call can never use up another:
+ *   - `create`  — creating a payment link (one call to Whish's API);
+ *   - `refresh` — re-reading a link's status from Whish (one call to Whish);
+ *   - `lookup`  — reading a link from our own database (no Whish call).
+ * Without separate counters a CRM that polls its links while customers pay —
+ * production sees ~4 polls per link — would spend the budget its next link
+ * creation needs, and customers would be refused a payment link.
+ */
+export type IntegrationBudgetName = 'create' | 'refresh' | 'lookup';
+
+const INTEGRATION_BUDGET_KEY = 'integration:rate-limit-budget';
+
+/** Which per-key budget a Whish Pay API handler spends (see ApiKeyRateLimitGuard). */
+export const IntegrationBudget = (budget: IntegrationBudgetName) =>
+  SetMetadata(INTEGRATION_BUDGET_KEY, budget);
+
+/**
+ * Per-API-key limiter for the company Whish Pay API (`/v1/integrations/whish/*`)
+ * and the per-link calls of its dashboard twin (`/v1/company/whish/payments`,
+ * where a signed-in user spends a per-user budget). The calls that reach WHISH — `create` and `refresh` — stay capped
+ * (INTEGRATION_CREATE_RATE_LIMIT_MAX each): a runaway CRM loop would burn our upstream
+ * quota and cost, and nothing is stranded by asking it to slow down — the
+ * customer has not paid yet. A `lookup` only reads our database and gets a far
+ * larger budget (INTEGRATION_LOOKUP_RATE_LIMIT_MAX). A handler without a budget
+ * spends `create`, the strictest.
+ *
+ * These are the ONLY request caps on that API — it opts out of the global
+ * per-IP throttler, which would otherwise cap a company's whole server at 100
+ * calls a minute per endpoint. Key guessing is limited separately, per failed
+ * attempt, by CompanyApiKeyAuthGuard.
  */
 @Injectable()
 export class ApiKeyRateLimitGuard implements CanActivate {
-  private readonly max: number;
+  private readonly max: Record<IntegrationBudgetName, number>;
 
   constructor(
     config: ConfigService<Env, true>,
     private readonly limits: ApiKeyRateLimitStore,
+    private readonly reflector: Reflector,
   ) {
-    this.max = config.get('INTEGRATION_RATE_LIMIT_MAX', { infer: true });
+    const whishCalls = config.get('INTEGRATION_CREATE_RATE_LIMIT_MAX', { infer: true });
+    this.max = {
+      create: whishCalls,
+      refresh: whishCalls,
+      lookup: config.get('INTEGRATION_LOOKUP_RATE_LIMIT_MAX', { infer: true }),
+    };
   }
 
   canActivate(ctx: ExecutionContext): Promise<boolean> {
-    return enforce(ctx, this.limits, this.max, 'rl:integration');
+    const budget =
+      this.reflector.getAllAndOverride<IntegrationBudgetName | undefined>(INTEGRATION_BUDGET_KEY, [
+        ctx.getHandler(),
+        ctx.getClass(),
+      ]) ?? 'create';
+    return enforce(ctx, this.limits, this.max[budget], `rl:integration:${budget}`);
   }
 }
 

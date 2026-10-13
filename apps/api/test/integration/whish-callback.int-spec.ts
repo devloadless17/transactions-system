@@ -80,7 +80,8 @@ describe('Whish callback handler (public, unauthenticated)', () => {
 
     // A wildly-high externalId that no row owns. Must resolve cleanly (the
     // endpoint always replies 200) and book nothing.
-    await expect(h.whish.handleCallback(2_000_000_000, 'any-token')).resolves.toBeUndefined();
+    // Reported as NOT authentic, so the endpoint counts it against the sender.
+    await expect(h.whish.handleCallback(2_000_000_000, 'any-token')).resolves.toBe(false);
 
     const snap = await snapshot(h, companyId);
     expect(Number(snap.totalCredit)).toBe(0); // no ledger entries booked
@@ -95,7 +96,7 @@ describe('Whish callback handler (public, unauthenticated)', () => {
 
     // A token of a DIFFERENT length than the real one exercises the length
     // pre-check; a same-length wrong token would exercise timingSafeEqual.
-    await expect(h.whish.handleCallback(p.externalId, `${p.token}-wrong`)).resolves.toBeUndefined();
+    await expect(h.whish.handleCallback(p.externalId, `${p.token}-wrong`)).resolves.toBe(false);
 
     expect(await statusOf(h, p.id)).toBe(WhishPaymentStatus.PENDING); // never settled
     const snap = await snapshot(h, companyId);
@@ -115,7 +116,7 @@ describe('Whish callback handler (public, unauthenticated)', () => {
     expect(sameLenWrong.length).toBe(p.token.length);
     expect(sameLenWrong).not.toBe(p.token);
 
-    await expect(h.whish.handleCallback(p.externalId, sameLenWrong)).resolves.toBeUndefined();
+    await expect(h.whish.handleCallback(p.externalId, sameLenWrong)).resolves.toBe(false);
 
     expect(await statusOf(h, p.id)).toBe(WhishPaymentStatus.PENDING);
     const snap = await snapshot(h, companyId);
@@ -129,7 +130,8 @@ describe('Whish callback handler (public, unauthenticated)', () => {
     const p = await insertPayment(h, companyId, WhishPaymentStatus.PENDING);
     h.whishClient.status = 'success';
 
-    await expect(h.whish.handleCallback(p.externalId, p.token)).resolves.toBeUndefined();
+    // Authentic — the endpoint never counts (or limits) a genuine callback.
+    await expect(h.whish.handleCallback(p.externalId, p.token)).resolves.toBe(true);
 
     expect(await statusOf(h, p.id)).toBe(WhishPaymentStatus.PAID);
     const snap = await snapshot(h, companyId);

@@ -92,8 +92,21 @@ export class FakeWhishClient {
     return Promise.resolve({ collectUrl: `https://whish.example/collect/${input.externalId}` });
   }
 
-  getStatus(): Promise<{ collectStatus: WhishCollectStatus; payerPhoneNumber: string | null }> {
+  /** The externalId of every getStatus call, in order. */
+  getStatusCalls: string[] = [];
+  /** Per-externalId status overrides (falls back to `status`). */
+  statusFor = new Map<string, WhishCollectStatus>();
+
+  getStatus(input?: {
+    currency: string;
+    externalId: string;
+  }): Promise<{ collectStatus: WhishCollectStatus; payerPhoneNumber: string | null }> {
+    if (input) this.getStatusCalls.push(input.externalId);
     if (this.failGetStatusWith) return Promise.reject(this.failGetStatusWith);
+    const override = input ? this.statusFor.get(input.externalId) : undefined;
+    if (override) {
+      return Promise.resolve({ collectStatus: override, payerPhoneNumber: this.payerPhoneNumber });
+    }
     return Promise.resolve({ collectStatus: this.status, payerPhoneNumber: this.payerPhoneNumber });
   }
 }

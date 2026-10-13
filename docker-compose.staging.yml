@@ -110,12 +110,14 @@ services:
       API_PUBLIC_URL: ${API_PUBLIC_URL}
       METRICS_TOKEN: ${METRICS_TOKEN}
       # Source-ingest limiters. Absent = schema defaults (ingest UNLIMITED,
-      # 20 failed auths/IP/min, Whish-Pay integration capped at 300). Listed
+      # 20 failed auths/IP/min, Whish Pay API braked at 6000 link creations
+      # and 30000 status lookups per key per minute). Listed
       # here so they are genuinely tunable from the server .env without a
       # code deploy — compose only passes through what it names.
       INGEST_RATE_LIMIT_MAX: ${INGEST_RATE_LIMIT_MAX:-0}
       AUTH_FAILURE_MAX_PER_MIN: ${AUTH_FAILURE_MAX_PER_MIN:-20}
-      INTEGRATION_RATE_LIMIT_MAX: ${INTEGRATION_RATE_LIMIT_MAX:-300}
+      INTEGRATION_CREATE_RATE_LIMIT_MAX: ${INTEGRATION_CREATE_RATE_LIMIT_MAX:-6000}
+      INTEGRATION_LOOKUP_RATE_LIMIT_MAX: ${INTEGRATION_LOOKUP_RATE_LIMIT_MAX:-30000}
       # Whish SANDBOX for staging. WHISH_ALLOW_SANDBOX=true lets the prod build
       # accept the sandbox base + (non-https) sandbox website URL.
       WHISH_BASE_URL: ${WHISH_BASE_URL}

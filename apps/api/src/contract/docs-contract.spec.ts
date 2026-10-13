@@ -526,8 +526,8 @@ describe('docs contract — facts clients asked about', () => {
   });
 
   it('scopes the per-key rate limiter to the endpoints that actually mount it', () => {
-    // Company-facing Whish Pay integration stays capped (its calls fan out to
-    // Whish's own API); source ingest mounts its own guard, unlimited by
+    // The company Whish Pay API keeps per-key safety brakes (its calls fan out
+    // to Whish's own API); source ingest mounts its own guard, unlimited by
     // default, because that traffic is money that already left the payer.
     expect(
       read('apps/api/src/modules/whish/integrations-whish.controller.ts'),
@@ -537,13 +537,17 @@ describe('docs contract — facts clients asked about', () => {
       read('apps/api/src/modules/transactions/ingest.controller.ts'),
       'ingest should mount IngestRateLimitGuard',
     ).toContain('IngestRateLimitGuard');
-    // company/* routes are per-IP only — the docs must not imply the 300/60s allowance.
-    for (const rel of [
-      'apps/api/src/modules/withdrawals/withdrawals.controller.ts',
-      'apps/api/src/modules/whish/whish-payments.controller.ts',
-    ]) {
-      expect(read(rel), `${rel} is per-IP throttled only`).not.toContain('ApiKeyRateLimitGuard');
-    }
+    // …and so do a payment link's own calls on the dashboard twin, which
+    // companies also call with their key (never refuse a deposit's start).
+    expect(read('apps/api/src/modules/whish/whish-payments.controller.ts')).toContain(
+      'ApiKeyRateLimitGuard',
+    );
+    // Other company/* routes are per-IP only — the docs must not imply the
+    // per-key brakes apply there.
+    expect(
+      read('apps/api/src/modules/withdrawals/withdrawals.controller.ts'),
+      'withdrawals are per-IP throttled only',
+    ).not.toContain('ApiKeyRateLimitGuard');
     expect(GUIDE).toMatch(/per-IP/);
     expect(DEV_GUIDE).toMatch(/per IP|per-IP/);
   });
@@ -860,5 +864,86 @@ describe('docs contract — fee models, CRM ordering, rate-limit headers', () =>
     expect(flat(WEB_GETTING_STARTED)).toMatch(/Retry-After/);
     // Not "the only exemptions are …" — other (non-company) surfaces are exempt too.
     expect(GUIDE).not.toMatch(/The only exemptions are/);
+  });
+});
+
+/**
+ * "Deposits are never rate-limited" (2026-10-13). A company's customers start
+ * their deposits by getting a Whish payment link from the company's server, so
+ * a per-IP cap would refuse customers at the company's busiest minute. Pinned:
+ * the code has no per-IP cap there, the per-key brakes are the documented
+ * numbers, and every guide says so.
+ */
+describe('docs contract — deposits are never rate-limited', () => {
+  const ENV_SCHEMA = read('apps/api/src/config/env.schema.ts');
+  const WEB_GETTING_STARTED = read('apps/web/src/features/company/getting-started-view.tsx');
+  const flat = (t: string) => t.replace(/\s+/g, ' ');
+  const envDefault = (name: string): number => {
+    const m = new RegExp(`${name}: z\\.coerce\\.number\\(\\)[^\\n]*\\.default\\((\\d+)\\)`).exec(
+      ENV_SCHEMA,
+    );
+    expect(m, `${name} default not found`).not.toBeNull();
+    return Number(m![1]);
+  };
+
+  it('the Whish Pay API has no per-IP cap — only its per-key brakes', () => {
+    const controller = read('apps/api/src/modules/whish/integrations-whish.controller.ts');
+    expect(controller).toMatch(/@SkipThrottle\(\)/);
+    expect(controller).toContain("@IntegrationBudget('create')");
+    expect(controller).toContain("@IntegrationBudget('lookup')");
+    expect(controller).toContain("@IntegrationBudget('refresh')");
+    // …and Whish's payment confirmations are not per-IP capped either.
+    expect(read('apps/api/src/modules/whish/whish-callback.controller.ts')).toMatch(
+      /@SkipThrottle\(\)/,
+    );
+  });
+
+  it('documents the brakes the code actually enforces', () => {
+    expect(envDefault('INTEGRATION_CREATE_RATE_LIMIT_MAX')).toBe(6000);
+    expect(envDefault('INTEGRATION_LOOKUP_RATE_LIMIT_MAX')).toBe(30000);
+    for (const [name, doc] of [
+      ['companies guide', GUIDE],
+      ['developer guide', DEV_GUIDE],
+      ['getting-started-view.tsx', WEB_GETTING_STARTED],
+    ] as const) {
+      const text = flat(doc);
+      expect(text, `${name}: the principle`).toMatch(/Deposits are never rate-limited/);
+      expect(text, `${name}: no per-IP limit on link creation`).toMatch(/no per-IP limit/);
+      expect(text, `${name}: link-creation brake`).toMatch(/6,000 a minute/);
+      expect(text, `${name}: lookup brake`).toMatch(/30,000 a minute/);
+      expect(text, `${name}: no stale 300/60s allowance`).not.toMatch(/300 requests/);
+    }
+  });
+
+  it('never reads the retired INTEGRATION_RATE_LIMIT_MAX — the servers still carry =300', () => {
+    // The old combined cap. Its line is still in the servers' env files, so
+    // reading that name again would silently cap link creation at 300 a minute.
+    expect(ENV_SCHEMA).not.toMatch(/^\s*INTEGRATION_RATE_LIMIT_MAX:/m);
+    expect(read('apps/api/src/modules/api-keys/guards/api-key-rate-limit.guard.ts')).not.toMatch(
+      /'INTEGRATION_RATE_LIMIT_MAX'/,
+    );
+    for (const f of ['docker-compose.prod.yml', 'docker-compose.staging.yml']) {
+      const compose = read(f);
+      expect(compose, f).not.toMatch(/\bINTEGRATION_RATE_LIMIT_MAX\b/);
+      expect(compose, f).toContain(
+        'INTEGRATION_CREATE_RATE_LIMIT_MAX: ${INTEGRATION_CREATE_RATE_LIMIT_MAX:-6000}',
+      );
+    }
+  });
+
+  it('never says link creation is capped per IP any more', () => {
+    // …not on the Whish Pay API, nor on its dashboard twin (/company/whish/payments).
+    for (const [name, doc] of [
+      ['companies guide', GUIDE],
+      ['developer guide', DEV_GUIDE],
+      ['getting-started-view.tsx', WEB_GETTING_STARTED],
+    ] as const) {
+      const text = flat(doc);
+      expect(text, `${name}: twin capped per IP`).not.toMatch(/twin is capped per IP/);
+      expect(text, `${name}: steering volume off the twin`).not.toMatch(/create links at volume/);
+    }
+    expect(GUIDE).not.toMatch(/100 link creations a minute/);
+    expect(GUIDE).not.toMatch(/governed by \*\*both\*\* limiters/);
+    expect(DEV_GUIDE).not.toMatch(/\*\*and\*\* `\/v1\/integrations\/whish\/\*`/);
   });
 });

@@ -1,4 +1,15 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Locator, type Page } from '@playwright/test';
+
+// The dev server serves the page before React hydrates it: a choice made on the
+// server-rendered <select> in that window is reset and never reaches the URL
+// (seen when the stack is busy). Re-apply it until the app has picked it up —
+// a filter that never mirrors still fails, after 30s.
+async function selectStatus(page: Page, select: Locator, status: string) {
+  await expect(async () => {
+    await select.selectOption(status);
+    await expect(page).toHaveURL(new RegExp(`[?&]status=${status}\\b`), { timeout: 2_000 });
+  }).toPass({ timeout: 30_000 });
+}
 
 // Verifies the transactions filter → URL mirroring (recent FE work). Uses the
 // admin storageState. The admin page has ~200k seeded rows so the table can be
@@ -23,11 +34,8 @@ test.describe('admin transactions: filters mirror to the URL', () => {
       .first();
     await expect(statusSelect).toBeVisible({ timeout: 30_000 });
 
-    // Apply the filter.
-    await statusSelect.selectOption('COMPLETED');
-
-    // (a) URL query string now carries the filter.
-    await expect(page).toHaveURL(/[?&]status=COMPLETED\b/, { timeout: 15_000 });
+    // Apply the filter — (a) the URL query string now carries it.
+    await selectStatus(page, statusSelect, 'COMPLETED');
 
     // (b) It composes without error: the select still reflects the choice and
     // the page is still on /admin/transactions (no crash / navigation away).
@@ -56,10 +64,8 @@ test.describe('admin transactions: filters mirror to the URL', () => {
       .first();
     await expect(statusSelect).toBeVisible({ timeout: 30_000 });
 
-    await statusSelect.selectOption('COMPLETED');
-
     // Filter applied, page reset: status present, page param gone.
-    await expect(page).toHaveURL(/[?&]status=COMPLETED\b/, { timeout: 15_000 });
+    await selectStatus(page, statusSelect, 'COMPLETED');
     await expect(page).not.toHaveURL(/[?&]page=/);
   });
 

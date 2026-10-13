@@ -730,6 +730,12 @@ model WhishPayment {
   idempotencyKey   String?            @map("idempotency_key")
   metadata         Json?              @db.JsonB
   paidAt           DateTime?          @map("paid_at") @db.Timestamptz(6)
+  // When the reconciliation poller should next ask Whish about this PENDING
+  // link. NULL = never polled (due once a minute old). Set after each poll by
+  // the link's age. Partial expression index on COALESCE(next_poll_at,
+  // created_at) WHERE status = 'PENDING' — SQL-only, see migration
+  // 20261013120000_whish_payment_poll_schedule.
+  nextPollAt       DateTime?          @map("next_poll_at") @db.Timestamptz(6)
   createdAt        DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt        DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
 

@@ -101,6 +101,11 @@ const ALLOWLIST = new Set<string>([
   // charged a network fee yet — and the migration file carries the
   // CONCURRENTLY out-of-band command for an already-large ledger.
   '20261008120700_network_fee_ledger_index:ledger_entries_network_fee_currency_created_idx',
+  // Partial index over PENDING Whish links only (the reconciliation poller's
+  // schedule): production has never had more than a handful pending at once,
+  // so it is tiny by construction; the migration file carries the
+  // CONCURRENTLY out-of-band command for a large table.
+  '20261013120000_whish_payment_poll_schedule:whish_payments_pending_poll_idx',
 ]);
 
 function migrationsDir(): string {
