@@ -157,8 +157,11 @@ We are the _outbound_ caller (the inverse of source-key ingest).
   round trip from a dev machine: run `node scripts/fake-whish.cjs` and point
   `WHISH_BASE_URL` at `http://localhost:4100/itel-service/api` instead. It can be
   driven through every `collectStatus` (`/__set-status?s=…`), the indeterminate
-  envelope (`/__set-envelope?mode=indeterminate`), and the refund outcomes
-  (`/__set-refund?mode=ok|refuse|lost`).
+  envelope (`/__set-envelope?mode=indeterminate`), the refund outcomes
+  (`/__set-refund?mode=ok|refuse|auth|lost|unknown`), and a payment refunded in
+  Whish's own portal (`/__mark-refunded?externalId=…`). The Playwright specs
+  `e2e/whish-refund.spec.ts` drive every one of them (they skip when the fake is
+  not running).
 - **Amount rules** — Whish _documents_ per-currency limits (USD: at most 2 decimals,
   minimum 1.00) in `WHISH_AMOUNT_RULES`, but does **not** enforce them: the live
   sandbox mints a real link for `0.50` and `10.005`, and carries a `0.50` link to the

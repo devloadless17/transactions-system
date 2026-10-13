@@ -10,7 +10,8 @@
 // Control endpoints:
 //   /__set-status?s=success|failed|pending|refunded|unknown
 //   /__set-envelope?mode=ok|indeterminate|http500
-//   /__set-refund?mode=ok|refuse|lost   (lost = refunded, but the reply says code 500)
+//   /__set-refund?mode=ok|refuse|auth|lost|unknown
+//   /__mark-refunded?externalId=…   (refunded outside the platform, e.g. in Whish's portal)
 const http = require('node:http');
 const crypto = require('node:crypto');
 
@@ -23,12 +24,16 @@ let collectStatus = 'success';
 // http500      — a raw 5xx (e.g. a proxy), body not even JSON
 let envelopeMode = 'ok';
 // How POST /payment/whish/refund answers:
-// ok     — refunds it (`status:true`, data null); collect/status then says `refunded`
-// refuse — a definite refusal; nothing is refunded
-// lost   — refunds it, but replies code "500" (the reply is lost): the client
-//          must find the refund through collect/status, never refund again
+// ok      — refunds it (`status:true`, data null); collect/status then says `refunded`
+// refuse  — a definite refusal; nothing is refunded
+// auth    — refused as not authorized (`auth.error`, as the live sandbox answers
+//           when refunds are not enabled for the account); nothing is refunded
+// lost    — refunds it, but replies code "500" (the reply is lost): the client
+//           must find the refund through collect/status, never refund again
+// unknown — replies code "500" and does NOT refund: the outcome stays unknown
 let refundMode = 'ok';
 const refundedExternalIds = new Set();
+const refundCalls = []; // every refund request body, for tests to count
 const knownExternalIds = new Set();
 const received = []; // webhook deliveries captured at /sink
 const seenHeaders = []; // header sets seen on Whish calls (to verify the client)
@@ -61,7 +66,12 @@ const server = http.createServer(async (req, res) => {
   const p = url.pathname;
 
   // --- introspection / control ---
-  if (p === '/__received') return send(res, 200, { received, seenHeaders });
+  if (p === '/__received') return send(res, 200, { received, seenHeaders, refundCalls });
+  if (p === '/__mark-refunded') {
+    const id = url.searchParams.get('externalId');
+    if (id) refundedExternalIds.add(id);
+    return send(res, 200, { refunded: id });
+  }
   if (p === '/__set-status') {
     collectStatus = url.searchParams.get('s') || 'success';
     return send(res, 200, { collectStatus });
@@ -81,6 +91,7 @@ const server = http.createServer(async (req, res) => {
     envelopeMode = 'ok';
     refundMode = 'ok';
     refundedExternalIds.clear();
+    refundCalls.length = 0;
     knownExternalIds.clear();
     return send(res, 200, { reset: true });
   }
@@ -148,6 +159,7 @@ const server = http.createServer(async (req, res) => {
       if (typeof body.externalId !== 'string') {
         return send(res, 200, fail('request.invalid', 'externalId must be a String'));
       }
+      refundCalls.push(body);
       if (!body.refundReason) {
         return send(res, 200, fail('request.invalid', 'refundReason is required'));
       }
@@ -160,6 +172,12 @@ const server = http.createServer(async (req, res) => {
       }
       if (refundMode === 'refuse') {
         return send(res, 200, fail('payment.not_refundable', 'This payment cannot be refunded'));
+      }
+      if (refundMode === 'auth') {
+        return send(res, 200, fail('auth.error', 'An error has occurred, please try again later.'));
+      }
+      if (refundMode === 'unknown') {
+        return send(res, 200, fail('500', 'service temporarily unavailable'));
       }
       refundedExternalIds.add(body.externalId);
       if (refundMode === 'lost') {
