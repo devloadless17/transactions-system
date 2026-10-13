@@ -9,6 +9,16 @@ import { DomainError, ValidationError } from '../../common/errors/domain.error';
 // handler or the reconciliation poller indefinitely.
 const WHISH_TIMEOUT_MS = 10_000;
 
+/**
+ * HTTP status for every Whish (payment-provider) failure: 503, not 502. Our API
+ * sits behind Cloudflare, which replaces an origin 502/504 with its own error
+ * page — the caller would get HTML instead of our JSON envelope and never see
+ * `error.code`, the message, or `details` (e.g. WHISH_PENDING's externalId /
+ * paymentId recovery handles). An origin 503 passes through untouched, and says
+ * the same thing: the upstream service could not complete the request.
+ */
+export const UPSTREAM_ERROR_STATUS = 503;
+
 /** Upstream Whish failure (network error or `status: false` envelope). */
 export class WhishError extends DomainError {
   /**
@@ -24,7 +34,7 @@ export class WhishError extends DomainError {
     upstreamResponse?: unknown,
     code = 'WHISH_ERROR',
   ) {
-    super(code, message, 502, details);
+    super(code, message, UPSTREAM_ERROR_STATUS, details);
     this.upstreamResponse = upstreamResponse;
   }
 }
@@ -39,8 +49,8 @@ export class WhishError extends DomainError {
  * Extends WhishError on purpose: callers that only care "did the Whish call
  * blow up" (e.g. the super-admin transaction log) keep working unchanged, while
  * callers that must NOT settle a row check `instanceof WhishIndeterminateError`
- * FIRST. Stays HTTP 502; only `error.code` distinguishes it, so no new status
- * code enters the integrator contract.
+ * FIRST. Same HTTP status as WhishError (UPSTREAM_ERROR_STATUS); only
+ * `error.code` distinguishes it, so no new status code enters the contract.
  */
 export class WhishIndeterminateError extends WhishError {
   constructor(message: string, details?: Record<string, unknown>, upstreamResponse?: unknown) {
@@ -179,11 +189,36 @@ export class WhishClient {
     if (!EXTERNAL_ID_RE.test(input.externalId)) {
       throw new ValidationError(`externalId must be a digit string: got '${input.externalId}'`);
     }
-    await this.call<null>('POST', '/payment/whish/refund', {
-      currency: input.currency,
-      externalId: input.externalId,
-      refundReason: input.refundReason,
-    });
+    try {
+      await this.call<null>('POST', '/payment/whish/refund', {
+        currency: input.currency,
+        externalId: input.externalId,
+        refundReason: input.refundReason,
+      });
+    } catch (err) {
+      // An `auth.*` refusal here does NOT mean bad credentials — the same
+      // channel/secret just answered the status check that runs before every
+      // refund. Whish is refusing REFUNDS for this account (seen on the sandbox
+      // as `auth.error` "An error has occurred, please try again later."):
+      // refunds not enabled for the merchant, or the server's IP not allowed.
+      // Say that, instead of the generic "invalid or expired credentials".
+      const code = err instanceof WhishError ? err.details?.code : undefined;
+      if (
+        err instanceof WhishError &&
+        !(err instanceof WhishIndeterminateError) &&
+        typeof code === 'string' &&
+        code.startsWith('auth.')
+      ) {
+        throw new WhishError(
+          `Whish refused the refund as not authorized for the platform's Whish account ` +
+            `(Whish code ${code}). Whish has to enable refunds for this account (and may need ` +
+            `to allow our server's IP). Nothing was refunded.`,
+          err.details,
+          err.upstreamResponse,
+        );
+      }
+      throw err;
+    }
   }
 
   /**

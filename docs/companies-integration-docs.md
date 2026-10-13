@@ -1607,7 +1607,7 @@ Each notification: `{ id, scope, flow, event, title, body, link, entityId, compa
 
 Whish Pay lets your CRM mint a hosted payment link, hand the link to your customer, and have the collected money settle automatically into your company wallet. The flow is **collect → reconcile**: you create a link, the customer pays on Whish's hosted page, Whish confirms the payment, and the platform writes a ledger transaction and credits your wallet. You can confirm settlement either by polling, by registering an outbound webhook, or by forcing a status refresh.
 
-> **Optional / platform-gated.** Whish is a single, platform-wide integration (one Whish merchant account, configured by the platform operator via the `WHISH_CHANNEL` / `WHISH_SECRET` credentials). It is **not** something a company self-enables. If the platform has not configured Whish, create calls fail with a **`VALIDATION_ERROR` (400)** — message `"Whish is not configured (missing WHISH_CHANNEL / WHISH_SECRET)"`. (A genuine _upstream_ Whish API failure is different: it surfaces as `WHISH_ERROR`, HTTP 502.) Enabled currencies are platform-controlled via `WHISH_ENABLED_CURRENCIES` (intersected with the set the API accepts) — by default **USD only**.
+> **Optional / platform-gated.** Whish is a single, platform-wide integration (one Whish merchant account, configured by the platform operator via the `WHISH_CHANNEL` / `WHISH_SECRET` credentials). It is **not** something a company self-enables. If the platform has not configured Whish, create calls fail with a **`VALIDATION_ERROR` (400)** — message `"Whish is not configured (missing WHISH_CHANNEL / WHISH_SECRET)"`. (A genuine _upstream_ Whish API failure is different: it surfaces as `WHISH_ERROR`, HTTP 503. Whish errors use 503 — not 502 — so our JSON body reaches you intact through our CDN, which replaces a 502 with its own error page.) Enabled currencies are platform-controlled via `WHISH_ENABLED_CURRENCIES` (intersected with the set the API accepts) — by default **USD only**.
 
 ### Authentication & base path
 
@@ -1794,7 +1794,7 @@ Both endpoints accept **either** a company API key (`Authorization: Bearer tsk_�
 }
 ```
 
-(A bad `currency` enum value fails earlier at zod validation, also `VALIDATION_ERROR` with zod issues in `details`. An upstream Whish outage surfaces as `WHISH_ERROR`, HTTP 502.)
+(A bad `currency` enum value fails earlier at zod validation, also `VALIDATION_ERROR` with zod issues in `details`. An upstream Whish outage surfaces as `WHISH_ERROR`, HTTP 503.)
 
 **Error — amount out of range (400):**
 
@@ -1810,8 +1810,8 @@ Both endpoints accept **either** a company API key (`Authorization: Bearer tsk_�
 }
 ```
 
-> **`WHISH_PENDING` (502) is NOT a failure.** If we could not confirm the outcome
-> with Whish — the upstream timed out, or answered "unknown" — you get HTTP 502
+> **`WHISH_PENDING` (503) is NOT a failure.** If we could not confirm the outcome
+> with Whish — the upstream timed out, or answered "unknown" — you get HTTP 503
 > with `error.code: "WHISH_PENDING"` instead of `WHISH_ERROR`. The payment may
 > well exist upstream. **Do not mark the order failed, and do not create a second
 > payment with a new idempotency key.**
@@ -1822,7 +1822,7 @@ Both endpoints accept **either** a company API key (`Authorization: Bearer tsk_�
 > ```json
 > {
 >   "success": false,
->   "statusCode": 502,
+>   "statusCode": 503,
 >   "error": {
 >     "code": "WHISH_PENDING",
 >     "message": "…",

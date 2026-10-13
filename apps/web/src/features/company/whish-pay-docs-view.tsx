@@ -186,11 +186,11 @@ function ApiSection() {
       'Auth failed. Send your company key as Authorization: Bearer tsk_… — these are server-to-server (no cookies/session).',
     ],
     [
-      '502 WHISH_ERROR',
+      '503 WHISH_ERROR',
       'Whish itself errored or was unreachable. Safe to retry (reuse your idempotencyKey); if it persists, contact support.',
     ],
     [
-      '502 WHISH_PENDING',
+      '503 WHISH_PENDING',
       'We could not confirm the outcome with Whish — do NOT treat this as a failure, and do NOT create a second payment under a new key. error.details carries externalId and paymentId. Retry the create with the SAME idempotencyKey and we re-attempt the same payment (returning it with its collectUrl once Whish answers), or look it up with GET /integrations/whish/payments/{externalId} (or GET /company/whish/payments/{paymentId}).',
     ],
     [

@@ -182,7 +182,9 @@ async function requestWithAuthRetry<T>(
       const r = await fetch(`${publicApiBase()}/auth/csrf`, { credentials: 'include' });
       if (r.ok) return requestWithAuthRetry<T>(path, opts, true);
     }
-    throw new ApiClientError(res.status, body, `API ${method} ${path} failed`);
+    // The fallback only shows when the body is not our JSON envelope (e.g. a
+    // CDN/proxy error page) — name the HTTP status so it can be diagnosed.
+    throw new ApiClientError(res.status, body, `API ${method} ${path} failed (HTTP ${res.status})`);
   }
 
   if (res.status === 204) return undefined as T;

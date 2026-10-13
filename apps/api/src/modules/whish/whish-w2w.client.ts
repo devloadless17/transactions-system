@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Env } from '../../config/env.schema';
 import { DomainError } from '../../common/errors/domain.error';
+import { UPSTREAM_ERROR_STATUS } from './whish.client';
 import type { ResolvedW2WSession } from './whish-session.store';
 
 // Cap every W2W call so an unresponsive upstream can't hang the request handler.
@@ -28,10 +29,13 @@ const CANCEL_DISCLAIMER = 'Cancellation of this transaction requires Receiver’
 const SESSION_AUTH_CODE =
   /^auth\.(session|token|login|sign_?in|signed?_?out|expired|unauthor|forbidden|invalid_session|not_?authenticated|no_?session|revoked)/i;
 
-/** Raised when Whish rejects the captured session as expired/invalid. */
+/**
+ * Raised when Whish rejects the captured session as expired/invalid. 503 (not
+ * 502) so the JSON body survives Cloudflare — see UPSTREAM_ERROR_STATUS.
+ */
 export class WhishSessionExpiredError extends DomainError {
   constructor(message: string, details?: Record<string, unknown>) {
-    super('WHISH_SESSION_EXPIRED', message, 502, details);
+    super('WHISH_SESSION_EXPIRED', message, UPSTREAM_ERROR_STATUS, details);
   }
 }
 

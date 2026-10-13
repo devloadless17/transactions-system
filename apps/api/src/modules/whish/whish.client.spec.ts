@@ -102,9 +102,11 @@ describe('WhishClient envelope handling', () => {
       // Still a WhishError, so the super-admin transaction log keeps working.
       expect(err).toBeInstanceOf(WhishError);
       expect((err as WhishError).code).toBe('WHISH_PENDING');
-      // Still a 502 — only `code` distinguishes it, so no new HTTP status enters
-      // the integrator contract.
-      expect((err as WhishError).httpStatus).toBe(502);
+      // The same status as every Whish failure — only `code` distinguishes it,
+      // so no new HTTP status enters the integrator contract. 503, not 502:
+      // Cloudflare replaces an origin 502 with its own page and the caller would
+      // never see this JSON.
+      expect((err as WhishError).httpStatus).toBe(503);
     });
 
     it('classifies an HTTP 5xx as INDETERMINATE even when the body is not JSON', async () => {
@@ -247,6 +249,17 @@ describe('WhishClient envelope handling', () => {
         refundReason: 'Customer cancelled',
       });
       expect(typeof lastBody?.externalId).toBe('string');
+    });
+
+    it('an auth.* refusal is explained as refunds not being enabled — not "invalid credentials"', async () => {
+      mockWhish(200, fail('auth.error', 'An error has occurred, please try again later.'));
+      const err = (await client.refund(refund).catch((e: unknown) => e)) as WhishError;
+      expect(err).toBeInstanceOf(WhishError);
+      expect(err).not.toBeInstanceOf(WhishIndeterminateError);
+      expect(err.message).toMatch(/refused the refund as not authorized/i);
+      expect(err.message).not.toMatch(/invalid or expired credentials/i);
+      expect(err.details?.code).toBe('auth.error');
+      expect(err.httpStatus).toBe(503);
     });
 
     it('is a definite failure when Whish refuses it', async () => {

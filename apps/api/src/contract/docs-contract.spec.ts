@@ -24,6 +24,7 @@ import {
 import { FLOW_CSV_HEADER } from '../common/flow-csv';
 import { computeNetworkFee } from '../modules/commissions/network-fee';
 import { feesConsumeAmountError, netOfFee, reservedTotal } from '../modules/ledger/flow-ledger';
+import { UPSTREAM_ERROR_STATUS, WhishError } from '../modules/whish/whish.client';
 
 // Fields on a company-facing response schema that are deliberately NOT shown in the
 // example field table (admin/internal projections or rarely-needed extras). Adding a
@@ -250,6 +251,24 @@ describe('docs ↔ API schema contract (anti-drift)', () => {
         undocumented,
         `whishPaymentResponseSchema has fields neither documented nor allow-listed: ${undocumented.join(', ')}. Document them in companies-integration-docs.md or add to WHISH_RESPONSE_UNDOCUMENTED_OK.`,
       ).toEqual([]);
+    });
+  });
+
+  describe('Whish errors are documented with the status the API really sends', () => {
+    // Behind Cloudflare an origin 502 is replaced by Cloudflare's own page, so a
+    // documented "502 WHISH_ERROR" would describe a JSON body nobody receives.
+    it('WHISH_ERROR / WHISH_PENDING go out as 503 and both company guides say so', () => {
+      expect(UPSTREAM_ERROR_STATUS).toBe(503);
+      expect(new WhishError('x').httpStatus).toBe(503);
+      for (const [name, doc] of [
+        ['companies guide', GUIDE],
+        ['developer guide', DEV_GUIDE],
+      ] as const) {
+        expect(doc, `${name} must document the 503`).toMatch(/503/);
+        expect(doc, `${name} still documents a Whish 502`).not.toMatch(
+          /502 WHISH_|WHISH_ERROR`, HTTP 502|WHISH_PENDING` \(502\)|"statusCode": 502/,
+        );
+      }
     });
   });
 
