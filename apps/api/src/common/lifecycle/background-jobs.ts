@@ -23,8 +23,9 @@ export function registerBackgroundJob(job: BackgroundJob): void {
 /** Jobs still running at the deadline are returned (to be logged). */
 export async function stopBackgroundJobs(deadlineMs: number): Promise<string[]> {
   for (const job of jobs) job.stop();
-  const t0 = Date.now();
-  while (jobs.some((j) => j.isRunning()) && Date.now() - t0 < deadlineMs) {
+  // A monotonic clock: a wall-clock step (NTP) must not stretch or cut the wait.
+  const t0 = performance.now();
+  while (jobs.some((j) => j.isRunning()) && performance.now() - t0 < deadlineMs) {
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   return jobs.filter((j) => j.isRunning()).map((j) => j.name);

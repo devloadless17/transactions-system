@@ -57,29 +57,39 @@ describe('graceful drain', () => {
     await expect(done).resolves.toBeUndefined();
   });
 
-  it('a real server under CONTINUOUS keep-alive traffic answers everything sent before it closes', async () => {
+  it('a real server under CONTINUOUS keep-alive traffic answers every request it received', async () => {
+    // The server records each request it actually received. That, not the
+    // client's clock, decides what must have been answered: a request refused
+    // before it reached the server (the listener already closed) is one Caddy
+    // holds and sends to the next container, never one that ran here. Judging
+    // by client-side timing instead failed at random on a loaded machine.
+    const received = new Set<string>();
     const server = http.createServer((req, res) => {
-      drainMiddleware(req as Request, res as unknown as Response, () => res.end('ok'));
+      received.add(String(req.headers['x-request-id']));
+      // Each request takes 20ms, so at any moment every connection is busy —
+      // the state in which a plain server.close() never finishes (measured:
+      // about half of all closes under load without the drain).
+      drainMiddleware(req as Request, res as unknown as Response, () =>
+        setTimeout(() => res.end('ok'), 20),
+      );
     });
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
     const { port } = server.address() as AddressInfo;
 
     // A pool of reused connections with requests always in flight — what
-    // Caddy's keep-alive pool to the API looks like under load. (Without Caddy
-    // in front, a request sent AFTER the close is refused; Caddy would hold it
-    // for the next container. What must never fail is one sent BEFORE.)
-    const NOTICE_MS = 300;
-    let closeStarted = false;
-    const failedBeforeClose: string[] = [];
+    // Caddy's keep-alive pool to the API looks like under load.
+    const failed: string[] = [];
     let answered = 0;
+    let sent = 0;
     let traffic = true;
     const worker = async () => {
       while (traffic) {
-        const sentBeforeClose = !closeStarted;
-        await fetch(`http://127.0.0.1:${port}/`).then(
+        const id = String(sent++);
+        await fetch(`http://127.0.0.1:${port}/`, { headers: { 'x-request-id': id } }).then(
           (r) => r.text().then(() => answered++),
-          (e: Error) => {
-            if (sentBeforeClose) failedBeforeClose.push(e.message);
+          async () => {
+            failed.push(id);
+            await new Promise((r) => setTimeout(r, 5)); // refused once closed: don't spin
           },
         );
       }
@@ -87,22 +97,19 @@ describe('graceful drain', () => {
     const load = Promise.all([worker(), worker(), worker(), worker()]);
     await new Promise((r) => setTimeout(r, 100)); // traffic flowing
 
-    const t0 = Date.now();
-    // The notice period ends at NOTICE_MS; mark it a little before, so a request
-    // racing the close itself is not counted as "sent before".
-    setTimeout(() => {
-      closeStarted = true;
-    }, NOTICE_MS - 20);
-    await drainHttpServer(server, { noticeMs: NOTICE_MS, deadlineMs: 5_000 });
-    const tookMs = Date.now() - t0;
+    const t0 = performance.now(); // monotonic: the wall clock can step
+    await drainHttpServer(server, { noticeMs: 300, deadlineMs: 5_000 });
+    const tookMs = performance.now() - t0;
     traffic = false;
     await load;
 
     expect(answered).toBeGreaterThan(0);
-    expect(failedBeforeClose).toEqual([]); // nothing sent during the notice period was dropped
-    expect(tookMs).toBeLessThan(NOTICE_MS + 1_000); // closes right after the notice, not at the deadline
-  });
-
+    // Nothing that reached the server was dropped.
+    expect(failed.filter((id) => received.has(id))).toEqual([]);
+    // It closed after the notice on its own, not when the deadline forced it
+    // (under keep-alive, a plain server.close() only ends at the deadline).
+    expect(tookMs).toBeLessThan(4_000);
+  }, 15_000); // room past the 5s deadline, so a regression fails on the checks above
   it('an open websocket (a dashboard) does not hold the shutdown open', async () => {
     // Measured on staging: one open dashboard kept the old API alive until
     // Docker killed it at 60s — server.close() waits for upgraded sockets too.
@@ -128,9 +135,9 @@ describe('graceful drain', () => {
     });
     await new Promise((r) => setTimeout(r, 100)); // the websocket is open
 
-    const t0 = Date.now();
+    const t0 = performance.now();
     await drainHttpServer(server, { noticeMs: 100, deadlineMs: 10_000 });
-    expect(Date.now() - t0).toBeLessThan(1_000); // not the 10s deadline
+    expect(performance.now() - t0).toBeLessThan(5_000); // not the 10s deadline
     await clientClosed; // the browser sees the close and reconnects elsewhere
   });
 });

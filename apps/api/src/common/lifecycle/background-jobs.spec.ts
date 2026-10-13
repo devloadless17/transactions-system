@@ -23,9 +23,11 @@ describe('stopBackgroundJobs', () => {
       running = false;
     }, 200);
 
-    const t0 = Date.now();
+    // performance.now(), not Date.now(): the wall clock can step (WSL2 jumps
+    // ~1.5s), which made timing assertions fail at random.
+    const t0 = performance.now();
     await expect(stopBackgroundJobs(5_000)).resolves.toEqual([]);
-    expect(Date.now() - t0).toBeGreaterThanOrEqual(150);
+    expect(performance.now() - t0).toBeGreaterThanOrEqual(150);
     expect(stopA).toHaveBeenCalledOnce();
     expect(stopB).toHaveBeenCalledOnce();
   });
@@ -37,8 +39,9 @@ describe('stopBackgroundJobs', () => {
 
   it('returns at once when nothing is running', async () => {
     registerBackgroundJob({ name: 'idle', stop: vi.fn(), isRunning: () => false });
-    const t0 = Date.now();
+    const t0 = performance.now();
     await stopBackgroundJobs(5_000);
-    expect(Date.now() - t0).toBeLessThan(50);
+    // No wait at all: far below the 5s deadline, with room for a loaded machine.
+    expect(performance.now() - t0).toBeLessThan(1_000);
   });
 });
