@@ -2,6 +2,7 @@
 
 import { useEffect } from 'react';
 import { AlertTriangle } from 'lucide-react';
+import { useErrorRecovery } from '@/lib/use-error-recovery';
 
 // Error boundary for the /pay/* payer landings. The global app error.tsx points
 // people "back to the dashboard" — wrong for an anonymous payer. This one is
@@ -17,6 +18,7 @@ export default function PayError({
   useEffect(() => {
     console.error('Pay page error:', error);
   }, [error]);
+  const { retry, retrying } = useErrorRecovery(error, reset);
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-muted/20 p-6">
@@ -28,10 +30,11 @@ export default function PayError({
           try loading this page again.
         </p>
         <button
-          onClick={reset}
-          className="mt-5 inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+          onClick={retry}
+          disabled={retrying}
+          className="mt-5 inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-60"
         >
-          Try again
+          {retrying ? 'Retrying…' : 'Try again'}
         </button>
       </div>
     </main>

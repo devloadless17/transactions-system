@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server';
+import { fetchWithReconnect } from '@/lib/api-reconnect';
 import { visitorIpHeader } from '@/lib/client-ip';
 
 // Match the API's auth cookie names (apps/api/src/modules/auth/auth.constants.ts).
@@ -30,7 +31,9 @@ export async function middleware(req: NextRequest): Promise<NextResponse> {
 
   let refreshRes: Response;
   try {
-    refreshRes = await fetch(`${INTERNAL_BASE}/auth/refresh`, {
+    // Waits out an API restart (api-reconnect.ts) — a POST, so only while the API
+    // can't be reached at all: a refresh it may have seen is never repeated.
+    refreshRes = await fetchWithReconnect(`${INTERNAL_BASE}/auth/refresh`, {
       method: 'POST',
       headers: {
         cookie: req.headers.get('cookie') ?? '',

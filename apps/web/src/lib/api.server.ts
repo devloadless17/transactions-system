@@ -1,6 +1,7 @@
 import 'server-only';
 import { cookies, headers } from 'next/headers';
 import { ApiClientError, unwrapEnvelope, type ApiErrorBody } from './api';
+import { fetchWithReconnect } from './api-reconnect';
 import { visitorIpHeader } from './client-ip';
 
 // Server-side (Node) base URL for the API. Use 127.0.0.1, NOT localhost:
@@ -22,7 +23,8 @@ interface RequestOpts {
  * RLS / role checks work, and the visitor's IP so the API rate-limits, audits
  * and logs the call under the person it is made for — not under this server,
  * which would put every visitor's page loads into one shared budget (see
- * client-ip.ts). Throws ApiClientError on non-2xx.
+ * client-ip.ts). Waits out an API restart the way Caddy does for the browser
+ * (api-reconnect.ts) instead of failing the page. Throws ApiClientError on non-2xx.
  */
 export async function apiServer<T>(path: string, opts: RequestOpts = {}): Promise<T> {
   const method = opts.method ?? 'GET';
@@ -32,7 +34,7 @@ export async function apiServer<T>(path: string, opts: RequestOpts = {}): Promis
     .map((c) => `${c.name}=${c.value}`)
     .join('; ');
 
-  const res = await fetch(`${INTERNAL_BASE}${path}`, {
+  const res = await fetchWithReconnect(`${INTERNAL_BASE}${path}`, {
     method,
     headers: {
       ...(opts.body ? { 'content-type': 'application/json' } : {}),
