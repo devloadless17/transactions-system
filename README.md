@@ -215,8 +215,9 @@ We are the _outbound_ caller (the inverse of source-key ingest).
   production `18.213.222.45`, `52.21.189.51`, `52.21.55.64`, sandbox `52.4.4.47` —
   to allowlist only if inbound traffic is ever restricted (e.g. a WAF rule);
   text is sent with characters Whish's database rejects (emoji) stripped, since
-  it refuses them with `emoji.not_supported`; and `User-Agent` must identify OUR
-  app (`AppName/version (website; contact-email)`), not Whish's.
+  it refuses them with `emoji.not_supported`; and the docs ask for a `User-Agent` with our own app details — we
+  deliberately keep the value that has always worked (Whish's original example,
+  `WHISH_USER_AGENT`); Ali decided on 2026-10-14 not to change it.
 - **CRM integration** — server-to-server via a **company API key**
   (`Authorization: Bearer tsk_…`, minted under Settings → API keys):
   `POST/GET /v1/integrations/whish/payments[/:ref]`. Optional signed webhook
