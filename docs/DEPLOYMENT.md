@@ -128,8 +128,12 @@ git push origin main:production
      (`apps/api/src/main.ts`, `common/http/graceful-drain.ts`) answers 503 on
      `/v1/health`, so Caddy, which health-checks it every second, stops routing
      to it and **holds** new requests (`lb_try_duration 60s`). Everything
-     already in flight finishes, the background jobs finish their current run,
-     and only then are Postgres and Redis closed. That normally takes ~3s.
+     already in flight finishes. Dashboards' realtime websockets are closed
+     once the API stops accepting connections; browsers reconnect through
+     Caddy's hold. Background runs stop **between** items: the Whish poller
+     between links, CRM delivery between deliveries, auto-approval between
+     withdrawals (a transfer that has started always completes). Only then are
+     Postgres and Redis closed. That normally takes ~3s.
   2. The new API starts. Once `/v1/health` answers 200, Caddy releases the held
      requests to it. Requests that arrive during a swap wait a few seconds;
      none fails.
@@ -138,10 +142,15 @@ git push origin main:production
 
   The stop timeout comes from the running image: one labelled
   `com.rivalpayments.graceful-drain=1` gets 60s, and an older image, which never
-  finishes draining under traffic, keeps the old 10s. Measured locally behind
-  Caddy with three deploys under continuous deposit load: 0 failures, and every
-  deposit was booked exactly once. Before this change the same test lost 21
-  deposits.
+  finishes draining under traffic, keeps the old 10s. An uncaught exception
+  goes through the same shutdown, capped at 15s, before the container restarts.
+
+  Measured locally behind Caddy, with three deploys under continuous deposit
+  load and a dashboard connected: 0 failures, and every deposit was booked
+  exactly once. Before this change the same test lost 21 deposits. On staging
+  through Cloudflare (2026-10-13), the old API stopped by itself in 3.2s, and
+  357 probe requests (deposit POSTs, API reads, pages) all succeeded; the
+  longest wait was 5.1s.
 
 - **Config:** `.env.prod.example` is the template; the workflow renders it to
   `/home/deploy/transactions-system/.env` on the server from the secrets above
