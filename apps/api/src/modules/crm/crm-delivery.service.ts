@@ -41,6 +41,7 @@ export class CrmDeliveryService implements OnApplicationBootstrap, OnModuleDestr
   private readonly logger = new Logger(CrmDeliveryService.name);
   private timer: ReturnType<typeof setInterval> | undefined;
   private running = false;
+  private stopping = false;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -54,10 +55,16 @@ export class CrmDeliveryService implements OnApplicationBootstrap, OnModuleDestr
     // A shutdown stops new runs and waits for one in progress (main.ts).
     registerBackgroundJob({
       name: 'crm-delivery',
-      stop: () => this.onModuleDestroy(),
+      stop: () => this.requestStop(),
       isRunning: () => this.running,
     });
     this.timer.unref?.();
+  }
+
+  /** Shutdown: no new sweep, and the sweep in progress stops between deliveries. */
+  requestStop(): void {
+    this.stopping = true;
+    this.onModuleDestroy();
   }
 
   onModuleDestroy(): void {
@@ -228,7 +235,10 @@ export class CrmDeliveryService implements OnApplicationBootstrap, OnModuleDestr
           select: { id: true },
         }),
       );
-      for (const d of due) await this.deliver(d.id);
+      for (const d of due) {
+        if (this.stopping) break; // shutdown: the next instance delivers the rest
+        await this.deliver(d.id);
+      }
     } catch (err) {
       this.logger.warn(`CRM delivery sweep failed: ${(err as Error).message}`);
     } finally {

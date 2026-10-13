@@ -1456,6 +1456,13 @@ export class WhishPaymentsService {
   async reconcileStalePayments(opts?: {
     /** Per-tick bound (default RECONCILE_MAX_PER_TICK); tests use a small one. */
     limit?: number;
+    /**
+     * Shutdown: once true, no further link is started — a link being checked
+     * finishes (each check is whole on its own), the rest wait for the next
+     * instance's run. A run can take minutes (250 links, Whish calls of up to
+     * 10s), and a deploy must not wait for that.
+     */
+    shouldStop?: () => boolean;
   }): Promise<{ checked: number; timedOut: number }> {
     if (!this.whish.isConfigured()) return { checked: 0, timedOut: 0 };
 
@@ -1500,16 +1507,18 @@ export class WhishPaymentsService {
 
     let timedOut = 0;
     let cursor = 0;
+    let checked = 0;
     const worker = async (): Promise<void> => {
-      while (cursor < rows.length) {
+      while (cursor < rows.length && !opts?.shouldStop?.()) {
         const p = rows[cursor++]!;
+        checked++;
         if (await this.pollStaleLink(p, now)) timedOut++;
       }
     };
     await Promise.all(
       Array.from({ length: Math.min(RECONCILE_CONCURRENCY, rows.length) }, () => worker()),
     );
-    return { checked: rows.length, timedOut };
+    return { checked, timedOut };
   }
 
   /**

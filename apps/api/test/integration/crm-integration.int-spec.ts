@@ -6,7 +6,7 @@
  * to an unreachable/unsafe URL is retried with backoff and finally FAILED — it
  * is never silently dropped.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { TransactionResponse } from '@app/shared';
 import type { ConfigService } from '@nestjs/config';
 import type { PrismaService } from '../../src/database/prisma.service';
@@ -210,5 +210,40 @@ describe('CRM delivery fail-fast', () => {
     expect(cur!.status).toBe('FAILED');
     expect(cur!.attempts).toBe(1);
     expect(cur!.nextRetryAt).toBeNull();
+  });
+});
+
+describe('CRM delivery shutdown', () => {
+  it('a shutdown stops the sweep between deliveries — the one in progress finishes', async () => {
+    const { companyId } = await createCompany(h);
+    const payload = {
+      event: 'transaction.completed',
+      reference: 'omt:x',
+      sentAt: 'now',
+      transaction: {},
+    };
+    await prisma.runAsAdmin((tx) =>
+      tx.webhookDelivery.createMany({
+        data: [1, 2, 3].map(() => ({
+          companyId,
+          eventType: 'transaction.completed',
+          payload,
+          targetUrl: 'https://10.0.0.1/hook',
+          status: 'PENDING' as const,
+        })),
+      }),
+    );
+    // A fresh instance: requestStop() is permanent for the one it is called on.
+    const sweeper = new CrmDeliveryService(prisma, fakeConfig, demoInbox, fakeCache);
+    const attempted: string[] = [];
+    vi.spyOn(sweeper, 'deliver').mockImplementation(async (id: string) => {
+      attempted.push(id);
+      sweeper.requestStop(); // the deploy's SIGTERM arrives during this delivery
+    });
+
+    await (sweeper as unknown as { sweep: () => Promise<void> }).sweep();
+
+    // The delivery in progress ran; no other was started.
+    expect(attempted).toHaveLength(1);
   });
 });

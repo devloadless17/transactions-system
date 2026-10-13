@@ -2,7 +2,7 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { NextFunction, Request, Response } from 'express';
-import { drainHttpServer, drainMiddleware, shutdownState } from './graceful-drain';
+import { drainHttpServer, drainMiddleware, shutdownState, trackUpgrades } from './graceful-drain';
 
 /**
  * A deploy must not lose a single request (money system): while the API
@@ -101,5 +101,36 @@ describe('graceful drain', () => {
     expect(answered).toBeGreaterThan(0);
     expect(failedBeforeClose).toEqual([]); // nothing sent during the notice period was dropped
     expect(tookMs).toBeLessThan(NOTICE_MS + 1_000); // closes right after the notice, not at the deadline
+  });
+
+  it('an open websocket (a dashboard) does not hold the shutdown open', async () => {
+    // Measured on staging: one open dashboard kept the old API alive until
+    // Docker killed it at 60s — server.close() waits for upgraded sockets too.
+    const server = http.createServer((_req, res) => res.end('ok'));
+    server.on('upgrade', (_req, socket) => {
+      // A realtime connection: accepted, then left open, as socket.io does.
+      socket.write(
+        'HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n',
+      );
+    });
+    trackUpgrades(server);
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const { port } = server.address() as AddressInfo;
+
+    const clientClosed = new Promise<void>((resolve) => {
+      const req = http.request({
+        host: '127.0.0.1',
+        port,
+        headers: { Connection: 'Upgrade', Upgrade: 'websocket' },
+      });
+      req.on('upgrade', (_res, socket) => socket.on('close', () => resolve()));
+      req.end();
+    });
+    await new Promise((r) => setTimeout(r, 100)); // the websocket is open
+
+    const t0 = Date.now();
+    await drainHttpServer(server, { noticeMs: 100, deadlineMs: 10_000 });
+    expect(Date.now() - t0).toBeLessThan(1_000); // not the 10s deadline
+    await clientClosed; // the browser sees the close and reconnects elsewhere
   });
 });

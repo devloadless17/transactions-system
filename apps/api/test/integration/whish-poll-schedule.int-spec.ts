@@ -211,6 +211,28 @@ describe('the reconciliation poller follows the schedule', () => {
     expect(h.whishClient.getStatusCalls).toEqual([p.externalId]); // never asked again
   });
 
+  it('a shutdown stops the run between links — a link already being checked finishes', async () => {
+    // A run can take minutes (250 links, Whish calls of up to 10s); a deploy must
+    // not wait for it, and must never leave a link half-handled.
+    const links = await Promise.all(
+      Array.from({ length: 12 }, (_, i) => insertPending((10 + i) * MIN)),
+    );
+
+    const res = await h.whish.reconcileStalePayments({
+      shouldStop: () => h.whishClient.getStatusCalls.length >= 1, // the stop arrives at once
+    });
+
+    // Each of the 4 workers finished the link it had started, then stopped.
+    expect(res.checked).toBeGreaterThan(0);
+    expect(res.checked).toBeLessThanOrEqual(4);
+    expect(h.whishClient.getStatusCalls).toHaveLength(res.checked);
+    // Every link that was started was fully handled (asked and rescheduled);
+    // the rest were left untouched for the next instance.
+    const rows = await Promise.all(links.map((l) => rowOf(l.id)));
+    expect(rows.filter((r) => r.nextPollAt !== null)).toHaveLength(res.checked);
+    expect(rows.every((r) => r.status === 'PENDING')).toBe(true);
+  });
+
   it('the 24h backstop still closes a link Whish never resolved', async () => {
     const p = await insertPending(25 * 60 * MIN);
     await h.whish.reconcileStalePayments();

@@ -1,4 +1,5 @@
-import type { Server } from 'node:http';
+import type { IncomingMessage, Server } from 'node:http';
+import type { Duplex } from 'node:stream';
 import type { NextFunction, Request, Response } from 'express';
 
 /**
@@ -25,6 +26,11 @@ import type { NextFunction, Request, Response } from 'express';
  *   3. Requests still in flight run to completion. Only a request still running
  *      after DRAIN_DEADLINE_MS is cut, so a stuck one cannot outlive Docker's
  *      stop_grace_period (docker-compose: 60s).
+ * Websockets (the dashboards' realtime connections) are closed at step 2:
+ * server.close() waits for them too, and they never end on their own — on
+ * staging one open dashboard kept the old API alive until Docker killed it at
+ * 60s. They carry no request; the browser reconnects, through Caddy's hold, to
+ * the new container. trackUpgrades() must be attached at startup.
  * The caller (main.ts) stops the background jobs alongside, and closes the
  * database and Redis only after both are done.
  */
@@ -43,6 +49,21 @@ export function drainMiddleware(_req: Request, res: Response, next: NextFunction
 
 type DrainableServer = Pick<Server, 'close' | 'closeIdleConnections' | 'closeAllConnections'>;
 
+const upgraded = new Set<Duplex>();
+
+/** Track upgraded (websocket) connections, so the drain can close them. Call at startup. */
+export function trackUpgrades(server: Pick<Server, 'on'>): void {
+  server.on('upgrade', (_req: IncomingMessage, socket: Duplex) => {
+    upgraded.add(socket);
+    socket.once('close', () => upgraded.delete(socket));
+  });
+}
+
+function closeUpgraded(): void {
+  for (const socket of upgraded) socket.destroy();
+  upgraded.clear();
+}
+
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /**
@@ -59,7 +80,14 @@ export async function drainHttpServer(
     // Stop accepting; the callback fires once every connection has closed.
     server.close(() => resolve());
     server.closeIdleConnections();
+    closeUpgraded();
     // Backstop for a request that never finishes.
-    setTimeout(() => server.closeAllConnections(), Math.max(0, deadlineMs - noticeMs)).unref();
+    setTimeout(
+      () => {
+        server.closeAllConnections();
+        closeUpgraded();
+      },
+      Math.max(0, deadlineMs - noticeMs),
+    ).unref();
   });
 }

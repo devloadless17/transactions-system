@@ -15,7 +15,7 @@ import IORedis from 'ioredis';
 import type { Server, ServerOptions } from 'socket.io';
 import type { INestApplicationContext } from '@nestjs/common';
 import { noStore } from './common/http/no-store';
-import { drainHttpServer, drainMiddleware } from './common/http/graceful-drain';
+import { drainHttpServer, drainMiddleware, trackUpgrades } from './common/http/graceful-drain';
 import { stopBackgroundJobs } from './common/lifecycle/background-jobs';
 import { trustedProxies } from './common/http/trusted-proxies';
 import { corsOriginCheck } from './common/http/cors-origin';
@@ -109,6 +109,9 @@ class CorsIoAdapter extends IoAdapter {
 
 // A background run in progress gets this long to finish during a shutdown.
 const JOB_DRAIN_MS = 40_000;
+// After an uncaught exception the zero-loss shutdown still runs, but the
+// process must not linger in that state: it exits by then whatever happens.
+const CRASH_EXIT_CAP_MS = 15_000;
 
 async function bootstrap() {
   // bodyParser stays enabled (Nest's express parses JSON by default).
@@ -133,13 +136,23 @@ async function bootstrap() {
 
   // An uncaught SYNCHRONOUS throw leaves the process in an undefined state — for a
   // money API, continuing to serve from there is more dangerous than restarting.
-  // Log loudly, then close gracefully (Prisma/Redis disconnect, timers cleared)
-  // and exit non-zero so the orchestrator's restart policy brings up a clean
-  // instance. A hard timeout guards against a hung shutdown.
+  // Log loudly, then shut down and exit non-zero so the restart policy brings up
+  // a clean instance. The shutdown is the same zero-loss one a deploy uses
+  // (below): the throw almost always comes from one code path, and the requests
+  // in flight on other connections — deposits, withdrawals — are finished rather
+  // than dropped, while Caddy holds new ones for the restarted container. Capped
+  // at CRASH_EXIT_CAP_MS, so a broken process cannot linger.
+  // Filled in once the server is up (below); until then a crash is a plain close.
+  const graceful: { shutdown?: (reason: string, exitCode: number) => Promise<void> } = {};
   process.on('uncaughtException', (err) => {
     logger.error(`Uncaught exception — shutting down: ${err.stack ?? err.message}`);
-    const force = setTimeout(() => process.exit(1), 5000);
+    const force = setTimeout(() => process.exit(1), CRASH_EXIT_CAP_MS);
     force.unref();
+    if (graceful.shutdown) {
+      void graceful.shutdown('uncaughtException', 1);
+      return;
+    }
+    // Still booting: nothing is being served yet.
     void app
       .close()
       .catch(() => undefined)
@@ -153,6 +166,7 @@ async function bootstrap() {
   // First middleware: once a shutdown starts, every response closes its
   // connection — part of the zero-loss shutdown below (./common/http/graceful-drain).
   app.use(drainMiddleware);
+  trackUpgrades(app.getHttpServer());
   // Every response here is authenticated and tenant-scoped — nothing may be
   // cached by a browser, proxy or CDN. Registered before the routes so it
   // covers streamed CSV exports and error responses too. See ./common/http/no-store.
@@ -263,13 +277,13 @@ async function bootstrap() {
   //      is using them any more.
   // docker-compose gives this 60s (stop_grace_period); it normally takes ~3s.
   let stopping = false;
-  const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
+  const shutdown = async (reason: string, exitCode = 0): Promise<void> => {
     if (stopping) return;
     stopping = true;
     // Steady clock: a wall clock can be stepped (NTP, VM time sync) mid-shutdown.
     const t0 = performance.now();
     const since = () => `${Math.round(performance.now() - t0)}ms`;
-    logger.log(`${signal}: draining — health now 503, finishing everything in flight`);
+    logger.log(`${reason}: draining — health now 503, finishing everything in flight`);
     const [, unfinished] = await Promise.all([
       drainHttpServer(app.getHttpServer()).then(() => logger.log(`HTTP drained (${since()})`)),
       stopBackgroundJobs(JOB_DRAIN_MS).then((left) => {
@@ -280,10 +294,17 @@ async function bootstrap() {
     if (unfinished.length) {
       logger.warn(`Background jobs still running at shutdown: ${unfinished.join(', ')}`);
     }
-    await app.close();
+    // A failure closing Postgres/Redis must not leave the process hanging until Docker
+    // kills it: everything in flight is already done, so log it and exit regardless.
+    await app.close().catch((err: unknown) => {
+      logger.error(
+        `Shutdown: closing connections failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
     logger.log(`Shutdown complete (${since()})`);
-    process.exit(0);
+    process.exit(exitCode);
   };
+  graceful.shutdown = shutdown;
   for (const signal of ['SIGTERM', 'SIGINT'] as const) {
     process.once(signal, (s: NodeJS.Signals) => void shutdown(s));
   }

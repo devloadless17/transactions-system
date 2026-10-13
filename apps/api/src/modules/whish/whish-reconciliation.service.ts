@@ -16,6 +16,7 @@ export class WhishReconciliationService implements OnApplicationBootstrap, OnMod
   private readonly logger = new Logger(WhishReconciliationService.name);
   private timer?: NodeJS.Timeout;
   private running = false;
+  private stopping = false;
 
   constructor(private readonly payments: WhishPaymentsService) {}
 
@@ -25,7 +26,10 @@ export class WhishReconciliationService implements OnApplicationBootstrap, OnMod
     // A shutdown stops new runs and waits for one in progress (main.ts).
     registerBackgroundJob({
       name: 'whish-reconciliation',
-      stop: () => this.onModuleDestroy(),
+      stop: () => {
+        this.stopping = true; // the run in progress stops between links
+        this.onModuleDestroy();
+      },
       isRunning: () => this.running,
     });
     // Don't keep the event loop alive just for this ticker.
@@ -43,7 +47,7 @@ export class WhishReconciliationService implements OnApplicationBootstrap, OnMod
     if (this.running) return;
     this.running = true;
     try {
-      const r = await this.payments.reconcileStalePayments();
+      const r = await this.payments.reconcileStalePayments({ shouldStop: () => this.stopping });
       // Heartbeat: log EVERY tick (even when it finds nothing) so we can confirm
       // the poller is actually running in each environment — a silent poller was
       // indistinguishable from a missing one.

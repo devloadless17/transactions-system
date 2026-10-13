@@ -123,6 +123,28 @@ describe('WithdrawalAutoApprovalService — disabled never transfers', () => {
   });
 });
 
+describe('WithdrawalAutoApprovalService — shutdown', () => {
+  it('stops BETWEEN withdrawals: a transfer in progress completes, the next is never claimed', async () => {
+    const second = { ...candidate, id: 'w2' };
+    const { service, withdrawals, transfers } = build({
+      state: makeState(),
+      candidates: [candidate, second],
+    });
+    // The deploy's SIGTERM arrives while the first transfer is with Whish.
+    transfers.sendTransfer.mockImplementationOnce(async () => {
+      service.requestStop();
+      return { status: 'SUCCESS', reference: 'wt_x', traceId: 't' };
+    });
+
+    await runTick(service);
+
+    expect(transfers.sendTransfer).toHaveBeenCalledOnce(); // the one in progress ran to its end
+    expect(withdrawals.approve).toHaveBeenCalledOnce(); // …and was settled
+    expect(withdrawals.claimForProcessing).toHaveBeenCalledTimes(1); // w2 was never claimed
+    expect(withdrawals.claimForProcessing).not.toHaveBeenCalledWith('w2', expect.anything());
+  });
+});
+
 describe('WithdrawalAutoApprovalService — error handling never double-pays', () => {
   it('an UNEXPECTED error (may be post-transfer) holds the row for reconcile, never reverts', async () => {
     const { service, withdrawals, config, transfers } = build({

@@ -37,6 +37,7 @@ export class WithdrawalAutoApprovalService implements OnApplicationBootstrap, On
   private timer?: NodeJS.Timeout;
   private nudgeTimer?: NodeJS.Timeout;
   private running = false;
+  private stopping = false;
 
   constructor(
     private readonly withdrawals: WithdrawalsService,
@@ -59,11 +60,21 @@ export class WithdrawalAutoApprovalService implements OnApplicationBootstrap, On
     // A shutdown stops new runs and waits for one in progress (main.ts).
     registerBackgroundJob({
       name: 'withdrawal-auto-approval',
-      stop: () => this.onModuleDestroy(),
+      stop: () => this.requestStop(),
       isRunning: () => this.running,
     });
     this.timer.unref?.();
     void this.tick();
+  }
+
+  /**
+   * Shutdown: no new run, and the run in progress stops BETWEEN withdrawals — a
+   * transfer that has started always runs to its end; the next instance takes
+   * the rest.
+   */
+  requestStop(): void {
+    this.stopping = true;
+    this.onModuleDestroy();
   }
 
   onModuleDestroy(): void {
@@ -144,6 +155,7 @@ export class WithdrawalAutoApprovalService implements OnApplicationBootstrap, On
       for (const w of stuck) {
         // Re-check the master switch every iteration: flipping it OFF stops the
         // run immediately, so a disable can never let one more transfer through.
+        if (this.stopping) return; // shutdown: before the next withdrawal, never mid-transfer
         if (!(await this.config.isEnabled())) return;
         const stop = await this.processClaimed(w);
         if (stop) return;
@@ -158,6 +170,7 @@ export class WithdrawalAutoApprovalService implements OnApplicationBootstrap, On
       });
       let processed = 0;
       for (const w of candidates) {
+        if (this.stopping) break; // shutdown → stop, before claiming
         if (!(await this.config.isEnabled())) break; // disabled mid-run → stop, before claiming
         const claimed = await this.withdrawals.claimForProcessing(w.id, w.companyId);
         if (!claimed) continue; // cancelled / raced away — skip
