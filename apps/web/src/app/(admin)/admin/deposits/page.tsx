@@ -14,9 +14,11 @@ export default async function Page({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const sp = await searchParams;
-  // Back office views deposits but can't reverse them.
+  // Back office views deposits but can't reverse them; only a super admin can
+  // record a deposit by hand (it puts money into a company's wallet).
   const session = await getSession();
   const canReverse = !!session && FULL_ADMIN_ROLES.includes(session.role);
+  const canCreateDeposit = session?.role === UserRole.SUPER_ADMIN;
   const backoffice = session?.role === UserRole.BACKOFFICE;
   const qc = makeServerQueryClient();
 
@@ -41,7 +43,12 @@ export default async function Page({
 
   return (
     <HydrationBoundary state={dehydrate(qc)}>
-      <TransactionsView scope="admin" canReverse={canReverse} backoffice={backoffice} />
+      <TransactionsView
+        scope="admin"
+        canReverse={canReverse}
+        canCreateDeposit={canCreateDeposit}
+        backoffice={backoffice}
+      />
     </HydrationBoundary>
   );
 }

@@ -40,16 +40,21 @@ export function useCompanyNames(ids: Array<string | null | undefined>): Map<stri
 /**
  * Searchable, lazy company picker for admin filters. Fetches a handful of
  * matches server-side as you type (only when open) — it never bulk-loads the
- * full company list. `value` is a company id or '' (= All).
+ * full company list. `value` is a company id or '' (= All). As a form field
+ * that needs one company, pass `allowAll={false}` and a `placeholder`.
  */
 export function CompanyFilter({
   value,
   onChange,
   className,
+  allowAll = true,
+  placeholder = 'All companies',
 }: {
   value: string;
   onChange: (companyId: string) => void;
   className?: string;
+  allowAll?: boolean;
+  placeholder?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
@@ -85,7 +90,7 @@ export function CompanyFilter({
             {value ? (
               (selectedName ?? '…')
             ) : (
-              <span className="text-muted-foreground">All companies</span>
+              <span className="text-muted-foreground">{placeholder}</span>
             )}
           </span>
           <ChevronsUpDown className="h-4 w-4 shrink-0 opacity-50" />
@@ -103,16 +108,18 @@ export function CompanyFilter({
           />
         </div>
         <ul className="max-h-64 overflow-auto p-1">
-          <li>
-            <button
-              type="button"
-              className="flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm hover:bg-accent"
-              onClick={() => pick('')}
-            >
-              All companies
-              {!value && <Check className="h-4 w-4" />}
-            </button>
-          </li>
+          {allowAll && (
+            <li>
+              <button
+                type="button"
+                className="flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm hover:bg-accent"
+                onClick={() => pick('')}
+              >
+                All companies
+                {!value && <Check className="h-4 w-4" />}
+              </button>
+            </li>
+          )}
           {resultsQ.isLoading && (
             <li className="px-2 py-1.5 text-sm text-muted-foreground">Searching…</li>
           )}

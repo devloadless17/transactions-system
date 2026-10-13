@@ -110,6 +110,27 @@ The seed prints the super admin credentials. Default:
 
 See `/home/aliubuntu/.claude/plans/system-architecture-prompt-fluttering-hedgehog.md` for the full architecture plan.
 
+## Manual deposits (admin)
+
+While a source is not yet sending its deposits through `POST /v1/ingest/:source/transactions`,
+a **SUPER_ADMIN** records them by hand: Deposits → **New deposit** (source, company, the
+source's own transaction ID, amount, and the optional customer / trading account / phone /
+note a source would send). It is the **same deposit**: `POST /v1/admin/deposits` books it
+through the same `TransactionsService.ingest()` path, under that source on the INGEST
+channel — same commission, network fee, source fee, ledger legs, wallet credit, analytics
+and `transaction.completed` CRM event. Before confirming, the admin sees
+`POST /v1/admin/deposits/preview`: the fee and the net credited, priced by the same code.
+
+- **Never credited twice.** The source's own reference is the dedupe key: when the
+  source later sends that deposit through the API, it is answered as a replay
+  (`replayed: true`) and books nothing.
+- **Strict where a person is typing:** a pricing gap is refused with its real error
+  (never booked at net 0, unlike the API, which must never bounce), the amount must be
+  whole cents, and a reference the source already has is refused rather than replayed —
+  on a form a repeat is a typo or a double entry.
+- **Audited** as `transaction.manual_deposit` (who, which deposit, which company) —
+  one Audit Logs filter lists every deposit entered by hand.
+
 ## Whish Pay integration
 
 Companies mint Whish payment links; a paid link settles into the company wallet

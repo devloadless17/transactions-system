@@ -163,6 +163,12 @@ In both cases you receive a `201` with the **existing** transaction, marked
 `"replayed": true`, and **the transaction is not recorded twice**. This means: if you
 get a network timeout, you can safely resend the exact same request.
 
+The same applies to transactions Rival Payments recorded for you by hand (for example,
+before your integration went live): when you send one of them with **your own
+transaction reference** as `externalTransactionId`, you receive it back with
+`"replayed": true` and it is not recorded twice. So it is safe to send your full
+history, including transactions we already recorded.
+
 > Reusing the _same_ `externalTransactionId` for a _different_ entity is rejected with
 > `409 DUPLICATE_TRANSACTION`. Keep your `externalTransactionId` globally unique per
 > transaction.

@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { TransactionStatus } from '../enums';
-import { currencySchema, quantizedAmountSchema } from './common';
+import { FeeApplication, TransactionStatus } from '../enums';
+import { currencySchema, moneyAmountSchema, quantizedAmountSchema } from './common';
 
 // Money IN. A sub-cent amount is quantized, never rejected: the deposit already
 // happened at the provider, so a 400 here would strand real money.
@@ -43,6 +43,53 @@ export const ingestTransactionSchema = z.object({
   idempotencyKey: z.string().trim().min(8).max(120).optional(),
 });
 export type IngestTransactionInput = z.infer<typeof ingestTransactionSchema>;
+
+// --------------------------- manual deposit (admin) --------------------------
+// A deposit a super admin enters by hand while its source is not yet sending it
+// through the ingest API. It is booked through the SAME ingest path, so it is
+// the same deposit. `externalTransactionId` must be the SOURCE's own reference:
+// when the source later sends that deposit through the API, it is recognised
+// as already booked and not credited twice.
+
+// Blank form fields mean "not provided" — never stored as "".
+const optionalText = (max: number) =>
+  z
+    .string()
+    .trim()
+    .max(max)
+    .optional()
+    .transform((v) => (v ? v : undefined));
+
+export const manualDepositPreviewSchema = z.object({
+  sourceId: z.string().uuid(),
+  companyId: z.string().uuid(),
+  // A human is typing it: whole cents, refused rather than silently rounded.
+  amount: moneyAmountSchema,
+  currency: currencySchema,
+});
+export type ManualDepositPreviewInput = z.infer<typeof manualDepositPreviewSchema>;
+
+export const createManualDepositSchema = manualDepositPreviewSchema.extend({
+  externalTransactionId: z.string().trim().min(1).max(200),
+  // The same descriptive fields a source sends in its payload.
+  customer: optionalText(200),
+  target: optionalText(200),
+  phone: optionalText(40),
+  note: optionalText(1000),
+});
+export type CreateManualDepositInput = z.infer<typeof createManualDepositSchema>;
+
+// What the deposit would book — the same pricing the booking uses.
+export const manualDepositPreviewResponseSchema = z.object({
+  amount: z.string(),
+  currency: z.string(),
+  feeApplication: z.nativeEnum(FeeApplication),
+  commissionAmount: z.string(),
+  networkFeeAmount: z.string(),
+  // What the company's wallet is credited.
+  netAmount: z.string(),
+});
+export type ManualDepositPreview = z.infer<typeof manualDepositPreviewResponseSchema>;
 
 export const transactionResponseSchema = z.object({
   id: z.string().uuid(),

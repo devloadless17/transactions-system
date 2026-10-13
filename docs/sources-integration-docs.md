@@ -221,6 +221,8 @@ A repeat is treated as a **replay** (no new money, no duplicate row) when **eith
 
 A replay returns the **existing** transaction with the **same `201`** status, plus **`"replayed": true`** in the body so you can distinguish it from a fresh booking (a newly-created transaction has `"replayed": false`). A replay books no new money.
 
+**Deposits recorded by hand.** While a source is not yet sending through this API, a super admin can record its deposits from the admin Deposits page (**New deposit** → `POST /v1/admin/deposits`). It books through the same ingest path, under that source, with the source's own transaction reference as `externalTransactionId` — so when the source later sends that deposit here, rule 2 answers it as a replay and it is never credited twice. (A manual entry is priced strictly — a pricing gap is refused, not booked at net 0 — and a reference the source already has is refused rather than replayed.)
+
 **Cross-company collision:** the `(source, externalTransactionId)` uniqueness is **global across companies** (`@@unique([sourceId, externalTransactionId])`). Reusing one `externalTransactionId` for a _different_ `companySlug` is **not** a replay — it hits the global unique constraint and fails **`409 DUPLICATE_TRANSACTION`** (with `error.details.externalTransactionId`). Always keep `externalTransactionId` unique per real-world transaction across all companies you push to.
 
 #### Success response (201)

@@ -10,6 +10,7 @@ import {
   type IngestCompanyListItem,
   type IngestTransactionInput,
   type ListTransactionsQuery,
+  type ManualDepositPreview,
   type PaginatedResponse,
   type TransactionResponse,
 } from '@app/shared';
@@ -159,6 +160,12 @@ export class TransactionsService {
       kind: 'source';
       sourceId: string;
       channel?: SourceFeeChannel;
+      // A deposit an admin enters by hand (the source isn't sending through the
+      // API yet) is priced STRICTLY even on the INGEST channel: a pricing gap is
+      // refused with its real error instead of booking at net 0. The never-bounce
+      // rule exists because a source cannot re-send on our schedule; an admin at
+      // the form can fix the rule and submit again. Internal-only.
+      strictPricing?: boolean;
       // The HTTP ingest controller has ALREADY resolved + ACTIVE-checked both
       // rows (source by code, company by slug) milliseconds earlier — passing
       // them here skips a duplicate runAsAdmin round-trip on the hottest
@@ -303,7 +310,7 @@ export class TransactionsService {
           };
         }
 
-        // ---- commission ----
+        // ---- commission + network fee ----
         // Channel-split pricing policy:
         //   - INGEST (external HTTP push): the deposit already happened at the
         //     source and CANNOT bounce. Pricing gaps book at net 0 — the full
@@ -318,56 +325,24 @@ export class TransactionsService {
         //     an admin Refresh settles it AT THE CORRECT FEE once pricing is
         //     fixed — strictly better than an irreversible net-0 booking that
         //     would also push a completed CRM event while crediting nothing.
-        const neverBounce = channel === SourceFeeChannel.INGEST;
-        const rules = await this.commissionsRepo.loadCandidates(cTx, {
+        //   - A manual (admin-entered) deposit: STRICT too — see strictPricing.
+        const neverBounce = channel === SourceFeeChannel.INGEST && !ctx.strictPricing;
+        const {
+          pricingIssue,
+          feeApplication,
+          fee,
+          network,
+          networkCapped,
+          fees,
+          externalDebit,
+          availableCredit,
+        } = await this.priceDeposit(cTx, {
           companyId,
           sourceId: source.id,
-          operationType: 'TRANSACTION',
-        });
-        const resolveArgs = {
-          companyId,
-          sourceId: source.id,
-          operationType: 'TRANSACTION' as const,
           amount,
-          rules,
-        };
-        const resolution = neverBounce
-          ? this.resolver.resolveOptional({ ...resolveArgs, capFeeAtAmount: true })
-          : this.resolver.resolve(resolveArgs);
-        const pricingIssue: 'unpriced' | 'capped' | null =
-          resolution === null ? 'unpriced' : resolution.capped ? 'capped' : null;
-
-        // Honour the rule's fee application (mirrors loads.approve):
-        //   DEDUCTED: external = amount,       company credited amount − fee
-        //   ON_TOP:   external = amount + fee, company credited the full amount
-        // `availableCredit` is the persisted netAmount (what the wallet receives).
-        // Unpriced falls back to DEDUCTED with fee = amount (net 0).
-        const feeApplication = resolution?.feeApplication ?? 'DEDUCTED';
-        const fee = resolution?.commissionAmount ?? amount;
-
-        // ---- network fee ----
-        // The optional per-company second fee, computed BESIDE the commission
-        // above (which is untouched) and on the same amount. Only a properly
-        // priced deposit carries one: an unpriced or commission-capped booking
-        // already withholds the whole amount. Under DEDUCTED it may take only
-        // what the commission leaves, so it can never push net below zero —
-        // switching it on never makes a deposit that books today fail or park.
-        let network = Money.zero();
-        let networkCapped = false;
-        if (networkFeeMaybeOn && resolution && !resolution.capped) {
-          const computed = computeNetworkFee(
-            amount,
-            await readNetworkFeeRate(cTx, companyId, 'TRANSACTION'),
-          );
-          ({ network, capped: networkCapped } = boundDepositNetworkFee({
-            amount,
-            commission: fee,
-            feeApplication,
-            computed,
-          }));
-        }
-        const fees: FeeParts = { commission: fee, network };
-        const { externalDebit, availableCredit } = ingestSplit(amount, fees, feeApplication);
+          neverBounce,
+          networkFeeMaybeOn,
+        });
 
         // ---- insert transaction row ----
         // A different company reusing the same (source, externalTransactionId)
@@ -499,6 +474,203 @@ export class TransactionsService {
     }
 
     return { ...result, replayed };
+  }
+
+  /**
+   * Price a deposit exactly as ingest() books it: the commission, the optional
+   * network fee, and the external/available split. ingest() and the admin
+   * deposit preview both call this, so a preview can never drift from the
+   * booking. Runs inside a transaction scoped to `companyId`.
+   */
+  private async priceDeposit(
+    cTx: PrismaClient,
+    args: {
+      companyId: string;
+      sourceId: string;
+      amount: Money;
+      // true → a pricing gap books at net 0 (see ingest's channel policy);
+      // false → it throws the resolver's error.
+      neverBounce: boolean;
+      networkFeeMaybeOn: boolean;
+    },
+  ) {
+    const { companyId, sourceId, amount } = args;
+    const rules = await this.commissionsRepo.loadCandidates(cTx, {
+      companyId,
+      sourceId,
+      operationType: 'TRANSACTION',
+    });
+    const resolveArgs = {
+      companyId,
+      sourceId,
+      operationType: 'TRANSACTION' as const,
+      amount,
+      rules,
+    };
+    const resolution = args.neverBounce
+      ? this.resolver.resolveOptional({ ...resolveArgs, capFeeAtAmount: true })
+      : this.resolver.resolve(resolveArgs);
+    const pricingIssue: 'unpriced' | 'capped' | null =
+      resolution === null ? 'unpriced' : resolution.capped ? 'capped' : null;
+
+    // Honour the rule's fee application (mirrors loads.approve):
+    //   DEDUCTED: external = amount,       company credited amount − fee
+    //   ON_TOP:   external = amount + fee, company credited the full amount
+    // `availableCredit` is the persisted netAmount (what the wallet receives).
+    // Unpriced falls back to DEDUCTED with fee = amount (net 0).
+    const feeApplication: FeeApplication = resolution?.feeApplication ?? 'DEDUCTED';
+    const fee = resolution?.commissionAmount ?? amount;
+
+    // ---- network fee ----
+    // The optional per-company second fee, computed BESIDE the commission
+    // above (which is untouched) and on the same amount. Only a properly
+    // priced deposit carries one: an unpriced or commission-capped booking
+    // already withholds the whole amount. Under DEDUCTED it may take only
+    // what the commission leaves, so it can never push net below zero —
+    // switching it on never makes a deposit that books today fail or park.
+    let network = Money.zero();
+    let networkCapped = false;
+    if (args.networkFeeMaybeOn && resolution && !resolution.capped) {
+      const computed = computeNetworkFee(
+        amount,
+        await readNetworkFeeRate(cTx, companyId, 'TRANSACTION'),
+      );
+      ({ network, capped: networkCapped } = boundDepositNetworkFee({
+        amount,
+        commission: fee,
+        feeApplication,
+        computed,
+      }));
+    }
+    const fees: FeeParts = { commission: fee, network };
+    const { externalDebit, availableCredit } = ingestSplit(amount, fees, feeApplication);
+    return {
+      pricingIssue,
+      feeApplication,
+      fee,
+      network,
+      networkCapped,
+      fees,
+      externalDebit,
+      availableCredit,
+    };
+  }
+
+  /**
+   * Admin: what a manual deposit would book, without booking it — the same
+   * strict pricing createManualDeposit uses. Throws the real pricing error
+   * (e.g. no commission rule) so the admin can fix it before submitting.
+   */
+  async previewManualDeposit(input: {
+    sourceId: string;
+    companyId: string;
+    amount: string;
+    currency: string;
+  }): Promise<ManualDepositPreview> {
+    const amount = Money.of(input.amount).round();
+    if (!amount.isPositive()) {
+      throw new ValidationError(`amount must be positive at up to ${MONEY_SCALE_LABEL}`);
+    }
+    const { company } = await this.resolveManualDepositParties(input.sourceId, input.companyId);
+    const priced = await this.prisma.runAsTenant(company.id, (tx) =>
+      this.priceDeposit(tx as unknown as PrismaClient, {
+        companyId: company.id,
+        sourceId: input.sourceId,
+        amount,
+        neverBounce: false,
+        networkFeeMaybeOn: company.networkFeeEnabled,
+      }),
+    );
+    return {
+      amount: amount.toString(),
+      currency: input.currency,
+      feeApplication: priced.feeApplication,
+      commissionAmount: priced.fee.toString(),
+      networkFeeAmount: priced.network.toString(),
+      netAmount: priced.availableCredit.toString(),
+    };
+  }
+
+  /**
+   * Admin: record a deposit by hand, while the source is not yet sending it
+   * through the ingest API. It is the SAME deposit the API would book — the
+   * same ingest() path, source and INGEST channel — so it is priced, booked,
+   * credited, counted and sent to the company's CRM (`transaction.completed`)
+   * exactly like one. Two differences, both deliberate:
+   *   - pricing is strict (a gap is refused, never booked at net 0);
+   *   - a reference this source already has is REFUSED, not replayed: on a
+   *     form, a repeated reference is a typo or a double entry, and answering
+   *     "done" would hide it.
+   * The reference must be the source's own transaction id. When the source
+   * later sends the same deposit through the API, ingest's (source, reference)
+   * dedupe answers it as a replay — it is never credited twice.
+   */
+  async createManualDeposit(input: {
+    sourceId: string;
+    companyId: string;
+    externalTransactionId: string;
+    amount: string;
+    currency: IngestTransactionInput['currency'];
+    payload: IngestTransactionInput['payload'];
+  }): Promise<TransactionResponse> {
+    await this.resolveManualDepositParties(input.sourceId, input.companyId);
+    const existing = await this.prisma.runAsAdmin((tx) =>
+      tx.transaction.findFirst({
+        where: { sourceId: input.sourceId, externalTransactionId: input.externalTransactionId },
+        select: { id: true, amount: true, currency: true, createdAt: true },
+      }),
+    );
+    if (existing) throw manualDuplicate(input.externalTransactionId, existing);
+
+    const booked = await this.ingest(
+      {
+        kind: 'source',
+        sourceId: input.sourceId,
+        channel: SourceFeeChannel.INGEST,
+        strictPricing: true,
+      },
+      {
+        companyId: input.companyId,
+        externalTransactionId: input.externalTransactionId,
+        amount: input.amount,
+        currency: input.currency,
+        payload: input.payload,
+      },
+    );
+    // Lost a race with an identical submit (a double click) — the other one
+    // booked it; this one must not report a second deposit.
+    if (booked.replayed) {
+      throw manualDuplicate(input.externalTransactionId, {
+        id: booked.id,
+        amount: booked.amount,
+        currency: booked.currency,
+        createdAt: new Date(booked.createdAt),
+      });
+    }
+    const { replayed: _replayed, ...transaction } = booked;
+    this.logger.log(
+      `manual deposit tx=${transaction.id} co=${transaction.companyId} src=${transaction.sourceCode} ` +
+        `ref=${transaction.externalTransactionId} amount=${transaction.amount} ${transaction.currency}`,
+    );
+    return transaction;
+  }
+
+  /** The source and company of a manual deposit, both required to be ACTIVE. */
+  private async resolveManualDepositParties(sourceId: string, companyId: string) {
+    const [source, company] = await this.prisma.runAsAdmin((tx) =>
+      Promise.all([
+        tx.source.findUnique({ where: { id: sourceId } }),
+        tx.company.findUnique({ where: { id: companyId } }),
+      ]),
+    );
+    if (!source) throw new NotFoundError('Source', sourceId);
+    if (source.status !== 'ACTIVE')
+      throw new ValidationError(`Source '${source.code}' is inactive`);
+    if (!company) throw new NotFoundError('Company', companyId);
+    if (company.status !== 'ACTIVE') {
+      throw new ValidationError(`Company '${company.name}' is inactive`);
+    }
+    return { source, company };
   }
 
   /**
@@ -970,6 +1142,19 @@ export const TRANSACTIONS_CSV_HEADER = [
  *     the company is credited the full amount.
  * In both cases external = credit + both fees, so the ledger set stays balanced.
  */
+/** A manual deposit whose reference this source already has — never booked twice. */
+function manualDuplicate(
+  reference: string,
+  existing: { id: string; amount: { toString(): string }; currency: string; createdAt: Date },
+): ConflictError {
+  return new ConflictError(
+    `Reference '${reference}' is already recorded for this source ` +
+      `(${Money.fromDb(existing.amount).toFixed(2)} ${existing.currency.trim()} on ` +
+      `${existing.createdAt.toISOString().slice(0, 10)}) — no new deposit was created.`,
+    { transactionId: existing.id },
+  );
+}
+
 export function ingestSplit(
   amount: Money,
   fees: FeeParts,

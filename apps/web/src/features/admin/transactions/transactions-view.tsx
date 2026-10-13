@@ -31,11 +31,12 @@ import { ExportCsvButton } from '@/components/export-csv-button';
 import { NetworkFeeLine } from '@/components/network-fee-line';
 import { useDebouncedValue } from '@/lib/use-debounced-value';
 import { EmptyState } from '@/components/empty-state';
-import { Inbox } from 'lucide-react';
+import { Inbox, Plus } from 'lucide-react';
 import { DateRangePicker, type PickedRange } from '@/components/ui/date-range-picker';
 import { isoBound, quickRangePresets } from '@/lib/date-presets';
 import { CompanyFilter, useCompanyNames } from '@/features/admin/company-filter';
 import { TransactionDetailDrawer } from './transaction-detail-drawer';
+import { ManualDepositDialog } from './manual-deposit-dialog';
 
 interface Filters {
   status?: TransactionStatus | '';
@@ -91,10 +92,13 @@ function urlParamsFromState(page: number, filters: Filters): string {
 export function TransactionsView({
   scope,
   canReverse = false,
+  canCreateDeposit = false,
   backoffice = false,
 }: {
   scope: 'admin' | 'company';
   canReverse?: boolean;
+  // Super admins can record a deposit by hand (the API is SUPER_ADMIN-only).
+  canCreateDeposit?: boolean;
   // BACKOFFICE sees only what the customer paid — never the net credited or a
   // platform fee (the API strips both for back office). Full admins (and the
   // company's own view) unchanged.
@@ -149,6 +153,7 @@ export function TransactionsView({
     setFilter({ from: b.from, to: b.to, fromTime: undefined, toTime: undefined }),
   );
   const [reverseTarget, setReverseTarget] = useState<TransactionResponse | null>(null);
+  const [newDepositOpen, setNewDepositOpen] = useState(false);
   const [detailTarget, setDetailTarget] = useState<TransactionResponse | null>(null);
 
   // Debounce the free-text search into the query key only; the input stays live.
@@ -319,15 +324,23 @@ export function TransactionsView({
               : 'Transactions ingested via your API keys.'}
           </p>
         </div>
-        <ExportCsvButton
-          path={
-            scope === 'admin'
-              ? '/admin/transactions/export.csv'
-              : '/company/transactions/export.csv'
-          }
-          params={params}
-          filename="transactions"
-        />
+        <div className="flex flex-wrap items-center gap-2">
+          {scope === 'admin' && canCreateDeposit && (
+            <Button className="gap-1.5" onClick={() => setNewDepositOpen(true)}>
+              <Plus className="h-4 w-4" />
+              New deposit
+            </Button>
+          )}
+          <ExportCsvButton
+            path={
+              scope === 'admin'
+                ? '/admin/transactions/export.csv'
+                : '/company/transactions/export.csv'
+            }
+            params={params}
+            filename="transactions"
+          />
+        </div>
       </div>
 
       <Card>
@@ -428,6 +441,9 @@ export function TransactionsView({
         </CardContent>
       </Card>
 
+      {canCreateDeposit && (
+        <ManualDepositDialog open={newDepositOpen} onClose={() => setNewDepositOpen(false)} />
+      )}
       <ReverseTransactionDialog
         target={reverseTarget}
         onClose={() => setReverseTarget(null)}
