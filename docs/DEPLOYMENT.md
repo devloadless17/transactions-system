@@ -160,6 +160,32 @@ release ran a destructive migration, restore the DB from a backup.
 
 Read the entry for every release you are about to roll back across. Newest first.
 
+#### Whish refunds — `20261013140000_whish_refund`
+
+- **One additive migration:** `REFUNDED` is added to `WhishPaymentStatus` and
+  `WHISH_REFUND` to `TransactionLogKind`, with two nullable columns on
+  `whish_payments` (`refund_requested_at`, `refunded_at`). The terminal-status
+  guard from `0018` (`reject_terminal_status_change()`) now also covers
+  `whish_payments` through a new `whish_payments_status_guard` trigger, so a
+  `REFUNDED` payment can never change status again. The guard's rules for
+  transactions, withdrawals, payouts and loads are unchanged. Catalog-only: no
+  backfill, no index.
+- **Nothing is refunded by deploying it.** A refund happens only when an admin
+  (`SUPER_ADMIN` or `ADMIN_OPERATOR`) presses Refund on a PAID payment. Whish then
+  sends the full amount back to the payer from the platform's Whish account — real
+  money — and the deposit is reversed like the admin Reverse.
+- **ROLLBACK RULE.** Rolling the API image back past this release is safe **only
+  while no Whish payment is `REFUNDED`**: the previous image cannot read that status
+  value. After the first refund, roll forward only. Check first (read-only):
+
+  ```bash
+  cd /home/deploy/transactions-system
+  docker compose -f docker-compose.prod.yml exec -T postgres \
+    sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tA' <<'SQL'
+  SELECT count(*) FROM whish_payments WHERE status = 'REFUNDED';
+  SQL
+  ```
+
 #### Deposits at volume — `20261013120000_whish_payment_poll_schedule`
 
 - **One additive migration:** `whish_payments.next_poll_at` (nullable, no
