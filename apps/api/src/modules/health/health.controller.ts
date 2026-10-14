@@ -1,5 +1,6 @@
 import { Controller, Get, Req, Res } from '@nestjs/common';
 import type { Request, Response } from 'express';
+import { Prisma } from '@app/db';
 import { PrismaService } from '../../database/prisma.service';
 import { SkipResponseEnvelope } from '../../common/decorators/skip-response-envelope.decorator';
 import { shutdownState } from '../../common/http/graceful-drain';
@@ -11,8 +12,28 @@ import { shutdownState } from '../../common/http/graceful-drain';
 export const PROXY_HEALTH_CHECK_HEADER = 'x-health-check';
 const PROXY_HEALTH_CHECK_VALUE = 'caddy';
 
+/**
+ * How long a health check waits for the database's answer. Well inside every
+ * checker's own timeout (Caddy 3s, the release script 3s, Docker 5s).
+ */
+export const DB_ANSWER_WAIT_MS = 1_500;
+/**
+ * How long the database may go without answering, while every connection is
+ * busy, before the API counts as down. Twice the longest a transaction waits
+ * for a connection (TX_MAX_WAIT_MS in prisma.service.ts): past it, work is
+ * failing, not waiting its turn.
+ */
+export const DB_BUSY_LIMIT_MS = 30_000;
+
+type DbState = 'ok' | 'busy' | 'down';
+
 const isLoopback = (address: string | undefined): boolean =>
   address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
+
+// P2024: no connection came free within Prisma's pool timeout — the pool is
+// busy, the database itself did not fail.
+const isPoolTimeout = (err: unknown): boolean =>
+  err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2024';
 
 // Operational liveness/readiness probe: orchestrators and monitors read the raw
 // {status,db} body and it sets its own 503 — keep it outside the API envelope.
@@ -27,6 +48,10 @@ export class HealthController {
    * long Caddy took to find this container.
    */
   private lastProxyCheckOkAt: number | null = null;
+  /** When the database last answered a check (performance.now()). */
+  private lastDbAnswerAt: number | null = null;
+  /** The database check in flight, shared by every health check meanwhile. */
+  private dbCheck: Promise<DbState | 'waiting'> | null = null;
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -39,12 +64,7 @@ export class HealthController {
       res.status(503);
       return { status: 'draining', timestamp: new Date().toISOString() };
     }
-    let db: 'ok' | 'down' = 'ok';
-    try {
-      await this.prisma.$queryRawUnsafe('SELECT 1');
-    } catch {
-      db = 'down';
-    }
+    const db = await this.dbState();
     // Return 503 (not 200) when the DB is unreachable so the container/orchestrator
     // healthcheck actually fails and the instance is restarted / pulled from
     // rotation instead of staying "healthy" while serving 500s on every request.
@@ -53,7 +73,7 @@ export class HealthController {
       this.lastProxyCheckOkAt = performance.now();
     }
     return {
-      status: db === 'ok' ? 'ok' : 'degraded',
+      status: db === 'down' ? 'degraded' : 'ok',
       timestamp: new Date().toISOString(),
       db,
       // Only for a caller inside this container (the release script, via
@@ -68,5 +88,49 @@ export class HealthController {
           }
         : {}),
     };
+  }
+
+  /**
+   * Is the database there? A check queues for a pool connection like any
+   * other query, so in a burst (every connection busy) it waits behind the
+   * work. That is busy, not down: the process serves, and the database
+   * answered moments ago — so Caddy keeps routing here (there is nowhere
+   * better: every colour shares this database), and a release does not take a
+   * busy new version for a crashed one. Measured: with the pool held, SELECT 1
+   * waited 4.7s, past Caddy's 3s timeout, which took the only API out of
+   * rotation in the middle of the burst.
+   *
+   * Down: the database failed the check, or has not answered for
+   * DB_BUSY_LIMIT_MS — or never has (a new release must reach its database
+   * before it takes traffic). One check is in flight at a time, so health
+   * checks never pile up in the pool queue themselves.
+   */
+  private async dbState(): Promise<DbState> {
+    this.dbCheck ??= this.prisma
+      .$queryRawUnsafe('SELECT 1')
+      .then(
+        (): DbState => {
+          this.lastDbAnswerAt = performance.now();
+          return 'ok';
+        },
+        (err: unknown): DbState | 'waiting' => (isPoolTimeout(err) ? 'waiting' : 'down'),
+      )
+      .finally(() => {
+        this.dbCheck = null;
+      });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const waited = new Promise<'waiting'>((resolve) => {
+      timer = setTimeout(() => resolve('waiting'), DB_ANSWER_WAIT_MS);
+    });
+    try {
+      const answer = await Promise.race([this.dbCheck, waited]);
+      if (answer !== 'waiting') return answer;
+    } finally {
+      clearTimeout(timer);
+    }
+    return this.lastDbAnswerAt !== null &&
+      performance.now() - this.lastDbAnswerAt < DB_BUSY_LIMIT_MS
+      ? 'busy'
+      : 'down';
   }
 }

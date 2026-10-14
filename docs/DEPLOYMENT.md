@@ -159,7 +159,8 @@ git push origin main:production
   | `overlap-held` | only the new one (the switch-over from the single `api` container) | the script holds the leases, so only the old API runs background work; traffic and the web move to the new one, the old one is stopped between two Whish transfers with nothing calling it, then the leases are given back |
   | `sequential`   | the new one does not (a rollback to an older tag)                  | never side by side: the old one drains first, Caddy holds requests until the new one is healthy (a few seconds)                                                                                                            |
 
-  Three things make it hold under real conditions, each found in a rehearsal:
+  Four things make it hold under real conditions, each found in a rehearsal or
+  a load test:
 
   - Internal health checks are never rate limited (`skipThrottle`). Caddy checks
     each upstream name every second from one IP; over the per-IP limit a 429
@@ -168,6 +169,13 @@ git push origin main:production
     both versions write for ~200ms, and 5 attempts sometimes ran out.
   - A release that crashes on start is caught in seconds (its restart count),
     not after the 3-minute health wait.
+  - A busy database pool is not a down API. The health check's `SELECT 1`
+    queues for a connection like any query, so in a burst it waited behind the
+    work (4.7s measured), past Caddy's 3s timeout: Caddy took the only API out
+    of rotation mid-burst. It now waits at most 1.5s and answers 200
+    `"db":"busy"` while the database answered within the last 30s; a database
+    error, 30s without an answer, or a new release that never reached its
+    database is still a 503.
 
   **Rehearsed locally** with the real compose file, release script, images and
   Caddy (2.11.7), under continuous load from 12 deposit streams, Whish

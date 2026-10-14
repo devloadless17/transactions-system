@@ -1,8 +1,9 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Request, Response } from 'express';
+import { Prisma } from '@app/db';
 import type { PrismaService } from '../../database/prisma.service';
 import { shutdownState } from '../../common/http/graceful-drain';
-import { HealthController } from './health.controller';
+import { DB_ANSWER_WAIT_MS, DB_BUSY_LIMIT_MS, HealthController } from './health.controller';
 
 /**
  * Caddy routes API traffic by this endpoint (active health checks): 503 takes
@@ -108,6 +109,135 @@ describe('HealthController', () => {
       await controller.health(fromCaddyCheck(), res);
       const body = await controller.health(fromCaddyCheck(), res);
       expect(body).not.toHaveProperty('proxyCheckedMsAgo');
+    });
+  });
+
+  /**
+   * The check queues for a pool connection like any query. In a burst every
+   * connection is busy and it waits behind the work (measured: 4.7s with the
+   * pool held, past Caddy's 3s timeout) — that must not take the only API out
+   * of rotation, nor make a release think its new version crashed.
+   */
+  describe('a busy pool is not a down database', () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    // Every SELECT 1 waits until the test answers it.
+    const setupQueued = () => {
+      const checks: Array<{ answer: () => void; fail: (err: unknown) => void }> = [];
+      const prisma = {
+        $queryRawUnsafe: vi.fn(
+          () =>
+            new Promise((answer, fail) => {
+              checks.push({ answer: () => answer([]), fail });
+            }),
+        ),
+      };
+      const res = { status: vi.fn() };
+      return {
+        controller: new HealthController(prisma as unknown as PrismaService),
+        prisma,
+        checks,
+        res: res as unknown as Response,
+        status: res.status,
+      };
+    };
+    // One health check the database answers at once.
+    const answered = async (s: ReturnType<typeof setupQueued>) => {
+      const body = s.controller.health(request(CADDY_PEER), s.res);
+      await vi.advanceTimersByTimeAsync(0);
+      s.checks.at(-1)!.answer();
+      return body;
+    };
+    // One health check whose SELECT 1 is still queued when the wait runs out.
+    const unanswered = async (s: ReturnType<typeof setupQueued>, req = request(CADDY_PEER)) => {
+      const body = s.controller.health(req, s.res);
+      await vi.advanceTimersByTimeAsync(DB_ANSWER_WAIT_MS);
+      return body;
+    };
+
+    it('answers 200 "busy" within the wait when the database answered moments ago', async () => {
+      const s = setupQueued();
+      await expect(answered(s)).resolves.toMatchObject({ status: 'ok', db: 'ok' });
+      await expect(unanswered(s)).resolves.toMatchObject({ status: 'ok', db: 'busy' });
+      expect(s.status).not.toHaveBeenCalled();
+    });
+
+    it("a busy answer to Caddy's check is a pass (the release script sees it)", async () => {
+      const s = setupQueued();
+      await answered(s);
+      await vi.advanceTimersByTimeAsync(5_000);
+      await unanswered(s, fromCaddyCheck());
+      const body = s.controller.health(fromInside(), s.res);
+      await vi.advanceTimersByTimeAsync(DB_ANSWER_WAIT_MS);
+      expect(proxyCheckedMsAgo(await body)).toBe(DB_ANSWER_WAIT_MS);
+    });
+
+    it('503 while it waits if the database never answered (a new release must reach it first)', async () => {
+      const s = setupQueued();
+      await expect(unanswered(s)).resolves.toMatchObject({ status: 'degraded', db: 'down' });
+      expect(s.status).toHaveBeenCalledWith(503);
+    });
+
+    it('503 once the database has not answered for DB_BUSY_LIMIT_MS', async () => {
+      const s = setupQueued();
+      await answered(s);
+      await expect(unanswered(s)).resolves.toMatchObject({ db: 'busy' });
+      await vi.advanceTimersByTimeAsync(DB_BUSY_LIMIT_MS - 2 * DB_ANSWER_WAIT_MS - 1);
+      await expect(unanswered(s)).resolves.toMatchObject({ db: 'busy' });
+      expect(s.status).not.toHaveBeenCalled();
+      await expect(unanswered(s)).resolves.toMatchObject({ status: 'degraded', db: 'down' });
+      expect(s.status).toHaveBeenCalledWith(503);
+    });
+
+    it('a late answer counts: once the queued check gets through, it is ok again', async () => {
+      const s = setupQueued();
+      await answered(s);
+      await unanswered(s);
+      s.checks.at(-1)!.answer();
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(answered(s)).resolves.toMatchObject({ db: 'ok' });
+    });
+
+    it('one check in flight at a time: health checks never pile up in the pool queue', async () => {
+      const s = setupQueued();
+      await answered(s);
+      expect(s.prisma.$queryRawUnsafe).toHaveBeenCalledTimes(1);
+      await Promise.all([unanswered(s), unanswered(s), unanswered(s)]);
+      expect(s.prisma.$queryRawUnsafe).toHaveBeenCalledTimes(2);
+      s.checks.at(-1)!.answer();
+      await vi.advanceTimersByTimeAsync(0);
+      await answered(s);
+      expect(s.prisma.$queryRawUnsafe).toHaveBeenCalledTimes(3);
+    });
+
+    it("Prisma's pool timeout (P2024) is busy, not down", async () => {
+      const s = setupQueued();
+      await answered(s);
+      const body = s.controller.health(request(CADDY_PEER), s.res);
+      await vi.advanceTimersByTimeAsync(0);
+      s.checks.at(-1)!.fail(
+        new Prisma.PrismaClientKnownRequestError('Timed out fetching a new connection', {
+          code: 'P2024',
+          clientVersion: Prisma.prismaVersion.client,
+        }),
+      );
+      await expect(body).resolves.toMatchObject({ status: 'ok', db: 'busy' });
+      expect(s.status).not.toHaveBeenCalled();
+    });
+
+    it('a database that fails the check is down at once, however recently it answered', async () => {
+      const s = setupQueued();
+      await answered(s);
+      const body = s.controller.health(request(CADDY_PEER), s.res);
+      await vi.advanceTimersByTimeAsync(0);
+      s.checks.at(-1)!.fail(new Error('connection refused'));
+      await expect(body).resolves.toMatchObject({ status: 'degraded', db: 'down' });
+      expect(s.status).toHaveBeenCalledWith(503);
     });
   });
 });

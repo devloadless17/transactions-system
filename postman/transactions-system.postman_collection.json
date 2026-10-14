@@ -128,7 +128,7 @@
               "host": ["{{baseUrl}}"],
               "path": ["health"]
             },
-            "description": "Sanity check. Returns `{ status: 'ok', db: 'ok' }` when Postgres is reachable."
+            "description": "Sanity check. Returns `{ status: 'ok', db: 'ok' }` when Postgres is reachable, `db: 'busy'` (still 200) while every database connection is in use, and 503 `{ status: 'degraded', db: 'down' }` when the database is unreachable."
           }
         }
       ]
