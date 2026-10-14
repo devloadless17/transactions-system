@@ -23,6 +23,9 @@ import {
   rangePhrase,
   type DateRange,
 } from '@/features/analytics/date-range';
+import { useAdminAttention } from '@/features/operations/use-admin-attention';
+import { AttentionBanner } from '@/features/admin/attention-banner';
+import { heldForText, plural } from '@/features/admin/attention';
 
 // Realtime (Socket.IO) is the PRIMARY freshness mechanism: every money event
 // invalidates ['admin','analytics'], so these tiles update LIVE, and a socket
@@ -59,6 +62,12 @@ export function AdminOverview() {
       return apiFetch<FlowsResponse>(`/admin/analytics/flows?${params.toString()}`);
     },
   });
+
+  // Money waiting on a person (live; see useAdminAttention). The landing page
+  // says so first, so a stuck withdrawal can't sit unseen behind a filter.
+  const attention = useAdminAttention();
+  const stuck = attention?.stuckWithdrawals;
+  const whishStuck = attention?.whishNeedsAttention;
 
   const opsQ = useQuery({
     queryKey: ['admin', 'analytics', 'operations'],
@@ -215,6 +224,35 @@ export function AdminOverview() {
         </div>
         <DateRangeControls value={range} onChange={setRange} className="self-start sm:self-auto" />
       </div>
+
+      {((stuck?.count ?? 0) > 0 || (whishStuck?.count ?? 0) > 0) && (
+        <AttentionBanner title="Needs your attention">
+          <ul className="space-y-1">
+            {stuck && stuck.count > 0 && (
+              <li>
+                <Link
+                  href="/admin/withdrawals"
+                  className="font-medium underline underline-offset-2"
+                >
+                  {plural(stuck.count, 'withdrawal')} stuck in processing
+                </Link>{' '}
+                — money held {heldForText(stuck.oldestAt) ?? ''} until someone checks the Whish
+                account and resolves it.
+              </li>
+            )}
+            {whishStuck && whishStuck.count > 0 && (
+              <li>
+                <Link href="/admin/whish" className="font-medium underline underline-offset-2">
+                  {plural(whishStuck.count, 'Whish payment')} need
+                  {whishStuck.count === 1 ? 's' : ''} attention
+                </Link>{' '}
+                — paid by the customer, not yet in the company&apos;s wallet
+                {whishStuck.oldestAt ? `, waiting ${heldForText(whishStuck.oldestAt)}` : ''}.
+              </li>
+            )}
+          </ul>
+        </AttentionBanner>
+      )}
 
       {/* Revenue trio: platform revenue − source fees = net revenue. Once there
           is network-fee revenue in the range (negative included — a reversal)

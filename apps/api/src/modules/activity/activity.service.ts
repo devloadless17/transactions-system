@@ -6,6 +6,7 @@ import {
   type ActivityKind,
   type ActivityListResponse,
   type ListActivityQuery,
+  type AdminAttention,
   type PendingCounts,
 } from '@app/shared';
 import type { PrismaClient } from '@app/db';
@@ -14,6 +15,7 @@ import { CacheService } from '../cache/cache.service';
 import { ValidationError } from '../../common/errors/domain.error';
 import { BACKOFFICE_CSV_COLUMNS, backofficeCsvCells } from '../../common/backoffice-view';
 import { streamCsvKeyset } from '../../common/csv';
+import { isStuckProcessing, processingSince } from '../withdrawals/stuck-processing';
 
 // Cache the list COUNT briefly so paging reuses it (same tradeoff as the
 // per-type lists). Rows are always live; only the total can lag by this window.
@@ -344,6 +346,41 @@ export class ActivityService {
   /** Platform-wide PENDING request counts across all companies (admin badges). */
   async adminPendingCounts(): Promise<PendingCounts> {
     return this.prisma.runAsAdmin((tx) => this.countPending(tx));
+  }
+
+  /**
+   * Money a person must look at now, platform-wide (admin sidebar alert, the
+   * Withdrawals / Whish Pay banners and the Overview). PROCESSING is normally
+   * seconds long, so that set is tiny; the stuck rule lives in
+   * withdrawals/stuck-processing.ts. The Whish predicate is the one the admin
+   * Whish list's "needs attention" filter uses, so the count matches the list.
+   */
+  async adminAttention(now: Date = new Date()): Promise<AdminAttention> {
+    return this.prisma.runAsAdmin(async (tx) => {
+      const [processing, whish] = await Promise.all([
+        tx.withdrawal.findMany({
+          where: { status: 'PROCESSING' },
+          select: { status: true, metadata: true, updatedAt: true },
+        }),
+        tx.whishPayment.aggregate({
+          where: { metadata: { path: ['needsAttention'], equals: true } },
+          _count: { _all: true },
+          _min: { createdAt: true },
+        }),
+      ]);
+      const stuck = processing.filter((w) => isStuckProcessing(w, now));
+      const oldestStuck = stuck.reduce<Date | null>((oldest, w) => {
+        const since = processingSince(w);
+        return !oldest || since < oldest ? since : oldest;
+      }, null);
+      return {
+        stuckWithdrawals: { count: stuck.length, oldestAt: oldestStuck?.toISOString() ?? null },
+        whishNeedsAttention: {
+          count: whish._count._all,
+          oldestAt: whish._min.createdAt?.toISOString() ?? null,
+        },
+      };
+    });
   }
 
   private async countPending(tx: PrismaClient): Promise<PendingCounts> {

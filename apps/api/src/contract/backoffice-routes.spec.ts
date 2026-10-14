@@ -27,6 +27,8 @@ const BACKOFFICE_ROUTES: Record<string, Treatment> = {
   'GET admin/activity': 'view',
   'GET admin/activity/export.csv': 'view',
   'GET admin/operations/counts': 'no-money',
+  // Stuck-money alert: counts and dates only
+  'GET admin/operations/attention': 'no-money',
   // Company picker (CompanyResponse carries no pricing)
   'GET admin/companies': 'no-money',
   // Deposits

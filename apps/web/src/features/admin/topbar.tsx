@@ -9,12 +9,13 @@ import { MobileNav } from '@/components/nav/mobile-nav';
 import { NotificationBell } from '@/features/notifications/notification-bell';
 import { usePendingCounts } from '@/features/operations/use-pending-counts';
 import { apiFetch } from '@/lib/api.client';
-import { adminNavItemsFor } from './sidebar';
+import { adminNavItemsFor, useAdminNavAlerts } from './sidebar';
 
 export function AdminTopbar({ session }: { session: MeResponse }) {
   const router = useRouter();
   const qc = useQueryClient();
   const badges = usePendingCounts('admin');
+  const alerts = useAdminNavAlerts();
 
   async function handleLogout() {
     try {
@@ -33,7 +34,7 @@ export function AdminTopbar({ session }: { session: MeResponse }) {
   return (
     <header className="flex h-14 items-center justify-between gap-2 border-b bg-background px-4 sm:px-6">
       <div className="flex min-w-0 items-center gap-2">
-        <MobileNav items={adminNavItemsFor(session.role)} badges={badges} />
+        <MobileNav items={adminNavItemsFor(session.role)} badges={badges} alerts={alerts} />
         <div className="hidden truncate text-sm text-muted-foreground sm:block">
           Signed in as {session.email} · {session.role}
         </div>

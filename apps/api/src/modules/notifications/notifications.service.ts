@@ -227,6 +227,45 @@ export class NotificationsService {
     }
   }
 
+  /**
+   * Auto-approval sent a withdrawal's Whish transfer and could not tell whether
+   * the money left (a timeout, or an error after the call). It holds the row in
+   * PROCESSING and never touches it again, so a person must check Whish and
+   * resolve it. ADMIN scope, in-app; cleared with the request once the
+   * withdrawal is approved or rejected (clearAdminRequest).
+   */
+  async withdrawalNeedsDecision(p: {
+    companyId: string;
+    entityId: string;
+    /** What the recipient was to be paid (net) — the operator's figure. */
+    amount: string;
+    currency: string;
+  }): Promise<void> {
+    try {
+      const company = await this.prisma.runAsAdmin((tx) =>
+        tx.company.findUnique({ where: { id: p.companyId }, select: { name: true } }),
+      );
+      const name = company?.name ?? null;
+      await this.create({
+        scope: 'ADMIN',
+        companyId: p.companyId,
+        companyName: name,
+        flow: 'WITHDRAWAL',
+        event: 'ATTENTION',
+        entityId: p.entityId,
+        title: 'Withdrawal needs a decision',
+        body:
+          `${name ?? 'A company'}: the Whish transfer of ${p.amount} ${p.currency} did not ` +
+          'confirm whether the money left. It is held until someone checks the Whish ' +
+          'account and resolves it.',
+        link: `/admin/${FLOW_PATH.WITHDRAWAL}`,
+        operatorAmount: { amount: p.amount, currency: p.currency },
+      });
+    } catch (e) {
+      this.logger.warn(`notify withdrawalNeedsDecision failed: ${(e as Error).message}`);
+    }
+  }
+
   /** An admin resolved a request → notify the requesting company. */
   async requestResolved(p: {
     flow: RequestFlow;
@@ -263,7 +302,8 @@ export class NotificationsService {
 
   /**
    * A request was resolved (approved / rejected / cancelled) → its ADMIN "new
-   * request" notification is no longer something any admin must action. Dismiss
+   * request" notification (and a "needs a decision" one, if it got stuck) is no
+   * longer something any admin must action. Dismiss
    * it for EVERY admin so it leaves all of their active lists and unread badges,
    * while staying reviewable under the "Cleared" filter. Best-effort, post-commit:
    * a failure here never blocks or rolls back the money operation.
@@ -271,22 +311,30 @@ export class NotificationsService {
   async clearAdminRequest(p: { flow: RequestFlow; entityId: string }): Promise<void> {
     try {
       await this.prisma.runAsAdmin(async (tx) => {
-        const notif = await tx.notification.findFirst({
-          where: { scope: 'ADMIN', flow: p.flow, event: 'REQUESTED', entityId: p.entityId },
+        // The "new request" notification, and a "needs a decision" one if the
+        // request got stuck on the way (withdrawalNeedsDecision).
+        const notifs = await tx.notification.findMany({
+          where: {
+            scope: 'ADMIN',
+            flow: p.flow,
+            event: { in: ['REQUESTED', 'ATTENTION'] },
+            entityId: p.entityId,
+          },
           select: { id: true },
         });
-        if (!notif) return;
         // Upsert a dismissed read marker for every platform admin (company_id IS
         // NULL). ON CONFLICT updates an existing read row so an admin who had
         // merely opened (read, not cleared) it also gets it cleared.
-        await tx.$executeRawUnsafe(
-          `INSERT INTO notification_reads (id, notification_id, user_id, company_id, dismissed_at)
-           SELECT gen_random_uuid(), $1::uuid, u.id, NULL, now()
-           FROM users u
-           WHERE u.company_id IS NULL AND u.role IN ('SUPER_ADMIN', 'ADMIN_OPERATOR', 'BACKOFFICE')
-           ON CONFLICT (notification_id, user_id) DO UPDATE SET dismissed_at = now()`,
-          notif.id,
-        );
+        for (const notif of notifs) {
+          await tx.$executeRawUnsafe(
+            `INSERT INTO notification_reads (id, notification_id, user_id, company_id, dismissed_at)
+             SELECT gen_random_uuid(), $1::uuid, u.id, NULL, now()
+             FROM users u
+             WHERE u.company_id IS NULL AND u.role IN ('SUPER_ADMIN', 'ADMIN_OPERATOR', 'BACKOFFICE')
+             ON CONFLICT (notification_id, user_id) DO UPDATE SET dismissed_at = now()`,
+            notif.id,
+          );
+        }
       });
       // Nudge every admin tab to recompute its bell.
       this.realtime.admin(['notifications']);

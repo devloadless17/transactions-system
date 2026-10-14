@@ -15,11 +15,15 @@ import { SidebarNav, type NavItem } from './sidebar-nav';
 export function MobileNav({
   items,
   badges,
+  alerts,
 }: {
   items: readonly NavItem[];
   badges?: Record<string, number>;
+  alerts?: Record<string, number>;
 }): React.JSX.Element {
   const [open, setOpen] = React.useState(false);
+  // The drawer hides the nav's red alerts, so the menu button carries one too.
+  const alerting = items.some((i) => i.alertKey && (alerts?.[i.alertKey] ?? 0) > 0);
 
   return (
     <Sheet open={open} onOpenChange={setOpen}>
@@ -27,17 +31,25 @@ export function MobileNav({
         <Button
           variant="ghost"
           size="icon"
-          className="h-9 w-9 md:hidden"
-          aria-label="Open navigation menu"
+          className="relative h-9 w-9 md:hidden"
+          aria-label={alerting ? 'Open navigation menu (needs attention)' : 'Open navigation menu'}
         >
           <Menu className="h-5 w-5" />
+          {alerting && (
+            <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-destructive ring-2 ring-background" />
+          )}
         </Button>
       </SheetTrigger>
       <SheetContent side="left" className="w-72 p-0 sm:max-w-xs">
         <SheetTitle className="sr-only">Navigation</SheetTitle>
         {/* Clears the drawer's absolutely-positioned close button. */}
         <div className="h-10 shrink-0" />
-        <SidebarNav items={items} onNavigate={() => setOpen(false)} badges={badges} />
+        <SidebarNav
+          items={items}
+          onNavigate={() => setOpen(false)}
+          badges={badges}
+          alerts={alerts}
+        />
       </SheetContent>
     </Sheet>
   );

@@ -48,6 +48,9 @@ import {
   type ReviewAction,
 } from '@/features/admin/withdrawals/review-copy';
 import { EntityDetailDrawer } from '@/features/activity/activity-detail-drawer';
+import { useAdminAttention } from '@/features/operations/use-admin-attention';
+import { AttentionBanner } from '@/features/admin/attention-banner';
+import { heldForText, plural } from '@/features/admin/attention';
 
 interface ReviewState {
   withdrawal: WithdrawalResponse;
@@ -99,6 +102,10 @@ export function AdminWithdrawalsView({
   // Auto-approval is a withdrawals-only feature; the same view also renders the
   // payouts/loads queues, which never show it.
   const showAutoApproval = superAdmin && config.noun === 'withdrawal';
+  // Withdrawals stuck in PROCESSING hold money until a person decides — and the
+  // queue opens on PENDING, so without this banner they are easy to never see.
+  const attention = useAdminAttention();
+  const stuck = config.noun === 'withdrawal' ? (attention?.stuckWithdrawals ?? null) : null;
 
   const params = flowFilterParams(filters, { pageSize: '20', page: String(page) });
 
@@ -273,6 +280,35 @@ export function AdminWithdrawalsView({
           {headerAction}
         </div>
       </div>
+
+      {stuck && stuck.count > 0 && (
+        <AttentionBanner
+          title={`${plural(stuck.count, 'withdrawal')} stuck in processing — money is held until someone decides`}
+          action={
+            filters.status !== 'PROCESSING' && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setFilters({ ...EMPTY_FLOW_FILTERS, status: 'PROCESSING' });
+                  setPage(1);
+                }}
+              >
+                Show stuck withdrawals
+              </Button>
+            )
+          }
+        >
+          The Whish transfer did not confirm whether the money left
+          {stuck.oldestAt
+            ? ` (the oldest held ${heldForText(stuck.oldestAt)}, since ${new Date(stuck.oldestAt).toLocaleString()})`
+            : ''}
+          . Check the platform&apos;s Whish account for it, then{' '}
+          {superAdmin
+            ? 'use Resolve on the row: Complete if it was sent, Revert if it was not.'
+            : 'ask a super admin to resolve it.'}
+        </AttentionBanner>
+      )}
 
       {showAutoApproval && <AutoApprovalPanel />}
 

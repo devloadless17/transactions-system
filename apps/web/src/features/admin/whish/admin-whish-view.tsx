@@ -23,6 +23,9 @@ import {
   EMPTY_WHISH_FILTERS,
   type WhishFilters,
 } from './whish-filter-bar';
+import { useAdminAttention } from '@/features/operations/use-admin-attention';
+import { AttentionBanner } from '@/features/admin/attention-banner';
+import { heldForText, plural } from '@/features/admin/attention';
 
 const PAGE_SIZE = 20;
 
@@ -41,6 +44,9 @@ export function AdminWhishView({
   const [detail, setDetail] = useState<WhishPaymentResponse | null>(null);
   const [refundTarget, setRefundTarget] = useState<WhishPaymentResponse | null>(null);
   const [filters, setFilters] = useState<WhishFilters>(EMPTY_WHISH_FILTERS);
+  // Paid-but-unsettled payments: the 60s poller skips them, so they wait for a
+  // person — say so above the list instead of behind a filter.
+  const attention = useAdminAttention()?.whishNeedsAttention;
   const [search, setSearch] = useState('');
   const debouncedSearch = useDebouncedValue(search, 300);
   const qc = useQueryClient();
@@ -197,6 +203,31 @@ export function AdminWhishView({
           filename="whish-payments"
         />
       </div>
+
+      {attention && attention.count > 0 && (
+        <AttentionBanner
+          title={`${plural(attention.count, 'Whish payment')} need${attention.count === 1 ? 's' : ''} attention — paid, but not in the company's wallet`}
+          action={
+            !filters.needsAttention && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setFilters({ ...EMPTY_WHISH_FILTERS, needsAttention: true });
+                  setPage(1);
+                }}
+              >
+                Show them
+              </Button>
+            )
+          }
+        >
+          The customer paid at Whish, but settling it into the company&apos;s wallet failed
+          {attention.oldestAt ? ` (the oldest waiting ${heldForText(attention.oldestAt)})` : ''}.
+          The background check skips these: hover the badge to see why, fix the cause, then{' '}
+          {canManage ? 'use Refresh on the row.' : 'ask an admin to refresh it.'}
+        </AttentionBanner>
+      )}
 
       <div className="grid gap-4 sm:grid-cols-2">
         <BalanceCard currency="USD" />

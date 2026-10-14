@@ -213,6 +213,14 @@ const fakeRealtime = {
   admin: () => undefined,
 } as unknown as RealtimeService;
 
+/** Every withdrawalNeedsDecision call the services made (admin-attention.int-spec reads it). */
+export const notifiedNeedsDecision: Array<{
+  companyId: string;
+  entityId: string;
+  amount: string;
+  currency: string;
+}> = [];
+
 const fakeNotifications = {
   requestSubmitted: async () => undefined,
   requestResolved: async () => undefined,
@@ -220,6 +228,10 @@ const fakeNotifications = {
   // implements it; the stub must mirror every method the code-under-test calls,
   // else the `as unknown as` cast hides a "not a function" at runtime.
   clearAdminRequest: async () => undefined,
+  // Called by setAutoMeta when a withdrawal is first flagged needsReconcile.
+  withdrawalNeedsDecision: async (p: (typeof notifiedNeedsDecision)[number]) => {
+    notifiedNeedsDecision.push(p);
+  },
 } as unknown as NotificationsService;
 
 const fakeCounter = { inc: () => undefined } as unknown as Counter<string>;

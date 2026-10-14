@@ -48,6 +48,15 @@ export class ActivityController {
     return this.activity.adminPendingCounts();
   }
 
+  // Money a person must look at now: withdrawals stuck in PROCESSING and Whish
+  // payments that need attention (admin sidebar alert, page banners, Overview).
+  // Counts and dates only — no amounts — so back office may read it too.
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN_OPERATOR, UserRole.BACKOFFICE)
+  @Get('admin/operations/attention')
+  async adminAttention() {
+    return this.activity.adminAttention();
+  }
+
   // ---------- Company: own unified activity ----------
   @Roles(UserRole.COMPANY_OWNER, UserRole.COMPANY_MANAGER, UserRole.COMPANY_VIEWER)
   @Get('company/activity')

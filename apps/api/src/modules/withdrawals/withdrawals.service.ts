@@ -596,19 +596,31 @@ export class WithdrawalsService {
 
   /** Merge auto-approval metadata without changing status (UNKNOWN / settle-retry flags). */
   async setAutoMeta(id: string, companyId: string, auto: AutoApprovalMeta): Promise<void> {
-    await this.prisma.runSerializableAsTenant(companyId, async (tx) => {
+    const flagged = await this.prisma.runSerializableAsTenant(companyId, async (tx) => {
       const cTx = tx as unknown as PrismaClient;
       const w = await cTx.withdrawal.findUnique({ where: { id } });
-      if (!w) return;
+      if (!w) return null;
       await cTx.withdrawal.update({
         where: { id },
         data: { metadata: mergeAutoMeta(w.metadata, auto) },
       });
+      // Newly handed to a person: the transfer's outcome is unknown.
+      return auto.needsReconcile === true && !autoMetaFlag(w.metadata, 'needsReconcile') ? w : null;
     });
     // These flags (needsReconcile / needsAttention / UNKNOWN) are the operator-
     // actionable stuck-money signals; emit so the admin queue + Resolve-processing
     // escape hatch update live, mirroring every other mutator (revertFromProcessing).
     this.notify(companyId);
+    // Post-commit and best-effort (it never throws): the money stays held until
+    // someone resolves it, so ring every admin's bell once, when it happens.
+    if (flagged) {
+      void this.notifications.withdrawalNeedsDecision({
+        companyId,
+        entityId: flagged.id,
+        amount: Money.fromDb(flagged.netAmount).toString(),
+        currency: flagged.currency,
+      });
+    }
   }
 
   /**

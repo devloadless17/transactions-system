@@ -40,6 +40,8 @@ const TOPIC_KEYS: Record<RealtimeTopic, KeysFor> = {
     // Sidebar PENDING-request badge.
     ['company', 'operations', 'counts'],
     ['admin', 'operations', 'counts'],
+    // Stuck-withdrawal alert (sidebar, banner, Overview).
+    ['admin', 'operations', 'attention'],
   ],
   payouts: () => [
     ['admin', 'payouts'],
