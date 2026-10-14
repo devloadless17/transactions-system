@@ -330,7 +330,9 @@ jobs:
             echo "  pull failed (attempt $attempt/4) — retrying in 15s"
             sleep 15
           done
-          docker compose -f docker-compose.prod.yml up -d --no-deps --no-recreate postgres redis caddy </dev/null
+          # Started if missing (a fresh server), never recreated, and healthy before
+          # the migrations run: --wait gives them the order `depends_on` gave.
+          docker compose -f docker-compose.prod.yml up -d --no-deps --no-recreate --wait --wait-timeout 180 postgres redis caddy </dev/null
 
           # `</dev/null` is load-bearing. This whole script is piped into `bash -s`
           # over ssh, so the remote bash reads it from stdin. `docker compose run`
@@ -338,8 +340,13 @@ jobs:
           # it swallows the rest of THIS script — `up -d` and everything below never
           # ran, and the deploy went green with the containers left on the old image.
           # Redirecting stdin to /dev/null severs it from the heredoc. (-T kept too.)
+          # --no-deps is load-bearing too. Without it `run` brings migrate's
+          # dependency (Postgres) up to date first, and RECREATES it whenever its
+          # config fingerprint changed: on 2026-10-14 a Compose upgrade (5.1.4 →
+          # 5.6.0) changed it, and this step restarted production Postgres mid-
+          # deploy (~2s without a database). A deploy never touches Postgres.
           echo "==> Migrations / RLS rotation / seed"
-          docker compose -f docker-compose.prod.yml run --rm -T migrate </dev/null
+          docker compose -f docker-compose.prod.yml run --rm -T --no-deps migrate </dev/null
 
           # The shipped Caddyfile is loaded by the release itself (release.sh), once
           # the new API colour runs and only if the file changed — never before,

@@ -207,10 +207,14 @@ jobs:
             echo "  pull failed (attempt $attempt/4) — retrying in 15s"
             sleep 15
           done
-          $SC up -d --no-deps --no-recreate postgres-staging redis-staging </dev/null
+          # Started if missing, never recreated, healthy before the migrations
+          # (--wait gives them the order `depends_on` gave). The migrations run
+          # with --no-deps: without it `run` recreates Postgres whenever its config
+          # fingerprint changed (a Compose upgrade did, 2026-10-13/14) — see deploy.yml.
+          $SC up -d --no-deps --no-recreate --wait --wait-timeout 180 postgres-staging redis-staging </dev/null
 
           echo "==> Migrations / RLS rotation (staging DB)"
-          $SC run --rm -T migrate-staging </dev/null
+          $SC run --rm -T --no-deps migrate-staging </dev/null
 
           # Blue/green, exactly like prod (scripts/deploy/release.sh): the new API
           # starts beside the live one and takes traffic only once Caddy has seen it

@@ -210,7 +210,12 @@ used to: `docker-compose.prod.yml` uses _floating_ tags (`postgres:16-alpine`,
 recreated whatever had a newer build — observed on 2026-08-20, which moved the engine to
 16.15 and briefly took the database down on a deploy meant to be api/web-only. Now the
 deploy pulls only the API, web and migrate images, and only starts those three if they
-are missing (`up -d --no-recreate`).
+are missing (`up -d --no-recreate --wait`). The migrations run with `--no-deps`: without
+it, `run migrate` brings its dependency up to date first and recreates Postgres whenever
+its config fingerprint changed — on 2026-10-14 the Compose upgrade (5.1.4 → 5.6.0) did
+that, and the next deploy restarted production Postgres (~2s without a database; no
+request failed at that quiet hour). `apps/api/src/contract/deploy-safety.spec.ts` pins
+every Compose call the deploy path makes.
 
 Updating one of them is therefore a deliberate step, at a calm moment (each restarts
 for a few seconds; Caddy's restart drops open connections for prod AND staging):

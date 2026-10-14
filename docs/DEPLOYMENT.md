@@ -196,7 +196,10 @@ git push origin main:production
 
   Never run a bare `docker compose up -d` on the server (it starts **both**
   colours — harmless, the leases hold, but untidy) or `--remove-orphans`. A
-  deploy never pulls or recreates Postgres, Redis or Caddy.
+  deploy never pulls or recreates Postgres, Redis or Caddy: every Compose `up`
+  and `run` it makes passes `--no-deps` (a plain `run migrate` recreated
+  Postgres once — see docs/server-operations.md), pinned by
+  `apps/api/src/contract/deploy-safety.spec.ts`.
 
 - **Config:** `.env.prod.example` is the template; the workflow renders it to
   `/home/deploy/transactions-system/.env` on the server from the secrets above
