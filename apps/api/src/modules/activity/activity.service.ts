@@ -16,7 +16,12 @@ import { ValidationError } from '../../common/errors/domain.error';
 import { BACKOFFICE_CSV_COLUMNS, backofficeCsvCells } from '../../common/backoffice-view';
 import { streamCsvKeyset } from '../../common/csv';
 import { isStuckProcessing, processingSince } from '../withdrawals/stuck-processing';
-import { depositSearchSql, flowSearchSql, searchTerm } from '../../common/search';
+import {
+  depositSearchSql,
+  flowSearchSql,
+  matchingSourceIds,
+  searchTerm,
+} from '../../common/search';
 
 // Cache the list COUNT briefly so paging reuses it (same tradeoff as the
 // per-type lists). Rows are always live; only the total can lag by this window.
@@ -154,19 +159,30 @@ const DEPOSIT_DETAILS_SQL = `COALESCE(o.payload->>'customer', o.payload->>'targe
 // and the export always apply the same search to the same fields — the WHOLE
 // row (every recipient detail, the phone typed any way), not the one field the
 // row shows as its title.
+// `sourceIds`: the sources whose code matches (matchingSourceIds), so a search
+// for "WHISH" finds Whish deposits as it always has.
 interface SearchPh {
   like: string;
   digits: string | null;
+  sources: string | null;
 }
-function searchPh(search: string | undefined, p: (v: unknown) => string): SearchPh | null {
+function searchPh(
+  search: string | undefined,
+  p: (v: unknown) => string,
+  sourceIds: string[] | null,
+): SearchPh | null {
   if (!search) return null;
   const t = searchTerm(search);
-  return { like: p(t.like), digits: t.digits ? p(t.digits) : null };
+  return {
+    like: p(t.like),
+    digits: t.digits ? p(t.digits) : null,
+    sources: sourceIds?.length ? p(sourceIds) : null,
+  };
 }
 const flowSearchClause = (sp: SearchPh | null): string =>
   sp ? ` AND ${flowSearchSql(sp.like, sp.digits)}` : '';
 const depositSearchClause = (sp: SearchPh | null): string =>
-  sp ? ` AND ${depositSearchSql(sp.like, sp.digits, 's.code')}` : '';
+  sp ? ` AND ${depositSearchSql(sp.like, sp.digits, sp.sources)}` : '';
 
 /**
  * Who the feed is being built for. Back office gets ONE figure per operation
@@ -290,7 +306,8 @@ export class ActivityService {
       filename: `transactions-${Date.now()}.csv`,
       header: ACTIVITY_CSV_HEADER,
       fetchPage: (cursor, take) =>
-        prisma.runAsScoped(scope, (tx) => {
+        prisma.runAsScoped(scope, async (tx) => {
+          const sourceIds = q.search ? await matchingSourceIds(tx, q.search) : null;
           const params: unknown[] = [];
           const p = (v: unknown) => (params.push(v), `$${params.length}`);
           const cl: string[] = [];
@@ -302,7 +319,7 @@ export class ActivityService {
           if (q.to) cl.push(`u.created_at <= ${p(new Date(q.to))}`);
           // The search runs inside each branch (every field of the row, not
           // just the projected ones) — the same rule as the list's rows + count.
-          const unionSql = unionSqlFor({ backoffice }, searchPh(q.search, p));
+          const unionSql = unionSqlFor({ backoffice }, searchPh(q.search, p, sourceIds));
           if (cursor) {
             const c = p(cursor.createdAt);
             const cid = p(cursor.id);
@@ -516,6 +533,7 @@ export class ActivityService {
     dp: (v: unknown) => string,
     a: {
       query: ListActivityQuery;
+      sourceIds: string[] | null;
       adminCompanyId: string | null;
       skip: number;
       audience: FeedAudience;
@@ -527,7 +545,7 @@ export class ActivityService {
     const currencyPh = q.currency ? dp(q.currency) : null;
     const fromPh = q.from ? dp(new Date(q.from)) : null;
     const toPh = q.to ? dp(new Date(q.to)) : null;
-    const search = searchPh(q.search, dp);
+    const search = searchPh(q.search, dp, a.sourceIds);
     const limPh = dp(a.skip + q.pageSize);
 
     // `searchClause` — the row matches the search (common/search.ts: every
@@ -602,6 +620,7 @@ export class ActivityService {
       audience: FeedAudience;
     },
   ): Promise<{ rows: ActivityRow[]; total: number }> {
+    const sourceIds = a.query.search ? await matchingSourceIds(tx, a.query.search) : null;
     // COUNT filters — applied to the full union's projected columns. Unchanged:
     // the COUNT runs over the whole union (it can't early-stop) and is 30s-cached,
     // so it isn't the per-keystroke hot path the bounded rows query optimizes.
@@ -619,7 +638,7 @@ export class ActivityService {
 
     const dataParams: unknown[] = [];
     const dp = (v: unknown) => (dataParams.push(v), `$${dataParams.length}`);
-    const unionRows = this.normalRowsSql(dp, a);
+    const unionRows = this.normalRowsSql(dp, { ...a, sourceIds });
     const limit = dp(a.query.pageSize);
     const offset = dp(a.skip);
     const rows = await tx.$queryRawUnsafe<ActivityRow[]>(
@@ -633,7 +652,7 @@ export class ActivityService {
       const cp: unknown[] = [];
       const p = (v: unknown) => (cp.push(v), `$${cp.length}`);
       const whereCount = where(p);
-      const union = this.unionSql({ backoffice: false }, searchPh(a.query.search, p));
+      const union = this.unionSql({ backoffice: false }, searchPh(a.query.search, p, sourceIds));
       return tx
         .$queryRawUnsafe<
           Array<{ n: bigint }>

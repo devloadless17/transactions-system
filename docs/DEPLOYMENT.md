@@ -464,6 +464,27 @@ The single-instance default is solid. Before scaling to **multiple API instances
 or to **very large tables**, action these (none are code bugs — they're topology
 decisions):
 
+- **Search is index-backed at any size — keep it that way.** Every money list's
+  search (`apps/api/src/common/search.ts`) matches through four SQL functions
+  (`deposit_search_text/_phones`, `flow_search_text/_phones`) that trigram GIN
+  indexes cover on each table (migrations `20261014150000`–`150400`). Measured at
+  27x production (525k deposits, 101k withdrawals) through the app's RLS role: a
+  search by phone, name or reference answers in 10–40ms (it was 0.5–7s). Three
+  things keep it that way:
+
+  - the queries call those functions with exactly the indexed arguments
+    (`search.spec.ts` checks the migrations against the code);
+  - the functions — and LIKE/ILIKE — are LEAKPROOF and pin `search_path` (no
+    inlining), or row-level security pushes the search behind the policy and
+    every search walks the table again. `deploy.sh` re-asserts LIKE/ILIKE after
+    every migrate (a restore drops their flag: see server-operations.md);
+  - the indexes are SQL-only (an expression index can't be declared in
+    schema.prisma), so a generated `prisma migrate dev` diff would DROP them —
+    `sql-only-indexes.spec.ts` fails any migration that does. Delete those
+    DROP lines from a generated migration before committing it.
+    Each deposit insert pays ~0.15ms for the two indexes (`fastupdate = off`: no
+    pending list for some later insert to flush).
+
 - **Realtime is cross-replica via the Redis adapter (wired automatically).**
   Socket.IO attaches the Redis adapter (`@socket.io/redis-adapter`) whenever
   `REDIS_URL` is set — see `CorsIoAdapter` in

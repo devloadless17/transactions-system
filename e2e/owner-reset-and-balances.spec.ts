@@ -8,6 +8,7 @@ import {
   loginAs,
   provisionCompanyOwner,
   unwrap,
+  settled,
 } from './helpers';
 
 /**
@@ -71,6 +72,7 @@ test.describe('super admin: company balances', () => {
 
     // --- UI (admin storageState from the setup project) ---
     await page.goto('/admin/companies', { waitUntil: 'domcontentloaded' });
+    await settled(page);
     await expect(page.getByRole('columnheader', { name: /available balance/i })).toBeVisible({
       timeout: 30_000,
     });

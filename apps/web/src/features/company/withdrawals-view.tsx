@@ -122,6 +122,43 @@ export function flowFilterParams(f: FlowFilters, base: Record<string, string>): 
   return p;
 }
 
+// Who a request is for, per payout method — shared by the company and admin
+// lists (and what their `search` matches, among other fields).
+// The recipient's NAME (primary identifier), per payout method.
+export function recipientName(d: WithdrawalResponse['payoutDetails']): string {
+  if (!d) return '';
+  switch (d.method) {
+    case PayoutMethod.CASH:
+    case PayoutMethod.WISH:
+      return d.recipientName;
+    case PayoutMethod.CRYPTO:
+      return d.network;
+    case PayoutMethod.BANK_TRANSFER:
+      return d.accountHolder;
+    case PayoutMethod.OTHER:
+      return d.description;
+    default:
+      return '';
+  }
+}
+
+// The recipient's CONTACT detail (phone for cash/Whish; the wallet/bank for the
+// other methods). Shown in the "Phone" column and copied whole on click.
+export function recipientContact(d: WithdrawalResponse['payoutDetails']): string {
+  if (!d) return '';
+  switch (d.method) {
+    case PayoutMethod.CASH:
+    case PayoutMethod.WISH:
+      return d.recipientPhone ?? '';
+    case PayoutMethod.CRYPTO:
+      return d.walletAddress;
+    case PayoutMethod.BANK_TRANSFER:
+      return d.bankName;
+    default:
+      return '';
+  }
+}
+
 export function FlowFilterBar({
   value,
   onChange,
@@ -330,6 +367,23 @@ export function WithdrawalsView({ config }: { config: ProcessConfig }) {
       header: 'Created',
       className: 'text-xs text-muted-foreground',
       cell: (w) => new Date(w.createdAt).toLocaleString(),
+    },
+    {
+      // Who it is for — what a person quotes when asking about one (and what the
+      // search box finds it by): the name, and the phone / wallet / account.
+      key: 'recipient',
+      header: 'Recipient',
+      className: 'text-xs',
+      cell: (w) => {
+        const name = recipientName(w.payoutDetails);
+        const contact = recipientContact(w.payoutDetails);
+        return (
+          <div className="max-w-[22ch] space-y-0.5">
+            <div className="truncate">{name || '—'}</div>
+            {contact && <div className="truncate font-mono text-muted-foreground">{contact}</div>}
+          </div>
+        );
+      },
     },
     {
       key: 'amount',

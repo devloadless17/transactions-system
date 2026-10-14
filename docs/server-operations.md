@@ -97,6 +97,19 @@ docker exec txn_postgres pg_restore -U <POSTGRES_USER> -d <POSTGRES_DB> \
 
 To inspect a dump without restoring: `pg_restore -l /tmp/r.dump`.
 
+After restoring into a **new** Postgres (a fresh container or server), the
+search runs correctly but walks whole tables until the next deploy: LIKE/ILIKE
+are marked LEAKPROOF so searches can use their indexes under row-level security
+(migration `20261014150000_search_text_functions`), and a restore does not carry
+that flag on these built-in functions. Every deploy re-applies it
+(`packages/db/deploy.sh`); to apply it right away:
+
+```bash
+docker exec txn_postgres psql -U <POSTGRES_USER> -d <POSTGRES_DB> \
+  -c 'ALTER FUNCTION textlike(text, text) LEAKPROOF' \
+  -c 'ALTER FUNCTION texticlike(text, text) LEAKPROOF'
+```
+
 ---
 
 ## Watchdog

@@ -55,7 +55,12 @@ import {
   ValidationError,
 } from '../../common/errors/domain.error';
 import { csvCell } from '../../common/csv';
-import { searchIds } from '../../common/search';
+import {
+  searchCount,
+  searchKeysetIds,
+  searchPageIds,
+  type SearchListFilters,
+} from '../../common/search';
 import { BACKOFFICE_CSV_COLUMNS, backofficeCsvCells } from '../../common/backoffice-view';
 
 // The per-tenant list COUNT is cached briefly so paging reuses it and a whale
@@ -998,16 +1003,6 @@ export class TransactionsService {
     if (args.query.status) where.status = args.query.status;
     if (args.query.sourceId) where.sourceId = args.query.sourceId;
     if (args.query.currency) where.currency = args.query.currency;
-    // Mirror the list view's search so an exported CSV contains exactly the
-    // filtered rows the user is looking at (common/search.ts).
-    if (args.query.search) {
-      const search = args.query.search;
-      where.id = {
-        in: await this.prisma.runAsScoped(args.companyId ?? null, (tx) =>
-          searchIds(tx, 'transactions', search, args.companyId ?? args.query.companyId),
-        ),
-      };
-    }
     if (args.query.from || args.query.to) {
       where.createdAt = {};
       if (args.query.from) where.createdAt.gte = new Date(args.query.from);
@@ -1017,6 +1012,14 @@ export class TransactionsService {
     const prisma = this.prisma;
     const scope = args.companyId ?? null;
     const backoffice = args.backoffice === true;
+    const searchFilters: SearchListFilters = {
+      companyId: args.companyId ?? args.query.companyId,
+      status: args.query.status,
+      sourceId: args.query.sourceId,
+      currency: args.query.currency,
+      from: args.query.from,
+      to: args.query.to,
+    };
 
     async function* generate(): AsyncGenerator<string> {
       // Lead with a UTF-8 BOM so Excel reads the file as UTF-8 (else “•” etc. shows as mojibake). Matches the shared CSV exporter.
@@ -1036,14 +1039,34 @@ export class TransactionsService {
         // scope is null). New rows inserted mid-export land at the top of the
         // (createdAt desc) order we've already passed, so the keyset walk never
         // double-reads or skips.
-        const page = await prisma.runAsScoped(scope, (tx) =>
-          tx.transaction.findMany({
-            where: pageWhere,
-            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-            take: CSV_EXPORT_CHUNK,
-            include: { source: { select: { code: true } } },
-          }),
-        );
+        // A searched export walks the search's ids (common/search.ts) — the
+        // same rows, in the same order, as the list the user is looking at.
+        const search = args.query.search;
+        const page = await prisma.runAsScoped(scope, async (tx) => {
+          if (!search) {
+            return tx.transaction.findMany({
+              where: pageWhere,
+              orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+              take: CSV_EXPORT_CHUNK,
+              include: { source: { select: { code: true } } },
+            });
+          }
+          const ids = await searchKeysetIds(
+            tx,
+            'transactions',
+            searchFilters,
+            search,
+            cursor,
+            CSV_EXPORT_CHUNK,
+          );
+          return ids.length
+            ? tx.transaction.findMany({
+                where: { id: { in: ids } },
+                orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+                include: { source: { select: { code: true } } },
+              })
+            : [];
+        });
         if (page.length === 0) break;
         let buf = '';
         for (const r of page) {
@@ -1128,18 +1151,6 @@ export class TransactionsService {
         if (args.query.from) where.createdAt.gte = new Date(args.query.from);
         if (args.query.to) where.createdAt.lte = new Date(args.query.to);
       }
-      // Search: the source's reference, our id, the payer's phone (typed any
-      // way), customer, target or note — see common/search.ts.
-      if (args.query.search) {
-        where.id = {
-          in: await searchIds(
-            tx,
-            'transactions',
-            args.query.search,
-            args.companyId ?? args.query.companyId,
-          ),
-        };
-      }
 
       const skip = (args.query.page - 1) * args.query.pageSize;
       if (skip > MAX_LIST_OFFSET) {
@@ -1151,28 +1162,58 @@ export class TransactionsService {
         `list-count:txn:${args.companyId ?? args.query.companyId ?? 'all'}` +
         `:${args.query.status ?? ''}:${args.query.sourceId ?? ''}:${args.query.currency ?? ''}` +
         `:${args.query.from ?? ''}:${args.query.to ?? ''}:${args.query.search ?? ''}`;
+      // createdAt alone isn't a total order; add id so rows with the same
+      // timestamp can't shuffle across page boundaries under high ingest.
+      const orderBy: Prisma.TransactionOrderByWithRelationInput[] = [
+        { createdAt: 'desc' },
+        { id: 'desc' },
+      ];
+      // Join the source code for just this page's rows (indexed FK). Cheaper
+      // and more scalable than loading the whole sources table per request.
+      // The Whish Pay link a deposit settled (unique FK, so one indexed
+      // lookup per row) — only the admin list exposes it.
+      const include = {
+        source: { select: { code: true } },
+        whishPayment: { select: { id: true, status: true } },
+      } as const;
+      // A search (the source's reference, our id, the payer's phone typed any
+      // way, customer, target or note — common/search.ts) picks the page and the
+      // total in SQL, index-backed; the rows still load through Prisma.
+      const search = args.query.search;
+      const searchFilters: SearchListFilters = {
+        companyId: args.companyId ?? args.query.companyId,
+        status: args.query.status,
+        sourceId: args.query.sourceId,
+        currency: args.query.currency,
+        from: args.query.from,
+        to: args.query.to,
+      };
       const [rows, total] = await Promise.all([
-        tx.transaction.findMany({
-          where,
-          // createdAt alone isn't a total order; add id so rows with the same
-          // timestamp can't shuffle across page boundaries under high ingest.
-          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-          skip,
-          take: args.query.pageSize,
-          // Join the source code for just this page's rows (indexed FK). Cheaper
-          // and more scalable than loading the whole sources table per request.
-          // The Whish Pay link a deposit settled (unique FK, so one indexed
-          // lookup per row) — only the admin list exposes it.
-          include: {
-            source: { select: { code: true } },
-            whishPayment: { select: { id: true, status: true } },
-          },
-        }),
+        search
+          ? searchPageIds(
+              tx,
+              'transactions',
+              searchFilters,
+              search,
+              skip,
+              args.query.pageSize,
+            ).then((ids) =>
+              ids.length
+                ? tx.transaction.findMany({ where: { id: { in: ids } }, orderBy, include })
+                : [],
+            )
+          : tx.transaction.findMany({ where, orderBy, skip, take: args.query.pageSize, include }),
         // singleFlight:false — runs inside the caller's tx; compute-on-miss, never
         // block on the cross-request poll (which would pin this pooled connection).
-        this.cache.wrap(countKey, LIST_COUNT_CACHE_TTL_SEC, () => tx.transaction.count({ where }), {
-          singleFlight: false,
-        }),
+        this.cache.wrap(
+          countKey,
+          LIST_COUNT_CACHE_TTL_SEC,
+          () =>
+            search
+              ? searchCount(tx, 'transactions', searchFilters, search)
+              : tx.transaction.count({ where }),
+          { singleFlight: false },
+        ),
       ]);
 
       return {

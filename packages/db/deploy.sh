@@ -52,6 +52,16 @@ ESCAPED_PW=$(printf '%s' "$POSTGRES_PASSWORD_RLS" | sed "s/'/''/g")
 printf "ALTER ROLE %s WITH PASSWORD '%s';" "$RLS_USER" "$ESCAPED_PW" \
   | pnpm exec prisma db execute --url "$DATABASE_MIGRATIONS_URL" --stdin
 
+# LIKE / ILIKE are marked LEAKPROOF (migration 20261014150000_search_text_functions)
+# so a search can use its trigram indexes under row-level security. They are
+# built-in functions, whose flags a backup restore does not carry over — so
+# re-assert them on every deploy. Idempotent; a failure only costs search speed
+# (never correctness or isolation), so it must never fail a deploy.
+echo "==> Search: LIKE/ILIKE leakproof (index-backed under RLS)"
+printf '%s\n' 'ALTER FUNCTION textlike(text, text) LEAKPROOF;' 'ALTER FUNCTION texticlike(text, text) LEAKPROOF;' \
+  | pnpm exec prisma db execute --url "$DATABASE_MIGRATIONS_URL" --stdin \
+  || echo "WARN: could not mark LIKE/ILIKE leakproof — searches still work, just not index-backed"
+
 if [ "${SEED_DATABASE:-false}" = "true" ]; then
   echo "==> Seeding database (SEED_DATABASE=true)"
   pnpm exec tsx prisma/seed.ts

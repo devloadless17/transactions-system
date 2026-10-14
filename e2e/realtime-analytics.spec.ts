@@ -6,6 +6,7 @@ import {
   ingestTransaction,
   loginAs,
   provisionCompanyOwner,
+  settled,
   unwrap,
 } from './helpers';
 
@@ -90,6 +91,7 @@ test.describe('realtime analytics — live dashboard updates', () => {
 
       // After a hard reload the value persists AND stays live.
       await page.reload({ waitUntil: 'domcontentloaded' });
+      await settled(page);
       await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible({
         timeout: 30_000,
       });
@@ -151,6 +153,8 @@ test.describe('realtime analytics — live dashboard updates', () => {
       });
 
     await page.goto('/admin', { waitUntil: 'domcontentloaded' });
+
+    await settled(page);
     await expect(page.getByRole('heading', { name: 'Platform Overview' })).toBeVisible({
       timeout: 30_000,
     });
@@ -169,6 +173,7 @@ test.describe('realtime analytics — live dashboard updates', () => {
 
     // After a hard reload, still exact + still live.
     await page.reload({ waitUntil: 'domcontentloaded' });
+    await settled(page);
     await expect(page.getByRole('heading', { name: 'Platform Overview' })).toBeVisible({
       timeout: 30_000,
     });

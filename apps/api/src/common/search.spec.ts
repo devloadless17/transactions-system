@@ -1,10 +1,12 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { ValidationError } from './errors/domain.error';
 import {
   depositSearchSql,
   flowSearchSql,
-  MAX_SEARCH_MATCHES,
-  searchIds,
+  searchCount,
+  searchKeysetIds,
+  searchPageIds,
   searchTerm,
 } from './search';
 
@@ -33,66 +35,125 @@ describe('searchTerm — what an operator types', () => {
   });
 });
 
-describe('the SQL predicates bind values, never interpolate them', () => {
-  it('a flow row matches by every payout detail and, for phones, by digits', () => {
-    const sql = flowSearchSql('$1', '$2');
-    expect(sql).toContain('jsonb_each_text');
-    expect(sql).toContain("o.payout_details->>'recipientPhone'");
-    expect(sql).toContain('LIKE $2');
-    expect(sql).not.toContain('admin_notes'); // a company must not probe admin notes
-    expect(flowSearchSql('$1', null)).not.toContain('regexp_replace');
+describe('the SQL predicates call the indexed functions and bind every value', () => {
+  // These calls MUST match the expressions the migrations index
+  // (20261014150100…150400), or the trigram indexes are skipped.
+  it('a flow row: its search text, and the recipient phone digits for a phone', () => {
+    expect(flowSearchSql('$1', '$2')).toBe(
+      '(flow_search_text(o.id, o.external_reference, o.notes, o.payout_details) ILIKE $1' +
+        ' OR flow_search_phones(o.payout_details) LIKE $2)',
+    );
+    expect(flowSearchSql('$1', null)).not.toContain('flow_search_phones');
   });
 
-  it('a deposit row matches by its documented payload fields, the reference and the id', () => {
-    const sql = depositSearchSql('$1', '$2', 's.code');
-    for (const field of ['customer', 'target', 'phone', 'note']) {
-      expect(sql).toContain(`o.payload->>'${field}' ILIKE $1`);
+  it('a deposit row: its search text, the phone digits, and (activity) its source', () => {
+    const sql = depositSearchSql('$1', '$2', '$3');
+    expect(sql).toContain(
+      'deposit_search_text(o.id, o.external_transaction_id, o.payload) ILIKE $1',
+    );
+    expect(sql).toContain('deposit_search_phones(o.payload) LIKE $2');
+    expect(sql).toContain('o.source_id = ANY($3::uuid[])');
+    expect(depositSearchSql('$1', null)).not.toContain('source_id');
+  });
+
+  it('the indexed expressions in the migrations are exactly these calls', () => {
+    let dir = process.cwd();
+    for (let i = 0; i < 6 && !fs.existsSync(path.join(dir, 'packages/db/prisma/migrations')); i++) {
+      dir = path.dirname(dir);
     }
-    expect(sql).toContain('o.external_transaction_id ILIKE $1');
-    expect(sql).toContain('s.code ILIKE $1');
-    expect(depositSearchSql('$1', null)).not.toContain('s.code');
+    const migrations = path.join(dir, 'packages/db/prisma/migrations');
+    const sqlOf = (name: string) =>
+      fs.readFileSync(path.join(migrations, name, 'migration.sql'), 'utf8');
+    const strip = (x: string) => x.replace(/"/g, '');
+    const deposits = strip(sqlOf('20261014150100_transactions_search_indexes'));
+    expect(deposits).toContain(
+      'deposit_search_text(id, external_transaction_id, payload) gin_trgm_ops',
+    );
+    expect(deposits).toContain('deposit_search_phones(payload) gin_trgm_ops');
+    for (const m of [
+      '20261014150200_withdrawals_search_indexes',
+      '20261014150300_payouts_search_indexes',
+      '20261014150400_loads_search_indexes',
+    ]) {
+      const sql = strip(sqlOf(m));
+      expect(sql, m).toContain(
+        'flow_search_text(id, external_reference, notes, payout_details) gin_trgm_ops',
+      );
+      expect(sql, m).toContain('flow_search_phones(payout_details) gin_trgm_ops');
+    }
   });
 });
 
-describe('searchIds — the ids a list narrows to', () => {
-  const fakeTx = (rows: number) => {
+describe('searched lists: page, count and export chunks', () => {
+  const fakeTx = (rows: unknown[]) => {
     const calls: Array<{ sql: string; values: unknown[] }> = [];
     return {
       calls,
       tx: {
         async $queryRawUnsafe<T>(sql: string, ...values: unknown[]): Promise<T> {
           calls.push({ sql, values });
-          return Array.from({ length: rows }, (_, i) => ({ id: `id-${i}` })) as T;
+          return rows as T;
         },
       },
     };
   };
 
-  it('binds the search and the company, and returns the ids', async () => {
-    const { tx, calls } = fakeTx(2);
-    await expect(searchIds(tx, 'withdrawals', '+961 70 977 661', 'co-1')).resolves.toEqual([
-      'id-0',
-      'id-1',
-    ]);
-    expect(calls[0]!.sql).toMatch(/FROM withdrawals o WHERE/);
-    expect(calls[0]!.values).toEqual([
+  it('a page: the search AND every list filter, newest first, bound — never interpolated', async () => {
+    const { tx, calls } = fakeTx([{ id: 'a' }, { id: 'b' }]);
+    const ids = await searchPageIds(
+      tx,
+      'withdrawals',
+      {
+        companyId: 'co-1',
+        status: 'PENDING',
+        currency: 'USD',
+        payoutMethod: 'WISH',
+        from: '2026-10-01T00:00:00Z',
+      },
+      '+961 70 977 661',
+      40,
+      20,
+    );
+    expect(ids).toEqual(['a', 'b']);
+    const { sql, values } = calls[0]!;
+    expect(sql).toMatch(/FROM withdrawals o WHERE \(flow_search_text/);
+    expect(sql).toMatch(/ORDER BY o\.created_at DESC, o\.id DESC LIMIT \$\d+ OFFSET \$\d+/);
+    expect(values).toEqual([
       '%+961 70 977 661%',
       '%96170977661%',
       'co-1',
-      MAX_SEARCH_MATCHES + 1,
+      'PENDING',
+      'USD',
+      'WISH',
+      new Date('2026-10-01T00:00:00Z'),
+      20,
+      40,
     ]);
+    expect(sql).not.toContain('977');
   });
 
-  it('deposits use the deposit predicate', async () => {
-    const { tx, calls } = fakeTx(0);
-    await searchIds(tx, 'transactions', 'ali');
-    expect(calls[0]!.sql).toMatch(/FROM transactions o WHERE/);
-    expect(calls[0]!.sql).toContain("o.payload->>'customer'");
+  it('the count, and deposits use the deposit text (with the source filter)', async () => {
+    const { tx, calls } = fakeTx([{ n: 7n }]);
+    await expect(searchCount(tx, 'transactions', { sourceId: 'src-1' }, 'ali')).resolves.toBe(7);
+    expect(calls[0]!.sql).toMatch(
+      /SELECT COUNT\(\*\)::bigint AS n FROM transactions o WHERE \(deposit_search_text/,
+    );
+    expect(calls[0]!.sql).toContain('o.source_id = $2::uuid');
   });
 
-  it('a search matching more rows than a list can narrow to asks for more characters', async () => {
-    const { tx } = fakeTx(MAX_SEARCH_MATCHES + 1);
-    await expect(searchIds(tx, 'payouts', '1')).rejects.toThrow(ValidationError);
-    await expect(searchIds(tx, 'payouts', '1')).rejects.toThrow(/type a few more characters/);
+  it('an export chunk continues after the cursor (keyset), newest first', async () => {
+    const { tx, calls } = fakeTx([{ id: 'c' }]);
+    const at = new Date('2026-10-02T13:25:50Z');
+    await searchKeysetIds(tx, 'payouts', {}, 'Hamza', { createdAt: at, id: 'id-9' }, 500);
+    expect(calls[0]!.sql).toContain(
+      '(o.created_at < $2 OR (o.created_at = $2 AND o.id < $3::uuid))',
+    );
+    expect(calls[0]!.values).toEqual(['%Hamza%', at, 'id-9', 500]);
+  });
+
+  it('there is no cap: a broad search is answered, not refused', async () => {
+    const many = Array.from({ length: 20 }, (_, i) => ({ id: String(i) }));
+    const { tx } = fakeTx(many);
+    await expect(searchPageIds(tx, 'loads', {}, '9', 0, 20)).resolves.toHaveLength(20);
   });
 });

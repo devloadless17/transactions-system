@@ -106,6 +106,19 @@ const ALLOWLIST = new Set<string>([
   // so it is tiny by construction; the migration file carries the
   // CONCURRENTLY out-of-band command for a large table.
   '20261013120000_whish_payment_poll_schedule:whish_payments_pending_poll_idx',
+  // The search indexes (2026-10-14): trigram GIN on each money table's search
+  // text and phone digits (common/search.ts). Plain builds by design — every
+  // table is small in production (transactions 19k rows: a sub-second build;
+  // the others a few thousand or fewer) and deploy.sh caps the wait for the
+  // lock at 5s; each file carries the CONCURRENTLY command for a large table.
+  '20261014150100_transactions_search_indexes:transactions_search_trgm_idx',
+  '20261014150100_transactions_search_indexes:transactions_search_phones_trgm_idx',
+  '20261014150200_withdrawals_search_indexes:withdrawals_search_trgm_idx',
+  '20261014150200_withdrawals_search_indexes:withdrawals_search_phones_trgm_idx',
+  '20261014150300_payouts_search_indexes:payouts_search_trgm_idx',
+  '20261014150300_payouts_search_indexes:payouts_search_phones_trgm_idx',
+  '20261014150400_loads_search_indexes:loads_search_trgm_idx',
+  '20261014150400_loads_search_indexes:loads_search_phones_trgm_idx',
 ]);
 
 function migrationsDir(): string {

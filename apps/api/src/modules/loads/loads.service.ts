@@ -35,7 +35,12 @@ import { FeesService } from '../commissions/fees.service';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain.error';
 import { assertListOffset } from '../../common/pagination';
 import { streamFlowCsv } from '../../common/flow-csv';
-import { searchIds } from '../../common/search';
+import {
+  searchCount,
+  searchKeysetIds,
+  searchPageIds,
+  type SearchListFilters,
+} from '../../common/search';
 
 const REQUESTABLE_STATUS: WithdrawalStatus = 'PENDING';
 
@@ -373,37 +378,44 @@ export class LoadsService {
         };
       }
 
-      // Search (phone, name, reference, id, note — see common/search.ts) narrows
-      // to the matching rows; every other filter and the paging stay as they are.
-      if (args.query.search) {
-        where.id = {
-          in: await searchIds(
-            tx,
-            'loads',
-            args.query.search,
-            args.companyId ?? args.query.companyId,
-          ),
-        };
-      }
-
       const skip = (args.query.page - 1) * args.query.pageSize;
       assertListOffset(skip);
       const countKey =
         `list-count:ld:${args.companyId ?? args.query.companyId ?? 'all'}` +
         `:${args.query.status ?? ''}:${args.query.currency ?? ''}:${args.query.payoutMethod ?? ''}` +
         `:${args.query.from ?? ''}:${args.query.to ?? ''}:${args.query.search ?? ''}`;
+      // A search (phone, name, reference, id, note — common/search.ts) picks the
+      // page and the total in SQL, index-backed; the rows still load through
+      // Prisma, so the response is the same either way.
+      const search = args.query.search;
+      const searchFilters: SearchListFilters = {
+        companyId: args.companyId ?? args.query.companyId,
+        status: args.query.status,
+        currency: args.query.currency,
+        payoutMethod: args.query.payoutMethod,
+        from: args.query.from,
+        to: args.query.to,
+      };
+      const orderBy: Prisma.LoadOrderByWithRelationInput[] = [
+        { createdAt: 'desc' },
+        { id: 'desc' },
+      ];
       const [rows, total] = await Promise.all([
-        tx.load.findMany({
-          where,
-          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-          skip,
-          take: args.query.pageSize,
-        }),
+        search
+          ? searchPageIds(tx, 'loads', searchFilters, search, skip, args.query.pageSize).then(
+              (ids) =>
+                ids.length ? tx.load.findMany({ where: { id: { in: ids } }, orderBy }) : [],
+            )
+          : tx.load.findMany({ where, orderBy, skip, take: args.query.pageSize }),
         // singleFlight:false — runs inside the caller's tx; compute-on-miss, never
         // block on the cross-request poll (which would pin this pooled connection).
-        this.cache.wrap(countKey, LIST_COUNT_CACHE_TTL_SEC, () => tx.load.count({ where }), {
-          singleFlight: false,
-        }),
+        this.cache.wrap(
+          countKey,
+          LIST_COUNT_CACHE_TTL_SEC,
+          () =>
+            search ? searchCount(tx, 'loads', searchFilters, search) : tx.load.count({ where }),
+          { singleFlight: false },
+        ),
       ]);
 
       return {
@@ -438,7 +450,7 @@ export class LoadsService {
     /** Back office gets one money figure per row — see common/backoffice-view.ts. */
     backoffice?: boolean;
   }): Promise<StreamableFile> {
-    const where = await this.exportWhere(args);
+    const where = this.exportWhere(args);
     const scope = args.companyId ?? null;
     const prisma = this.prisma;
     return streamFlowCsv({
@@ -446,6 +458,30 @@ export class LoadsService {
       now: Date.now(),
       backoffice: args.backoffice ? 'collect' : undefined,
       baseWhere: where as Record<string, unknown>,
+      // A searched export walks the search's ids (common/search.ts), chunk by
+      // chunk, exactly like the list page — same rows, same order.
+      fetchPage: args.query.search
+        ? (cursor, take) => {
+            const search = args.query.search!;
+            const filters: SearchListFilters = {
+              companyId: args.companyId ?? args.query.companyId,
+              status: args.query.status,
+              currency: args.query.currency,
+              payoutMethod: args.query.payoutMethod,
+              from: args.query.from,
+              to: args.query.to,
+            };
+            return prisma.runAsScoped(scope, async (tx) => {
+              const ids = await searchKeysetIds(tx, 'loads', filters, search, cursor, take);
+              return ids.length
+                ? tx.load.findMany({
+                    where: { id: { in: ids } },
+                    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+                  })
+                : [];
+            });
+          }
+        : undefined,
       findPage: (pageWhere, take) =>
         prisma.runAsScoped(scope, (tx) =>
           tx.load.findMany({
@@ -457,10 +493,7 @@ export class LoadsService {
     });
   }
 
-  private async exportWhere(args: {
-    companyId?: string;
-    query: ListLoadsQuery;
-  }): Promise<Prisma.LoadWhereInput> {
+  private exportWhere(args: { companyId?: string; query: ListLoadsQuery }): Prisma.LoadWhereInput {
     const where: Prisma.LoadWhereInput = {};
     if (args.companyId) where.companyId = args.companyId;
     else if (args.query.companyId) where.companyId = args.query.companyId;
@@ -471,14 +504,6 @@ export class LoadsService {
       where.createdAt = {
         ...(args.query.from ? { gte: new Date(args.query.from) } : {}),
         ...(args.query.to ? { lte: new Date(args.query.to) } : {}),
-      };
-    }
-    if (args.query.search) {
-      const search = args.query.search;
-      where.id = {
-        in: await this.prisma.runAsScoped(args.companyId ?? null, (tx) =>
-          searchIds(tx, 'loads', search, args.companyId ?? args.query.companyId),
-        ),
       };
     }
     return where;

@@ -64,7 +64,12 @@ x-api-staging: &api
     # 2 x CPU cores + 1 = 5 on this server, which a burst of link creations
     # exhausts — see TX_MAX_WAIT_MS in prisma.service.ts). Two colours run side
     # by side during a release, so 2 x 20 stays far under max_connections 100.
-    DATABASE_URL: postgresql://${POSTGRES_USER_RLS:-txn_app_rls}:${POSTGRES_PASSWORD_RLS}@postgres-staging:5432/${POSTGRES_DB}?schema=public&connection_limit=${DATABASE_POOL_SIZE:-20}
+    # pool_timeout: how long a query waits for a free connection (seconds). It
+    # must exceed TX_MAX_WAIT_MS (15s, prisma.service.ts): Prisma's default is
+    # 10s, which silently capped every wait at 10s — under a burst plus busy
+    # dashboards, plain queries (a Whish callback, a link creation) failed with
+    # P2024 → 500 after 10s instead of waiting their turn (load test, 2026-10-14).
+    DATABASE_URL: postgresql://${POSTGRES_USER_RLS:-txn_app_rls}:${POSTGRES_PASSWORD_RLS}@postgres-staging:5432/${POSTGRES_DB}?schema=public&connection_limit=${DATABASE_POOL_SIZE:-20}&pool_timeout=${DATABASE_POOL_TIMEOUT_S:-20}
     REDIS_URL: redis://redis-staging:6379
     JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
     JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}

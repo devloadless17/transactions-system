@@ -809,7 +809,9 @@ test.describe.serial('network fee — the full matrix, live', () => {
     try {
       await loginAs(page, dual.ownerEmail, PW, '/app');
       await page.goto('/app/deposits', { waitUntil: 'domcontentloaded' });
-      const search = page.getByPlaceholder('ext-001');
+      const search = page.getByRole('textbox', {
+        name: /search by phone, customer, reference or id/i,
+      });
       await search.fill('mx-');
       await expect(page.getByText(dualExt)).toBeVisible({ timeout: 30_000 });
 
@@ -827,7 +829,9 @@ test.describe.serial('network fee — the full matrix, live', () => {
       await page.waitForURL('**/app**', { timeout: 20_000, waitUntil: 'commit' });
       await page.getByRole('link', { name: 'Deposits', exact: true }).click();
       await page.waitForURL('**/app/deposits**', { timeout: 15_000, waitUntil: 'commit' });
-      await page.getByPlaceholder('ext-001').fill('mx-');
+      await page
+        .getByRole('textbox', { name: /search by phone, customer, reference or id/i })
+        .fill('mx-');
 
       // While its request is still in flight, the other company's deposit is NOT shown.
       const others = page.getByText(dualExt);

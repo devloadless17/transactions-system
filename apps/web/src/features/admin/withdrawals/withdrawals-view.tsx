@@ -36,6 +36,8 @@ import {
   flowFilterParams,
   PayoutInstructions,
   prettyMethod,
+  recipientContact,
+  recipientName,
   type FlowFilters,
 } from '@/features/company/withdrawals-view';
 import { useCompanyNames } from '@/features/admin/company-filter';
@@ -663,43 +665,5 @@ function statusVariant(s: WithdrawalStatus): 'success' | 'warning' | 'destructiv
       return 'destructive';
     default:
       return 'secondary';
-  }
-}
-
-// One-line "who to pay" for the list row. For cash/Whish that's name + phone
-// (what the operator usually needs); other methods fall back to their key
-// identifier. Returns '—' when there are no payout details.
-// The recipient's NAME (primary identifier), per payout method.
-function recipientName(d: WithdrawalResponse['payoutDetails']): string {
-  if (!d) return '';
-  switch (d.method) {
-    case PayoutMethod.CASH:
-    case PayoutMethod.WISH:
-      return d.recipientName;
-    case PayoutMethod.CRYPTO:
-      return d.network;
-    case PayoutMethod.BANK_TRANSFER:
-      return d.accountHolder;
-    case PayoutMethod.OTHER:
-      return d.description;
-    default:
-      return '';
-  }
-}
-
-// The recipient's CONTACT detail (phone for cash/Whish; the wallet/bank for the
-// other methods). Shown in the "Phone" column and copied whole on click.
-function recipientContact(d: WithdrawalResponse['payoutDetails']): string {
-  if (!d) return '';
-  switch (d.method) {
-    case PayoutMethod.CASH:
-    case PayoutMethod.WISH:
-      return d.recipientPhone ?? '';
-    case PayoutMethod.CRYPTO:
-      return d.walletAddress;
-    case PayoutMethod.BANK_TRANSFER:
-      return d.bankName;
-    default:
-      return '';
   }
 }

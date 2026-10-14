@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { settled } from './helpers';
 import fs from 'node:fs';
 
 // Covers the Whish Pay filter bar + CSV export added for the admin/company pages.
@@ -10,6 +11,7 @@ test.describe('admin Whish Pay: filter + export', () => {
 
   test('filter bar renders and search is sent as a query param', async ({ page }) => {
     await page.goto('/admin/whish', { waitUntil: 'domcontentloaded' });
+    await settled(page);
     await expect(page.getByRole('heading', { name: 'Whish Pay' })).toBeVisible({
       timeout: 30_000,
     });
@@ -47,6 +49,7 @@ test.describe('admin Whish Pay: filter + export', () => {
 
   test('Export CSV downloads a UTF-8 BOM file with the expected columns', async ({ page }) => {
     await page.goto('/admin/whish', { waitUntil: 'domcontentloaded' });
+    await settled(page);
     await expect(page.getByRole('heading', { name: 'Whish Pay' })).toBeVisible({
       timeout: 30_000,
     });
@@ -76,6 +79,7 @@ test.describe('admin Whish Pay: filter + export', () => {
   // exactly the kind of quiet mismatch a reconciliation would trip over.
   test('a quick range narrows the export exactly like the list', async ({ page }) => {
     await page.goto('/admin/whish', { waitUntil: 'domcontentloaded' });
+    await settled(page);
     await expect(page.getByRole('heading', { name: 'Whish Pay' })).toBeVisible({
       timeout: 30_000,
     });

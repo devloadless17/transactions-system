@@ -64,6 +64,20 @@ export async function loginAs(
   }
 }
 
+/**
+ * Wait until React has revealed every streamed section of the page. A production
+ * build streams parts of a page as hidden copies (`<div hidden id="S:0">`) and
+ * reveals them a moment later (React 19 batches reveals, ~300ms) — until then a
+ * strict locator also sees the hidden copy and fails with "resolved to 2
+ * elements". The dev server streams differently, so this only shows against a
+ * production build. Call it after a full-page `goto` before strict locators.
+ */
+export async function settled(page: Page): Promise<void> {
+  await page.waitForFunction(() => !document.querySelector('[hidden][id^="S:"]'), undefined, {
+    timeout: 15_000,
+  });
+}
+
 export function uniqueSlug(prefix: string) {
   return `${prefix}-${Date.now().toString(36)}`;
 }

@@ -117,6 +117,14 @@ export function streamFlowCsv(opts: {
   noun: string;
   baseWhere: Record<string, unknown>;
   findPage: (pageWhere: Record<string, unknown>, take: number) => Promise<FlowCsvRow[]>;
+  /**
+   * Fetch a chunk directly instead (a searched export: common/search.ts picks
+   * the ids). Same keyset contract: rows after `cursor`, newest first.
+   */
+  fetchPage?: (
+    cursor: { createdAt: Date; id: string } | null,
+    take: number,
+  ) => Promise<FlowCsvRow[]>;
   now: number;
   /**
    * Back office sees one money figure per row and nothing a fee could be
@@ -131,6 +139,7 @@ export function streamFlowCsv(opts: {
     filename: `${opts.noun}-${opts.now}.csv`,
     header: FLOW_CSV_HEADER,
     fetchPage: (cursor, take) => {
+      if (opts.fetchPage) return opts.fetchPage(cursor ?? null, take);
       const pageWhere = cursor
         ? {
             ...opts.baseWhere,

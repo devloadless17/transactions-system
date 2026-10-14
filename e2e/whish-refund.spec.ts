@@ -13,6 +13,7 @@ import {
   mutate,
   provisionCompanyOwner,
   provisionPlatformUser,
+  settled,
 } from './helpers';
 
 /**
@@ -50,6 +51,7 @@ interface Paid {
 
 async function whishRow(page: Page, externalId: string) {
   await page.goto('/admin/whish');
+  await settled(page);
   await page.getByPlaceholder(/Search invoice/i).fill(externalId);
   const row = page.locator('tr', { hasText: `#${externalId}` });
   await expect(row).toBeVisible({ timeout: 20_000 });
