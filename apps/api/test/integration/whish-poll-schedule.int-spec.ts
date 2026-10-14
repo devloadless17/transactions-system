@@ -523,7 +523,7 @@ describe('the poller comes back when a link is due (real clock, real lease, real
 
       // …and the poller comes back by itself when the link falls due.
       await vi.waitFor(async () => expect((await rowOf(p.id)).status).toBe('FAILED'), {
-        timeout: 10_000,
+        timeout: 20_000,
         interval: 50,
       });
     } finally {
@@ -533,7 +533,10 @@ describe('the poller comes back when a link is due (real clock, real lease, real
     const closed = await rowOf(p.id);
     const late = closed.updatedAt.getTime() - dueAt;
     expect(late).toBeGreaterThanOrEqual(0); // never before its time
-    expect(late).toBeLessThan(2_500); // the every-minute pass would be up to 60s late
+    // Without the wake-up only the next every-minute pass would ask: ~57s late.
+    // Measured locally at ~0.2s; the bound leaves room for a loaded machine's
+    // clock (WSL once took 3.5s), and is still far from a minute.
+    expect(late).toBeLessThan(15_000);
     expect(h.whishClient.getStatusCalls).toEqual([p.externalId]); // asked exactly once
     expect(h.crm.names()).toEqual(['transaction.failed']);
   });
