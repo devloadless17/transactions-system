@@ -320,10 +320,10 @@ Read the entry for every release you are about to roll back across. Newest first
   leisure. Production's `.env` is re-rendered from `.env.prod.example` on every
   production deploy, so it picks up the new names by itself. To change a brake,
   set the new names. **Raised 2026-10-14 (6000 → 60000, 30000 → 300000), so the
-  brakes sit above what the platform itself serves:** staging's hand-kept
-  `.env.staging` sets both names explicitly to the old values, and compose
-  passes them through, so on staging change those two lines to 60000 and 300000
-  — otherwise staging keeps the old brakes whatever the code default says.
+  brakes sit above what the platform itself serves.** Staging's `.env.staging`
+  does not set these two names (checked), so it takes the compose default;
+  production's `.env` is re-rendered from `.env.prod.example`, which carries the
+  new values. A value set in a server env file overrides both.
 - **Behaviour changes, no configuration needed:**
   - `/v1/integrations/whish/*` has no per-IP limit any more (per-key brakes
     only); Whish's payment confirmations are never limited — only fake ones
