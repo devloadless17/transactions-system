@@ -12,10 +12,24 @@
 //   /__set-envelope?mode=ok|indeterminate|http500
 //   /__set-refund?mode=ok|refuse|auth|lost|unknown
 //   /__mark-refunded?externalId=…   (refunded outside the platform, e.g. in Whish's portal)
+//
+// Load-test mode (scripts/loadtest-whish.ts), like the real Whish:
+//   /__set-status?s=live — each link is `pending` until paid, `success` once
+//                          paid, and `failed` once it is FAKE_WHISH_LINK_TTL_MS
+//                          old unpaid (default 5 minutes, as Whish).
+//   /__pay?externalId=…  — the customer pays: the link is `success`, and the
+//                          success callback is called, as Whish does.
+//   /__stats             — links minted, paid, and callbacks sent.
+//   FAKE_WHISH_LATENCY_MS (env) — added to every Whish API answer.
 const http = require('node:http');
 const crypto = require('node:crypto');
 
 const PORT = Number(process.env.FAKE_WHISH_PORT ?? 4100);
+const LATENCY_MS = Number(process.env.FAKE_WHISH_LATENCY_MS ?? 0);
+const LINK_TTL_MS = Number(process.env.FAKE_WHISH_LINK_TTL_MS ?? 5 * 60_000);
+// externalId → { mintedAt, paidAt, successCallbackUrl } (load-test mode)
+const links = new Map();
+const stats = { minted: 0, paid: 0, callbacks: 0, callbackErrors: 0, statusCalls: 0 };
 const REQUIRED_HEADERS = ['channel', 'secret', 'websiteurl', 'user-agent'];
 // success | failed | pending | refunded | unknown  (all five v1.4.4 values)
 let collectStatus = 'success';
@@ -67,6 +81,21 @@ const server = http.createServer(async (req, res) => {
 
   // --- introspection / control ---
   if (p === '/__received') return send(res, 200, { received, seenHeaders, refundCalls });
+  if (p === '/__stats') return send(res, 200, { ...stats, links: links.size });
+  if (p === '/__pay') {
+    const id = url.searchParams.get('externalId');
+    const link = id ? links.get(id) : undefined;
+    if (!link) return send(res, 404, { error: 'unknown link' });
+    if (Date.now() - link.mintedAt >= LINK_TTL_MS) return send(res, 409, { error: 'expired' });
+    link.paidAt = link.paidAt ?? Date.now();
+    stats.paid++;
+    // Whish calls the success callback (a GET) once the payment succeeds.
+    stats.callbacks++;
+    fetch(link.successCallbackUrl)
+      .then((r) => r.arrayBuffer())
+      .catch(() => stats.callbackErrors++);
+    return send(res, 200, { paidAt: link.paidAt });
+  }
   if (p === '/__mark-refunded') {
     const id = url.searchParams.get('externalId');
     if (id) refundedExternalIds.add(id);
@@ -90,6 +119,8 @@ const server = http.createServer(async (req, res) => {
     collectStatus = 'success';
     envelopeMode = 'ok';
     refundMode = 'ok';
+    links.clear();
+    for (const k of Object.keys(stats)) stats[k] = 0;
     refundedExternalIds.clear();
     refundCalls.length = 0;
     knownExternalIds.clear();
@@ -109,6 +140,7 @@ const server = http.createServer(async (req, res) => {
 
   // --- Whish API ---
   if (p.startsWith('/itel-service/api/')) {
+    if (LATENCY_MS > 0) await new Promise((r) => setTimeout(r, LATENCY_MS));
     const missing = REQUIRED_HEADERS.filter((h) => !req.headers[h]);
     seenHeaders.push({
       path: p,
@@ -136,6 +168,14 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, fail('request.invalid', 'externalId must be a String'));
       }
       knownExternalIds.add(body.externalId);
+      if (collectStatus === 'live') {
+        links.set(body.externalId, {
+          mintedAt: Date.now(),
+          paidAt: null,
+          successCallbackUrl: body.successCallbackUrl,
+        });
+        stats.minted++;
+      }
       return send(res, 200, ok({ collectUrl: `http://localhost:${PORT}/pay/${body.externalId}` }));
     }
     if (p.endsWith('/payment/collect/status') && req.method === 'POST') {
@@ -147,8 +187,18 @@ const server = http.createServer(async (req, res) => {
       if (knownExternalIds.size && !knownExternalIds.has(body.externalId)) {
         return send(res, 200, fail('external_id.not_exists', 'unknown externalId'));
       }
+      stats.statusCalls++;
       // A refunded payment stays refunded, whatever the global status says.
-      const status = refundedExternalIds.has(body.externalId) ? 'refunded' : collectStatus;
+      const link = collectStatus === 'live' ? links.get(body.externalId) : undefined;
+      const status = refundedExternalIds.has(body.externalId)
+        ? 'refunded'
+        : link
+          ? link.paidAt
+            ? 'success'
+            : Date.now() - link.mintedAt >= LINK_TTL_MS
+              ? 'failed'
+              : 'pending'
+          : collectStatus;
       const phone = status === 'success' || status === 'refunded' ? '96170902894' : null;
       return send(res, 200, ok({ collectStatus: status, payerPhoneNumber: phone }));
     }
@@ -193,6 +243,8 @@ const server = http.createServer(async (req, res) => {
   send(res, 404, { error: 'not found' });
 });
 
+// A load test reuses connections; keep them open between its calls.
+server.keepAliveTimeout = 65_000;
 server.listen(PORT, () => console.log(`fake-whish listening on http://localhost:${PORT}`));
 
 // expose a tiny signature helper for the harness (not used by the server itself)
