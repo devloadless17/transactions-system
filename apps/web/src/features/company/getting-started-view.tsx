@@ -198,13 +198,13 @@ export function GettingStartedView() {
                 Whish Pay API — <code className="font-mono">/v1/integrations/whish</code>, per API
                 key, no per-IP limit.
               </strong>{' '}
-              Creating a link: <strong>6,000 a minute</strong> (100 a second). Refreshing a status
-              from Whish: <strong>6,000 a minute</strong>. Looking a payment up:{' '}
-              <strong>30,000 a minute</strong>. Each has its own counter, so polling never uses up
+              Creating a link: <strong>60,000 a minute</strong> (1,000 a second). Refreshing a
+              status from Whish: <strong>60,000 a minute</strong>. Looking a payment up:{' '}
+              <strong>300,000 a minute</strong>. Each has its own counter, so polling never uses up
               your link creation. The same brakes cover a link&apos;s own calls on{' '}
               <code className="font-mono">/v1/company/whish/payments</code> (create, look up,
-              refresh). These are brakes against an integration stuck in a loop, not ceilings for
-              real customers — contact us if you ever approach one.{' '}
+              refresh). These are brakes against a flood, not ceilings for real customers: they sit
+              above what the platform itself serves, so your customers are never refused by them.{' '}
               <code className="font-mono">RateLimit-*</code> headers on every response.
             </li>
             <li>

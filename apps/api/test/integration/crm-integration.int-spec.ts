@@ -247,3 +247,127 @@ describe('CRM delivery shutdown', () => {
     expect(attempted).toHaveLength(1);
   });
 });
+
+describe('CRM delivery under load — each status sent once, fairly, without delay', () => {
+  /** `count` due deliveries to `companyId`'s demo CRM, created `ageMs` ago. */
+  async function dueRows(companyId: string, count: number, ageMs = 0): Promise<string[]> {
+    const cfg = await config.enableDemo(companyId);
+    const at = new Date(Date.now() - ageMs);
+    const ids: string[] = [];
+    for (let i = 0; i < count; i++) {
+      const row = await prisma.runAsAdmin((tx) =>
+        tx.webhookDelivery.create({
+          data: {
+            companyId,
+            eventType: 'transaction.completed',
+            payload: {
+              event: 'transaction.completed',
+              reference: `whish:load-${i}`,
+              sentAt: at.toISOString(),
+              transaction: { status: 'COMPLETED', occurredAt: at.toISOString() },
+            },
+            targetUrl: cfg.apiUrl!,
+            status: 'PENDING',
+            nextRetryAt: at,
+          },
+          select: { id: true },
+        }),
+      );
+      ids.push(row.id);
+    }
+    return ids;
+  }
+  const statusOf = async (ids: string[]) =>
+    prisma.runAsAdmin((tx) =>
+      tx.webhookDelivery.findMany({
+        where: { id: { in: ids } },
+        select: { status: true, attempts: true },
+      }),
+    );
+  const sweepOnce = (svc: CrmDeliveryService) =>
+    (svc as unknown as { sweep: () => Promise<void> }).sweep();
+
+  it('the first attempt and the sweep never send the same delivery twice', async () => {
+    const { companyId } = await createCompany(h);
+    // A first attempt that waited in line past its head start: the sweep may
+    // now take the row too — both race for it.
+    const firstAttemptAt = new Date(Date.now() - 1_000);
+    const [id] = await dueRows(companyId, 1, 1_000);
+    await prisma.runAsAdmin((tx) =>
+      tx.webhookDelivery.update({ where: { id: id! }, data: { nextRetryAt: firstAttemptAt } }),
+    );
+    const svc = new CrmDeliveryService(prisma, fakeConfig, demoInbox, fakeCache);
+    const received = vi.spyOn(demoInbox, 'receive');
+
+    await Promise.all([
+      svc.deliver(id!, firstAttemptAt),
+      svc.deliver(id!),
+      sweepOnce(svc),
+      svc.deliver(id!, firstAttemptAt),
+    ]);
+
+    expect(received.mock.calls.filter(([co]) => co === companyId)).toHaveLength(1);
+    expect(await statusOf([id!])).toEqual([{ status: 'DELIVERED', attempts: 1 }]);
+    received.mockRestore();
+  });
+
+  it('a first attempt the sweep already took is not sent again', async () => {
+    const { companyId } = await createCompany(h);
+    const firstAttemptAt = new Date(Date.now() + 60_000);
+    const [id] = await dueRows(companyId, 1);
+    // The sweep has it (claimed, in flight elsewhere): its due time moved on.
+    await prisma.runAsAdmin((tx) =>
+      tx.webhookDelivery.update({
+        where: { id: id! },
+        data: { nextRetryAt: new Date(Date.now() + 30_000) },
+      }),
+    );
+    const svc = new CrmDeliveryService(prisma, fakeConfig, demoInbox, fakeCache);
+    const received = vi.spyOn(demoInbox, 'receive');
+
+    await svc.deliver(id!, firstAttemptAt);
+
+    expect(received.mock.calls.filter(([co]) => co === companyId)).toHaveLength(0);
+    received.mockRestore();
+  });
+
+  it('one sweep works through a whole backlog, not one batch per tick', async () => {
+    const ids: string[] = [];
+    for (let c = 0; c < 6; c++) {
+      const { companyId } = await createCompany(h);
+      ids.push(...(await dueRows(companyId, 75, 60_000)));
+    }
+    const svc = new CrmDeliveryService(prisma, fakeConfig, demoInbox, fakeCache);
+
+    await sweepOnce(svc); // 450 due: more than one batch of 200
+
+    const rows = await statusOf(ids);
+    expect(rows.filter((r) => r.status === 'DELIVERED')).toHaveLength(ids.length);
+    expect(rows.every((r) => r.attempts === 1)).toBe(true);
+  });
+
+  it('a company with a large backlog cannot hold up another company', async () => {
+    const big = await createCompany(h);
+    const bigIds = await dueRows(big.companyId, 260, 120_000); // older, so first in line
+    const small = await createCompany(h);
+    const [smallId] = await dueRows(small.companyId, 1, 1_000);
+    const svc = new CrmDeliveryService(prisma, fakeConfig, demoInbox, fakeCache);
+    const order: string[] = [];
+    const deliver = svc.deliver.bind(svc);
+    vi.spyOn(svc, 'deliver').mockImplementation(async (id: string, at?: Date) => {
+      order.push(id);
+      return deliver(id, at);
+    });
+
+    await sweepOnce(svc);
+
+    // In the very first batch — the big company's share of it (25) and the
+    // small one — though 260 older deliveries were due before it.
+    const firstBatch = order.slice(0, 26);
+    expect(firstBatch).toContain(smallId);
+    expect(firstBatch.filter((id) => bigIds.includes(id))).toHaveLength(25);
+    expect((await statusOf([...bigIds, smallId!])).every((r) => r.status === 'DELIVERED')).toBe(
+      true,
+    );
+  });
+});

@@ -24,8 +24,10 @@ function setup(company: { crmEnabled: boolean; crmApiUrl: string | null } | null
   const prisma = {
     runAsAdmin: vi.fn((cb: (t: typeof tx) => unknown) => cb(tx)),
   } as unknown as PrismaService;
-  const deliver = vi.fn().mockResolvedValue(undefined);
-  const svc = new CrmDispatchService(prisma, { deliver } as unknown as CrmDeliveryService);
+  const deliver = vi.fn();
+  const svc = new CrmDispatchService(prisma, {
+    deliverSoon: deliver,
+  } as unknown as CrmDeliveryService);
   // The dispatcher is fire-and-forget; let its detached promise chain settle.
   const settled = async () => {
     for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
@@ -109,7 +111,7 @@ describe('CrmDispatchService — the body the CRM receives', () => {
     });
     // What a company passes on to its own client is exactly this figure.
     expect(payload.transaction!.networkFeeAmount).not.toBe(payload.transaction!.commissionAmount);
-    expect(deliver).toHaveBeenCalledWith('d-1');
+    expect(deliver).toHaveBeenCalledWith('d-1', deposit.companyId, expect.any(Date));
   });
 
   it('a company without a network fee gets "0" — the field is always there', async () => {
@@ -200,7 +202,7 @@ describe('CrmDispatchService — the body the CRM receives', () => {
       runAsAdmin: vi.fn((cb: (t: typeof tx) => unknown) => cb(tx)),
     } as unknown as PrismaService;
     const svc = new CrmDispatchService(prisma, {
-      deliver: vi.fn().mockResolvedValue(undefined),
+      deliverSoon: vi.fn(),
     } as unknown as CrmDeliveryService);
 
     svc.emitWithdrawal(withdrawal, 'withdrawal.pending');
@@ -225,6 +227,32 @@ describe('CrmDispatchService — the body the CRM receives', () => {
       svc.emitFromTransaction(deposit, 'transaction.completed');
       await settled();
       expect(created).toEqual([]);
+    }
+  });
+});
+
+describe('CrmDispatchService — an event is never dropped on a database hiccup', () => {
+  it('retries saving the event until it is saved, then delivers it once', async () => {
+    vi.useFakeTimers();
+    try {
+      const { svc, created, deliver } = setup(ON);
+      const prisma = (svc as unknown as { prisma: { runAsAdmin: ReturnType<typeof vi.fn> } })
+        .prisma;
+      const real = prisma.runAsAdmin.getMockImplementation()!;
+      // The pool is exhausted twice (P2028), then the save goes through.
+      prisma.runAsAdmin
+        .mockRejectedValueOnce(new Error('Unable to start a transaction in the given time'))
+        .mockRejectedValueOnce(new Error('Unable to start a transaction in the given time'))
+        .mockImplementation(real);
+
+      svc.emitFromTransaction(deposit, 'transaction.completed');
+      await vi.advanceTimersByTimeAsync(1_000); // retry 1 after 1s
+      await vi.advanceTimersByTimeAsync(2_000); // retry 2 after 2s
+
+      expect(created).toHaveLength(1);
+      expect(deliver).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
     }
   });
 });

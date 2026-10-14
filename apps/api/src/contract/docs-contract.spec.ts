@@ -923,8 +923,8 @@ describe('docs contract — deposits are never rate-limited', () => {
   });
 
   it('documents the brakes the code actually enforces', () => {
-    expect(envDefault('INTEGRATION_CREATE_RATE_LIMIT_MAX')).toBe(6000);
-    expect(envDefault('INTEGRATION_LOOKUP_RATE_LIMIT_MAX')).toBe(30000);
+    expect(envDefault('INTEGRATION_CREATE_RATE_LIMIT_MAX')).toBe(60000);
+    expect(envDefault('INTEGRATION_LOOKUP_RATE_LIMIT_MAX')).toBe(300000);
     for (const [name, doc] of [
       ['companies guide', GUIDE],
       ['developer guide', DEV_GUIDE],
@@ -933,8 +933,8 @@ describe('docs contract — deposits are never rate-limited', () => {
       const text = flat(doc);
       expect(text, `${name}: the principle`).toMatch(/Deposits are never rate-limited/);
       expect(text, `${name}: no per-IP limit on link creation`).toMatch(/no per-IP limit/);
-      expect(text, `${name}: link-creation brake`).toMatch(/6,000 a minute/);
-      expect(text, `${name}: lookup brake`).toMatch(/30,000 a minute/);
+      expect(text, `${name}: link-creation brake`).toMatch(/60,000 a minute/);
+      expect(text, `${name}: lookup brake`).toMatch(/300,000 a minute/);
       expect(text, `${name}: no stale 300/60s allowance`).not.toMatch(/300 requests/);
     }
   });
@@ -950,7 +950,7 @@ describe('docs contract — deposits are never rate-limited', () => {
       const compose = read(f);
       expect(compose, f).not.toMatch(/\bINTEGRATION_RATE_LIMIT_MAX\b/);
       expect(compose, f).toContain(
-        'INTEGRATION_CREATE_RATE_LIMIT_MAX: ${INTEGRATION_CREATE_RATE_LIMIT_MAX:-6000}',
+        'INTEGRATION_CREATE_RATE_LIMIT_MAX: ${INTEGRATION_CREATE_RATE_LIMIT_MAX:-60000}',
       );
     }
   });

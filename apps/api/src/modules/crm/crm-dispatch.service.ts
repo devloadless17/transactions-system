@@ -29,9 +29,15 @@ const STATUS_FOR_WITHDRAWAL_EVENT: Record<CrmWithdrawalEvent, CrmWithdrawalStatu
   'withdrawal.cancelled': 'CANCELLED',
 };
 
-// How long a freshly-enqueued delivery is withheld from the retry sweep so the
-// inline immediate attempt (≤5s) can finish first and we don't double-POST.
+// How long a freshly-enqueued delivery is left to its first attempt before the
+// retry sweep may take it. (The attempt's claim, not this, is what prevents a
+// double POST — see CrmDeliveryService.claim.)
 const DISPATCH_SWEEP_HEADSTART_MS = 60_000;
+// Saving an event (its webhook_deliveries row) is retried on failure: until it
+// is saved nothing can ever send it, so a database hiccup must not cost the
+// company a status. 1s, 2s, 4s, 8s, 16s between the 6 attempts.
+const SAVE_ATTEMPTS = 6;
+const SAVE_RETRY_BASE_MS = 1_000;
 
 /**
  * The single entry point other modules call to push a money event's status to a
@@ -158,9 +164,36 @@ export class CrmDispatchService {
     // must follow the order the events actually happened in, whatever order
     // their database round trips below happen to finish in.
     const sentAt = new Date().toISOString();
-    void this.run(companyId, event, reference, body, sentAt).catch((err) =>
-      this.logger.warn(`CRM dispatch for ${reference} failed: ${(err as Error).message}`),
-    );
+    void this.save(companyId, event, reference, body, sentAt);
+  }
+
+  /** `run`, retried until the event is saved (see SAVE_ATTEMPTS). Never throws. */
+  private async save(
+    companyId: string,
+    event: CrmEventPayload['event'],
+    reference: string,
+    body: Pick<CrmEventPayload, 'transaction' | 'withdrawal'>,
+    sentAt: string,
+  ): Promise<void> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await this.run(companyId, event, reference, body, sentAt);
+        return;
+      } catch (err) {
+        if (attempt >= SAVE_ATTEMPTS) {
+          this.logger.error(
+            `CRM ${event} for ${reference} could not be saved after ${attempt} attempts — ` +
+              `company ${companyId} was NOT told: ${(err as Error).message}`,
+          );
+          return;
+        }
+        this.logger.warn(
+          `CRM dispatch for ${reference} failed (attempt ${attempt}/${SAVE_ATTEMPTS}), retrying: ` +
+            (err as Error).message,
+        );
+        await new Promise((r) => setTimeout(r, SAVE_RETRY_BASE_MS * 2 ** (attempt - 1)));
+      }
+    }
   }
 
   private async run(
@@ -170,42 +203,33 @@ export class CrmDispatchService {
     body: Pick<CrmEventPayload, 'transaction' | 'withdrawal'>,
     sentAt: string,
   ): Promise<void> {
-    const company = await this.prisma.runAsAdmin((tx) =>
-      tx.company.findUnique({
+    const payload: CrmEventPayload = { event, reference, sentAt, ...body };
+    const firstAttemptAt = new Date(Date.now() + DISPATCH_SWEEP_HEADSTART_MS);
+    // One transaction: read the company's CRM settings and save the event.
+    const row = await this.prisma.runAsAdmin(async (tx) => {
+      const company = await tx.company.findUnique({
         where: { id: companyId },
         select: { crmEnabled: true, crmApiUrl: true },
-      }),
-    );
-    if (!company?.crmEnabled || !company.crmApiUrl) return;
-
-    const payload: CrmEventPayload = { event, reference, sentAt, ...body };
-    const row = await this.prisma.runAsAdmin((tx) =>
-      tx.webhookDelivery.create({
+      });
+      if (!company?.crmEnabled || !company.crmApiUrl) return null;
+      return tx.webhookDelivery.create({
         data: {
           companyId,
           eventType: event,
           payload: payload as unknown as Prisma.InputJsonValue,
-          targetUrl: company.crmApiUrl!,
+          targetUrl: company.crmApiUrl,
           status: 'PENDING',
-          // Hold the row back from the retry sweep briefly so the immediate
-          // attempt below (≤5s) gets a clear head start — otherwise a sweep tick
-          // landing while it's still in flight would POST the same event twice.
-          // If the process dies right after insert, the sweep still picks it up.
-          nextRetryAt: new Date(Date.now() + DISPATCH_SWEEP_HEADSTART_MS),
+          // Left to its first attempt (below) until then; if the process dies
+          // right after insert, the sweep still picks it up.
+          nextRetryAt: firstAttemptAt,
         },
         select: { id: true },
-      }),
-    );
-    // Immediate best-effort attempt; the sweep retries on failure. Guard the
-    // detached promise so an early throw inside deliver() (e.g. its first DB read,
-    // before deliver()'s own try/catch) can't surface as an unhandled rejection —
-    // the row is already queued, so the retry sweep picks it up regardless.
-    void this.delivery
-      .deliver(row.id)
-      .catch((err) =>
-        this.logger.warn(
-          `CRM immediate deliver ${row.id} failed (sweep will retry): ${(err as Error).message}`,
-        ),
-      );
+      });
+    });
+    if (!row) return;
+    // First attempt as soon as a lane is free (fair across companies, bounded);
+    // the sweep retries on failure. deliverSoon never throws: an attempt that
+    // fails early leaves the row queued for the sweep.
+    this.delivery.deliverSoon(row.id, companyId, firstAttemptAt);
   }
 }

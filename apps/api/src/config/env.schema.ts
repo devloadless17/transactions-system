@@ -94,25 +94,26 @@ export const envSchema = z
     // minute: creating a payment link, and refreshing a status from Whish — each
     // with its OWN counter (a CRM polling with refresh can never use up its link
     // creation). Never a ceiling for real customers — a company's customers must
-    // never be refused the start of a deposit — but a BRAKE for a broken CRM
-    // stuck in a loop: each call reaches Whish, and our Whish account is shared
-    // by every company, so one company's runaway loop could get it throttled and
-    // stop EVERYONE's deposits. 6,000 = 100 a second, sustained for a whole
-    // minute: no real customer base gets there, a loop does at once. 0 disables.
+    // never be refused the start of a deposit, and Whish puts no limit on our
+    // account — only a last-resort BRAKE against a flood (a leaked key, a broken
+    // integration stuck in a loop), refused before any database or Whish work.
+    // 60,000 = 1,000 a second for a whole minute: more than the platform itself
+    // serves, so the platform's capacity is reached first and real customers
+    // are never refused by it. 0 disables.
     // (No per-IP cap on these endpoints: key guessing is limited separately, per
     // failed attempt — AUTH_FAILURE_MAX_PER_MIN.)
     // A NEW name on purpose: staging's hand-kept env file still carries the
     // retired INTEGRATION_RATE_LIMIT_MAX=300 (the old combined cap, copied from
     // the old example), and that line must never cap link creation again — so
     // the old name is not read anywhere (docs-contract.spec.ts pins it).
-    INTEGRATION_CREATE_RATE_LIMIT_MAX: z.coerce.number().int().min(0).default(6000),
+    INTEGRATION_CREATE_RATE_LIMIT_MAX: z.coerce.number().int().min(0).default(60000),
 
     // Status LOOKUPS on the Whish Pay API (GET /v1/integrations/whish/payments/
     // :reference), per API key, per minute — their own counter. A lookup only
     // reads our database (no Whish call); CRMs poll each link a few times while
     // the customer pays (~4 per link in production), so this brake sits 5x
-    // higher. 0 disables.
-    INTEGRATION_LOOKUP_RATE_LIMIT_MAX: z.coerce.number().int().min(0).default(30000),
+    // higher: 300,000 = 5,000 a second. 0 disables.
+    INTEGRATION_LOOKUP_RATE_LIMIT_MAX: z.coerce.number().int().min(0).default(300000),
 
     // FAILED API-key authentications per (client IP, key prefix), per minute
     // (5x that per IP across prefixes). Always on, for every API key — source

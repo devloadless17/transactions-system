@@ -1,7 +1,7 @@
 import { createHmac } from 'node:crypto';
 import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { WebhookDelivery } from '@app/db';
+import { Prisma } from '@app/db';
 import type { CrmEventPayload } from '@app/shared';
 import { PrismaService } from '../../database/prisma.service';
 import type { Env } from '../../config/env.schema';
@@ -9,6 +9,7 @@ import { assertSafeWebhookUrl, safeFetch } from '../../common/net/ssrf';
 import { CacheService } from '../cache/cache.service';
 import { CrmDemoInboxService } from './crm-demo-inbox.service';
 import { registerBackgroundJob } from '../../common/lifecycle/background-jobs';
+import { DeliveryLanes } from './delivery-lanes';
 
 // Hard cap per attempt so a slow/hostile CRM can't tie up the worker.
 const DELIVERY_TIMEOUT_MS = 5000;
@@ -16,25 +17,41 @@ const DELIVERY_TIMEOUT_MS = 5000;
 // entry is used the delivery is marked FAILED.
 const RETRY_BACKOFF_MS = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000, 6 * 3600_000];
 const MAX_ATTEMPTS = RETRY_BACKOFF_MS.length + 1; // 6: one immediate + 5 retries
-// How often the retry sweep runs, and how many due rows it claims per tick.
+// The retry sweep runs every 20s, and again at once while it finds a full
+// batch, so a backlog (a CRM that was down for a while) is worked through
+// continuously rather than one batch per tick.
 const JOB_INTERVAL_MS = 20_000;
-const JOB_BATCH = 50;
-// The cross-instance sweep lock must outlive the WORST-CASE sweep, not one tick:
-// the batch runs sequentially and each delivery can block up to DELIVERY_TIMEOUT_MS,
-// so a full slow batch is ~JOB_BATCH * DELIVERY_TIMEOUT_MS. If the lock lapsed
-// mid-sweep a second replica would re-claim the unprocessed rows and double-POST
-// them. (On a crash the lock still self-heals after this TTL.)
-const SWEEP_LOCK_TTL_MS = JOB_BATCH * DELIVERY_TIMEOUT_MS + 30_000;
+const JOB_BATCH = 200;
+// At most this many of one company's deliveries per batch: a company with a
+// large backlog (its CRM is down) cannot fill the batch and hold up others.
+const JOB_BATCH_PER_COMPANY = 25;
+// Deliveries in flight at once from this API, and to any one company's CRM
+// (see DeliveryLanes): a slow or dead CRM holds at most 32 slots, never all.
+const MAX_IN_FLIGHT = 256;
+const MAX_IN_FLIGHT_PER_COMPANY = 32;
+// Waiting deliveries held in memory; past this the sweep takes them from the
+// database instead (each is a durable row either way).
+const MAX_QUEUED = 50_000;
+// Every attempt first CLAIMS its delivery for this long — longer than any
+// attempt takes — in one atomic UPDATE. Whoever starts an attempt (the first
+// one, the sweep, another API instance) therefore owns it alone: a delivery is
+// never POSTed twice at the same time, whatever the timing.
+const CLAIM_MS = DELIVERY_TIMEOUT_MS + 25_000;
+// The sweep lock across instances only saves duplicate work now (the claim
+// is what prevents a double POST), so it is held per batch, briefly.
+const SWEEP_LOCK_TTL_MS = 2 * 60_000;
 // Truncate the stored CRM response so a chatty endpoint can't bloat a row.
 const MAX_RESPONSE_BODY = 2000;
 
 /**
  * Durable, retried delivery of CRM events. A delivery is a `webhook_deliveries`
- * row; `deliver` is called once immediately by the dispatcher and again by the
- * background sweep until it succeeds or exhausts its retries. The built-in demo
- * target is delivered in-process (no network / no SSRF) so the preview works on
- * localhost and in docker; everything else is a real outbound POST carrying the
- * company's API key in the Authorization header.
+ * row; it is attempted once straight away (`deliverSoon`, from the dispatcher)
+ * and again by the background sweep until it succeeds or exhausts its retries.
+ * Both go through the same lanes (fair per company, bounded) and the same
+ * atomic claim. The built-in demo target is delivered in-process (no network /
+ * no SSRF) so the preview works on localhost and in docker; everything else is
+ * a real outbound POST carrying the company's API key in the Authorization
+ * header.
  */
 @Injectable()
 export class CrmDeliveryService implements OnApplicationBootstrap, OnModuleDestroy {
@@ -42,6 +59,11 @@ export class CrmDeliveryService implements OnApplicationBootstrap, OnModuleDestr
   private timer: ReturnType<typeof setInterval> | undefined;
   private running = false;
   private stopping = false;
+  private readonly lanes = new DeliveryLanes({
+    maxInFlight: MAX_IN_FLIGHT,
+    perCompany: MAX_IN_FLIGHT_PER_COMPANY,
+    maxQueued: MAX_QUEUED,
+  });
 
   constructor(
     private readonly prisma: PrismaService,
@@ -52,39 +74,88 @@ export class CrmDeliveryService implements OnApplicationBootstrap, OnModuleDestr
 
   onApplicationBootstrap(): void {
     this.timer = setInterval(() => void this.sweep(), JOB_INTERVAL_MS);
-    // A shutdown stops new runs and waits for one in progress (main.ts).
+    // A shutdown stops new runs and waits for the deliveries in flight (main.ts).
     registerBackgroundJob({
       name: 'crm-delivery',
       stop: () => this.requestStop(),
-      isRunning: () => this.running,
+      isRunning: () => this.running || this.lanes.inFlight > 0,
     });
     this.timer.unref?.();
   }
 
-  /** Shutdown: no new sweep, and the sweep in progress stops between deliveries. */
+  /**
+   * Shutdown: no new sweep and no new attempt; the attempts in flight finish.
+   * What was waiting stays a due row for the next instance's sweep.
+   */
   requestStop(): void {
     this.stopping = true;
+    this.lanes.close();
     this.onModuleDestroy();
+  }
+
+  /**
+   * The first attempt of a new delivery, as soon as a lane is free. The row was
+   * created with `nextRetryAt = firstAttemptAt` (the sweep leaves it alone until
+   * then); the attempt claims it only if that is still so, so if the sweep got
+   * there first it is not sent again. When the lanes are full it is handed to
+   * the sweep at once instead.
+   */
+  deliverSoon(deliveryId: string, companyId: string, firstAttemptAt: Date): void {
+    const queued = this.lanes.run(companyId, () => this.deliver(deliveryId, firstAttemptAt));
+    if (queued) return;
+    void this.prisma
+      .runAsAdmin((tx) =>
+        tx.webhookDelivery.updateMany({
+          where: { id: deliveryId, status: 'PENDING', nextRetryAt: firstAttemptAt },
+          data: { nextRetryAt: new Date() },
+        }),
+      )
+      .catch((err) =>
+        this.logger.warn(
+          `CRM delivery ${deliveryId} left for the sweep: ${(err as Error).message}`,
+        ),
+      );
+  }
+
+  /**
+   * Claim a delivery for one attempt, atomically: due (or, for its first
+   * attempt, still exactly as the dispatcher created it) and not delivered or
+   * failed. Null = someone else has it, or it is no longer due.
+   */
+  private async claim(deliveryId: string, firstAttemptAt?: Date): Promise<ClaimedDelivery | null> {
+    const now = new Date();
+    const until = new Date(now.getTime() + CLAIM_MS);
+    const due = firstAttemptAt
+      ? Prisma.sql`w.next_retry_at = ${firstAttemptAt}`
+      : Prisma.sql`(w.next_retry_at IS NULL OR w.next_retry_at <= ${now})`;
+    // One statement claims it AND reads the company's CRM key: every database
+    // round trip counts when thousands of events are delivered at once.
+    const rows = await this.prisma.runAsAdmin(
+      (tx) => tx.$queryRaw<ClaimedDelivery[]>`
+        UPDATE webhook_deliveries w SET next_retry_at = ${until}
+        FROM companies c
+        WHERE w.id = ${deliveryId}::uuid AND c.id = w.company_id
+          AND w.status IN ('PENDING', 'RETRYING') AND ${due}
+        RETURNING w.id, w.company_id AS "companyId", w.payload, w.target_url AS "targetUrl",
+                  w.attempts, c.crm_api_key AS "crmApiKey", c.crm_demo_token AS "crmDemoToken"`,
+    );
+    return rows[0] ?? null;
   }
 
   onModuleDestroy(): void {
     if (this.timer) clearInterval(this.timer);
   }
 
-  /** Attempt one delivery. Never throws — updates the row's status in place. */
-  async deliver(deliveryId: string): Promise<void> {
-    const row = await this.prisma.runAsAdmin((tx) =>
-      tx.webhookDelivery.findUnique({ where: { id: deliveryId } }),
-    );
-    if (!row || row.status === 'DELIVERED' || row.status === 'FAILED') return;
+  /**
+   * Attempt one delivery, if it can be claimed (see `claim`). Never throws —
+   * updates the row's status in place.
+   */
+  async deliver(deliveryId: string, firstAttemptAt?: Date): Promise<void> {
+    const row = await this.claim(deliveryId, firstAttemptAt);
+    if (!row) return;
 
     const payload = row.payload as unknown as CrmEventPayload;
-    const company = await this.prisma.runAsAdmin((tx) =>
-      tx.company.findUnique({
-        where: { id: row.companyId },
-        select: { crmApiKey: true, crmDemoToken: true },
-      }),
-    );
+    const company = { crmApiKey: row.crmApiKey, crmDemoToken: row.crmDemoToken };
 
     // Built-in demo target → capture in-process (instant, no SSRF, works locally).
     // Routed by the company's OWN demo token (exact match), never a look-alike
@@ -142,6 +213,8 @@ export class CrmDeliveryService implements OnApplicationBootstrap, OnModuleDestr
         signal: AbortSignal.timeout(DELIVERY_TIMEOUT_MS),
       });
       if (res.ok) {
+        // Read the (small) answer so the connection is free for the next event.
+        await safeText(res);
         await this.markDelivered(row.id, row.attempts + 1, res.status);
         this.logger.log(`CRM delivered ${payload.event} ${payload.reference} → ${row.targetUrl}`);
         return;
@@ -169,7 +242,7 @@ export class CrmDeliveryService implements OnApplicationBootstrap, OnModuleDestr
   }
 
   private async markFailedAttempt(
-    row: WebhookDelivery,
+    row: ClaimedDelivery,
     responseStatus: number | null,
     responseBody: string,
     nonRetryable = false,
@@ -208,44 +281,70 @@ export class CrmDeliveryService implements OnApplicationBootstrap, OnModuleDestr
     );
   }
 
-  /** Background sweep: re-attempt every delivery whose retry is due. */
+  /**
+   * Background sweep: re-attempt every delivery whose retry is due, oldest
+   * first, at most JOB_BATCH_PER_COMPANY of one company per batch, through the
+   * lanes. While more is due the next batch follows at once.
+   */
   private async sweep(): Promise<void> {
-    if (this.running) return;
+    if (this.running || this.stopping) return;
     this.running = true;
-    // Cross-instance guard: if another API replica is already sweeping, skip this
-    // tick so two replicas don't double-POST the same due deliveries. Fails open
-    // when Redis is down — no worse than today's single-instance behavior, where
-    // the in-process `running` flag already prevents overlap. (TTL > one tick so
-    // the lock auto-clears if a sweep is killed mid-run.)
-    const lock = await this.cache.tryLock('crm-delivery-sweep', SWEEP_LOCK_TTL_MS);
-    if (!lock) {
-      this.running = false;
-      return;
-    }
     try {
-      const now = new Date();
-      const due = await this.prisma.runAsAdmin((tx) =>
-        tx.webhookDelivery.findMany({
-          where: {
-            status: { in: ['PENDING', 'RETRYING'] },
-            OR: [{ nextRetryAt: null }, { nextRetryAt: { lte: now } }],
-          },
-          orderBy: { createdAt: 'asc' },
-          take: JOB_BATCH,
-          select: { id: true },
-        }),
-      );
-      for (const d of due) {
-        if (this.stopping) break; // shutdown: the next instance delivers the rest
-        await this.deliver(d.id);
+      for (;;) {
+        // Cross-instance guard: if another API replica is sweeping, skip — it
+        // covers the same rows. Fails open when Redis is down (the claim still
+        // keeps every delivery single).
+        const lock = await this.cache.tryLock('crm-delivery-sweep', SWEEP_LOCK_TTL_MS);
+        if (!lock) return;
+        let more = false;
+        try {
+          const due = await this.prisma.runAsAdmin(
+            (tx) => tx.$queryRaw<Array<{ id: string; companyId: string }>>`
+              SELECT id, company_id AS "companyId" FROM (
+                SELECT id, company_id, next_retry_at,
+                       row_number() OVER (PARTITION BY company_id
+                                          ORDER BY next_retry_at NULLS FIRST) AS turn
+                FROM webhook_deliveries
+                WHERE status IN ('PENDING', 'RETRYING')
+                  AND (next_retry_at IS NULL OR next_retry_at <= ${new Date()})
+              ) due
+              WHERE turn <= ${JOB_BATCH_PER_COMPANY}
+              ORDER BY next_retry_at NULLS FIRST
+              LIMIT ${JOB_BATCH}`,
+          );
+          // More may be due when the batch was full, or a company had its whole
+          // share in it — unless the lanes are full, in which case the next
+          // tick takes the rest.
+          const perCompany = new Map<string, number>();
+          for (const d of due) perCompany.set(d.companyId, (perCompany.get(d.companyId) ?? 0) + 1);
+          const runs = due.map((d) => this.lanes.run(d.companyId, () => this.deliver(d.id)));
+          more =
+            !runs.includes(null) &&
+            (due.length === JOB_BATCH ||
+              [...perCompany.values()].some((n) => n === JOB_BATCH_PER_COMPANY));
+          await Promise.all(runs);
+        } finally {
+          await this.cache.unlock('crm-delivery-sweep', lock);
+        }
+        if (!more || this.stopping) return;
       }
     } catch (err) {
       this.logger.warn(`CRM delivery sweep failed: ${(err as Error).message}`);
     } finally {
-      await this.cache.unlock('crm-delivery-sweep', lock);
       this.running = false;
     }
   }
+}
+
+/** What an attempt needs of the delivery it claimed. */
+interface ClaimedDelivery {
+  id: string;
+  companyId: string;
+  payload: Prisma.JsonValue;
+  targetUrl: string;
+  attempts: number;
+  crmApiKey: string | null;
+  crmDemoToken: string | null;
 }
 
 /**

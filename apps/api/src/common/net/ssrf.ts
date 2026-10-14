@@ -155,16 +155,38 @@ export async function assertSafeWebhookUrl(raw: string): Promise<ResolvedHost> {
 
 type SafeFetchInit = NonNullable<Parameters<typeof undiciFetch>[1]>;
 
-/**
- * Validate `url` against the SSRF policy and fetch it with the connection PINNED
- * to the exact IP(s) we just validated. This closes the validate-then-connect
- * DNS-rebinding window: the socket can only dial an address that passed the
- * check. The Host header and TLS SNI stay on the original hostname, so cert
- * verification is unaffected. Throws ValidationError for a disallowed URL.
- */
-export async function safeFetch(url: string, init: SafeFetchInit = {}) {
-  const { addresses } = await assertSafeWebhookUrl(url);
-  const dispatcher = new Agent({
+// Connections to a webhook host are kept open and reused (keep-alive) instead
+// of a new TCP + TLS connection for every event — at thousands of events a
+// minute, a handshake per event is most of the work, on our side and on the
+// receiver's. An agent is keyed by the host AND the exact addresses just
+// validated for it, and it can only dial those addresses: a reused connection
+// reaches nothing the check did not pass, and a DNS change (to anything) makes
+// a new key, so a fresh agent pinned to the newly validated addresses.
+const pinnedAgents = new Map<string, { agent: Agent; usedAt: number }>();
+const AGENT_IDLE_MS = 2 * 60_000;
+const MAX_AGENTS = 500;
+
+/** The pooled agent for `host` pinned to `addresses` (exported for tests). */
+export function pinnedAgentFor(host: string, addresses: ResolvedHost['addresses']): Agent {
+  const key = `${host}|${addresses
+    .map((a) => `${a.family}/${a.address}`)
+    .sort()
+    .join(',')}`;
+  const now = Date.now();
+  const hit = pinnedAgents.get(key);
+  if (hit) {
+    hit.usedAt = now;
+    return hit.agent;
+  }
+  // Retire idle agents, and the oldest beyond the cap, before adding one.
+  for (const [k, v] of pinnedAgents) {
+    if (now - v.usedAt > AGENT_IDLE_MS || pinnedAgents.size >= MAX_AGENTS) {
+      pinnedAgents.delete(k);
+      void v.agent.close().catch(() => {});
+    }
+  }
+  const agent = new Agent({
+    keepAliveTimeout: 30_000,
     connect: {
       // undici calls this with { all: true } and expects an address array; we
       // ignore the (re-)resolution and return only the pre-validated IP(s).
@@ -177,9 +199,24 @@ export async function safeFetch(url: string, init: SafeFetchInit = {}) {
       },
     },
   });
-  try {
-    return await undiciFetch(url, { ...init, dispatcher });
-  } finally {
-    await dispatcher.close().catch(() => {});
-  }
+  pinnedAgents.set(key, { agent, usedAt: now });
+  return agent;
+}
+
+/**
+ * Validate `url` against the SSRF policy and fetch it with the connection PINNED
+ * to the exact IP(s) we just validated. This closes the validate-then-connect
+ * DNS-rebinding window: the socket can only dial an address that passed the
+ * check. The Host header and TLS SNI stay on the original hostname, so cert
+ * verification is unaffected. Throws ValidationError for a disallowed URL.
+ *
+ * Connections are reused across calls (see pinnedAgentFor), so read or cancel
+ * the response body: an unread body keeps its connection from being reused.
+ */
+export async function safeFetch(url: string, init: SafeFetchInit = {}) {
+  const { addresses } = await assertSafeWebhookUrl(url);
+  return undiciFetch(url, {
+    ...init,
+    dispatcher: pinnedAgentFor(new URL(url).hostname, addresses),
+  });
 }

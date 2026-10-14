@@ -60,7 +60,11 @@ x-api-staging: &api
     API_PORT: 3001
     API_HOST: 0.0.0.0
     API_GLOBAL_PREFIX: v1
-    DATABASE_URL: postgresql://${POSTGRES_USER_RLS:-txn_app_rls}:${POSTGRES_PASSWORD_RLS}@postgres-staging:5432/${POSTGRES_DB}?schema=public
+    # connection_limit: the API's database connections (Prisma's own default is
+    # 2 x CPU cores + 1 = 5 on this server, which a burst of link creations
+    # exhausts — see TX_MAX_WAIT_MS in prisma.service.ts). Two colours run side
+    # by side during a release, so 2 x 20 stays far under max_connections 100.
+    DATABASE_URL: postgresql://${POSTGRES_USER_RLS:-txn_app_rls}:${POSTGRES_PASSWORD_RLS}@postgres-staging:5432/${POSTGRES_DB}?schema=public&connection_limit=${DATABASE_POOL_SIZE:-20}
     REDIS_URL: redis://redis-staging:6379
     JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
     JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
@@ -72,14 +76,14 @@ x-api-staging: &api
     API_PUBLIC_URL: ${API_PUBLIC_URL}
     METRICS_TOKEN: ${METRICS_TOKEN}
     # Source-ingest limiters. Absent = schema defaults (ingest UNLIMITED,
-    # 20 failed auths/IP/min, Whish Pay API braked at 6000 link creations
-    # and 30000 status lookups per key per minute). Listed
+    # 20 failed auths/IP/min, Whish Pay API braked at 60000 link creations
+    # and 300000 status lookups per key per minute). Listed
     # here so they are genuinely tunable from the server .env without a
     # code deploy — compose only passes through what it names.
     INGEST_RATE_LIMIT_MAX: ${INGEST_RATE_LIMIT_MAX:-0}
     AUTH_FAILURE_MAX_PER_MIN: ${AUTH_FAILURE_MAX_PER_MIN:-20}
-    INTEGRATION_CREATE_RATE_LIMIT_MAX: ${INTEGRATION_CREATE_RATE_LIMIT_MAX:-6000}
-    INTEGRATION_LOOKUP_RATE_LIMIT_MAX: ${INTEGRATION_LOOKUP_RATE_LIMIT_MAX:-30000}
+    INTEGRATION_CREATE_RATE_LIMIT_MAX: ${INTEGRATION_CREATE_RATE_LIMIT_MAX:-60000}
+    INTEGRATION_LOOKUP_RATE_LIMIT_MAX: ${INTEGRATION_LOOKUP_RATE_LIMIT_MAX:-300000}
     # Whish SANDBOX for staging. WHISH_ALLOW_SANDBOX=true lets the prod build
     # accept the sandbox base + (non-https) sandbox website URL.
     WHISH_BASE_URL: ${WHISH_BASE_URL}

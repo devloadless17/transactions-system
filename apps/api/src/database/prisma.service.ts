@@ -14,6 +14,18 @@ import { CompanyQueue } from './company-queue';
 const SERIALIZABLE_MAX_ATTEMPTS = 8;
 const SERIALIZABLE_BASE_BACKOFF_MS = 10;
 
+// Every query here runs in an interactive transaction (RLS context is set per
+// transaction), so each one first waits for a connection from the pool. Prisma
+// gives up on that wait after 2s by default (P2028 "Unable to start a
+// transaction in the given time"). Under a burst — thousands of customers
+// creating links at once — that turned a busy moment into refused deposits,
+// failed Whish callbacks and lost CRM events (measured: 6% of 10,000 link
+// creations refused). A burst must make work wait its turn, never fail it.
+const TX_MAX_WAIT_MS = 15_000;
+// How long one transaction may run once it has its connection (Prisma's
+// default is 5s; a CPU-starved moment must not abort a short write).
+const TX_TIMEOUT_MS = 10_000;
+
 function isRetryableTxError(err: unknown): boolean {
   if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2034') return true;
   // A unique-violation (P2002 / 23505) inside a SERIALIZABLE money mutation is a
@@ -43,6 +55,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
 
   constructor() {
     super({
+      transactionOptions: { maxWait: TX_MAX_WAIT_MS, timeout: TX_TIMEOUT_MS },
       log:
         process.env.NODE_ENV === 'development'
           ? [
@@ -118,7 +131,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
       // Same reasoning as runAsAdmin: a wide read (an all-time analytics window
       // runs ~11 aggregates in one transaction) must not abort on Prisma's 5s
       // interactive-transaction default. Reads only, so a long timeout is safe.
-      opts?.timeout ? { timeout: opts.timeout, maxWait: 5_000 } : undefined,
+      opts?.timeout ? { timeout: opts.timeout, maxWait: TX_MAX_WAIT_MS } : undefined,
     );
   }
 
@@ -148,7 +161,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
         // Heavy cross-tenant reads (e.g. the reconciliation full sweep over the whole
         // ledger) pass an explicit timeout so they don't hit Prisma's 5s interactive
         // -transaction default and abort at scale. Reads, so a long timeout is safe.
-        ...(opts?.timeout ? { timeout: opts.timeout, maxWait: 5_000 } : {}),
+        ...(opts?.timeout ? { timeout: opts.timeout, maxWait: TX_MAX_WAIT_MS } : {}),
         ...(opts?.isolationLevel ? { isolationLevel: opts.isolationLevel } : {}),
       },
     );

@@ -77,6 +77,9 @@ const EXPIRE_AGE_MS = 10 * 60_000;
 // failed. Those links are asked about until Whish answers; one still unknown
 // after this long is closed AND flagged for an operator.
 const UNKNOWN_EXPIRE_AGE_MS = 24 * 3600_000;
+// A link creation still waiting on Whish is done within this (the Whish call
+// times out after 10s): a link-less row older than this is not in flight.
+const MINT_IN_FLIGHT_MS = 60_000;
 // Max pending links polled per reconciliation run. Whish calls back per ATTEMPT
 // — a failure callback means one attempt failed while the link stays payable —
 // and never when a link finally expires, so polling is the ONLY way
@@ -88,8 +91,12 @@ const UNKNOWN_EXPIRE_AGE_MS = 24 * 3600_000;
 const RECONCILE_MAX_PER_TICK = 250;
 // Links polled at the same time within a run — the bound on Whish API calls in
 // flight, however large the backlog. Each poll is one Whish call (~0.3s), so
-// this is about 800 links a minute.
-const RECONCILE_CONCURRENCY = 4;
+// this is about 3,200 links a minute: more than the platform can create, so
+// unpaid links are confirmed as fast as they are made, at any load. Whish puts
+// no limit on our account; if it ever answers 429 the run stops (see
+// pollStaleLink). Each check holds a database connection only for its short
+// writes, never across the Whish call.
+export const RECONCILE_CONCURRENCY = 16;
 // A refund call answers within the client's 10s timeout. A refund request older
 // than this is no longer in flight, so if Whish still reports the payment as
 // paid, Whish did not refund it and the request can be released for a retry.
@@ -1147,6 +1154,10 @@ export class WhishPaymentsService {
     collectStatus: 'failed' | 'refunded',
     currency: string,
     payerPhoneNumber: string | null,
+    // False for a link the company was never told about (no
+    // `transaction.pending`, no reference in an answer): closing it must not
+    // send its CRM an event for a reference it has never seen.
+    tellCrm = true,
   ): Promise<WhishPaymentResponse> {
     // Guard on still-PENDING: a delayed 'failed' status from Whish must never
     // overwrite a payment a concurrent callback/settle already moved to PAID.
@@ -1166,15 +1177,17 @@ export class WhishPaymentsService {
     if (res.count === 1) {
       this.logger.log(`Whish payment ${payment.externalId} closed as ${collectStatus}`);
       this.realtime.company(payment.companyId, ['whish']);
-      this.crm.emitWhish({
-        companyId: payment.companyId,
-        externalId: payment.externalId,
-        amount: payment.amount.toString(),
-        currency,
-        invoice: payment.invoice,
-        payerPhoneNumber,
-        event: 'transaction.failed',
-      });
+      if (tellCrm) {
+        this.crm.emitWhish({
+          companyId: payment.companyId,
+          externalId: payment.externalId,
+          amount: payment.amount.toString(),
+          currency,
+          invoice: payment.invoice,
+          payerPhoneNumber,
+          event: 'transaction.failed',
+        });
+      }
     }
     return mapWhishPayment(current);
   }
@@ -1213,11 +1226,18 @@ export class WhishPaymentsService {
       // never a silent close.
       const code = err instanceof WhishError ? err.details?.code : undefined;
       if (code === 'external_id.not_exists' && isLinklessOrphan(payment)) {
+        // After an INDETERMINATE create the company got the reference and a
+        // `transaction.pending`, so it is told the outcome. A row our own
+        // failure left before Whish was called was answered with an error and
+        // no reference: it is closed without a word to the CRM.
+        const announced =
+          (payment.metadata as { linkCreateIndeterminate?: boolean } | null)
+            ?.linkCreateIndeterminate === true;
         this.logger.warn(
-          `Whish payment ${payment.externalId} was never minted (external_id.not_exists after an ` +
-            `indeterminate create) — closing it out.`,
+          `Whish payment ${payment.externalId} was never minted (external_id.not_exists, ` +
+            `${announced ? 'after an indeterminate create' : 'create failed before Whish answered'}) — closing it out.`,
         );
-        return this.closeAsNotCollected(payment, 'failed', currency, null);
+        return this.closeAsNotCollected(payment, 'failed', currency, null, announced);
       }
       throw err;
     }
@@ -1901,10 +1921,17 @@ function whishCsvCells(
 
 /** Append `ref=<externalId>` to a redirect URL, respecting any existing query. */
 /**
- * A PENDING payment whose link was never confirmed minted: the create call to
- * Whish came back INDETERMINATE, so we kept the row (and its externalId) but
- * have no collectUrl. It is not payable as-is, so an idempotent retry must
- * re-attempt the mint rather than hand the same dead row back.
+ * A PENDING payment whose link was never confirmed minted, so it has no
+ * collectUrl: either the create call to Whish came back INDETERMINATE (flagged
+ * linkCreateIndeterminate), or the create failed on OUR side after the row was
+ * saved and before Whish answered (e.g. the database was too busy to give a
+ * connection) — no flag can be written then. It is not payable as-is, so an
+ * idempotent retry must re-attempt the mint rather than hand the same dead row
+ * back, and the poller closes it once Whish says it never made it.
+ *
+ * Without the flag, only once it is older than MINT_IN_FLIGHT_MS: a younger
+ * row may be a create that is still waiting for Whish (its call times out in
+ * 10s), which must not be minted twice.
  */
 /**
  * Reusing an idempotency key with a DIFFERENT body is a client bug, and on the
@@ -1932,7 +1959,9 @@ function isLinklessOrphan(row: WhishPayment): boolean {
   return (
     row.status === WhishPaymentStatus.PENDING &&
     row.collectUrl === null &&
-    (row.metadata as { linkCreateIndeterminate?: boolean } | null)?.linkCreateIndeterminate === true
+    ((row.metadata as { linkCreateIndeterminate?: boolean } | null)?.linkCreateIndeterminate ===
+      true ||
+      Date.now() - row.createdAt.getTime() > MINT_IN_FLIGHT_MS)
   );
 }
 

@@ -174,14 +174,14 @@ describe('IngestRateLimitGuard — authenticated ingest volume', () => {
 
 describe('ApiKeyRateLimitGuard — the company Whish Pay API, one budget per kind of call', () => {
   // INTEGRATION_CREATE_RATE_LIMIT_MAX → create + refresh; INTEGRATION_LOOKUP_RATE_LIMIT_MAX → lookup.
-  // Production defaults: 6,000 and 30,000 a minute — brakes for a runaway loop,
-  // never a ceiling a real customer base reaches.
+  // Production defaults: 60,000 and 300,000 a minute — brakes against a flood,
+  // above what the platform itself serves, so never a ceiling for real customers.
   const config = {
     get: (key: string) =>
       key === 'INTEGRATION_LOOKUP_RATE_LIMIT_MAX'
-        ? 30000
+        ? 300000
         : key === 'INTEGRATION_CREATE_RATE_LIMIT_MAX'
-          ? 6000
+          ? 60000
           : 0,
   } as unknown as ConfigService<Env, true>;
   const reflectorFor = (budget: string | undefined) =>
@@ -198,26 +198,26 @@ describe('ApiKeyRateLimitGuard — the company Whish Pay API, one budget per kin
     return { outcome, limits, res: built.res };
   };
 
-  it('link creation: a brake at 6,000 a minute (100 a second) per key, far above real customers', async () => {
-    expect((await call('create', 6000)).outcome).toBe('allowed');
-    const over = await call('create', 6001);
+  it('link creation: a brake at 60,000 a minute (1,000 a second) per key, above what the platform serves', async () => {
+    expect((await call('create', 60000)).outcome).toBe('allowed');
+    const over = await call('create', 60001);
     expect(over.outcome).toBe(429);
     expect(over.res.setHeader).toHaveBeenCalledWith('Retry-After', 5);
     expect(over.limits.hit).toHaveBeenCalledWith('rl:integration:create:key-1', 60);
   });
 
   it('a Whish status refresh has the same ceiling but its OWN counter', async () => {
-    const { outcome, limits } = await call('refresh', 6000);
+    const { outcome, limits } = await call('refresh', 60000);
     expect(outcome).toBe('allowed');
     expect(limits.hit).toHaveBeenCalledWith('rl:integration:refresh:key-1', 60);
-    expect((await call('refresh', 6001)).outcome).toBe(429);
+    expect((await call('refresh', 60001)).outcome).toBe(429);
   });
 
-  it('status lookups (our database only) get 30,000 a minute on their own counter', async () => {
-    const { outcome, limits } = await call('lookup', 30000);
+  it('status lookups (our database only) get 300,000 a minute on their own counter', async () => {
+    const { outcome, limits } = await call('lookup', 300000);
     expect(outcome).toBe('allowed');
     expect(limits.hit).toHaveBeenCalledWith('rl:integration:lookup:key-1', 60);
-    expect((await call('lookup', 30001)).outcome).toBe(429);
+    expect((await call('lookup', 300001)).outcome).toBe(429);
   });
 
   it('polling can never spend the budget link creation needs (different counters)', async () => {

@@ -404,6 +404,45 @@ describe('Whish v1.4.4 — indeterminate link creation', () => {
     expect(h.crm.names()).toContain('transaction.failed');
   });
 
+  it('closes a link-less row our own failure left behind (no flag), instead of polling it forever', async () => {
+    // The create failed on OUR side after the row was saved and before Whish was
+    // called (the database was too busy): no indeterminate flag could be written.
+    const { companyId } = await createCompany(h);
+    // No collectUrl, no metadata — and due for its check.
+    const p = await insertPayment(
+      h,
+      companyId,
+      WhishPaymentStatus.PENDING,
+      new Date(Date.now() - 6 * 60_000),
+    );
+    h.whishClient.failGetStatusWith = new WhishError('unknown externalId', {
+      code: 'external_id.not_exists',
+    });
+
+    await h.whish.reconcileStalePayments();
+
+    expect((await readRow(h, p.id)).status).toBe('FAILED');
+    // The company was answered with an error and never given this reference:
+    // its CRM is not sent an event about it.
+    expect(h.crm.names()).toEqual([]);
+  });
+
+  it('a link-less row younger than a minute is not treated as an orphan (its create may be in flight)', async () => {
+    const { companyId } = await createCompany(h);
+    const p = await insertPayment(
+      h,
+      companyId,
+      WhishPaymentStatus.PENDING,
+      new Date(Date.now() - 5_000),
+    );
+    h.whishClient.failGetStatusWith = new WhishError('unknown externalId', {
+      code: 'external_id.not_exists',
+    });
+
+    await expect(h.whish.refreshStatus(companyId, p.id)).rejects.toThrow();
+    expect((await readRow(h, p.id)).status).toBe('PENDING');
+  });
+
   it('does NOT close a row that HAS a link on the same error — that is an operator case', async () => {
     const { companyId } = await createCompany(h);
     await addTransactionFee(h, companyId, '0');

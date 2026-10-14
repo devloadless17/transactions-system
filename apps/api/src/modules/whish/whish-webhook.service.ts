@@ -77,6 +77,8 @@ export class WhishWebhookService {
           redirect: 'manual',
           signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
         });
+        // Read the (small) answer so the connection is free for reuse.
+        await res.text().catch(() => '');
         if (res.ok) {
           this.logger.log(
             `Webhook delivered: payment ${payment.externalId} → ${company.webhookUrl}`,

@@ -27,7 +27,11 @@ import { WhishPaymentStatus } from '@app/shared';
 import { JobLeaseService } from '../../src/database/job-lease.service';
 import { WhishError } from '../../src/modules/whish/whish.client';
 import { WhishReconciliationService } from '../../src/modules/whish/whish-reconciliation.service';
-import { FIRST_POLL_AGE_MS, nextPollDelayMs } from '../../src/modules/whish/whish-payments.service';
+import {
+  FIRST_POLL_AGE_MS,
+  nextPollDelayMs,
+  RECONCILE_CONCURRENCY,
+} from '../../src/modules/whish/whish-payments.service';
 import {
   addTransactionFee,
   buildHarness,
@@ -297,15 +301,18 @@ describe('the reconciliation poller follows the schedule', () => {
 
   it('if Whish answers "too many requests" the run stops at once and says so', async () => {
     const links = await Promise.all(
-      Array.from({ length: 12 }, (_, i) => insertPending((6.5 + i * 0.25) * MIN)),
+      // More links than the checks that run at once.
+      Array.from({ length: RECONCILE_CONCURRENCY + 20 }, (_, i) =>
+        insertPending((6.5 + i * 0.05) * MIN),
+      ),
     );
     h.whishClient.failGetStatusWith = new WhishError('Too many requests', { httpStatus: 429 });
 
     const res = await h.whish.reconcileStalePayments();
 
-    // The (up to 4) checks already in flight finish; no further link is started.
+    // The checks already in flight finish; no further link is started.
     expect(res.throttled).toBe(true);
-    expect(res.checked).toBeLessThanOrEqual(4);
+    expect(res.checked).toBeLessThanOrEqual(RECONCILE_CONCURRENCY);
     expect(h.whishClient.getStatusCalls).toHaveLength(res.checked);
     const rows = await Promise.all(links.map((l) => rowOf(l.id)));
     expect(rows.every((r) => r.status === 'PENDING')).toBe(true); // nothing closed
@@ -397,16 +404,19 @@ describe('the reconciliation poller follows the schedule', () => {
     // A run can take minutes (250 links, Whish calls of up to 10s); a deploy must
     // not wait for it, and must never leave a link half-handled.
     const links = await Promise.all(
-      Array.from({ length: 12 }, (_, i) => insertPending((6.5 + i * 0.25) * MIN)),
+      // More links than the checks that run at once.
+      Array.from({ length: RECONCILE_CONCURRENCY + 20 }, (_, i) =>
+        insertPending((6.5 + i * 0.05) * MIN),
+      ),
     );
 
     const res = await h.whish.reconcileStalePayments({
       shouldStop: () => h.whishClient.getStatusCalls.length >= 1, // the stop arrives at once
     });
 
-    // Each of the 4 workers finished the link it had started, then stopped.
+    // Each worker finished the link it had started, then stopped.
     expect(res.checked).toBeGreaterThan(0);
-    expect(res.checked).toBeLessThanOrEqual(4);
+    expect(res.checked).toBeLessThanOrEqual(RECONCILE_CONCURRENCY);
     expect(h.whishClient.getStatusCalls).toHaveLength(res.checked);
     // Every link that was started was fully handled (asked and rescheduled);
     // the rest were left untouched — still due — for the next instance.

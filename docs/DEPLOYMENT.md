@@ -312,14 +312,18 @@ Read the entry for every release you are about to roll back across. Newest first
   Whish never resolves pile up. No data needs repair either way.
 - **Renamed limit — check the server env files.** The per-key brake on creating
   and refreshing Whish payment links is now `INTEGRATION_CREATE_RATE_LIMIT_MAX`
-  (default 6000 a minute; status lookups have their own
-  `INTEGRATION_LOOKUP_RATE_LIMIT_MAX`, default 30000). The old
+  (default 60000 a minute since 2026-10-14, was 6000; status lookups have their
+  own `INTEGRATION_LOOKUP_RATE_LIMIT_MAX`, default 300000, was 30000). The old
   `INTEGRATION_RATE_LIMIT_MAX` is **no longer read**. Staging's hand-kept
   `.env.staging` still carries `INTEGRATION_RATE_LIMIT_MAX=300` (the old combined
   cap, copied from the old example) and that line is now inert — remove it at
   leisure. Production's `.env` is re-rendered from `.env.prod.example` on every
   production deploy, so it picks up the new names by itself. To change a brake,
-  set the new names.
+  set the new names. **Raised 2026-10-14 (6000 → 60000, 30000 → 300000), so the
+  brakes sit above what the platform itself serves:** staging's hand-kept
+  `.env.staging` sets both names explicitly to the old values, and compose
+  passes them through, so on staging change those two lines to 60000 and 300000
+  — otherwise staging keeps the old brakes whatever the code default says.
 - **Behaviour changes, no configuration needed:**
   - `/v1/integrations/whish/*` has no per-IP limit any more (per-key brakes
     only); Whish's payment confirmations are never limited — only fake ones
@@ -337,7 +341,7 @@ Read the entry for every release you are about to roll back across. Newest first
     expiry are still checked live on every request), and `last_used_at` is
     stamped at most once a minute per key.
   - The Whish reconciliation poller follows `next_poll_at`, earliest-due first,
-    up to 4 Whish calls at a time (about 800 links a minute). A link is
+    up to 16 Whish calls at a time (about 3,200 links a minute). A link is
     scheduled at birth for one check 5:10 after it was created (Whish closes an
     unpaid link at 5:00, and reports a payment itself), then every minute, and
     is closed at 10 minutes if Whish still reports it unpaid — one Whish call
@@ -474,12 +478,14 @@ decisions):
   `reverse_proxy` forwards WebSockets by default; just keep its read/idle timeout
   generous (or unset) for the API upstream so a healthy socket stays open for the
   whole session (it only legitimately reconnects ~every 13 min on token refresh).
-- **Set the DB connection pool per instance.** `DATABASE_URL` has no
-  `connection_limit`, so Prisma defaults to `num_cpus*2+1` **per instance**. With
-  N replicas + the 120s reconcile transaction, that can exceed Postgres
-  `max_connections`. Append `?connection_limit=<n>&pool_timeout=<s>` to
-  `DATABASE_URL` (size it: `N_replicas * connection_limit < max_connections`,
-  leaving headroom for migrations/admin).
+- **The DB connection pool per instance.** The compose files set
+  `connection_limit=${DATABASE_POOL_SIZE:-20}` on `DATABASE_URL` (since
+  2026-10-14). Without it Prisma takes `num_cpus*2+1` — 5 on the 2-core
+  production server — and a burst of link creations queued past Prisma's 2s
+  connection wait: in a local load test with 5 connections, 6% of 10,000 link
+  creations were refused and CRM events were lost. Size it so
+  `N_instances * connection_limit < max_connections` (100), leaving headroom for
+  migrations/admin; during a blue/green release two instances run.
 - **One company's bookings take turns per API process.** `CompanyQueue`
   ([apps/api/src/database/company-queue.ts](../apps/api/src/database/company-queue.ts))
   queues a company's money transactions inside one process — that is what lets

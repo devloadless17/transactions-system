@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assertSafeWebhookUrl, isPrivateAddress } from './ssrf';
+import { assertSafeWebhookUrl, isPrivateAddress, pinnedAgentFor } from './ssrf';
 
 describe('isPrivateAddress', () => {
   it('flags loopback, private, link-local and metadata IPv4', () => {
@@ -83,5 +83,22 @@ describe('assertSafeWebhookUrl', () => {
   it('returns the validated address (used to pin the connection) for a public literal IP', async () => {
     const r = await assertSafeWebhookUrl('https://203.0.113.10/hook');
     expect(r.addresses).toEqual([{ address: '203.0.113.10', family: 4 }]);
+  });
+});
+
+describe('pinnedAgentFor — reused connections stay pinned to validated addresses', () => {
+  const a = [{ address: '93.184.216.34', family: 4 }];
+  const b = [{ address: '93.184.216.35', family: 4 }];
+
+  it('reuses one agent (keep-alive connections) for the same host and addresses', () => {
+    expect(pinnedAgentFor('crm.example.com', a)).toBe(pinnedAgentFor('crm.example.com', a));
+  });
+
+  it('a DNS change makes a new agent, pinned to the newly validated addresses', () => {
+    expect(pinnedAgentFor('crm2.example.com', a)).not.toBe(pinnedAgentFor('crm2.example.com', b));
+  });
+
+  it('never shares an agent across hosts', () => {
+    expect(pinnedAgentFor('one.example.com', a)).not.toBe(pinnedAgentFor('two.example.com', a));
   });
 });

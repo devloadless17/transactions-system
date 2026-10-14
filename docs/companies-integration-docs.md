@@ -306,13 +306,13 @@ What is limited — three things, each answering `429 RATE_LIMITED`:
 
 **1. Payment links — per API key, one budget for each kind of call.** This covers the Whish Pay API (`/v1/integrations/whish/*`) and a link's own calls on its dashboard twin, `/v1/company/whish/payments` (create, look up, refresh-status), on the same counters for the same key — signed in on the dashboard, the budget is per user. Neither has a per-IP limit.
 
-| Call                                                              | Budget per API key                | Counter |
-| ----------------------------------------------------------------- | --------------------------------- | ------- |
-| Create a payment link — `POST /payments`                          | **6,000 a minute** (100 a second) | its own |
-| Refresh a status from Whish — `POST /payments/:reference/refresh` | **6,000 a minute**                | its own |
-| Look up a payment — `GET /payments/:reference`                    | **30,000 a minute**               | its own |
+| Call                                                              | Budget per API key                   | Counter |
+| ----------------------------------------------------------------- | ------------------------------------ | ------- |
+| Create a payment link — `POST /payments`                          | **60,000 a minute** (1,000 a second) | its own |
+| Refresh a status from Whish — `POST /payments/:reference/refresh` | **60,000 a minute**                  | its own |
+| Look up a payment — `GET /payments/:reference`                    | **300,000 a minute**                 | its own |
 
-These are **safety brakes, not ceilings for real traffic**: 100 customers starting a deposit every second for a whole minute is far beyond any real customer base, while a broken integration stuck in a retry loop reaches it at once. They exist because every link creation and refresh is a call to Whish, through an account Rival shares across companies — one runaway loop must not get it throttled for everyone. Each kind of call has its **own** counter, so polling statuses can never use up your link creation. If your volume ever approaches a brake, contact us: they are raised in configuration (`INTEGRATION_CREATE_RATE_LIMIT_MAX`, default 6000; `INTEGRATION_LOOKUP_RATE_LIMIT_MAX`, default 30000). Fixed one-minute windows.
+These are **safety brakes, not ceilings for real traffic**: they sit above what the platform itself serves, so your customers are never refused by them. They exist only to stop a flood — a leaked key, or a broken integration stuck in a retry loop — before it costs any work. Each kind of call has its **own** counter, so polling statuses can never use up your link creation. They are set in configuration (`INTEGRATION_CREATE_RATE_LIMIT_MAX`, default 60000; `INTEGRATION_LOOKUP_RATE_LIMIT_MAX`, default 300000). Fixed one-minute windows.
 
 **2. Every other company route — per IP.** Everything else under `/v1/company/*` — wallets, transactions, withdrawals, payouts, loads, and the payment-link list and CSV of `/company/whish/payments` — whether called with a session or an API key:
 
@@ -331,8 +331,8 @@ The per-key and wrong-key limiters return the standard flat envelope, with the l
   "statusCode": 429,
   "error": {
     "code": "RATE_LIMITED",
-    "message": "Rate limit exceeded: 6000 requests per 60s",
-    "details": { "limit": 6000, "windowSeconds": 60 }
+    "message": "Rate limit exceeded: 60000 requests per 60s",
+    "details": { "limit": 60000, "windowSeconds": 60 }
   }
 }
 ```
@@ -2319,7 +2319,7 @@ function verify(rawBody, header, crmKey) {
 
 **Retry / backoff policy (verified in `crm-delivery.service.ts`):**
 
-- One immediate best-effort attempt on the event, then a background sweep retries due deliveries (sweep runs ~every 20s, 50 rows/tick, cross-instance locked to avoid double-send).
+- One attempt as soon as the event happens, then a background sweep retries due deliveries (every 20s, and continuously while a backlog remains). Each attempt first claims its delivery atomically, so the same delivery is never sent twice at the same time. **At most 32 deliveries to your endpoint are in flight at once** — a burst of your customers' payments never opens thousands of connections to your server — and your endpoint being slow or down never delays other companies' deliveries.
 - **Total attempts = 6** (1 immediate + 5 retries). Retry delays after each failure: **60s, 5m, 15m, 1h, 6h**.
 - **Only transient failures are retried**: a network error/timeout, HTTP `429`, or any `5xx`. A `4xx` (`400/401/403/404/409/422`, etc.) is treated as a **permanent config error and is NOT retried** — fix your endpoint/key, the event will not come back on its own. A URL that becomes non-https/private is also failed permanently.
 - Delivery state lives in `webhook_deliveries` (status `PENDING → RETRYING → DELIVERED | FAILED`); the stored response body is truncated to 2000 chars. This table is internal — there is currently **no public endpoint to query delivery status or replay a failed delivery** (see issues).
