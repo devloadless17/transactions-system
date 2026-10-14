@@ -81,6 +81,13 @@ export const crmEventTransactionSchema = z.object({
   netAmount: z.string().nullable(),
   commissionAmount: z.string().nullable(),
   networkFeeAmount: z.string().nullable(),
+  // On `transaction.reversed`: true when the deposit was refunded to the
+  // customer (the money went back to them), false when it was only reversed.
+  // Always false / null on the other events. Absent on an event saved before
+  // these fields existed (it may still be retried), so absent reads as
+  // false / null — as the integration guide tells companies to treat it.
+  refunded: z.boolean().default(false),
+  refundedAt: z.string().nullable().default(null),
   customer: z.string().nullable(),
   tradingAccount: z.string().nullable(),
   phone: z.string().nullable(),

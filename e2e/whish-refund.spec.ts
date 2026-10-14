@@ -65,15 +65,22 @@ async function refundFromWhishPage(page: Page, externalId: string, reason = 'Cus
   return { row, dialog };
 }
 
-async function signInAs(browser: Browser, email: string, password: string): Promise<Page> {
+async function signInAs(
+  browser: Browser,
+  email: string,
+  password: string,
+  landing: '/admin' | '/app' = '/admin',
+): Promise<Page> {
   const ctx = await browser.newContext({
     baseURL: BASE_URL,
     storageState: { cookies: [], origins: [] },
   });
   const page = await ctx.newPage();
-  await loginAs(page, email, password, '/admin');
+  await loginAs(page, email, password, landing);
   return page;
 }
+
+const OWNER_PASSWORD = 'E2e!owner-refund-123';
 
 test.describe.serial('Whish refunds — every answer Whish can give', () => {
   test.setTimeout(120_000);
@@ -83,6 +90,7 @@ test.describe.serial('Whish refunds — every answer Whish can give', () => {
   let ownerCsrf: string;
   let companyId: string;
   let slug: string;
+  let ownerEmail: string;
 
   /** A Whish Pay link the customer paid, settled into the company's wallet. */
   async function paidPayment(amount = '40.00'): Promise<Paid> {
@@ -134,7 +142,8 @@ test.describe.serial('Whish refunds — every answer Whish can give', () => {
       commissionType: 'PERCENTAGE',
       commissionValue: '2',
     });
-    owner = await loginOwnerApiContext(co.ownerEmail, co.tempPassword, 'E2e!owner-refund-123');
+    ownerEmail = co.ownerEmail;
+    owner = await loginOwnerApiContext(co.ownerEmail, co.tempPassword, OWNER_PASSWORD);
     ownerCsrf = await getCsrf(owner);
   });
   test.beforeEach(async () => {
@@ -159,7 +168,10 @@ test.describe.serial('Whish refunds — every answer Whish can give', () => {
     await expect(row.getByRole('button', { name: 'Refund', exact: true })).toHaveCount(0);
   });
 
-  test('a refund returns the money through Whish and reverses the deposit', async ({ page }) => {
+  test('a refund returns the money through Whish and reverses the deposit', async ({
+    page,
+    browser,
+  }) => {
     const p = await paidPayment('40.00');
     const before = await available();
 
@@ -185,6 +197,18 @@ test.describe.serial('Whish refunds — every answer Whish can give', () => {
     const depositRow = page.locator('tr', { hasText: p.externalId });
     await expect(depositRow.getByText('REFUNDED')).toBeVisible();
     await expect(depositRow.getByRole('button')).toHaveCount(0);
+
+    // The company sees it too — through its API and on its own Deposits page:
+    // REVERSED, and refunded to its customer.
+    const own = await getJson(owner, `/v1/company/transactions/${p.transactionId}`);
+    expect(own).toMatchObject({ status: 'REVERSED', refunded: true });
+    expect(own.refundedAt).toBeTruthy();
+    const ownerPage = await signInAs(browser, ownerEmail, OWNER_PASSWORD, '/app');
+    await ownerPage.goto(`/app/deposits?search=${p.externalId}`);
+    await expect(
+      ownerPage.locator('tr', { hasText: p.externalId }).getByText('REFUNDED'),
+    ).toBeVisible();
+    await ownerPage.context().close();
   });
 
   test('a reason of fewer than 3 characters cannot be sent', async ({ page }) => {

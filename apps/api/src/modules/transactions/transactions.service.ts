@@ -835,7 +835,16 @@ export class TransactionsService {
    */
   async reverse(
     txId: string,
-    args: { actorId: string; reason: string },
+    args: {
+      actorId: string;
+      reason: string;
+      /**
+       * Set when this reversal books a refund to the payer (a Whish refund):
+       * recorded on the deposit in the same database transaction, so every
+       * reader and the CRM event see `refunded` together with REVERSED.
+       */
+      refundedAt?: Date;
+    },
   ): Promise<TransactionResponse> {
     // Admin action: look up the owning company first, then run the mutation
     // scoped to it so RLS WITH CHECK validates every compensating write.
@@ -843,7 +852,7 @@ export class TransactionsService {
       tx.transaction.findUnique({ where: { id: txId }, select: { companyId: true } }),
     );
     if (!pre) throw new NotFoundError('Transaction', txId);
-    const { reversed, replayed } = await this.prisma.runSerializableAsTenant(
+    const { reversed, replayed, refundNoted } = await this.prisma.runSerializableAsTenant(
       pre.companyId,
       async (tx) => {
         const cTx = tx as unknown as PrismaClient;
@@ -857,7 +866,20 @@ export class TransactionsService {
           // Already reversed (a stale dialog, a retried request, or the loser of
           // two concurrent reversals): nothing is booked, and — see below —
           // nothing is announced a second time either.
-          return { reversed: orig, replayed: true };
+          //
+          // Except one new fact: an operator reversed the deposit earlier and the
+          // payer has now been refunded. No money moves here (the wallet was
+          // already debited); the deposit records the refund, and the company is
+          // told once more, now with `refunded: true`.
+          if (args.refundedAt && !orig.refundedAt) {
+            const noted = await cTx.transaction.update({
+              where: { id: orig.id },
+              data: { refundedAt: args.refundedAt },
+              include: { source: { select: { code: true } } },
+            });
+            return { reversed: noted, replayed: true, refundNoted: true };
+          }
+          return { reversed: orig, replayed: true, refundNoted: false };
         }
         if (orig.status !== 'COMPLETED') {
           throw new ConflictError(`Transaction is in status ${orig.status} and cannot be reversed`);
@@ -913,10 +935,10 @@ export class TransactionsService {
 
         const updated = await cTx.transaction.update({
           where: { id: orig.id },
-          data: { status: 'REVERSED' },
+          data: { status: 'REVERSED', ...(args.refundedAt ? { refundedAt: args.refundedAt } : {}) },
           include: { source: { select: { code: true } } },
         });
-        return { reversed: updated, replayed: false };
+        return { reversed: updated, replayed: false, refundNoted: false };
       },
     );
 
@@ -928,6 +950,12 @@ export class TransactionsService {
     // An idempotent replay moved no money, so it must not look like a second
     // reversal: no cache churn, no realtime refresh, and above all no second
     // `transaction.reversed` webhook to the company's CRM. Mirrors ingest().
+    if (refundNoted) {
+      this.logger.log(`refund recorded on already-reversed tx=${reversed.id} (no money moved)`);
+      this.realtime.company(reversed.companyId, ['transactions']);
+      this.crm.emitFromTransaction(response, 'transaction.reversed');
+      return response;
+    }
     if (replayed) {
       this.logger.log(`reverse replay ignored tx=${reversed.id} (already REVERSED)`);
       return response;
@@ -1207,6 +1235,7 @@ export class TransactionsService {
       status: TransactionResponse['status'];
       payload?: unknown;
       processedAt: Date | null;
+      refundedAt: Date | null;
       createdAt: Date;
     },
   ): Promise<TransactionResponse> {
@@ -1391,6 +1420,7 @@ function mapTxRow(
     status: TransactionResponse['status'];
     payload?: unknown;
     processedAt: Date | null;
+    refundedAt: Date | null;
     createdAt: Date;
   },
   sourceCode: string,
@@ -1409,6 +1439,8 @@ function mapTxRow(
     networkFeeAmount: Money.fromDb(row.networkFeeAmount).toString(),
     netAmount: Money.fromDb(row.netAmount).toString(),
     status: row.status,
+    refunded: row.refundedAt !== null,
+    refundedAt: row.refundedAt?.toISOString() ?? null,
     customer: payloadString(row.payload, 'customer'),
     target: payloadString(row.payload, 'target'),
     phone: payloadString(row.payload, 'phone'),

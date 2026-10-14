@@ -250,6 +250,35 @@ describe('createCommissionRuleGroupSchema (commission tier ladder)', () => {
 // `withdrawal` (withdrawal events), selected by the event family. Lock that
 // invariant so a future change can't let a body go out empty or double-bodied.
 describe('crmEventPayloadSchema (deposit vs withdrawal body)', () => {
+  it('reads a deposit event saved before `refunded` existed as not refunded', () => {
+    const result = crmEventPayloadSchema.safeParse({
+      event: 'transaction.reversed',
+      reference: 'whish:1',
+      sentAt: '2026-10-14T06:00:00.000Z',
+      transaction: {
+        id: '11111111-1111-1111-1111-111111111111',
+        status: 'REVERSED',
+        source: 'whish',
+        externalTransactionId: '1',
+        amount: '25',
+        currency: 'USD',
+        netAmount: '24.5',
+        commissionAmount: '0.5',
+        networkFeeAmount: '0',
+        customer: null,
+        tradingAccount: null,
+        phone: null,
+        note: null,
+        occurredAt: '2026-10-14T06:00:00.000Z',
+      },
+    });
+    expect(result.success).toBe(true);
+    expect(result.success && result.data.transaction).toMatchObject({
+      refunded: false,
+      refundedAt: null,
+    });
+  });
+
   const depositBody = {
     id: '0f8d2c4e-1a2b-4c3d-9e8f-7a6b5c4d3e2f',
     status: 'COMPLETED',

@@ -21,6 +21,8 @@ const charged: TransactionResponse = {
   networkFeeAmount: '1',
   netAmount: '97',
   status: 'COMPLETED',
+  refunded: false,
+  refundedAt: null,
   customer: 'Jane Doe',
   target: 'ACC-1',
   phone: '+9610000000',

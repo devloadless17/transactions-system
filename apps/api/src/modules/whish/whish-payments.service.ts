@@ -963,16 +963,20 @@ export class WhishPaymentsService {
     }
     const reason =
       (payment.metadata as { refundReason?: unknown } | null)?.refundReason ?? 'no reason recorded';
+    // One moment for both records: the deposit's refund (written with its
+    // reversal, so the CRM event already says `refunded`) and the payment's.
+    const refundedAt = new Date();
     await this.transactions.reverse(payment.transactionId, {
       actorId,
       reason: `Refunded to the payer through Whish: ${String(reason)}`,
+      refundedAt,
     });
     const res = await this.prisma.runAsAdmin((tx) =>
       tx.whishPayment.updateMany({
         where: { id, status: WhishPaymentStatus.PAID },
         data: {
           status: WhishPaymentStatus.REFUNDED,
-          refundedAt: new Date(),
+          refundedAt,
           metadata: withoutRefundFlags(payment.metadata),
         },
       }),

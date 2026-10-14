@@ -305,12 +305,15 @@ export function TransactionsView({
       key: 'status',
       header: 'Status',
       cell: (t) =>
-        // A deposit refunded through Whish is REVERSED in the ledger; say what
-        // actually happened to the money.
-        t.status === 'REVERSED' && (t as Row).whishPayment?.status === 'REFUNDED' ? (
+        // A deposit refunded to the customer is REVERSED in the ledger; say what
+        // actually happened to the money. The deposit itself records the refund
+        // (`refunded`), so company and admin see the same thing.
+        t.refunded ? (
           <Badge
             variant="warning"
-            title="Refunded to the payer through Whish; the deposit was reversed"
+            title={`Refunded to the customer through Whish${
+              t.refundedAt ? ` on ${new Date(t.refundedAt).toLocaleString()}` : ''
+            }; the deposit was reversed`}
           >
             REFUNDED
           </Badge>

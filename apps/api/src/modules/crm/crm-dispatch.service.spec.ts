@@ -49,6 +49,8 @@ const deposit: TransactionResponse = {
   networkFeeAmount: '1',
   netAmount: '97.5',
   status: 'COMPLETED',
+  refunded: false,
+  refundedAt: null,
   customer: 'Jane',
   target: 'ACC-9',
   phone: '+96170000000',
@@ -103,6 +105,8 @@ describe('CrmDispatchService — the body the CRM receives', () => {
       netAmount: '97.5',
       commissionAmount: '1.5',
       networkFeeAmount: '1',
+      refunded: false,
+      refundedAt: null,
       customer: 'Jane',
       tradingAccount: 'ACC-9',
       phone: '+96170000000',
@@ -254,5 +258,50 @@ describe('CrmDispatchService — an event is never dropped on a database hiccup'
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('CrmDispatchService — a reversal says whether the customer was refunded', () => {
+  it('transaction.reversed carries refunded: true and when, for a refund', async () => {
+    const { svc, created, settled } = setup(ON);
+    svc.emitFromTransaction(
+      {
+        ...deposit,
+        status: 'REVERSED',
+        refunded: true,
+        refundedAt: '2026-10-14T06:00:00.000Z',
+      },
+      'transaction.reversed',
+    );
+    await settled();
+    expect(created[0]!.payload.transaction).toMatchObject({
+      status: 'REVERSED',
+      refunded: true,
+      refundedAt: '2026-10-14T06:00:00.000Z',
+    });
+  });
+
+  it('…and refunded: false for an operator reversal without a refund', async () => {
+    const { svc, created, settled } = setup(ON);
+    svc.emitFromTransaction({ ...deposit, status: 'REVERSED' }, 'transaction.reversed');
+    await settled();
+    expect(created[0]!.payload.transaction).toMatchObject({
+      status: 'REVERSED',
+      refunded: false,
+      refundedAt: null,
+    });
+  });
+
+  it('Whish link events (pending / failed) always say refunded: false', async () => {
+    const { svc, created, settled } = setup(ON);
+    svc.emitWhish({
+      companyId: deposit.companyId,
+      externalId: '10231',
+      amount: '25.00',
+      currency: 'USD',
+      event: 'transaction.pending',
+    });
+    await settled();
+    expect(created[0]!.payload.transaction).toMatchObject({ refunded: false, refundedAt: null });
   });
 });

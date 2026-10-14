@@ -165,7 +165,7 @@ function ApiSection() {
     ],
     [
       'REFUNDED',
-      'Paid, then refunded to the customer by the platform: Whish sent the full amount back to the customer’s Whish account, and the deposit was reversed out of your wallet (the net you were credited; both fees are returned). You receive transaction.reversed; refundedAt is set. Only the platform can refund: to refund a customer, ask the platform team.',
+      'Paid, then refunded to the customer by the platform: Whish sent the full amount back to the customer’s Whish account, and the deposit was reversed out of your wallet (the net you were credited; both fees are returned). You receive transaction.reversed with refunded: true; refundedAt is set on the payment and on the transaction. Only the platform can refund: to refund a customer, ask the platform team.',
     ],
   ];
   const errors: [string, string][] = [

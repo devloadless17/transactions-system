@@ -457,6 +457,10 @@ model Transaction {
   payload               Json              @db.JsonB
   idempotencyKey        String?           @map("idempotency_key")
   processedAt           DateTime?         @map("processed_at") @db.Timestamptz(6)
+  // When the deposit was refunded to the payer (a Whish refund), written in the
+  // same database transaction as the reversal that booked it. A refunded deposit
+  // is REVERSED; NULL on a REVERSED deposit = an operator reversal, no refund.
+  refundedAt            DateTime?         @map("refunded_at") @db.Timestamptz(6)
   createdAt             DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt             DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
 

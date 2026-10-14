@@ -320,6 +320,8 @@ x-crm-signature: t=1781018591,sha256=<hex>
     "netAmount": "24.5",
     "commissionAmount": "0.5",
     "networkFeeAmount": "0",
+    "refunded": false,
+    "refundedAt": null,
     "customer": "John Doe",
     "tradingAccount": null,
     "phone": "+961…",
@@ -369,7 +371,7 @@ x-crm-signature: t=1781018591,sha256=<hex>
     ],
     [
       'transaction.reversed',
-      'A settled deposit was reversed (also when the platform refunds a Whish payment).',
+      'A settled deposit was reversed. refunded: true (with refundedAt) when the platform refunded it to your customer through Whish; false when it was only reversed.',
     ],
   ];
   const withdrawalEvents: [string, string][] = [

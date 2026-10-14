@@ -105,6 +105,10 @@ export const transactionResponseSchema = z.object({
   networkFeeAmount: z.string(),
   netAmount: z.string(),
   status: z.nativeEnum(TransactionStatus),
+  // Refunded to the customer (a Whish refund). The status is then REVERSED, as
+  // for an operator's reversal; these say the money also went back to the payer.
+  refunded: z.boolean(),
+  refundedAt: z.string().nullable(),
   // Descriptive fields lifted from the ingest payload (null when not provided).
   customer: z.string().nullable(),
   target: z.string().nullable(),

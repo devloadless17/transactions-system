@@ -84,6 +84,8 @@ function txResponse(
     networkFeeAmount: '0',
     netAmount: '24.50',
     status: 'COMPLETED',
+    refunded: false,
+    refundedAt: null,
     customer: 'John Doe',
     target: null,
     phone: '+9610000000',

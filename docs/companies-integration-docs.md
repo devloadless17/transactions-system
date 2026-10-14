@@ -472,25 +472,27 @@ Unlike the ingest responses (which deliberately hide the platform fees), these c
 
 Returned by the list, get-one, and (nested under `transaction`) the detail endpoint.
 
-| Field                   | Type             | Notes                                                                                                                                        |
-| ----------------------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `id`                    | string (uuid)    | Platform transaction id. Use this in the get-one / detail URLs.                                                                              |
-| `companyId`             | string (uuid)    | Always your company.                                                                                                                         |
-| `sourceId`              | string (uuid)    | The source that ingested it. Use as the `sourceId` list filter.                                                                              |
-| `sourceCode`            | string           | Human-readable source code (e.g. the provider short code).                                                                                   |
-| `externalTransactionId` | string           | The id your source supplied at ingest. Target of the `search` filter.                                                                        |
-| `amount`                | string (decimal) | Gross amount as ingested. Decimal string, quantized to 2 dp (whole cents). Never a float.                                                    |
-| `commissionAmount`      | string (decimal) | The commission (platform fee) taken on this deposit.                                                                                         |
-| `networkFeeAmount`      | string (decimal) | The network fee taken on this deposit, next to the commission. `"0"` when not charged.                                                       |
-| `netAmount`             | string (decimal) | Credited to your available balance: `amount − commissionAmount − networkFeeAmount` for `DEDUCTED` (the normal setup); `amount` for `ON_TOP`. |
-| `currency`              | string           | ISO-4217, 3 chars. Currently only `USD` is supported.                                                                                        |
-| `status`                | enum             | See lifecycle below.                                                                                                                         |
-| `customer`              | string \| null   | Lifted from the ingest `payload.customer`. `null` if not provided.                                                                           |
-| `target`                | string \| null   | Lifted from `payload.target` (the trading account / payee). `null` if absent.                                                                |
-| `phone`                 | string \| null   | From `payload.phone`. `null` if absent.                                                                                                      |
-| `note`                  | string \| null   | From `payload.note`. `null` if absent.                                                                                                       |
-| `processedAt`           | string \| null   | ISO-8601 timestamp when booked (set at ingest). `null` if not yet processed.                                                                 |
-| `createdAt`             | string           | ISO-8601 row-creation timestamp. Also the list sort key (desc).                                                                              |
+| Field                   | Type             | Notes                                                                                                                                                                                                                                             |
+| ----------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                    | string (uuid)    | Platform transaction id. Use this in the get-one / detail URLs.                                                                                                                                                                                   |
+| `companyId`             | string (uuid)    | Always your company.                                                                                                                                                                                                                              |
+| `sourceId`              | string (uuid)    | The source that ingested it. Use as the `sourceId` list filter.                                                                                                                                                                                   |
+| `sourceCode`            | string           | Human-readable source code (e.g. the provider short code).                                                                                                                                                                                        |
+| `externalTransactionId` | string           | The id your source supplied at ingest. Target of the `search` filter.                                                                                                                                                                             |
+| `amount`                | string (decimal) | Gross amount as ingested. Decimal string, quantized to 2 dp (whole cents). Never a float.                                                                                                                                                         |
+| `commissionAmount`      | string (decimal) | The commission (platform fee) taken on this deposit.                                                                                                                                                                                              |
+| `networkFeeAmount`      | string (decimal) | The network fee taken on this deposit, next to the commission. `"0"` when not charged.                                                                                                                                                            |
+| `netAmount`             | string (decimal) | Credited to your available balance: `amount − commissionAmount − networkFeeAmount` for `DEDUCTED` (the normal setup); `amount` for `ON_TOP`.                                                                                                      |
+| `currency`              | string           | ISO-4217, 3 chars. Currently only `USD` is supported.                                                                                                                                                                                             |
+| `status`                | enum             | See lifecycle below.                                                                                                                                                                                                                              |
+| `refunded`              | boolean          | `true` when the deposit was **refunded to your customer** (the money went back to them through Whish). The status is then `REVERSED`, as for an operator's reversal without a refund — this field is what tells the two apart. `false` otherwise. |
+| `refundedAt`            | string \| null   | ISO-8601 time of that refund; `null` unless `refunded`.                                                                                                                                                                                           |
+| `customer`              | string \| null   | Lifted from the ingest `payload.customer`. `null` if not provided.                                                                                                                                                                                |
+| `target`                | string \| null   | Lifted from `payload.target` (the trading account / payee). `null` if absent.                                                                                                                                                                     |
+| `phone`                 | string \| null   | From `payload.phone`. `null` if absent.                                                                                                                                                                                                           |
+| `note`                  | string \| null   | From `payload.note`. `null` if absent.                                                                                                                                                                                                            |
+| `processedAt`           | string \| null   | ISO-8601 timestamp when booked (set at ingest). `null` if not yet processed.                                                                                                                                                                      |
+| `createdAt`             | string           | ISO-8601 row-creation timestamp. Also the list sort key (desc).                                                                                                                                                                                   |
 
 The **detail** endpoint adds two fields inside `transaction` and a `ledgerEntries` array:
 
@@ -515,7 +517,8 @@ In practice for source-ingested transactions:
 
 - A transaction is created already **`COMPLETED`** (ingest is atomic: row + ledger + wallet credit in one serializable transaction).
 - An admin reversal moves a `COMPLETED` transaction to **`REVERSED`** (writes compensating ledger entries; reversal is idempotent). Only `COMPLETED` can be reversed.
-- `PENDING` / `PROCESSING` / `FAILED` / `REFUNDED` exist in the enum but are not produced by the ingest flow today; treat them as forward-compatible values you may receive in the future and avoid hard-coding an exhaustive switch that throws on the others.
+- A **refund** to your customer (the platform refunding a Whish payment) is also a reversal: the transaction becomes **`REVERSED`** and, in addition, `refunded: true` with `refundedAt`. A `REVERSED` transaction with `refunded: false` was reversed without a refund. (If a deposit is reversed first and refunded later, `refunded` turns `true` then, and you receive `transaction.reversed` again, now with `refunded: true`.)
+- `PENDING` / `PROCESSING` / `FAILED` / `REFUNDED` exist in the enum but are not produced by the ingest flow today (a refund is `REVERSED` + `refunded: true`, never the status `REFUNDED`); treat them as forward-compatible values you may receive in the future and avoid hard-coding an exhaustive switch that throws on the others.
 
 ---
 
@@ -1661,13 +1664,13 @@ Returned (under the `data` envelope) by every create / get / refresh call.
 
 A single deposit is visible through two objects with **different status vocabularies**, which is the most common source of integration confusion. The payment link (this section) tracks collection; the ledger **transaction** tracks the money once collected. They map one-to-one:
 
-| Payment link `status` | Transaction `status` (`GET /company/transactions`) | CRM event               | Notes                                                                    |
-| --------------------- | -------------------------------------------------- | ----------------------- | ------------------------------------------------------------------------ |
-| `PENDING`             | _(no transaction row yet)_                         | `transaction.pending`   | The event's `transaction.id` / this object's `transactionId` are `null`. |
-| `PAID`                | `COMPLETED`                                        | `transaction.completed` | Fees and net are known only now.                                         |
-| `FAILED`              | _(no transaction row)_                             | `transaction.failed`    | Declined, refunded before settlement, or lapsed unpaid.                  |
-| `REFUNDED`            | `REVERSED`                                         | `transaction.reversed`  | Refunded to your customer through Whish, and the deposit reversed.       |
-| `PAID` (unchanged)    | `REVERSED`                                         | `transaction.reversed`  | An operator reversed an already-settled deposit without a refund.        |
+| Payment link `status` | Transaction `status` (`GET /company/transactions`) | CRM event               | Notes                                                                                 |
+| --------------------- | -------------------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------- |
+| `PENDING`             | _(no transaction row yet)_                         | `transaction.pending`   | The event's `transaction.id` / this object's `transactionId` are `null`.              |
+| `PAID`                | `COMPLETED`                                        | `transaction.completed` | Fees and net are known only now.                                                      |
+| `FAILED`              | _(no transaction row)_                             | `transaction.failed`    | Declined, refunded before settlement, or lapsed unpaid.                               |
+| `REFUNDED`            | `REVERSED`                                         | `transaction.reversed`  | Refunded to your customer through Whish, and the deposit reversed — `refunded: true`. |
+| `PAID` (unchanged)    | `REVERSED`                                         | `transaction.reversed`  | An operator reversed an already-settled deposit without a refund — `refunded: false`. |
 
 So **`PAID` and `COMPLETED` are the same event seen from two sides**, and a lapsed link surfaces as `FAILED` / `transaction.failed` — there is no `EXPIRED` status or `transaction.expired` event in practice.
 
@@ -2135,6 +2138,8 @@ x-crm-signature: t=1750579200,sha256=9f86d0818...e3b0c44298fc1c149afbf4c8996fb
     "netAmount": "97.5",
     "commissionAmount": "2.5",
     "networkFeeAmount": "0",
+    "refunded": false,
+    "refundedAt": null,
     "customer": "John Doe",
     "tradingAccount": "ACC-99821",
     "phone": "+9613000000",
@@ -2172,22 +2177,24 @@ For withdrawals, `withdrawal.id` is the UUID returned by `POST /company/withdraw
 
 **`transaction` fields** (`crmEventTransactionSchema`) — deposit events only:
 
-| Field                   | Type                     | Notes                                                                                                                                                                                                           |
-| ----------------------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `id`                    | string (uuid) \| null    | Ledger transaction id. **`null`** for Whish `PENDING`/`FAILED` events (no ledger row exists yet); populated on `COMPLETED`/`REVERSED`.                                                                          |
-| `status`                | enum                     | `PENDING` \| `COMPLETED` \| `FAILED` \| `REVERSED` — derived from `event`.                                                                                                                                      |
-| `source`                | string                   | Source code (e.g. `whish`, or your source's code).                                                                                                                                                              |
-| `externalTransactionId` | string                   | Your/the provider's id for this transaction.                                                                                                                                                                    |
-| `amount`                | string (decimal)         | Gross amount, decimal string (never a float).                                                                                                                                                                   |
-| `currency`              | string                   | ISO currency code.                                                                                                                                                                                              |
-| `netAmount`             | string (decimal) \| null | Amount after the platform fees. **`null` until `COMPLETED`** (fees unknown earlier; always null for Whish PENDING/FAILED).                                                                                      |
-| `commissionAmount`      | string (decimal) \| null | Platform fee (commission). Same null rule as `netAmount`. NOTE: unlike the source-facing _ingest_ response, CRM events to the **company** intentionally **do** include fees/net.                                |
-| `networkFeeAmount`      | string (decimal) \| null | The [network fee](#fees-commission-and-network-fee) — `"0"` when you are not charged one. Same null rule as `netAmount`. An event queued before this field existed may omit it: treat a missing value as `"0"`. |
-| `customer`              | string \| null           | Customer name/label, if known.                                                                                                                                                                                  |
-| `tradingAccount`        | string \| null           | The trading account (internally `target`). Null for Whish lifecycle events.                                                                                                                                     |
-| `phone`                 | string \| null           | Payer phone, if known.                                                                                                                                                                                          |
-| `note`                  | string \| null           | Free-text note / invoice.                                                                                                                                                                                       |
-| `occurredAt`            | string (ISO-8601)        | When the underlying status change happened (`processedAt` if present, else `createdAt`; for Whish lifecycle, the emit time).                                                                                    |
+| Field                   | Type                      | Notes                                                                                                                                                                                                                                                                           |
+| ----------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                    | string (uuid) \| null     | Ledger transaction id. **`null`** for Whish `PENDING`/`FAILED` events (no ledger row exists yet); populated on `COMPLETED`/`REVERSED`.                                                                                                                                          |
+| `status`                | enum                      | `PENDING` \| `COMPLETED` \| `FAILED` \| `REVERSED` — derived from `event`.                                                                                                                                                                                                      |
+| `source`                | string                    | Source code (e.g. `whish`, or your source's code).                                                                                                                                                                                                                              |
+| `externalTransactionId` | string                    | Your/the provider's id for this transaction.                                                                                                                                                                                                                                    |
+| `amount`                | string (decimal)          | Gross amount, decimal string (never a float).                                                                                                                                                                                                                                   |
+| `currency`              | string                    | ISO currency code.                                                                                                                                                                                                                                                              |
+| `netAmount`             | string (decimal) \| null  | Amount after the platform fees. **`null` until `COMPLETED`** (fees unknown earlier; always null for Whish PENDING/FAILED).                                                                                                                                                      |
+| `commissionAmount`      | string (decimal) \| null  | Platform fee (commission). Same null rule as `netAmount`. NOTE: unlike the source-facing _ingest_ response, CRM events to the **company** intentionally **do** include fees/net.                                                                                                |
+| `networkFeeAmount`      | string (decimal) \| null  | The [network fee](#fees-commission-and-network-fee) — `"0"` when you are not charged one. Same null rule as `netAmount`. An event queued before this field existed may omit it: treat a missing value as `"0"`.                                                                 |
+| `refunded`              | boolean                   | On `transaction.reversed`: `true` when the deposit was refunded to your customer (the money went back to them), `false` when it was only reversed. Always `false` on the other events. An event queued before this field existed may omit it: treat a missing value as `false`. |
+| `refundedAt`            | string (ISO-8601) \| null | When that refund happened; `null` unless `refunded`.                                                                                                                                                                                                                            |
+| `customer`              | string \| null            | Customer name/label, if known.                                                                                                                                                                                                                                                  |
+| `tradingAccount`        | string \| null            | The trading account (internally `target`). Null for Whish lifecycle events.                                                                                                                                                                                                     |
+| `phone`                 | string \| null            | Payer phone, if known.                                                                                                                                                                                                                                                          |
+| `note`                  | string \| null            | Free-text note / invoice.                                                                                                                                                                                                                                                       |
+| `occurredAt`            | string (ISO-8601)         | When the underlying status change happened (`processedAt` if present, else `createdAt`; for Whish lifecycle, the emit time).                                                                                                                                                    |
 
 #### Withdrawal events
 
@@ -2264,12 +2271,12 @@ x-crm-signature: t=1750579200,sha256=…
 
 **Deposit events** (`transaction.*`):
 
-| Event                   | Trigger (verified in code)                                                                                                                                                  | `id` | net/fees |
-| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- | -------- |
-| `transaction.pending`   | A Whish payment link is minted (`POST /integrations/whish/payments`).                                                                                                       | null | null     |
-| `transaction.completed` | Any transaction is ingested/settled into the ledger (incl. Whish settlement, same `reference` as its earlier pending).                                                      | uuid | present  |
-| `transaction.failed`    | Whish link creation fails, or a Whish payment is marked FAILED — via the failure callback or the background reconciler (Whish reported failure, or the link lapsed unpaid). | null | null     |
-| `transaction.reversed`  | A ledger transaction is reversed — by an operator, or because the platform refunded a Whish payment to your customer.                                                       | uuid | present  |
+| Event                   | Trigger (verified in code)                                                                                                                                                      | `id` | net/fees |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- | -------- |
+| `transaction.pending`   | A Whish payment link is minted (`POST /integrations/whish/payments`).                                                                                                           | null | null     |
+| `transaction.completed` | Any transaction is ingested/settled into the ledger (incl. Whish settlement, same `reference` as its earlier pending).                                                          | uuid | present  |
+| `transaction.failed`    | Whish link creation fails, or a Whish payment is marked FAILED — via the failure callback or the background reconciler (Whish reported failure, or the link lapsed unpaid).     | null | null     |
+| `transaction.reversed`  | A ledger transaction is reversed — by an operator (`refunded: false`), or because the platform refunded a Whish payment to your customer (`refunded: true`, with `refundedAt`). | uuid | present  |
 
 > A Whish payment therefore typically produces two events with the **same `reference`** (`whish:<externalId>`): `transaction.pending` then `transaction.completed`. Upsert on `reference` so it becomes one evolving record, not two.
 

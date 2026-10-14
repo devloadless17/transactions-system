@@ -73,6 +73,9 @@ const DEPOSIT_SHOWN = [
   'amount',
   'currency',
   'status',
+  // Whether the money went back to the customer — what back office is asked.
+  'refunded',
+  'refundedAt',
   'customer',
   'target',
   'phone',

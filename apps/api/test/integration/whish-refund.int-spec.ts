@@ -37,6 +37,14 @@ async function provisionWhishSource(h: Harness): Promise<void> {
 const readRow = (h: Harness, id: string) =>
   h.prisma.runAsAdmin((tx) => tx.whishPayment.findUniqueOrThrow({ where: { id } }));
 
+const readTx = (h: Harness, transactionId: string) =>
+  h.prisma.runAsAdmin((tx) =>
+    tx.transaction.findUniqueOrThrow({
+      where: { id: transactionId },
+      select: { status: true, refundedAt: true },
+    }),
+  );
+
 const readTxStatus = async (h: Harness, transactionId: string) =>
   (
     await h.prisma.runAsAdmin((tx) =>
@@ -160,8 +168,23 @@ describe('Whish refund — admin refunds a paid payment to the payer', () => {
     expect(Number(snap.wallet?.available)).toBe(0);
     expect(Number(snap.feeLedger)).toBe(0);
     expect(snap.balanced).toBe(true);
-    // The CRM already handles transaction.reversed — no new event type.
+    // The CRM already handles transaction.reversed — no new event type — and
+    // the event itself says the customer was refunded, and when: the deposit
+    // records it in the same database transaction as the reversal.
     expect(h.crm.names()).toEqual(['transaction.reversed']);
+    expect(h.crm.events[0]!.payload).toMatchObject({
+      status: 'REVERSED',
+      refunded: true,
+      refundedAt: res.refundedAt,
+    });
+    expect((await readTx(h, txId)).refundedAt?.toISOString()).toBe(res.refundedAt);
+    // …and so does the deposit read through the API.
+    const viaApi = await h.transactions.getById(txId, companyId);
+    expect(viaApi).toMatchObject({
+      status: 'REVERSED',
+      refunded: true,
+      refundedAt: res.refundedAt,
+    });
     // The reason is kept on the payment for the operator trail.
     expect((await readRow(h, id)).metadata).toMatchObject({
       refundReason: 'Customer cancelled the order',
@@ -332,8 +355,12 @@ describe('Whish refund — admin refunds a paid payment to the payer', () => {
     const after = await snapshot(h, companyId);
     expect(Number(after.wallet?.available)).toBe(Number(before.wallet?.available));
     expect(after.totalDebit).toBe(before.totalDebit);
-    // reverse() replays silently — the CRM already heard about the reversal.
-    expect(h.crm.names()).toEqual([]);
+    // No money moves again — but the refund is new: the deposit records it, and
+    // the CRM, which only heard "reversed", is told once that the customer was
+    // refunded (same event and reference, a later sentAt).
+    expect((await readTx(h, txId)).refundedAt?.toISOString()).toBe(res.refundedAt);
+    expect(h.crm.names()).toEqual(['transaction.reversed']);
+    expect(h.crm.events[0]!.payload).toMatchObject({ refunded: true, refundedAt: res.refundedAt });
   });
 
   it('a refund Whish made but we failed to book keeps the request and is booked by Refresh', async () => {
