@@ -16,6 +16,7 @@ import { ValidationError } from '../../common/errors/domain.error';
 import { BACKOFFICE_CSV_COLUMNS, backofficeCsvCells } from '../../common/backoffice-view';
 import { streamCsvKeyset } from '../../common/csv';
 import { isStuckProcessing, processingSince } from '../withdrawals/stuck-processing';
+import { depositSearchSql, flowSearchSql, searchTerm } from '../../common/search';
 
 // Cache the list COUNT briefly so paging reuses it (same tradeoff as the
 // per-type lists). Rows are always live; only the total can lag by this window.
@@ -148,6 +149,25 @@ const moneyColsSql = (fee: FeeColumn, amountSql: string = grossSql(fee)): string
 const PAYOUT_DETAILS_SQL = `COALESCE(o.payout_details->>'recipientName', o.payout_details->>'accountHolder', o.payout_details->>'walletAddress', o.payout_details->>'description', o.external_reference)`;
 const DEPOSIT_DETAILS_SQL = `COALESCE(o.payload->>'customer', o.payload->>'target', o.payload->>'phone')`;
 
+// The bound search values (see common/search.ts), placed by the query's own
+// placeholder function. Every union builder takes them, so the rows, the count
+// and the export always apply the same search to the same fields — the WHOLE
+// row (every recipient detail, the phone typed any way), not the one field the
+// row shows as its title.
+interface SearchPh {
+  like: string;
+  digits: string | null;
+}
+function searchPh(search: string | undefined, p: (v: unknown) => string): SearchPh | null {
+  if (!search) return null;
+  const t = searchTerm(search);
+  return { like: p(t.like), digits: t.digits ? p(t.digits) : null };
+}
+const flowSearchClause = (sp: SearchPh | null): string =>
+  sp ? ` AND ${flowSearchSql(sp.like, sp.digits)}` : '';
+const depositSearchClause = (sp: SearchPh | null): string =>
+  sp ? ` AND ${depositSearchSql(sp.like, sp.digits, 's.code')}` : '';
+
 /**
  * Who the feed is being built for. Back office gets ONE figure per operation
  * and nothing a fee could be derived from (common/backoffice-view.ts):
@@ -263,7 +283,7 @@ export class ActivityService {
     const q = args.query;
     const prisma = this.prisma;
     const backoffice = args.backoffice === true;
-    const unionSql = this.unionSql({ backoffice });
+    const unionSqlFor = this.unionSql.bind(this);
     const kindsFor = this.kindsFor.bind(this);
 
     return streamCsvKeyset<ActivityRow>({
@@ -280,14 +300,9 @@ export class ActivityService {
           if (q.currency) cl.push(`u.currency = ${p(q.currency)}`);
           if (q.from) cl.push(`u.created_at >= ${p(new Date(q.from))}`);
           if (q.to) cl.push(`u.created_at <= ${p(new Date(q.to))}`);
-          if (q.search) {
-            const like = p(`%${q.search}%`);
-            // Match the human reference/name fields AND the internal id, so a
-            // code copied from an audit log finds its row.
-            cl.push(
-              `(u.reference ILIKE ${like} OR u.description ILIKE ${like} OR u.details ILIKE ${like} OR u.id::text ILIKE ${like})`,
-            );
-          }
+          // The search runs inside each branch (every field of the row, not
+          // just the projected ones) — the same rule as the list's rows + count.
+          const unionSql = unionSqlFor({ backoffice }, searchPh(q.search, p));
           if (cursor) {
             const c = p(cursor.createdAt);
             const cid = p(cursor.id);
@@ -399,7 +414,10 @@ export class ActivityService {
   // bounded (normalRowsSql) or balance (balanceUnionSql) variants.
   // `amount` is the GROSS that actually moved (see grossSql) — except a deposit
   // shown to back office, which is the amount the customer paid (FeedAudience).
-  private unionSql(audience: FeedAudience = { backoffice: false }): string {
+  private unionSql(
+    audience: FeedAudience = { backoffice: false },
+    search: SearchPh | null = null,
+  ): string {
     const flowBranch = (kind: ActivityKind, table: string): string => `
       SELECT o.id, '${kind}'::text AS kind, ${moneyColsSql('fee_amount')},
              o.fee_application::text AS fee_application,
@@ -411,7 +429,7 @@ export class ActivityService {
              ${FLOW_RECIPIENT_SQL}
       FROM ${table} o
       LEFT JOIN companies c ON c.id = o.company_id
-      WHERE o.status = 'COMPLETED'`;
+      WHERE o.status = 'COMPLETED'${flowSearchClause(search)}`;
     return `
       SELECT o.id, 'DEPOSIT'::text AS kind, ${moneyColsSql('commission_amount', depositAmountSql(audience))},
              NULL::text AS fee_application,
@@ -423,7 +441,7 @@ export class ActivityService {
       FROM transactions o
       LEFT JOIN sources s ON s.id = o.source_id
       LEFT JOIN companies c ON c.id = o.company_id
-      WHERE o.status = 'COMPLETED'
+      WHERE o.status = 'COMPLETED'${depositSearchClause(search)}
       UNION ALL${flowBranch('LOAD', 'loads')}
       UNION ALL${flowBranch('WITHDRAWAL', 'withdrawals')}
       UNION ALL${flowBranch('PAYOUT', 'payouts')}
@@ -509,23 +527,19 @@ export class ActivityService {
     const currencyPh = q.currency ? dp(q.currency) : null;
     const fromPh = q.from ? dp(new Date(q.from)) : null;
     const toPh = q.to ? dp(new Date(q.to)) : null;
-    const likePh = q.search ? dp(`%${q.search}%`) : null;
+    const search = searchPh(q.search, dp);
     const limPh = dp(a.skip + q.pageSize);
 
-    const branchWhere = (ref: string, desc: string, details: string): string => {
+    // `searchClause` — the row matches the search (common/search.ts: every
+    // field, incl. the internal id so a code copied from an audit log or any
+    // detail panel is findable straight from the search box).
+    const branchWhere = (searchClause: string): string => {
       const cl = [`o.status = 'COMPLETED'`];
       if (companyPh) cl.push(`o.company_id = ${companyPh}::uuid`);
       if (currencyPh) cl.push(`o.currency = ${currencyPh}`);
       if (fromPh) cl.push(`o.created_at >= ${fromPh}`);
       if (toPh) cl.push(`o.created_at <= ${toPh}`);
-      if (likePh) {
-        // Also match the internal id so a code copied from an audit log (or any
-        // detail panel) is findable straight from the search box.
-        cl.push(
-          `(${ref} ILIKE ${likePh} OR ${desc} ILIKE ${likePh} OR ${details} ILIKE ${likePh} OR o.id::text ILIKE ${likePh})`,
-        );
-      }
-      return cl.join(' AND ');
+      return cl.join(' AND ') + searchClause;
     };
 
     // The three money-out/-in tables share an identical projection shape.
@@ -539,7 +553,7 @@ export class ActivityService {
              ${FLOW_RECIPIENT_SQL}
       FROM ${table} o
       LEFT JOIN companies c ON c.id = o.company_id
-      WHERE ${branchWhere('o.external_reference', 'o.payout_method::text', PAYOUT_DETAILS_SQL)}
+      WHERE ${branchWhere(flowSearchClause(search))}
       ORDER BY o.created_at DESC, o.id DESC
       LIMIT ${limPh}
     )`;
@@ -555,7 +569,7 @@ export class ActivityService {
       FROM transactions o
       LEFT JOIN sources s ON s.id = o.source_id
       LEFT JOIN companies c ON c.id = o.company_id
-      WHERE ${branchWhere(`o.external_transaction_id`, `s.code`, DEPOSIT_DETAILS_SQL)}
+      WHERE ${branchWhere(depositSearchClause(search))}
       ORDER BY o.created_at DESC, o.id DESC
       LIMIT ${limPh}
     )`,
@@ -599,12 +613,7 @@ export class ActivityService {
       if (a.query.currency) cl.push(`u.currency = ${p(a.query.currency)}`);
       if (a.query.from) cl.push(`u.created_at >= ${p(new Date(a.query.from))}`);
       if (a.query.to) cl.push(`u.created_at <= ${p(new Date(a.query.to))}`);
-      if (a.query.search) {
-        const like = p(`%${a.query.search}%`);
-        cl.push(
-          `(u.reference ILIKE ${like} OR u.description ILIKE ${like} OR u.details ILIKE ${like} OR u.id::text ILIKE ${like})`,
-        );
-      }
+      // The search is applied inside the union (unionSql) — see below.
       return cl.length ? `WHERE ${cl.join(' AND ')}` : '';
     };
 
@@ -624,10 +633,11 @@ export class ActivityService {
       const cp: unknown[] = [];
       const p = (v: unknown) => (cp.push(v), `$${cp.length}`);
       const whereCount = where(p);
+      const union = this.unionSql({ backoffice: false }, searchPh(a.query.search, p));
       return tx
         .$queryRawUnsafe<
           Array<{ n: bigint }>
-        >(`SELECT COUNT(*)::bigint AS n FROM (${this.unionSql()}) u ${whereCount}`, ...cp)
+        >(`SELECT COUNT(*)::bigint AS n FROM (${union}) u ${whereCount}`, ...cp)
         .then((r) => Number(r[0]?.n ?? 0));
     });
 

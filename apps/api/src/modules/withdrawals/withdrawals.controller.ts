@@ -90,7 +90,7 @@ export class WithdrawalsController {
   companyExport(
     @Query(new ZodPipe(listWithdrawalsQuerySchema)) query: ListWithdrawalsQuery,
     @CurrentUser() user: AuthPrincipal,
-  ): StreamableFile {
+  ): Promise<StreamableFile> {
     if (!user.companyId) throw new ForbiddenError('No company in session');
     return this.withdrawals.streamCsv({ companyId: user.companyId, query });
   }
@@ -137,7 +137,7 @@ export class WithdrawalsController {
   adminExport(
     @Query(new ZodPipe(listWithdrawalsQuerySchema)) query: ListWithdrawalsQuery,
     @CurrentUser() user: AuthPrincipal,
-  ): StreamableFile {
+  ): Promise<StreamableFile> {
     return this.withdrawals.streamCsv({ query, backoffice: isBackoffice(user) });
   }
 

@@ -9,14 +9,19 @@ import {
   createWithdrawalSchema,
   crmEventTransactionSchema,
   crmEventWithdrawalSchema,
-  Money,
-  WHISH_AMOUNT_RULES,
+  listActivityQuerySchema,
+  listLoadsQuerySchema,
   listNotificationsQuerySchema,
+  listPayoutsQuerySchema,
+  listTransactionsQuerySchema,
   listWhishPaymentsQuerySchema,
+  listWithdrawalsQuerySchema,
   loadResponseSchema,
+  Money,
   paginationSchema,
   payoutResponseSchema,
   transactionResponseSchema,
+  WHISH_AMOUNT_RULES,
   whishPaymentResponseSchema,
   withdrawalResponseSchema,
   WithdrawalStatus,
@@ -202,6 +207,30 @@ describe('docs ↔ API schema contract (anti-drift)', () => {
       expect(line).toMatch(/`from\??`/);
       expect(line).toMatch(/`to\??`/);
       expect(line).toContain('search');
+    });
+
+    it('every money list documents its real `search` — and what it matches (Oct 2026)', () => {
+      // A phone search used to find deposits but not the withdrawal paid to that
+      // phone: the lists searched one field (or nothing at all). common/search.ts
+      // is now one rule for all of them; the guide must say what it matches.
+      for (const schema of [
+        listWithdrawalsQuerySchema,
+        listPayoutsQuerySchema,
+        listLoadsQuerySchema,
+        listTransactionsQuerySchema,
+        listActivityQuerySchema,
+      ]) {
+        expect(schema.shape.search).toBeDefined();
+      }
+      const searchRows = GUIDE.split('\n').filter((l) => /^\|\s*`search`/.test(l));
+      // deposits, loads, withdrawals/payouts ({flow}), activity
+      expect(searchRows).toHaveLength(4);
+      for (const row of searchRows) {
+        expect(row).toMatch(/phone/i);
+        expect(row).toMatch(/`id`/);
+      }
+      expect(GUIDE).not.toContain('Substring match on `externalTransactionId`');
+      expect(GUIDE).not.toContain('Fuzzy match on `reference` / `description` / `details`');
     });
   });
 

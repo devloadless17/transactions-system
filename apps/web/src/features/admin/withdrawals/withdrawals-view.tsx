@@ -48,6 +48,7 @@ import {
   type ReviewAction,
 } from '@/features/admin/withdrawals/review-copy';
 import { EntityDetailDrawer } from '@/features/activity/activity-detail-drawer';
+import { useDebouncedValue } from '@/lib/use-debounced-value';
 import { useAdminAttention } from '@/features/operations/use-admin-attention';
 import { AttentionBanner } from '@/features/admin/attention-banner';
 import { heldForText, plural } from '@/features/admin/attention';
@@ -107,7 +108,12 @@ export function AdminWithdrawalsView({
   const attention = useAdminAttention();
   const stuck = config.noun === 'withdrawal' ? (attention?.stuckWithdrawals ?? null) : null;
 
-  const params = flowFilterParams(filters, { pageSize: '20', page: String(page) });
+  // The search box stays live; only the query waits for typing to pause.
+  const debouncedSearch = useDebouncedValue(filters.search, 300);
+  const params = flowFilterParams(
+    { ...filters, search: debouncedSearch },
+    { pageSize: '20', page: String(page) },
+  );
 
   const listQ = useQuery({
     queryKey: [...config.queryKey, params.toString()],

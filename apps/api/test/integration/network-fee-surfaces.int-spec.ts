@@ -164,7 +164,7 @@ describe('activity feed', () => {
 describe('CSV exports — network_fee_amount is the LAST column', () => {
   it('transactions export', async () => {
     const rows = await readCsv(
-      h.transactions.streamCsv({
+      await h.transactions.streamCsv({
         companyId: co.companyId,
         query: { page: 1, pageSize: 20 } as never,
       }),
@@ -180,7 +180,7 @@ describe('CSV exports — network_fee_amount is the LAST column', () => {
 
   it('withdrawals export: gross includes the network fee', async () => {
     const rows = await readCsv(
-      h.withdrawals.streamCsv({
+      await h.withdrawals.streamCsv({
         companyId: co.companyId,
         query: { page: 1, pageSize: 20 } as never,
       }),

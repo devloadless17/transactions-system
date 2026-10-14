@@ -148,7 +148,8 @@ export function ActivityView({
             <Input
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
-              placeholder="Search name, reference, id…"
+              placeholder="Phone, name, reference, id…"
+              aria-label="Search by phone, name, reference or id"
               className="h-9 w-full pl-8 sm:w-60"
             />
           </div>

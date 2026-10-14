@@ -705,7 +705,10 @@ describe('back office sees ONE figure per operation — and never a fee', () => 
     const col = (rows: string[][], name: string) => rows[0]!.indexOf(name);
 
     const deposits = await readCsv(
-      h.transactions.streamCsv({ query: { companyId: co.companyId } as never, backoffice: true }),
+      await h.transactions.streamCsv({
+        query: { companyId: co.companyId } as never,
+        backoffice: true,
+      }),
     );
     const onTopRow = deposits.find((r) => r[0] === onTopDepositId)!;
     expect(eq(onTopRow[col(deposits, 'amount')], '100')).toBe(true);

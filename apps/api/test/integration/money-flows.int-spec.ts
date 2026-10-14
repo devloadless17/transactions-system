@@ -76,7 +76,7 @@ describe('ingest', () => {
       await h.transactions.ingest({ kind: 'source', sourceId }, ingestInput(companyId, amount));
     }
 
-    const file = h.transactions.streamCsv({
+    const file = await h.transactions.streamCsv({
       companyId,
       query: { page: 1, pageSize: 20 },
     });

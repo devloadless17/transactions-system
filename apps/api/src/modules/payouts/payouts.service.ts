@@ -37,6 +37,7 @@ import {
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain.error';
 import { assertListOffset } from '../../common/pagination';
 import { streamFlowCsv } from '../../common/flow-csv';
+import { searchIds } from '../../common/search';
 
 const REQUESTABLE_STATUS: WithdrawalStatus = 'PENDING';
 
@@ -380,12 +381,25 @@ export class PayoutsService {
         };
       }
 
+      // Search (phone, name, reference, id, note — see common/search.ts) narrows
+      // to the matching rows; every other filter and the paging stay as they are.
+      if (args.query.search) {
+        where.id = {
+          in: await searchIds(
+            tx,
+            'payouts',
+            args.query.search,
+            args.companyId ?? args.query.companyId,
+          ),
+        };
+      }
+
       const skip = (args.query.page - 1) * args.query.pageSize;
       assertListOffset(skip);
       const countKey =
         `list-count:po:${args.companyId ?? args.query.companyId ?? 'all'}` +
         `:${args.query.status ?? ''}:${args.query.currency ?? ''}:${args.query.payoutMethod ?? ''}` +
-        `:${args.query.from ?? ''}:${args.query.to ?? ''}`;
+        `:${args.query.from ?? ''}:${args.query.to ?? ''}:${args.query.search ?? ''}`;
       const [rows, total] = await Promise.all([
         tx.payout.findMany({
           where,
@@ -426,13 +440,13 @@ export class PayoutsService {
    * keyset chunks. Mirrors the list query's filters; each chunk is its own
    * short RLS-scoped query.
    */
-  streamCsv(args: {
+  async streamCsv(args: {
     companyId?: string;
     query: ListPayoutsQuery;
     /** Back office gets one money figure per row — see common/backoffice-view.ts. */
     backoffice?: boolean;
-  }): StreamableFile {
-    const where = this.exportWhere(args);
+  }): Promise<StreamableFile> {
+    const where = await this.exportWhere(args);
     const scope = args.companyId ?? null;
     const prisma = this.prisma;
     return streamFlowCsv({
@@ -451,10 +465,10 @@ export class PayoutsService {
     });
   }
 
-  private exportWhere(args: {
+  private async exportWhere(args: {
     companyId?: string;
     query: ListPayoutsQuery;
-  }): Prisma.PayoutWhereInput {
+  }): Promise<Prisma.PayoutWhereInput> {
     const where: Prisma.PayoutWhereInput = {};
     if (args.companyId) where.companyId = args.companyId;
     else if (args.query.companyId) where.companyId = args.query.companyId;
@@ -465,6 +479,14 @@ export class PayoutsService {
       where.createdAt = {
         ...(args.query.from ? { gte: new Date(args.query.from) } : {}),
         ...(args.query.to ? { lte: new Date(args.query.to) } : {}),
+      };
+    }
+    if (args.query.search) {
+      const search = args.query.search;
+      where.id = {
+        in: await this.prisma.runAsScoped(args.companyId ?? null, (tx) =>
+          searchIds(tx, 'payouts', search, args.companyId ?? args.query.companyId),
+        ),
       };
     }
     return where;

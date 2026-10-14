@@ -478,7 +478,7 @@ Returned by the list, get-one, and (nested under `transaction`) the detail endpo
 | `companyId`             | string (uuid)    | Always your company.                                                                                                                                                                                                                              |
 | `sourceId`              | string (uuid)    | The source that ingested it. Use as the `sourceId` list filter.                                                                                                                                                                                   |
 | `sourceCode`            | string           | Human-readable source code (e.g. the provider short code).                                                                                                                                                                                        |
-| `externalTransactionId` | string           | The id your source supplied at ingest. Target of the `search` filter.                                                                                                                                                                             |
+| `externalTransactionId` | string           | The id your source supplied at ingest. One of the fields the `search` filter matches.                                                                                                                                                             |
 | `amount`                | string (decimal) | Gross amount as ingested. Decimal string, quantized to 2 dp (whole cents). Never a float.                                                                                                                                                         |
 | `commissionAmount`      | string (decimal) | The commission (platform fee) taken on this deposit.                                                                                                                                                                                              |
 | `networkFeeAmount`      | string (decimal) | The network fee taken on this deposit, next to the commission. `"0"` when not charged.                                                                                                                                                            |
@@ -528,17 +528,17 @@ List your transactions, newest first, with filters and offset pagination.
 
 **Query parameters** (all optional):
 
-| Field       | Type                       | Req | Notes                                                                                                 |
-| ----------- | -------------------------- | --- | ----------------------------------------------------------------------------------------------------- |
-| `page`      | int ≥ 1                    | No  | Default `1`.                                                                                          |
-| `pageSize`  | int 1–100                  | No  | Default `20`. Hard cap 100.                                                                           |
-| `status`    | enum                       | No  | Filter by `TransactionStatus` (see above).                                                            |
-| `sourceId`  | string (uuid)              | No  | Filter by source.                                                                                     |
-| `currency`  | enum                       | No  | `USD`.                                                                                                |
-| `from`      | string (ISO-8601 datetime) | No  | `createdAt >= from`. Must be a full RFC-3339 datetime (e.g. `2026-06-01T00:00:00Z`), not a bare date. |
-| `to`        | string (ISO-8601 datetime) | No  | `createdAt <= to`.                                                                                    |
-| `search`    | string ≤ 200               | No  | Substring match on `externalTransactionId`.                                                           |
-| `companyId` | string (uuid)              | No  | **Admin-only.** Ignored for company keys (always scoped to your company).                             |
+| Field       | Type                       | Req | Notes                                                                                                                                                                                                                                                                                                                                                                     |
+| ----------- | -------------------------- | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `page`      | int ≥ 1                    | No  | Default `1`.                                                                                                                                                                                                                                                                                                                                                              |
+| `pageSize`  | int 1–100                  | No  | Default `20`. Hard cap 100.                                                                                                                                                                                                                                                                                                                                               |
+| `status`    | enum                       | No  | Filter by `TransactionStatus` (see above).                                                                                                                                                                                                                                                                                                                                |
+| `sourceId`  | string (uuid)              | No  | Filter by source.                                                                                                                                                                                                                                                                                                                                                         |
+| `currency`  | enum                       | No  | `USD`.                                                                                                                                                                                                                                                                                                                                                                    |
+| `from`      | string (ISO-8601 datetime) | No  | `createdAt >= from`. Must be a full RFC-3339 datetime (e.g. `2026-06-01T00:00:00Z`), not a bare date.                                                                                                                                                                                                                                                                     |
+| `to`        | string (ISO-8601 datetime) | No  | `createdAt <= to`.                                                                                                                                                                                                                                                                                                                                                        |
+| `search`    | string ≤ 200               | No  | Free text, case-insensitive: the `externalTransactionId`, the `id`, and the payload's `customer`, `target`, `phone` and `note`. A phone matches however it is written (`+961 70 123 456`, `70123456`, `0096170123456`). A search matching more than 10,000 rows is refused with `400 VALIDATION_ERROR` — send a fuller value (the whole phone number, reference or name). |
+| `companyId` | string (uuid)              | No  | **Admin-only.** Ignored for company keys (always scoped to your company).                                                                                                                                                                                                                                                                                                 |
 
 The response is the standard envelope wrapping a paginated body, so the rows live at `data.data` and the page metadata at `data.meta`.
 
@@ -905,14 +905,15 @@ Returns the calling company's loads, newest first, paginated. Always scoped to t
 
 **Query params** (`listLoadsQuerySchema`):
 
-| Field          | Type     | Req | Notes                                                                              |
-| -------------- | -------- | --- | ---------------------------------------------------------------------------------- |
-| `page`         | int      | no  | Default `1`, min `1`.                                                              |
-| `pageSize`     | int      | no  | Default `20`, **max `100`** (capped).                                              |
-| `status`       | enum     | no  | `PENDING` \| `COMPLETED` \| `REJECTED` \| `CANCELLED` (others never match a load). |
-| `currency`     | string   | no  | Enum; e.g. `USD`.                                                                  |
-| `payoutMethod` | enum     | no  | `CASH` \| `WISH` \| `CRYPTO` \| `BANK_TRANSFER` \| `OTHER`.                        |
-| `from` / `to`  | ISO-8601 | no  | Filters on request (`createdAt`) time.                                             |
+| Field          | Type         | Req | Notes                                                                                                                                                                                                                                                                                                                                                                                               |
+| -------------- | ------------ | --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `page`         | int          | no  | Default `1`, min `1`.                                                                                                                                                                                                                                                                                                                                                                               |
+| `pageSize`     | int          | no  | Default `20`, **max `100`** (capped).                                                                                                                                                                                                                                                                                                                                                               |
+| `status`       | enum         | no  | `PENDING` \| `COMPLETED` \| `REJECTED` \| `CANCELLED` (others never match a load).                                                                                                                                                                                                                                                                                                                  |
+| `currency`     | string       | no  | Enum; e.g. `USD`.                                                                                                                                                                                                                                                                                                                                                                                   |
+| `payoutMethod` | enum         | no  | `CASH` \| `WISH` \| `CRYPTO` \| `BANK_TRANSFER` \| `OTHER`.                                                                                                                                                                                                                                                                                                                                         |
+| `from` / `to`  | ISO-8601     | no  | Filters on request (`createdAt`) time.                                                                                                                                                                                                                                                                                                                                                              |
+| `search`       | string ≤ 200 | no  | Free text, case-insensitive: the `id`, `externalReference`, `notes`, and every field of `payoutDetails` (name, phone, account, wallet, pickup location…). A phone matches however it is written (`+961 70 123 456`, `70123456`, `0096170123456`). A search matching more than 10,000 rows is refused with `400 VALIDATION_ERROR` — send a fuller value (the whole phone number, reference or name). |
 
 ```bash
 curl "https://portal.rivalpayments.com/v1/company/loads?status=PENDING&pageSize=20" \
@@ -984,7 +985,7 @@ curl -X POST "https://portal.rivalpayments.com/v1/company/loads/b3f1c2a8-.../can
 
 ### `GET https://portal.rivalpayments.com/v1/company/loads/export.csv` — Export loads as CSV
 
-Streams **all** your loads matching the list filters (`status`, `currency`, `payoutMethod`, `from`, `to`; pagination is ignored) as raw `text/csv` — no JSON envelope. It has exactly the same columns as the withdrawal / payout export, including `network_fee_amount` as the last column; see [Export requests as CSV](#export-requests-as-csv).
+Streams **all** your loads matching the list filters (`status`, `currency`, `payoutMethod`, `from`, `to`, `search`; pagination is ignored) as raw `text/csv` — no JSON envelope. It has exactly the same columns as the withdrawal / payout export, including `network_fee_amount` as the last column; see [Export requests as CSV](#export-requests-as-csv).
 
 ---
 
@@ -1231,15 +1232,16 @@ curl -X POST "https://portal.rivalpayments.com/v1/company/withdrawals/a3f1c2d4-5
 
 `GET https://portal.rivalpayments.com/v1/company/{flow}` → **200**. Returns your company's requests only. Response payload is `{ data: [...], meta }` (so the array is at `data.data`).
 
-| Query param    | Type               | Notes                                                                            |
-| -------------- | ------------------ | -------------------------------------------------------------------------------- |
-| `page`         | int ≥ 1            | Default `1`.                                                                     |
-| `pageSize`     | int 1–100          | Default `20`. **Capped at 100.**                                                 |
-| `status`       | `WithdrawalStatus` | Optional filter.                                                                 |
-| `currency`     | enum               | Optional.                                                                        |
-| `payoutMethod` | `PayoutMethod`     | Optional.                                                                        |
-| `from` / `to`  | ISO-8601 datetime  | Filter by `createdAt`.                                                           |
-| `companyId`    | uuid               | Ignored for company callers (always scoped to your own company); used by admins. |
+| Query param    | Type               | Notes                                                                                                                                                                                                                                                                                                                                                                                                |
+| -------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `page`         | int ≥ 1            | Default `1`.                                                                                                                                                                                                                                                                                                                                                                                         |
+| `pageSize`     | int 1–100          | Default `20`. **Capped at 100.**                                                                                                                                                                                                                                                                                                                                                                     |
+| `status`       | `WithdrawalStatus` | Optional filter.                                                                                                                                                                                                                                                                                                                                                                                     |
+| `currency`     | enum               | Optional.                                                                                                                                                                                                                                                                                                                                                                                            |
+| `payoutMethod` | `PayoutMethod`     | Optional.                                                                                                                                                                                                                                                                                                                                                                                            |
+| `from` / `to`  | ISO-8601 datetime  | Filter by `createdAt`.                                                                                                                                                                                                                                                                                                                                                                               |
+| `search`       | string ≤ 200       | Free text, case-insensitive: the `id`, `externalReference`, `notes`, and every field of `payoutDetails` (recipient name and phone, bank account, wallet…). A phone matches however it is written (`+961 70 123 456`, `70123456`, `0096170123456`). A search matching more than 10,000 rows is refused with `400 VALIDATION_ERROR` — send a fuller value (the whole phone number, reference or name). |
+| `companyId`    | uuid               | Ignored for company callers (always scoped to your own company); used by admins.                                                                                                                                                                                                                                                                                                                     |
 
 ```bash
 curl "https://portal.rivalpayments.com/v1/company/withdrawals?status=PENDING&pageSize=20" \
@@ -1278,7 +1280,7 @@ curl "https://portal.rivalpayments.com/v1/company/payouts/a3f1c2d4-5e6f-4a7b-8c9
 
 ### Export requests as CSV
 
-`GET https://portal.rivalpayments.com/v1/company/{flow}/export.csv` → **200** `text/csv` (raw file, no JSON envelope). Streams **all** your requests matching the list filters (`status`, `currency`, `payoutMethod`, `from`, `to`; pagination is ignored). Loads export the same columns from `GET /company/loads/export.csv`. Header row:
+`GET https://portal.rivalpayments.com/v1/company/{flow}/export.csv` → **200** `text/csv` (raw file, no JSON envelope). Streams **all** your requests matching the list filters (`status`, `currency`, `payoutMethod`, `from`, `to`, `search`; pagination is ignored). Loads export the same columns from `GET /company/loads/export.csv`. Header row:
 
 ```text
 id,created_at,processed_at,company_id,status,currency,gross_amount,fee_amount,net_amount,fee_application,payout_method,external_reference,recipient_name,recipient_contact,notes,admin_notes,network_fee_amount
@@ -1478,15 +1480,15 @@ A unified, human-readable feed merging the four **COMPLETED** money operations �
 
 **Query params:**
 
-| Field         | Type              | Req | Notes                                                    |
-| ------------- | ----------------- | --- | -------------------------------------------------------- |
-| `page`        | int ≥ 1           | no  | Default `1`                                              |
-| `pageSize`    | int 1–100         | no  | Default `20`. Hard cap **100**                           |
-| `direction`   | enum              | no  | `IN` (deposits + loads) or `OUT` (withdrawals + payouts) |
-| `kind`        | enum              | no  | `DEPOSIT`, `LOAD`, `WITHDRAWAL`, `PAYOUT`                |
-| `currency`    | enum              | no  | Currently only `USD`                                     |
-| `from` / `to` | ISO-8601 datetime | no  | Filter by `createdAt`                                    |
-| `search`      | string ≤ 200      | no  | Fuzzy match on `reference` / `description` / `details`   |
+| Field         | Type              | Req | Notes                                                                                                                                                                                                                                                       |
+| ------------- | ----------------- | --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `page`        | int ≥ 1           | no  | Default `1`                                                                                                                                                                                                                                                 |
+| `pageSize`    | int 1–100         | no  | Default `20`. Hard cap **100**                                                                                                                                                                                                                              |
+| `direction`   | enum              | no  | `IN` (deposits + loads) or `OUT` (withdrawals + payouts)                                                                                                                                                                                                    |
+| `kind`        | enum              | no  | `DEPOSIT`, `LOAD`, `WITHDRAWAL`, `PAYOUT`                                                                                                                                                                                                                   |
+| `currency`    | enum              | no  | Currently only `USD`                                                                                                                                                                                                                                        |
+| `from` / `to` | ISO-8601 datetime | no  | Filter by `createdAt`                                                                                                                                                                                                                                       |
+| `search`      | string ≤ 200      | no  | Free text over the whole row, case-insensitive: `reference`, `id`, the note, the source, and every detail of who it was for or from (name, phone, account, wallet). A phone matches however it is written (`+961 70 123 456`, `70123456`, `0096170123456`). |
 
 Deep paging capped at offset `50000` (same `400 VALIDATION_ERROR` as ledger). The admin-only `companyId` filter is ignored on this company-scoped route.
 

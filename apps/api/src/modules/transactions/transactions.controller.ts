@@ -56,7 +56,7 @@ export class TransactionsReadController {
   adminExport(
     @Query(new ZodPipe(listTransactionsQuerySchema)) query: ListTransactionsQuery,
     @CurrentUser() user: AuthPrincipal,
-  ): StreamableFile {
+  ): Promise<StreamableFile> {
     return this.transactions.streamCsv({ query, backoffice: isBackoffice(user) });
   }
 
@@ -106,7 +106,7 @@ export class TransactionsReadController {
   companyExport(
     @Query(new ZodPipe(listTransactionsQuerySchema)) query: ListTransactionsQuery,
     @CurrentUser() user: AuthPrincipal,
-  ): StreamableFile {
+  ): Promise<StreamableFile> {
     if (!user.companyId) throw new ForbiddenError('No company in session');
     return this.transactions.streamCsv({ companyId: user.companyId, query });
   }

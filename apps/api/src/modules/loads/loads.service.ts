@@ -35,6 +35,7 @@ import { FeesService } from '../commissions/fees.service';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain.error';
 import { assertListOffset } from '../../common/pagination';
 import { streamFlowCsv } from '../../common/flow-csv';
+import { searchIds } from '../../common/search';
 
 const REQUESTABLE_STATUS: WithdrawalStatus = 'PENDING';
 
@@ -372,12 +373,25 @@ export class LoadsService {
         };
       }
 
+      // Search (phone, name, reference, id, note — see common/search.ts) narrows
+      // to the matching rows; every other filter and the paging stay as they are.
+      if (args.query.search) {
+        where.id = {
+          in: await searchIds(
+            tx,
+            'loads',
+            args.query.search,
+            args.companyId ?? args.query.companyId,
+          ),
+        };
+      }
+
       const skip = (args.query.page - 1) * args.query.pageSize;
       assertListOffset(skip);
       const countKey =
         `list-count:ld:${args.companyId ?? args.query.companyId ?? 'all'}` +
         `:${args.query.status ?? ''}:${args.query.currency ?? ''}:${args.query.payoutMethod ?? ''}` +
-        `:${args.query.from ?? ''}:${args.query.to ?? ''}`;
+        `:${args.query.from ?? ''}:${args.query.to ?? ''}:${args.query.search ?? ''}`;
       const [rows, total] = await Promise.all([
         tx.load.findMany({
           where,
@@ -418,13 +432,13 @@ export class LoadsService {
    * chunks. Mirrors the list query's filters; each chunk is its own short
    * RLS-scoped query.
    */
-  streamCsv(args: {
+  async streamCsv(args: {
     companyId?: string;
     query: ListLoadsQuery;
     /** Back office gets one money figure per row — see common/backoffice-view.ts. */
     backoffice?: boolean;
-  }): StreamableFile {
-    const where = this.exportWhere(args);
+  }): Promise<StreamableFile> {
+    const where = await this.exportWhere(args);
     const scope = args.companyId ?? null;
     const prisma = this.prisma;
     return streamFlowCsv({
@@ -443,7 +457,10 @@ export class LoadsService {
     });
   }
 
-  private exportWhere(args: { companyId?: string; query: ListLoadsQuery }): Prisma.LoadWhereInput {
+  private async exportWhere(args: {
+    companyId?: string;
+    query: ListLoadsQuery;
+  }): Promise<Prisma.LoadWhereInput> {
     const where: Prisma.LoadWhereInput = {};
     if (args.companyId) where.companyId = args.companyId;
     else if (args.query.companyId) where.companyId = args.query.companyId;
@@ -454,6 +471,14 @@ export class LoadsService {
       where.createdAt = {
         ...(args.query.from ? { gte: new Date(args.query.from) } : {}),
         ...(args.query.to ? { lte: new Date(args.query.to) } : {}),
+      };
+    }
+    if (args.query.search) {
+      const search = args.query.search;
+      where.id = {
+        in: await this.prisma.runAsScoped(args.companyId ?? null, (tx) =>
+          searchIds(tx, 'loads', search, args.companyId ?? args.query.companyId),
+        ),
       };
     }
     return where;

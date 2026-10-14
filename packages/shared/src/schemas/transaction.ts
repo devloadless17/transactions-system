@@ -179,8 +179,9 @@ export const listTransactionsQuerySchema = z.object({
   // ISO date strings.
   from: z.string().datetime().optional(),
   to: z.string().datetime().optional(),
-  // Fuzzy: matches externalTransactionId. Bounded like every other string filter
-  // (it feeds a LIKE and a cache key).
+  // Free text: the source's reference, the id, the payer's phone (typed any
+  // way), customer, target or note. Bounded like every other string filter (it
+  // feeds a LIKE and a cache key).
   search: z.string().trim().max(200).optional(),
 });
 export type ListTransactionsQuery = z.infer<typeof listTransactionsQuerySchema>;

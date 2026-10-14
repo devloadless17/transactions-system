@@ -76,7 +76,7 @@ export class LoadsController {
   companyExport(
     @Query(new ZodPipe(listLoadsQuerySchema)) query: ListLoadsQuery,
     @CurrentUser() user: AuthPrincipal,
-  ): StreamableFile {
+  ): Promise<StreamableFile> {
     if (!user.companyId) throw new ForbiddenError('No company in session');
     return this.loads.streamCsv({ companyId: user.companyId, query });
   }
@@ -136,7 +136,7 @@ export class LoadsController {
   adminExport(
     @Query(new ZodPipe(listLoadsQuerySchema)) query: ListLoadsQuery,
     @CurrentUser() user: AuthPrincipal,
-  ): StreamableFile {
+  ): Promise<StreamableFile> {
     return this.loads.streamCsv({ query, backoffice: isBackoffice(user) });
   }
 

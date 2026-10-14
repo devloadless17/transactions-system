@@ -33,7 +33,7 @@ import { ExportCsvButton } from '@/components/export-csv-button';
 import { NetworkFeeLine } from '@/components/network-fee-line';
 import { useDebouncedValue } from '@/lib/use-debounced-value';
 import { EmptyState } from '@/components/empty-state';
-import { Inbox, Plus } from 'lucide-react';
+import { Inbox, Plus, Search } from 'lucide-react';
 import { DateRangePicker, type PickedRange } from '@/components/ui/date-range-picker';
 import { isoBound, quickRangePresets } from '@/lib/date-presets';
 import { CompanyFilter, useCompanyNames } from '@/features/admin/company-filter';
@@ -405,13 +405,17 @@ export function TransactionsView({
         <CardContent className="space-y-4 p-4">
           <div className="flex flex-wrap items-end gap-3">
             <div className="space-y-1">
-              <label className="text-xs text-muted-foreground">Search ext id</label>
-              <Input
-                placeholder="ext-001"
-                value={filters.search ?? ''}
-                onChange={(e) => setFilter({ search: e.target.value })}
-                className="w-40"
-              />
+              <label className="text-xs text-muted-foreground">Search</label>
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="Phone, customer, reference, id…"
+                  aria-label="Search by phone, customer, reference or id"
+                  value={filters.search ?? ''}
+                  onChange={(e) => setFilter({ search: e.target.value })}
+                  className="h-9 w-full pl-8 sm:w-60"
+                />
+              </div>
             </div>
             <div className="space-y-1">
               <label className="text-xs text-muted-foreground">Date range</label>

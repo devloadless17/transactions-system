@@ -45,7 +45,8 @@ export const listActivityQuerySchema = z.object({
   // ISO date strings — filter by createdAt.
   from: z.string().datetime().optional(),
   to: z.string().datetime().optional(),
-  // Fuzzy match on reference / description / details.
+  // Free text over the whole row: reference, id, note, source, and every detail
+  // of who it was for/from (name, phone typed any way, account, wallet).
   search: z.string().trim().max(200).optional(),
 });
 export type ListActivityQuery = z.infer<typeof listActivityQuerySchema>;

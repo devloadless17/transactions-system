@@ -55,6 +55,7 @@ import {
   ValidationError,
 } from '../../common/errors/domain.error';
 import { csvCell } from '../../common/csv';
+import { searchIds } from '../../common/search';
 import { BACKOFFICE_CSV_COLUMNS, backofficeCsvCells } from '../../common/backoffice-view';
 
 // The per-tenant list COUNT is cached briefly so paging reuses it and a whale
@@ -984,12 +985,12 @@ export class TransactionsService {
    * own short RLS-scoped query and emitted as it's produced, so memory stays
    * bounded to one chunk and no transaction is held open across the download.
    */
-  streamCsv(args: {
+  async streamCsv(args: {
     companyId?: string;
     query: ListTransactionsQuery;
     /** Back office gets only what the customer paid — see common/backoffice-view.ts. */
     backoffice?: boolean;
-  }): StreamableFile {
+  }): Promise<StreamableFile> {
     const header = TRANSACTIONS_CSV_HEADER;
     const where: Prisma.TransactionWhereInput = {};
     if (args.companyId) where.companyId = args.companyId;
@@ -998,9 +999,14 @@ export class TransactionsService {
     if (args.query.sourceId) where.sourceId = args.query.sourceId;
     if (args.query.currency) where.currency = args.query.currency;
     // Mirror the list view's search so an exported CSV contains exactly the
-    // filtered rows the user is looking at.
+    // filtered rows the user is looking at (common/search.ts).
     if (args.query.search) {
-      where.externalTransactionId = { contains: args.query.search };
+      const search = args.query.search;
+      where.id = {
+        in: await this.prisma.runAsScoped(args.companyId ?? null, (tx) =>
+          searchIds(tx, 'transactions', search, args.companyId ?? args.query.companyId),
+        ),
+      };
     }
     if (args.query.from || args.query.to) {
       where.createdAt = {};
@@ -1122,8 +1128,17 @@ export class TransactionsService {
         if (args.query.from) where.createdAt.gte = new Date(args.query.from);
         if (args.query.to) where.createdAt.lte = new Date(args.query.to);
       }
+      // Search: the source's reference, our id, the payer's phone (typed any
+      // way), customer, target or note — see common/search.ts.
       if (args.query.search) {
-        where.externalTransactionId = { contains: args.query.search };
+        where.id = {
+          in: await searchIds(
+            tx,
+            'transactions',
+            args.query.search,
+            args.companyId ?? args.query.companyId,
+          ),
+        };
       }
 
       const skip = (args.query.page - 1) * args.query.pageSize;

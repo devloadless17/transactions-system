@@ -17,6 +17,7 @@ import {
   type WalletResponse,
   type WithdrawalResponse,
 } from '@app/shared';
+import { Search } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -39,6 +40,7 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet';
 import { Input } from '@/components/ui/input';
+import { useDebouncedValue } from '@/lib/use-debounced-value';
 import { Label } from '@/components/ui/label';
 import { PhoneInput } from '@/components/ui/phone-input';
 import { DateRangePicker } from '@/components/ui/date-range-picker';
@@ -84,6 +86,9 @@ export interface FlowFilters {
   fromTime?: string; // HH:mm (optional; whole-day window when absent)
   toTime?: string; // HH:mm
   companyId: string; // admin-only
+  // Free text, as typed: phone (any format), recipient name, account, wallet,
+  // reference, id or note. Views debounce it before it reaches the query.
+  search: string;
 }
 
 export const EMPTY_FLOW_FILTERS: FlowFilters = {
@@ -95,6 +100,7 @@ export const EMPTY_FLOW_FILTERS: FlowFilters = {
   fromTime: undefined,
   toTime: undefined,
   companyId: '',
+  search: '',
 };
 
 /** Build the list query string from the active filters (+ any base params). */
@@ -104,6 +110,7 @@ export function flowFilterParams(f: FlowFilters, base: Record<string, string>): 
   if (f.currency) p.set('currency', f.currency);
   if (f.method) p.set('payoutMethod', f.method);
   if (f.companyId) p.set('companyId', f.companyId);
+  if (f.search.trim()) p.set('search', f.search.trim());
   if (f.from) {
     const iso = isoBound(f.from, f.fromTime, false);
     if (iso) p.set('from', iso);
@@ -137,6 +144,18 @@ export function FlowFilterBar({
   return (
     <Card>
       <CardContent className="flex flex-wrap items-end gap-3 p-4">
+        <Field label="Search">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+            <Input
+              value={value.search}
+              onChange={(e) => set({ search: e.target.value })}
+              placeholder="Phone, name, reference, id…"
+              aria-label="Search by phone, recipient name, reference or id"
+              className="h-9 w-full pl-8 sm:w-60"
+            />
+          </div>
+        </Field>
         <Field label="Status">
           <select
             className={selectClass}
@@ -227,7 +246,12 @@ export function WithdrawalsView({ config }: { config: ProcessConfig }) {
   const [filters, setFilters] = useState<FlowFilters>(EMPTY_FLOW_FILTERS);
   const [page, setPage] = useState(1);
 
-  const params = flowFilterParams(filters, { pageSize: '20', page: String(page) });
+  // The search box stays live; only the query waits for typing to pause.
+  const debouncedSearch = useDebouncedValue(filters.search, 300);
+  const params = flowFilterParams(
+    { ...filters, search: debouncedSearch },
+    { pageSize: '20', page: String(page) },
+  );
   const listQ = useQuery({
     queryKey: [...config.queryKey, 'list', params.toString()],
     queryFn: () =>

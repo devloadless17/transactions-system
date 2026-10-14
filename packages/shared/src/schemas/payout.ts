@@ -70,5 +70,8 @@ export const listPayoutsQuerySchema = z.object({
   // ISO date strings — filter by request (createdAt) time.
   from: z.string().datetime().optional(),
   to: z.string().datetime().optional(),
+  // Free text: a phone (typed any way), recipient name, account or wallet, the
+  // external reference, the id, or the note.
+  search: z.string().trim().max(200).optional(),
 });
 export type ListPayoutsQuery = z.infer<typeof listPayoutsQuerySchema>;
