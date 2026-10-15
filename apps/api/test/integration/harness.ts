@@ -552,6 +552,31 @@ function cashPayout(): CashPayoutDetails {
   };
 }
 
+/**
+ * Record the Whish W2W transfer made for a withdrawal, as the auto-approval
+ * poller does before calling Whish. approve() books EXTERNAL = this amount.
+ */
+export async function recordW2WTransfer(
+  h: Harness,
+  withdrawal: { id: string; companyId: string },
+  amount: string,
+): Promise<void> {
+  await h.prisma.runAsAdmin((tx) =>
+    tx.whishTransfer.create({
+      data: {
+        reference: `wt_test_${withdrawal.id}`,
+        recipientPhone: '96170000000',
+        amount,
+        currency: USD,
+        status: 'SUCCESS',
+        source: 'WITHDRAWAL',
+        companyId: withdrawal.companyId,
+        withdrawalId: withdrawal.id,
+      },
+    }),
+  );
+}
+
 export function cashWithdrawalInput(amount: string): CreateWithdrawalInput {
   return { amount, currency: USD, payout: cashPayout() };
 }

@@ -60,8 +60,9 @@ export const withdrawalResponseSchema = z.object({
   networkFeeAmount: z.string(),
   feeApplication: z.nativeEnum(FeeApplication),
   netAmount: z.string(),
-  // Sub-dollar cents kept by the platform when an auto Whish transfer floored the
-  // net to a whole dollar (0 for everything else). Recorded for audit/leftover totals.
+  // Sub-dollar cents kept by the platform when an auto Whish transfer sent only
+  // whole dollars — historical only: transfers now send the full net, so this is 0
+  // for every new withdrawal. Kept for audit/leftover totals.
   roundingRemainder: z.string(),
   // Total the company is actually charged = net + fee + networkFee (the money
   // that moves). Equals `amount` for DEDUCTED fees; for ON_TOP the fees are

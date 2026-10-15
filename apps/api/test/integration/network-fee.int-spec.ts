@@ -2,7 +2,7 @@
  * The optional per-company NETWORK FEE, end to end against the real database
  * (RLS enforced, real ledger, real wallets). Every flow is exercised with the
  * switch ON — deposits (both channels, both fee applications, the bounded and
- * unpriced edges), reversal, withdrawals (incl. whole-dollar auto settlement,
+ * unpriced edges), reversal, withdrawals (incl. legacy whole-dollar W2W settlement,
  * PROCESSING completion, reject/cancel), payouts, loads (incl. receivable
  * settlement and the admin direct load) — and each one asserts the exact legs
  * it booked plus the wallet == ledger projection.
@@ -24,6 +24,7 @@ import {
   legsFor,
   loadInput,
   payoutInput,
+  recordW2WTransfer,
   setNetworkFee,
   snapshot,
   USD,
@@ -360,7 +361,7 @@ describe('network fee — withdrawals', () => {
     expect(eq(s.wallet!.reserved, '0')).toBe(true);
   });
 
-  it('whole-dollar auto settlement: the cents stay on FEE, the network fee on NETWORK_FEE', async () => {
+  it('a legacy whole-dollar transfer: the cents stay on FEE, the network fee on NETWORK_FEE', async () => {
     const { companyId, userId } = await withdrawalCompany({ feeType: 'PERCENTAGE', feeValue: '1' });
     await addFlowFee(h, companyId, 'WITHDRAWAL', '6.65'); // DEDUCTED
     const w = await h.withdrawals.request(companyId, userId, wishWithdrawalInput('20'));
@@ -368,11 +369,14 @@ describe('network fee — withdrawals', () => {
     expect(eq(w.networkFeeAmount, '0.20')).toBe(true);
     expect(eq(w.netAmount, '18.47')).toBe(true);
 
+    // In flight from before 2dp sending: Whish was sent floor(net) = 18.
+    expect(await h.withdrawals.claimForProcessing(w.id, companyId)).toBe(true);
+    await recordW2WTransfer(h, { id: w.id, companyId }, '18');
     const done = await h.withdrawals.approve(
       w.id,
-      userId,
+      null,
       { externalReference: 'w2w-1' },
-      { floorWhole: true },
+      { skipReceivableBlock: true },
     );
     expect(eq(done.roundingRemainder, '0.47')).toBe(true);
     expectLegs(await legsFor(h, companyId, { withdrawalId: w.id }), {
@@ -396,13 +400,14 @@ describe('network fee — withdrawals', () => {
       externalReference: 'ext-1',
     });
     expect(done.status).toBe('COMPLETED');
-    // net = 50.40 − 0.50 − 0.50 = 49.40 → 49 sent, 0.40 remainder on FEE.
+    // net = 50.40 − 0.50 − 0.50 = 49.40, all of it sent; no remainder.
+    expect(eq(done.roundingRemainder, '0')).toBe(true);
     expectLegs(await legsFor(h, companyId, { withdrawalId: w.id }), {
       'AVAILABLE:DEBIT': '50.40',
       'RESERVED:CREDIT': '50.40',
       'RESERVED:DEBIT': '50.40',
-      'EXTERNAL:CREDIT': '49',
-      'FEE:CREDIT': '0.90',
+      'EXTERNAL:CREDIT': '49.40',
+      'FEE:CREDIT': '0.50',
       'NETWORK_FEE:CREDIT': '0.50',
     });
     await expectConsistent(h, companyId);

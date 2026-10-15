@@ -425,7 +425,7 @@ describe('completing a "stuck transfer" only settles a PROCESSING withdrawal', (
     expect(Object.keys(legs).sort()).toEqual(['AVAILABLE:DEBIT', 'RESERVED:CREDIT']);
   });
 
-  it('a PROCESSING withdrawal still completes whole-dollar, with both fees', async () => {
+  it('a PROCESSING withdrawal completes at the full net, with both fees', async () => {
     const { companyId, userId } = await createCompany(h);
     await fund(companyId, '200');
     await addFlowFee(h, companyId, 'WITHDRAWAL', '1');
@@ -440,11 +440,11 @@ describe('completing a "stuck transfer" only settles a PROCESSING withdrawal', (
       externalReference: 'w2w-ref',
     });
     expect(done.status).toBe('COMPLETED');
-    expect(eq(done.roundingRemainder, '0.40')).toBe(true);
+    expect(eq(done.roundingRemainder, '0')).toBe(true);
     const legs = await legsFor(h, companyId, { withdrawalId: w.id });
-    // reserved 50.40 → EXTERNAL 49 + FEE (0.50 + 0.40 remainder) + NETWORK_FEE 0.50
-    expect(eq(legs['EXTERNAL:CREDIT'], '49')).toBe(true);
-    expect(eq(legs['FEE:CREDIT'], '0.90')).toBe(true);
+    // reserved 50.40 → EXTERNAL 49.40 + FEE 0.50 + NETWORK_FEE 0.50
+    expect(eq(legs['EXTERNAL:CREDIT'], '49.40')).toBe(true);
+    expect(eq(legs['FEE:CREDIT'], '0.50')).toBe(true);
     expect(eq(legs['NETWORK_FEE:CREDIT'], '0.50')).toBe(true);
     expect((await snapshot(h, companyId)).balanced).toBe(true);
   });

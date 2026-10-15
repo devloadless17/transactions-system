@@ -3,7 +3,7 @@
  * network fee is OFF is indistinguishable from a company that never had one.
  *
  * Twin companies run the SAME sequence of money operations — deposits (incl. a
- * reversal into a receivable), withdrawals (manual, whole-dollar auto, reject),
+ * reversal into a receivable), withdrawals (manual, WISH, reject),
  * payouts, loads (incl. receivable settlement):
  *   A — never configured (the state of every company after the deploy);
  *   B — network-fee rates saved on every flow, but the switch OFF.
@@ -96,14 +96,9 @@ async function scenario(companyId: string, userId: string) {
   );
   steps.push(money(d2), await legsFor(h, companyId, { transactionId: d2.id }));
 
-  // Withdrawal: whole-dollar auto settlement.
+  // Withdrawal: WISH approval.
   const w1 = await h.withdrawals.request(companyId, userId, wishWithdrawalInput('20'));
-  const w1done = await h.withdrawals.approve(
-    w1.id,
-    userId,
-    { externalReference: 'a' },
-    { floorWhole: true },
-  );
+  const w1done = await h.withdrawals.approve(w1.id, userId, { externalReference: 'a' });
   steps.push(money(w1), money(w1done), await legsFor(h, companyId, { withdrawalId: w1.id }));
 
   // Withdrawal: rejected.

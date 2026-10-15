@@ -1,14 +1,14 @@
 /**
- * Integration tests for the auto-approved Whish W2W "floorWhole" settlement path
- * in WithdrawalsService.approve (withdrawals.service.ts ~217-260).
+ * Integration tests for settling an auto-approved Whish W2W withdrawal in
+ * WithdrawalsService.approve.
  *
- * The auto Whish transfer sends WHOLE dollars only: the recipient gets
- * floor(net) and the sub-dollar remainder stays with the platform, rolled into
- * the realized FEE and recorded on the row as `roundingRemainder`. These tests
- * pin that the EXTERNAL debit is the whole-dollar amount, the remainder lands in
- * the FEE account (so debits still equal credits), the row records it, and the
- * ledger stays balanced. The second scenario pins that an already-succeeded
- * transfer (skipReceivableBlock) still settles past an outstanding RECEIVABLE.
+ * The auto Whish transfer sends the FULL net, cents included (18.67 → 18.67),
+ * and approve() books EXTERNAL = the amount recorded on the transfer row, so the
+ * books always match what actually left. A transfer fired before 2dp sending
+ * carried floor(net); such a row still settles correctly: EXTERNAL = the whole
+ * dollars sent, the cents roll into FEE and are recorded as `roundingRemainder`.
+ * The last scenario pins that an already-succeeded transfer (skipReceivableBlock)
+ * still settles past an outstanding RECEIVABLE.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Money } from '@app/shared';
@@ -21,6 +21,7 @@ import {
   createCompany,
   createEnabledSource,
   ingestInput,
+  recordW2WTransfer,
   snapshot,
   USD,
   type Harness,
@@ -95,8 +96,9 @@ afterAll(async () => {
   await h.prisma.$disconnect();
 });
 
-describe('withdrawal floorWhole settlement (auto Whish W2W)', () => {
-  it('floors the EXTERNAL debit to whole dollars and keeps the cents in the FEE', async () => {
+describe('withdrawal Whish W2W settlement', () => {
+  /** Fund 90 available, then request a WISH withdrawal of 20 with net 18.67. */
+  async function fundedWithdrawal() {
     const { companyId, userId } = await createCompany(h);
     const sourceId = await createEnabledSource(h, companyId);
     // Fund the wallet: ingest 100 at 10% txn fee → net 90 available.
@@ -109,25 +111,12 @@ describe('withdrawal floorWhole settlement (auto Whish W2W)', () => {
     const w = await h.withdrawals.request(companyId, userId, wishWithdrawalInput('20'));
     expect(eq(w.feeAmount, '1.33')).toBe(true);
     expect(eq(w.netAmount, '18.67')).toBe(true);
+    expect(await h.withdrawals.claimForProcessing(w.id, companyId)).toBe(true);
+    return { companyId, w };
+  }
 
-    // Auto-approve the fractional-net WISH withdrawal with whole-dollar flooring.
-    const approved = await h.withdrawals.approve(
-      w.id,
-      userId,
-      { externalReference: 'ext-1' },
-      { floorWhole: true },
-    );
-    expect(approved.status).toBe('COMPLETED');
-    expect(approved.externalReference).toBe('ext-1');
-    // The sub-dollar remainder kept by the platform is recorded on the row.
-    expect(eq(approved.roundingRemainder, '0.67')).toBe(true);
-
-    // The money that actually left the platform is the WHOLE-dollar amount: 18.
-    expect(eq(await externalDebit(h, companyId, w.id), '18')).toBe(true);
-    // The realized FEE = original fee 1.33 + floored remainder 0.67 = 2.00.
-    expect(eq(await feeRealized(h, companyId, w.id), '2')).toBe(true);
-
-    // Books balance: RESERVED 20 dr == EXTERNAL 18 cr + FEE 2 cr; reserved drained.
+  async function expectSettledBooks(companyId: string) {
+    // Books balance: RESERVED 20 dr == EXTERNAL + FEE cr; reserved drained.
     const snap = await snapshot(h, companyId);
     expect(snap.balanced).toBe(true);
     expect(eq(snap.wallet!.reserved, '0')).toBe(true);
@@ -135,6 +124,67 @@ describe('withdrawal floorWhole settlement (auto Whish W2W)', () => {
     expect(eq(snap.wallet!.available, '70')).toBe(true);
     expect(eq(snap.wallet!.available, snap.availableLedger)).toBe(true);
     expect(eq(snap.wallet!.reserved, snap.reservedLedger)).toBe(true);
+  }
+
+  it('books the full net, cents included, when the full net was sent', async () => {
+    const { companyId, w } = await fundedWithdrawal();
+    await recordW2WTransfer(h, { id: w.id, companyId }, '18.67');
+
+    const approved = await h.withdrawals.approve(
+      w.id,
+      null,
+      { externalReference: 'ext-1' },
+      { skipReceivableBlock: true },
+    );
+    expect(approved.status).toBe('COMPLETED');
+    expect(approved.externalReference).toBe('ext-1');
+    expect(eq(approved.roundingRemainder, '0')).toBe(true);
+
+    // The money that left the platform is the full net: 18.67.
+    expect(eq(await externalDebit(h, companyId, w.id), '18.67')).toBe(true);
+    // The realized FEE is just the commission.
+    expect(eq(await feeRealized(h, companyId, w.id), '1.33')).toBe(true);
+    await expectSettledBooks(companyId);
+  });
+
+  it('books the full net when no transfer row exists (simulated transfer)', async () => {
+    const { companyId, w } = await fundedWithdrawal();
+    const approved = await h.withdrawals.approve(
+      w.id,
+      null,
+      { externalReference: 'SIMULATED-1' },
+      { skipReceivableBlock: true },
+    );
+    expect(eq(approved.roundingRemainder, '0')).toBe(true);
+    expect(eq(await externalDebit(h, companyId, w.id), '18.67')).toBe(true);
+    expect(eq(await feeRealized(h, companyId, w.id), '1.33')).toBe(true);
+    await expectSettledBooks(companyId);
+  });
+
+  it('a legacy whole-dollar transfer books what was sent and keeps the cents in the FEE', async () => {
+    const { companyId, w } = await fundedWithdrawal();
+    // Fired before 2dp sending: Whish was sent floor(18.67) = 18.
+    await recordW2WTransfer(h, { id: w.id, companyId }, '18');
+
+    const approved = await h.withdrawals.approve(
+      w.id,
+      null,
+      { externalReference: 'ext-1' },
+      { skipReceivableBlock: true },
+    );
+    expect(eq(approved.roundingRemainder, '0.67')).toBe(true);
+    expect(eq(await externalDebit(h, companyId, w.id), '18')).toBe(true);
+    // The realized FEE = original fee 1.33 + remainder 0.67 = 2.00.
+    expect(eq(await feeRealized(h, companyId, w.id), '2')).toBe(true);
+    await expectSettledBooks(companyId);
+  });
+
+  it('refuses a transfer amount larger than the net', async () => {
+    const { companyId, w } = await fundedWithdrawal();
+    await recordW2WTransfer(h, { id: w.id, companyId }, '18.68');
+    await expect(
+      h.withdrawals.approve(w.id, null, { externalReference: 'x' }, { skipReceivableBlock: true }),
+    ).rejects.toThrow(/does not fit net/);
   });
 
   it('settles past an outstanding RECEIVABLE when skipReceivableBlock is set (transfer already left)', async () => {
@@ -176,18 +226,18 @@ describe('withdrawal floorWhole settlement (auto Whish W2W)', () => {
     ).rejects.toThrow(/owed to the platform/i);
 
     // The transfer already SUCCEEDED off-platform, so the ledger MUST record it:
-    // approve with skipReceivableBlock + floorWhole settles WITHOUT throwing.
+    // approve with skipReceivableBlock settles WITHOUT throwing.
     const approved = await h.withdrawals.approve(
       w.id,
       userId,
       { externalReference: 'ext-2' },
-      { floorWhole: true, skipReceivableBlock: true },
+      { skipReceivableBlock: true },
     );
     expect(approved.status).toBe('COMPLETED');
-    expect(eq(approved.roundingRemainder, '0.67')).toBe(true);
+    expect(eq(approved.roundingRemainder, '0')).toBe(true);
 
-    // Settlement floored to whole dollars even past the debt; books stay balanced
-    // and the receivable remains outstanding (still owed).
+    // Settled at the full net even past the debt; books stay balanced and the
+    // receivable remains outstanding (still owed).
     const after = await snapshot(h, companyId);
     expect(after.balanced).toBe(true);
     expect(eq(after.wallet!.reserved, '0')).toBe(true);

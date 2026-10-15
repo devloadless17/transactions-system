@@ -299,21 +299,23 @@ export class WithdrawalsService {
     id: string,
     approvedById: string | null,
     input: ApproveWithdrawalInput,
-    // floorWhole: settle to whole dollars (auto Whish W2W path). The recipient got
-    // floor(net); the sub-dollar remainder stays with the platform (rolled into the
-    // realized FEE) and is recorded as rounding_remainder. Manual approvals omit it.
     // skipReceivableBlock: settle even if the company now owes a RECEIVABLE — used
     // ONLY when the W2W transfer already SUCCEEDED (money physically left, so the
     // ledger MUST record it; the debt stays outstanding and still blocks NEW money-out).
     // requireProcessing: refuse anything but a PROCESSING row — for the operator's
     // "the transfer did go through" confirmation, which must never settle a PENDING
     // row (no transfer was ever attempted for it) with the two options above.
-    opts?: { floorWhole?: boolean; skipReceivableBlock?: boolean; requireProcessing?: boolean },
+    opts?: { skipReceivableBlock?: boolean; requireProcessing?: boolean },
   ): Promise<WithdrawalResponse> {
     const pre = await this.prisma.runAsAdmin((tx) =>
       tx.withdrawal.findUnique({ where: { id }, select: { companyId: true } }),
     );
     if (!pre) throw new NotFoundError('Withdrawal', id);
+    // The Whish W2W transfer made for this withdrawal, if any (admin-only RLS, so
+    // read here, outside the tenant transaction). Its amount is what actually left.
+    const sent = await this.prisma.runAsAdmin((tx) =>
+      tx.whishTransfer.findUnique({ where: { withdrawalId: id }, select: { amount: true } }),
+    );
     const row = await this.prisma.runSerializableAsTenant(pre.companyId, async (tx) => {
       const cTx = tx as unknown as PrismaClient;
 
@@ -344,11 +346,6 @@ export class WithdrawalsService {
         }
       }
 
-      // A PROCESSING row is ALWAYS an auto Whish transfer of floor(net), so force
-      // whole-dollar settlement regardless of how approve() was entered — otherwise
-      // a manual approve of a PROCESSING row would book the full net to EXTERNAL
-      // while only floor(net) actually left.
-      const floorWhole = opts?.floorWhole === true || w.status === 'PROCESSING';
       // fromDb: a legacy row can carry a wider tail than the money scale; quantize
       // the INPUTS once here and derive reserved/net/fees by exact subtraction.
       // Both fees were frozen on the row at request time.
@@ -356,10 +353,20 @@ export class WithdrawalsService {
       const fees = storedFees(w.feeAmount, w.networkFeeAmount);
       const reserved = reservedTotal(amount, fees, w.feeApplication);
       const net = netOfFee(amount, fees, w.feeApplication);
-      // The money that actually leaves. floorWhole sends whole dollars and keeps
-      // the cents; otherwise the recipient gets the full net.
-      const external = floorWhole ? net.floorToWhole() : net;
-      // What the platform realizes = both original fees + any floored remainder,
+      // The money that actually leaves = the full net. A PROCESSING row is an auto
+      // Whish transfer, so book exactly what was SENT: the full net to the cent
+      // today, but a transfer fired before 2dp sending was whole dollars (floor of
+      // the net) — those cents stay with the platform as the rounding remainder.
+      let external = net;
+      if (w.status === 'PROCESSING' && sent) {
+        external = Money.fromDb(sent.amount);
+        if (external.gt(net) || !external.isPositive()) {
+          throw new ConflictError(
+            `Whish transfer amount ${external.toString()} does not fit net ${net.toString()} ${w.currency}`,
+          );
+        }
+      }
+      // What the platform realizes = both original fees + any legacy remainder,
       // which stays on FEE (so true commission = FEE − Σ rounding_remainder still
       // holds). By construction external + commission + network == reserved,
       // so debits == credits.
@@ -367,7 +374,7 @@ export class WithdrawalsService {
         commission: reserved.sub(external).sub(fees.network),
         network: fees.network,
       };
-      const rounding = net.sub(external); // 0 unless floored
+      const rounding = net.sub(external); // 0 unless a legacy whole-dollar transfer
 
       // Funds leave the platform; the fees (incl. any rounding) are realized to
       // FEE and NETWORK_FEE. Ledger: reserved → external + FEE + NETWORK_FEE.
@@ -643,16 +650,15 @@ export class WithdrawalsService {
       if (!input.externalReference) {
         throw new ValidationError('externalReference is required to complete a transfer');
       }
-      // Operator confirms the money moved → settle whole-dollar, and past any
+      // Operator confirms the money moved → settle what was sent, and past any
       // receivable that appeared after the transfer (the cash already left).
       // Only a PROCESSING row has a transfer to confirm: a PENDING one settled
-      // this way would pay out past a debt and book a whole-dollar remainder for
-      // a transfer that never happened.
+      // this way would pay out past a debt for a transfer that never happened.
       return this.approve(
         id,
         actorId,
         { externalReference: input.externalReference, notes: input.notes },
-        { floorWhole: true, skipReceivableBlock: true, requireProcessing: true },
+        { skipReceivableBlock: true, requireProcessing: true },
       );
     }
     const pre = await this.prisma.runAsAdmin((tx) =>
@@ -707,8 +713,7 @@ export class WithdrawalsService {
           // poller and anything predicting its behaviour cannot drift apart.
           payoutMethod: AUTO_APPROVE_METHOD,
           currency: AUTO_APPROVE_CURRENCY,
-          // >= 1 so flooring to whole dollars still transfers something; sub-$1
-          // nets stay manual. <= the configured cap.
+          // >= the minimum (sub-$1 nets stay manual). <= the configured cap.
           netAmount: {
             gte: new Prisma.Decimal(AUTO_APPROVE_MIN_NET),
             lte: new Prisma.Decimal(opts.maxAutoApproveAmount),

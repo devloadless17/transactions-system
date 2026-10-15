@@ -41,7 +41,7 @@ function build(opts: {
     claimForProcessing: vi.fn().mockResolvedValue(true),
     revertFromProcessing: vi.fn().mockResolvedValue(undefined),
     setAutoMeta: vi.fn().mockResolvedValue(undefined),
-    approve: vi.fn().mockResolvedValue(undefined),
+    approve: vi.fn().mockResolvedValue({ roundingRemainder: '0' }),
   };
   const config = {
     simulationMode: opts.simulate ?? false,
@@ -245,7 +245,22 @@ describe('WithdrawalAutoApprovalService — error handling never double-pays', (
     expect(config.recordFailure).toHaveBeenCalled();
   });
 
-  it('on SUCCESS settles whole-dollar AND past any receivable (floorWhole + skipReceivableBlock)', async () => {
+  it('transfers the full net, cents included (218.98 is sent as 218.98)', async () => {
+    const withCents = { ...candidate, netAmount: { toString: () => '218.98' } };
+    const { service, transfers } = build({ state: makeState(), candidates: [withCents] });
+    transfers.sendTransfer.mockResolvedValue({
+      status: 'SUCCESS',
+      reference: 'wt_x',
+      traceId: 't',
+    });
+    await runTick(service);
+    expect(transfers.sendTransfer).toHaveBeenCalledWith(
+      expect.objectContaining({ amount: '218.98', currency: 'USD' }),
+      expect.objectContaining({ withdrawalId: candidate.id }),
+    );
+  });
+
+  it('on SUCCESS settles past any receivable (skipReceivableBlock)', async () => {
     const { service, withdrawals, transfers } = build({
       state: makeState(),
       candidates: [candidate],
@@ -256,13 +271,13 @@ describe('WithdrawalAutoApprovalService — error handling never double-pays', (
       traceId: 't',
     });
     await runTick(service);
-    // The money already left → settle must floor to whole dollars and must not be
-    // blocked by a receivable that appeared after the transfer.
+    // The money already left → settle must not be blocked by a receivable that
+    // appeared after the transfer.
     expect(withdrawals.approve).toHaveBeenCalledWith(
       candidate.id,
       null,
       expect.objectContaining({ externalReference: 'wt_x' }),
-      expect.objectContaining({ floorWhole: true, skipReceivableBlock: true }),
+      expect.objectContaining({ skipReceivableBlock: true }),
     );
   });
 
@@ -446,7 +461,7 @@ describe('WithdrawalAutoApprovalService — simulate mode never moves money', ()
     await runTick(service);
     expect(transfers.sendTransfer).not.toHaveBeenCalled();
     expect(transfers.sessionStatus).not.toHaveBeenCalled();
-    // Same settle path as prod: floorWhole + skipReceivableBlock, fake reference.
+    // Same settle path as prod: skipReceivableBlock, fake reference.
     expect(withdrawals.approve).toHaveBeenCalledWith(
       candidate.id,
       null,
@@ -454,7 +469,7 @@ describe('WithdrawalAutoApprovalService — simulate mode never moves money', ()
         externalReference: `SIMULATED-${candidate.id}`,
         notes: expect.stringContaining('SIMULATED'),
       }),
-      expect.objectContaining({ floorWhole: true, skipReceivableBlock: true }),
+      expect.objectContaining({ skipReceivableBlock: true }),
     );
     expect(config.recordSuccess).toHaveBeenCalled();
     expect(audit.record).toHaveBeenCalledWith(

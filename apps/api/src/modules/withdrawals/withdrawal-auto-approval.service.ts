@@ -252,10 +252,10 @@ export class WithdrawalAutoApprovalService implements OnApplicationBootstrap, On
       return false;
     }
 
-    // Transfer whole dollars only: floor the net "to pay" (e.g. 18.67 → 18). The
-    // settle (approve floorWhole) keeps the cents as the rounding remainder, so the
-    // amount sent here and the amount booked to EXTERNAL match exactly.
-    const transferAmount = Money.fromDb(w.netAmount).floorToWhole();
+    // Transfer the full net "to pay", cents included (e.g. 18.67 → 18.67). The
+    // settle (approve) books exactly the amount recorded on the transfer row, so
+    // what is sent here and what is booked to EXTERNAL always match.
+    const transferAmount = Money.fromDb(w.netAmount);
 
     let result;
     try {
@@ -373,13 +373,13 @@ export class WithdrawalAutoApprovalService implements OnApplicationBootstrap, On
     traceId: string | null,
   ): Promise<void> {
     const net = Money.fromDb(w.netAmount);
-    const transferred = net.floorToWhole();
     try {
-      // floorWhole: EXTERNAL = floor(net), the cents become the rounding remainder.
+      // approve() books EXTERNAL = the amount actually sent (the full net; only a
+      // legacy whole-dollar transfer leaves a rounding remainder).
       // skipReceivableBlock: the transfer already SUCCEEDED (money left), so settle
       // must NOT be blocked by a receivable that appeared after the transfer —
       // otherwise the row would wedge in PROCESSING forever. The debt still stands.
-      await this.withdrawals.approve(
+      const settled = await this.withdrawals.approve(
         w.id,
         null,
         {
@@ -388,7 +388,7 @@ export class WithdrawalAutoApprovalService implements OnApplicationBootstrap, On
             ? `Auto-approved (SIMULATED — no transfer) (${reference})`
             : `Auto-approved via Whish W2W (${reference})`,
         },
-        { floorWhole: true, skipReceivableBlock: true },
+        { skipReceivableBlock: true },
       );
       await this.config.recordSuccess();
       await this.audit.record({
@@ -401,8 +401,8 @@ export class WithdrawalAutoApprovalService implements OnApplicationBootstrap, On
           reference,
           traceId,
           net: net.toString(),
-          transferred: transferred.toString(),
-          rounding: net.sub(transferred).toString(),
+          transferred: net.sub(Money.fromDb(settled.roundingRemainder)).toString(),
+          rounding: settled.roundingRemainder,
           currency: w.currency.trim(),
           ...(this.simulate ? { simulated: true } : {}),
         },

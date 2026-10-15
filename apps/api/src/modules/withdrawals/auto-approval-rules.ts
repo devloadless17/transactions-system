@@ -18,10 +18,7 @@ import { Money } from '@app/shared';
 export const AUTO_APPROVE_METHOD = 'WISH';
 /** ...in USD. */
 export const AUTO_APPROVE_CURRENCY = 'USD';
-/**
- * Minimum net. The transfer floors to whole dollars, so a sub-$1 net would send
- * $0 — those stay manual.
- */
+/** Minimum net auto-transferred; sub-$1 nets stay manual. */
 export const AUTO_APPROVE_MIN_NET = '1';
 
 /** Why a withdrawal will NOT be auto-approved (i.e. a human must action it). */

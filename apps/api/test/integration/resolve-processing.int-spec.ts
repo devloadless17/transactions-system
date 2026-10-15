@@ -10,10 +10,8 @@
  *     therefore THROW ConflictError on such a row.
  *
  *  B. The COMPLETE path. A PROCESSING row that did NOT succeed can be settled by
- *     the operator with {action:'complete', externalReference}. Because a
- *     PROCESSING row is always an auto Whish transfer of floor(net), approve()
- *     forces whole-dollar settlement: the recipient got floor(net), the
- *     sub-dollar remainder is realized to the platform FEE. The ledger must stay
+ *     the operator with {action:'complete', externalReference}. approve() books
+ *     the full net (cents included) as having left. The ledger must stay
  *     balanced and the wallet must remain a faithful projection of it.
  *
  * Driven entirely through the real services + the real _test DB.
@@ -99,16 +97,16 @@ describe('resolveProcessing double-pay guard', () => {
     expect(row.status).toBe('PROCESSING');
   });
 
-  it('B: COMPLETE settles a non-succeeded PROCESSING row whole-dollar; books stay balanced', async () => {
+  it('B: COMPLETE settles a non-succeeded PROCESSING row at the full net; books stay balanced', async () => {
     const { companyId, userId } = await createCompany(h);
     const sourceId = await createEnabledSource(h, companyId);
     await addFlowFee(h, companyId, 'TRANSACTION', '0');
     // Ingest 100 → 100 available.
     await h.transactions.ingest({ kind: 'source', sourceId }, ingestInput(companyId, '100'));
 
-    // A 1% DEDUCTED WITHDRAWAL fee makes the net carry cents so floorWhole has a
-    // real remainder to roll into the FEE. amount 50.40, fee 0.504 → 0.50 at the
-    // cent scale (DEDUCTED) → reserved 50.40, net 49.90.
+    // A 1% DEDUCTED WITHDRAWAL fee makes the net carry cents, which must all be
+    // paid. amount 50.40, fee 0.504 → 0.50 at the cent scale (DEDUCTED) →
+    // reserved 50.40, net 49.90.
     await addFlowFee(h, companyId, 'WITHDRAWAL', '1');
     const w = await h.withdrawals.request(companyId, userId, wishWithdrawalInput('50.40'));
     expect(eq(w.feeAmount, '0.50')).toBe(true);
@@ -123,20 +121,19 @@ describe('resolveProcessing double-pay guard', () => {
     // it's the UNKNOWN-but-actually-unpaid case the operator confirms by hand.
     expect(await h.withdrawals.claimForProcessing(w.id, companyId)).toBe(true);
 
-    // Operator confirms the money moved → settle. A PROCESSING row always floors
-    // to whole dollars: recipient got floor(49.90) = 49, the 0.90 remainder is
-    // realized to the platform FEE alongside the original 0.50 fee.
+    // Operator confirms the money moved → settle. The recipient got the full net
+    // 49.90 (cents included); only the original 0.50 fee is realized to FEE.
     const completed = await h.withdrawals.resolveProcessing(w.id, userId, {
       action: 'complete',
       externalReference: 'ext-1',
     });
     expect(completed.status).toBe('COMPLETED');
     expect(completed.externalReference).toBe('ext-1');
-    expect(eq(completed.roundingRemainder, '0.90')).toBe(true); // 49.90 − 49
+    expect(eq(completed.roundingRemainder, '0')).toBe(true);
 
-    // The ledger identity holds: reserved (50.40) → EXTERNAL (49) + FEE (1.40),
-    // where FEE = original 0.50 + rounding 0.90 = 1.40. Books balance, reserved
-    // is fully drained, and the wallet still mirrors the ledger.
+    // The ledger identity holds: reserved (50.40) → EXTERNAL (49.90) + FEE (0.50).
+    // Books balance, reserved is fully drained, and the wallet still mirrors the
+    // ledger.
     const after = await snapshot(h, companyId);
     expect(after.balanced).toBe(true);
     expect(eq(after.wallet!.reserved, '0')).toBe(true);

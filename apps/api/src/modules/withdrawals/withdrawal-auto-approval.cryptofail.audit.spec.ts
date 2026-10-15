@@ -38,7 +38,7 @@ function build() {
     claimForProcessing: vi.fn().mockResolvedValue(true),
     revertFromProcessing: vi.fn().mockResolvedValue(undefined),
     setAutoMeta: vi.fn().mockResolvedValue(undefined),
-    approve: vi.fn().mockResolvedValue(undefined),
+    approve: vi.fn().mockResolvedValue({ roundingRemainder: '0' }),
   };
   const config = {
     simulationMode: false,
