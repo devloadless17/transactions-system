@@ -1,5 +1,5 @@
 import type { ExecutionContext } from '@nestjs/common';
-import { HealthController } from '../../modules/health/health.controller';
+import { HealthController, isInternalCheck } from '../../modules/health/health.controller';
 
 /**
  * Requests the global per-IP throttler never counts:
@@ -20,6 +20,5 @@ export function skipThrottle(context: ExecutionContext): boolean {
   if (process.env.THROTTLE_DISABLED === 'true') return true;
   if (context.getType() !== 'http') return false;
   if (context.getClass() !== HealthController) return false;
-  const req = context.switchToHttp().getRequest<{ headers: Record<string, unknown> }>();
-  return req.headers['x-forwarded-for'] === undefined;
+  return isInternalCheck(context.switchToHttp().getRequest<{ headers: Record<string, unknown> }>());
 }

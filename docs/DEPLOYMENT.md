@@ -133,10 +133,14 @@ git push origin main:production
      reports, to a caller inside its container, when one last passed
      (`proxyCheckedMsAgo`). A release that never gets there is stopped and the
      live API carries on — the deploy fails red and nothing changed.
-  3. The old colour drains: it answers 503, Caddy moves to the new one within a
-     second, it finishes everything in flight (websockets are closed and
-     reconnect), its background runs stop **between** items, then it exits.
-     A healthy colour is up at every moment, so no request waits.
+  3. The old colour drains: its health check answers 503 to Caddy (and to the
+     checks inside the container), Caddy moves to the new one within a second,
+     it finishes everything in flight (websockets are closed and reconnect),
+     its background runs stop **between** items, then it exits. A healthy
+     colour is up at every moment, so no request waits. An outside uptime
+     monitor's `/v1/health` (it carries `X-Forwarded-For`, set by Caddy) still
+     gets 200 in that second: the API is up, so a release never shows as an
+     outage.
   4. The new colour is watched for a few seconds; if it falls over, the previous
      one (stopped, not removed) is started again.
   5. The web is swapped; Caddy holds its requests for the second it restarts.

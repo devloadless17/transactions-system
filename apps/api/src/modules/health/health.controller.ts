@@ -13,6 +13,15 @@ export const PROXY_HEALTH_CHECK_HEADER = 'x-health-check';
 const PROXY_HEALTH_CHECK_VALUE = 'caddy';
 
 /**
+ * A check made from inside our network — Caddy's active check, the container's
+ * own healthcheck, the release script — carries no X-Forwarded-For, while Caddy
+ * sets one on every request it forwards (`header_up X-Forwarded-For` in every
+ * reverse_proxy). A visitor cannot remove it, so a visitor never passes for one.
+ */
+export const isInternalCheck = (req: { headers: Record<string, unknown> }): boolean =>
+  req.headers['x-forwarded-for'] === undefined;
+
+/**
  * How long a health check waits for the database's answer. Well inside every
  * checker's own timeout (Caddy 3s, the release script 3s, Docker 5s).
  */
@@ -60,7 +69,12 @@ export class HealthController {
     // Shutting down (a deploy): 503 tells Caddy's active health check to stop
     // routing new requests here — it holds them for the new container — while
     // the requests already here finish. See common/http/graceful-drain.
-    if (shutdownState.draining) {
+    // Only the checks from inside get it. A visitor's check (an uptime monitor)
+    // reaches here in the second before Caddy's own check notices, and this
+    // instance answers it like any other request it still serves — a 503 would
+    // report the API down in a release that keeps it up (seen 2026-10-17: one
+    // 503 to an outside probe, while every real request was served).
+    if (shutdownState.draining && isInternalCheck(req)) {
       res.status(503);
       return { status: 'draining', timestamp: new Date().toISOString() };
     }
@@ -69,7 +83,10 @@ export class HealthController {
     // healthcheck actually fails and the instance is restarted / pulled from
     // rotation instead of staying "healthy" while serving 500s on every request.
     if (db === 'down') res.status(503);
-    else if (req.headers[PROXY_HEALTH_CHECK_HEADER] === PROXY_HEALTH_CHECK_VALUE) {
+    else if (
+      isInternalCheck(req) &&
+      req.headers[PROXY_HEALTH_CHECK_HEADER] === PROXY_HEALTH_CHECK_VALUE
+    ) {
       this.lastProxyCheckOkAt = performance.now();
     }
     return {

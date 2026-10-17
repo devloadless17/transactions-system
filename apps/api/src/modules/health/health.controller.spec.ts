@@ -21,6 +21,9 @@ describe('HealthController', () => {
     ({ headers, socket: { remoteAddress: peer } }) as unknown as Request;
   const fromCaddyCheck = () => request(CADDY_PEER, { 'x-health-check': 'caddy' });
   const fromInside = () => request('127.0.0.1');
+  // Forwarded by Caddy, which sets X-Forwarded-For on every visitor's request.
+  const fromVisitor = (headers: Record<string, string> = {}) =>
+    request(CADDY_PEER, { 'x-forwarded-for': '203.0.113.7', ...headers });
   const proxyCheckedMsAgo = (body: object) =>
     (body as { proxyCheckedMsAgo?: number | null }).proxyCheckedMsAgo;
 
@@ -56,14 +59,44 @@ describe('HealthController', () => {
     expect(status).toHaveBeenCalledWith(503);
   });
 
-  it('503 draining once a shutdown starts — without touching the database', async () => {
-    const { controller, prisma, res, status } = setup(true);
-    shutdownState.draining = true;
-    await expect(controller.health(request(CADDY_PEER), res)).resolves.toMatchObject({
-      status: 'draining',
+  describe('once a shutdown starts (a release drains this instance)', () => {
+    it("503 draining to the checks from inside — Caddy's, Docker's, the release script's — without touching the database", async () => {
+      for (const req of [fromCaddyCheck(), fromInside()]) {
+        const { controller, prisma, res, status } = setup(true);
+        shutdownState.draining = true;
+        await expect(controller.health(req, res)).resolves.toMatchObject({ status: 'draining' });
+        expect(status).toHaveBeenCalledWith(503);
+        expect(prisma.$queryRawUnsafe).not.toHaveBeenCalled();
+      }
     });
-    expect(status).toHaveBeenCalledWith(503);
-    expect(prisma.$queryRawUnsafe).not.toHaveBeenCalled();
+
+    it("a visitor's check gets the normal answer: this instance still serves it, and the API is up", async () => {
+      const { controller, res, status } = setup(true);
+      shutdownState.draining = true;
+      await expect(controller.health(fromVisitor(), res)).resolves.toMatchObject({
+        status: 'ok',
+        db: 'ok',
+      });
+      expect(status).not.toHaveBeenCalled();
+    });
+
+    it('a visitor claiming to be Caddy is still a visitor', async () => {
+      const { controller, res, status } = setup(true);
+      shutdownState.draining = true;
+      await expect(
+        controller.health(fromVisitor({ 'x-health-check': 'caddy' }), res),
+      ).resolves.toMatchObject({ status: 'ok' });
+      expect(status).not.toHaveBeenCalled();
+    });
+
+    it('a visitor still sees a database that is down', async () => {
+      const { controller, res, status } = setup(false);
+      shutdownState.draining = true;
+      await expect(controller.health(fromVisitor(), res)).resolves.toMatchObject({
+        status: 'degraded',
+      });
+      expect(status).toHaveBeenCalledWith(503);
+    });
   });
 
   describe('has Caddy seen this instance healthy? (asked by the release script)', () => {
@@ -84,7 +117,8 @@ describe('HealthController', () => {
 
     it('only Caddy checks count: another caller through the proxy changes nothing', async () => {
       const { controller, res } = setup(true);
-      await controller.health(request(CADDY_PEER), res); // e.g. an uptime monitor
+      await controller.health(fromVisitor(), res); // e.g. an uptime monitor
+      await controller.health(fromVisitor({ 'x-health-check': 'caddy' }), res); // posing as Caddy
       await expect(controller.health(fromInside(), res)).resolves.toMatchObject({
         proxyCheckedMsAgo: null,
       });

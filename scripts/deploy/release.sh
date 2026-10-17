@@ -19,9 +19,10 @@
 #   2. It must answer its health check, and Caddy's own health check must have
 #      passed on it (the API reports that — proxyCheckedMsAgo — to a caller
 #      inside its container). Only then can Caddy route to it.
-#   3. The old colour drains: it answers 503 so Caddy moves to the new one
-#      within a second, it finishes everything in flight, its background work
-#      stops between items and gives back its leases, then it exits.
+#   3. The old colour drains: its health check answers 503 to Caddy's checks
+#      (a visitor's still gets 200) so Caddy moves to the new one within a
+#      second, it finishes everything in flight, its background work stops
+#      between items and gives back its leases, then it exits.
 #   4. The new colour is watched for a few seconds; if it falls over, the
 #      previous one is started again.
 #   5. The web is swapped (Caddy holds its requests for the moment it restarts).

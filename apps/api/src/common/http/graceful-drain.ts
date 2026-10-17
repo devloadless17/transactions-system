@@ -16,10 +16,12 @@ import type { NextFunction, Request, Response } from 'express';
  * it, and a request that was already sent cannot be retried safely.
  *
  * So the order is:
- *   1. `shutdownState.draining` turns on: /v1/health answers 503, and every
- *      response carries `Connection: close`. Caddy's active health check (every
- *      second, see the Caddyfile) stops routing new requests here and HOLDS
- *      them (lb_try_duration) until the new container is healthy.
+ *   1. `shutdownState.draining` turns on: /v1/health answers 503 to the checks
+ *      from inside (Caddy's, Docker's, the release script's; a visitor's check
+ *      still gets the normal answer), and every response carries
+ *      `Connection: close`. Caddy's active health check (every second, see the
+ *      Caddyfile) stops routing new requests here and HOLDS them
+ *      (lb_try_duration) until the new container is healthy.
  *   2. After LB_NOTICE_MS, when Caddy has stopped sending here, the server stops
  *      accepting and closes its idle connections — nothing is being written to
  *      them any more.
